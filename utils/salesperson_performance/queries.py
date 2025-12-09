@@ -571,12 +571,13 @@ class SalespersonQueries:
     
     def get_backlog_data(
         self,
-        employee_ids: List[int] = None
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None
     ) -> pd.DataFrame:
         """
-        Get backlog/outstanding data by salesperson.
+        Get total backlog/outstanding data by salesperson.
         
-        Returns DataFrame with outstanding revenue and GP by salesperson.
+        Returns DataFrame with total backlog revenue and GP by salesperson.
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -590,16 +591,176 @@ class SalespersonQueries:
             SELECT 
                 sales_id,
                 sales_name,
-                SUM(backlog_sales_by_split_usd) as outstanding_revenue,
-                SUM(backlog_gp_by_split_usd) as outstanding_gp
+                SUM(backlog_sales_by_split_usd) as total_backlog_revenue,
+                SUM(backlog_gp_by_split_usd) as total_backlog_gp,
+                COUNT(DISTINCT oc_number) as backlog_orders,
+                COUNT(DISTINCT customer_id) as backlog_customers
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
-            GROUP BY sales_id, sales_name
         """
         
         params = {'employee_ids': tuple(employee_ids)}
         
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += " GROUP BY sales_id, sales_name"
+        
         return self._execute_query(query, params, "backlog_data")
+    
+    def get_backlog_in_period(
+        self,
+        start_date: date,
+        end_date: date,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get backlog with ETD falling within the specified period.
+        This represents backlog expected to convert to invoice in the period.
+        
+        Args:
+            start_date: Period start date
+            end_date: Period end date
+            employee_ids: Optional employee filter
+            entity_ids: Optional entity filter
+            
+        Returns DataFrame with in-period backlog by salesperson.
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                sales_id,
+                sales_name,
+                SUM(backlog_sales_by_split_usd) as in_period_backlog_revenue,
+                SUM(backlog_gp_by_split_usd) as in_period_backlog_gp,
+                COUNT(DISTINCT oc_number) as in_period_orders,
+                COUNT(DISTINCT customer_id) as in_period_customers
+            FROM backlog_by_salesperson_looker_view
+            WHERE sales_id IN :employee_ids
+              AND etd BETWEEN :start_date AND :end_date
+        """
+        
+        params = {
+            'employee_ids': tuple(employee_ids),
+            'start_date': start_date,
+            'end_date': end_date
+        }
+        
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += " GROUP BY sales_id, sales_name"
+        
+        return self._execute_query(query, params, "backlog_in_period")
+    
+    def get_backlog_by_month(
+        self,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get backlog grouped by ETD month for forecasting.
+        
+        Returns DataFrame with backlog by ETD month.
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                etd_year,
+                etd_month,
+                SUM(backlog_sales_by_split_usd) as backlog_revenue,
+                SUM(backlog_gp_by_split_usd) as backlog_gp,
+                COUNT(DISTINCT oc_number) as order_count
+            FROM backlog_by_salesperson_looker_view
+            WHERE sales_id IN :employee_ids
+              AND etd IS NOT NULL
+        """
+        
+        params = {'employee_ids': tuple(employee_ids)}
+        
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += """
+            GROUP BY etd_year, etd_month
+            ORDER BY etd_year, 
+                     FIELD(etd_month, 'Jan','Feb','Mar','Apr','May','Jun',
+                                      'Jul','Aug','Sep','Oct','Nov','Dec')
+        """
+        
+        return self._execute_query(query, params, "backlog_by_month")
+    
+    def get_backlog_detail(
+        self,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        limit: int = 100
+    ) -> pd.DataFrame:
+        """
+        Get detailed backlog records for drill-down.
+        
+        Returns DataFrame with individual backlog line items.
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                oc_number,
+                oc_date,
+                etd,
+                customer,
+                customer_id,
+                product_pn,
+                brand,
+                sales_name,
+                sales_id,
+                legal_entity,
+                backlog_sales_by_split_usd,
+                backlog_gp_by_split_usd,
+                split_rate_percent,
+                pending_type,
+                days_until_etd,
+                status
+            FROM backlog_by_salesperson_looker_view
+            WHERE sales_id IN :employee_ids
+        """
+        
+        params = {'employee_ids': tuple(employee_ids)}
+        
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += f"""
+            ORDER BY backlog_sales_by_split_usd DESC
+            LIMIT {limit}
+        """
+        
+        return self._execute_query(query, params, "backlog_detail")
     
     # =========================================================================
     # HELPER METHODS

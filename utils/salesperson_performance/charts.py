@@ -43,7 +43,9 @@ class SalespersonCharts:
         metrics: Dict,
         yoy_metrics: Dict = None,
         complex_kpis: Dict = None,
-        show_complex: bool = True
+        backlog_metrics: Dict = None,
+        show_complex: bool = True,
+        show_backlog: bool = True
     ):
         """
         Render KPI summary cards using Streamlit metrics.
@@ -52,7 +54,9 @@ class SalespersonCharts:
             metrics: Overview metrics dict
             yoy_metrics: YoY comparison metrics (optional)
             complex_kpis: Complex KPI metrics (optional)
+            backlog_metrics: Backlog and forecast metrics (optional)
             show_complex: Whether to show complex KPI row
+            show_backlog: Whether to show backlog/forecast row
         """
         # Row 1: Main Financial KPIs
         col1, col2, col3, col4 = st.columns(4)
@@ -135,9 +139,84 @@ class SalespersonCharts:
                 value=f"{metrics['gp_percent']:.1f}%",
             )
         
-        # Row 3: Complex KPIs (if provided and enabled)
+        # Row 3: Backlog & Forecast (if provided and enabled)
+        if show_backlog and backlog_metrics:
+            st.divider()
+            st.markdown("##### 📦 Backlog & Forecast")
+            
+            col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
+            
+            with col_b1:
+                st.metric(
+                    label="📦 Total Backlog",
+                    value=f"${backlog_metrics.get('total_backlog_revenue', 0):,.0f}",
+                    delta=f"{backlog_metrics.get('backlog_orders', 0):,} orders",
+                    delta_color="off"
+                )
+            
+            with col_b2:
+                coverage = backlog_metrics.get('backlog_coverage_percent')
+                delta_str = f"{coverage:.0f}% of target" if coverage else None
+                st.metric(
+                    label="📅 In-Period Backlog",
+                    value=f"${backlog_metrics.get('in_period_backlog_revenue', 0):,.0f}",
+                    delta=delta_str,
+                    delta_color="off"
+                )
+            
+            with col_b3:
+                st.metric(
+                    label="✅ Current Invoiced",
+                    value=f"${backlog_metrics.get('current_invoiced_revenue', 0):,.0f}",
+                    help="Revenue already invoiced in period"
+                )
+            
+            with col_b4:
+                forecast_achievement = backlog_metrics.get('forecast_achievement_revenue')
+                delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
+                delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
+                st.metric(
+                    label="🔮 Forecast",
+                    value=f"${backlog_metrics.get('forecast_revenue', 0):,.0f}",
+                    delta=delta_str,
+                    delta_color=delta_color if delta_str else "off",
+                    help="Invoiced + In-Period Backlog"
+                )
+            
+            with col_b5:
+                gap = backlog_metrics.get('gap_revenue')
+                gap_percent = backlog_metrics.get('gap_revenue_percent')
+                
+                if gap is not None:
+                    # Positive gap = exceeding target, Negative = shortfall
+                    if gap >= 0:
+                        gap_label = "🟢 Surplus"
+                        delta_color = "normal"
+                    else:
+                        gap_label = "🔴 GAP"
+                        delta_color = "inverse"
+                    
+                    delta_str = f"{gap_percent:+.1f}%" if gap_percent else None
+                    st.metric(
+                        label=gap_label,
+                        value=f"${gap:+,.0f}",
+                        delta=delta_str,
+                        delta_color=delta_color,
+                        help="Forecast - Target"
+                    )
+                else:
+                    st.metric(
+                        label="⚠️ GAP",
+                        value="N/A",
+                        delta="No target",
+                        delta_color="off"
+                    )
+        
+        # Row 4: Complex KPIs (if provided and enabled)
         if show_complex and complex_kpis:
             st.divider()
+            st.markdown("##### 🆕 New Business KPIs")
+            
             col9, col10, col11 = st.columns(3)
             
             with col9:
@@ -676,3 +755,250 @@ class SalespersonCharts:
             width=CHART_WIDTH,
             height=200
         )
+    
+    # =========================================================================
+    # BACKLOG & FORECAST CHARTS
+    # =========================================================================
+    
+    @staticmethod
+    def build_forecast_waterfall_chart(
+        backlog_metrics: Dict,
+        title: str = "🔮 Revenue Forecast vs Target"
+    ) -> alt.Chart:
+        """
+        Build a waterfall-style chart showing Invoiced + Backlog = Forecast vs Target.
+        
+        Args:
+            backlog_metrics: Dict with backlog metrics
+            title: Chart title
+            
+        Returns:
+            Altair chart
+        """
+        if not backlog_metrics:
+            return SalespersonCharts._empty_chart("No backlog data")
+        
+        # Prepare data for stacked bar
+        data = pd.DataFrame([
+            {
+                'category': 'Performance',
+                'component': '✅ Invoiced',
+                'value': backlog_metrics.get('current_invoiced_revenue', 0),
+                'order': 1
+            },
+            {
+                'category': 'Performance',
+                'component': '📅 In-Period Backlog',
+                'value': backlog_metrics.get('in_period_backlog_revenue', 0),
+                'order': 2
+            },
+            {
+                'category': 'Target',
+                'component': '🎯 Target',
+                'value': backlog_metrics.get('revenue_target', 0) or 0,
+                'order': 1
+            }
+        ])
+        
+        # Color scale
+        color_scale = alt.Scale(
+            domain=['✅ Invoiced', '📅 In-Period Backlog', '🎯 Target'],
+            range=[COLORS['gross_profit'], COLORS['new_customer'], COLORS['target']]
+        )
+        
+        # Stacked bar chart
+        bars = alt.Chart(data).mark_bar(size=60).encode(
+            x=alt.X('category:N', title='', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s'), stack='zero'),
+            color=alt.Color('component:N', scale=color_scale, legend=alt.Legend(orient='bottom')),
+            order=alt.Order('order:Q'),
+            tooltip=[
+                alt.Tooltip('category:N', title='Category'),
+                alt.Tooltip('component:N', title='Component'),
+                alt.Tooltip('value:Q', title='Amount', format=',.0f')
+            ]
+        )
+        
+        # Add forecast line
+        forecast_value = backlog_metrics.get('forecast_revenue', 0)
+        forecast_line = alt.Chart(pd.DataFrame({'y': [forecast_value]})).mark_rule(
+            color=COLORS['gross_profit_percent'],
+            strokeWidth=2,
+            strokeDash=[5, 5]
+        ).encode(
+            y='y:Q'
+        )
+        
+        # Add forecast label
+        forecast_text = alt.Chart(pd.DataFrame({
+            'x': ['Target'],
+            'y': [forecast_value],
+            'label': [f'Forecast: ${forecast_value:,.0f}']
+        })).mark_text(
+            align='left',
+            dx=35,
+            fontSize=12,
+            fontWeight='bold',
+            color=COLORS['gross_profit_percent']
+        ).encode(
+            x='x:N',
+            y='y:Q',
+            text='label:N'
+        )
+        
+        chart = alt.layer(bars, forecast_line, forecast_text).properties(
+            width=400,
+            height=350,
+            title=title
+        )
+        
+        return chart
+    
+    @staticmethod
+    def build_backlog_by_month_chart(
+        monthly_df: pd.DataFrame,
+        invoiced_monthly_df: pd.DataFrame = None,
+        title: str = "📅 Backlog by ETD Month"
+    ) -> alt.Chart:
+        """
+        Build bar chart showing backlog distribution by ETD month.
+        Optionally overlay with invoiced data for comparison.
+        
+        Args:
+            monthly_df: Backlog by month data
+            invoiced_monthly_df: Optional invoiced by month for comparison
+            title: Chart title
+            
+        Returns:
+            Altair chart
+        """
+        if monthly_df.empty:
+            return SalespersonCharts._empty_chart("No backlog data")
+        
+        df = monthly_df.copy()
+        
+        # Ensure month column exists
+        if 'month' not in df.columns and 'etd_month' in df.columns:
+            df = df.rename(columns={'etd_month': 'month'})
+        
+        # Bar chart for backlog
+        bars = alt.Chart(df).mark_bar(color=COLORS['new_customer']).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='ETD Month'),
+            y=alt.Y('backlog_revenue:Q', title='Backlog (USD)', axis=alt.Axis(format='~s')),
+            tooltip=[
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip('backlog_revenue:Q', title='Backlog', format=',.0f'),
+                alt.Tooltip('order_count:Q', title='Orders')
+            ]
+        )
+        
+        # Text labels
+        text = alt.Chart(df).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-5,
+            fontSize=10,
+            color=COLORS['text_dark']
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('backlog_revenue:Q'),
+            text=alt.Text('backlog_revenue:Q', format=',.0f')
+        )
+        
+        chart = alt.layer(bars, text).properties(
+            width=CHART_WIDTH,
+            height=300,
+            title=title
+        )
+        
+        return chart
+    
+    @staticmethod
+    def build_gap_analysis_chart(
+        backlog_metrics: Dict,
+        title: str = "📊 Target vs Forecast Analysis"
+    ) -> alt.Chart:
+        """
+        Build a bullet/progress chart showing current progress, forecast, and target.
+        
+        Args:
+            backlog_metrics: Dict with backlog metrics
+            title: Chart title
+            
+        Returns:
+            Altair chart
+        """
+        if not backlog_metrics:
+            return SalespersonCharts._empty_chart("No data available")
+        
+        target = backlog_metrics.get('revenue_target', 0) or 0
+        invoiced = backlog_metrics.get('current_invoiced_revenue', 0)
+        forecast = backlog_metrics.get('forecast_revenue', 0)
+        
+        if target == 0:
+            return SalespersonCharts._empty_chart("No target set")
+        
+        # Calculate percentages
+        invoiced_pct = (invoiced / target) * 100
+        forecast_pct = (forecast / target) * 100
+        
+        data = pd.DataFrame([
+            {'metric': 'Revenue', 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct},
+            {'metric': 'Revenue', 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct},
+            {'metric': 'Revenue', 'type': 'Target', 'value': target, 'percent': 100},
+        ])
+        
+        # Base bar (target as background)
+        base = alt.Chart(data[data['type'] == 'Target']).mark_bar(
+            color='#e0e0e0',
+            size=40
+        ).encode(
+            x=alt.X('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s')),
+            y=alt.Y('metric:N', title='')
+        )
+        
+        # Forecast bar
+        forecast_bar = alt.Chart(data[data['type'] == 'Forecast']).mark_bar(
+            color=COLORS['new_customer'],
+            size=25
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N'),
+            tooltip=[
+                alt.Tooltip('type:N', title='Type'),
+                alt.Tooltip('value:Q', title='Amount', format=',.0f'),
+                alt.Tooltip('percent:Q', title='% of Target', format='.1f')
+            ]
+        )
+        
+        # Invoiced bar (innermost)
+        invoiced_bar = alt.Chart(data[data['type'] == 'Invoiced']).mark_bar(
+            color=COLORS['gross_profit'],
+            size=15
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N'),
+            tooltip=[
+                alt.Tooltip('type:N', title='Type'),
+                alt.Tooltip('value:Q', title='Amount', format=',.0f'),
+                alt.Tooltip('percent:Q', title='% of Target', format='.1f')
+            ]
+        )
+        
+        # Target line
+        target_rule = alt.Chart(data[data['type'] == 'Target']).mark_tick(
+            color=COLORS['target'],
+            thickness=3,
+            size=50
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N')
+        )
+        
+        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule).properties(
+            width=CHART_WIDTH,
+            height=150,
+            title=title
+        )
+        
+        return chart

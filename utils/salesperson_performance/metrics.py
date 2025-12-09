@@ -73,6 +73,9 @@ class SalespersonMetrics:
         """
         today = date.today()
         
+        # Ensure year is integer
+        year = int(year)
+        
         if period_type == 'YTD':
             start = date(year, 1, 1)
             end = min(today, date(year, 12, 31))
@@ -651,3 +654,172 @@ class SalespersonMetrics:
             top_brands = brand_gp.copy()
         
         return top_brands
+    
+    # =========================================================================
+    # BACKLOG & FORECAST CALCULATIONS
+    # =========================================================================
+    
+    def calculate_backlog_metrics(
+        self,
+        total_backlog_df: pd.DataFrame,
+        in_period_backlog_df: pd.DataFrame,
+        period_type: str = 'YTD',
+        year: int = None
+    ) -> Dict:
+        """
+        Calculate backlog and forecast metrics.
+        
+        Args:
+            total_backlog_df: Total backlog data
+            in_period_backlog_df: Backlog with ETD in period
+            period_type: Period type for target lookup
+            year: Year for target lookup
+            
+        Returns:
+            Dict with backlog metrics
+        """
+        if year is None:
+            year = datetime.now().year
+        
+        # Total backlog (all outstanding)
+        total_backlog_revenue = 0
+        total_backlog_gp = 0
+        backlog_orders = 0
+        backlog_customers = 0
+        
+        if not total_backlog_df.empty:
+            total_backlog_revenue = total_backlog_df['total_backlog_revenue'].sum()
+            total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
+            backlog_orders = total_backlog_df['backlog_orders'].sum() if 'backlog_orders' in total_backlog_df.columns else 0
+            backlog_customers = total_backlog_df['backlog_customers'].sum() if 'backlog_customers' in total_backlog_df.columns else 0
+        
+        # In-period backlog (ETD within period)
+        in_period_backlog_revenue = 0
+        in_period_backlog_gp = 0
+        in_period_orders = 0
+        
+        if not in_period_backlog_df.empty:
+            in_period_backlog_revenue = in_period_backlog_df['in_period_backlog_revenue'].sum()
+            in_period_backlog_gp = in_period_backlog_df['in_period_backlog_gp'].sum()
+            in_period_orders = in_period_backlog_df['in_period_orders'].sum() if 'in_period_orders' in in_period_backlog_df.columns else 0
+        
+        # Current invoiced (from sales_df)
+        current_invoiced_revenue = self.sales_df['sales_by_split_usd'].sum() if not self.sales_df.empty else 0
+        current_invoiced_gp = self.sales_df['gross_profit_by_split_usd'].sum() if not self.sales_df.empty else 0
+        
+        # Forecast = Current Invoiced + In-Period Backlog
+        forecast_revenue = current_invoiced_revenue + in_period_backlog_revenue
+        forecast_gp = current_invoiced_gp + in_period_backlog_gp
+        
+        # Get target
+        revenue_target = self._get_prorated_target('revenue', period_type, year)
+        gp_target = self._get_prorated_target('gross_profit', period_type, year)
+        
+        # GAP = Target - Forecast (negative means shortfall)
+        gap_revenue = None
+        gap_gp = None
+        gap_revenue_percent = None
+        gap_gp_percent = None
+        
+        if revenue_target and revenue_target > 0:
+            gap_revenue = forecast_revenue - revenue_target
+            gap_revenue_percent = (gap_revenue / revenue_target) * 100
+        
+        if gp_target and gp_target > 0:
+            gap_gp = forecast_gp - gp_target
+            gap_gp_percent = (gap_gp / gp_target) * 100
+        
+        # Forecast achievement
+        forecast_achievement_revenue = None
+        forecast_achievement_gp = None
+        
+        if revenue_target and revenue_target > 0:
+            forecast_achievement_revenue = (forecast_revenue / revenue_target) * 100
+        
+        if gp_target and gp_target > 0:
+            forecast_achievement_gp = (forecast_gp / gp_target) * 100
+        
+        return {
+            # Total Backlog
+            'total_backlog_revenue': total_backlog_revenue,
+            'total_backlog_gp': total_backlog_gp,
+            'backlog_orders': backlog_orders,
+            'backlog_customers': backlog_customers,
+            
+            # In-Period Backlog
+            'in_period_backlog_revenue': in_period_backlog_revenue,
+            'in_period_backlog_gp': in_period_backlog_gp,
+            'in_period_orders': in_period_orders,
+            
+            # Current Invoiced
+            'current_invoiced_revenue': current_invoiced_revenue,
+            'current_invoiced_gp': current_invoiced_gp,
+            
+            # Forecast
+            'forecast_revenue': forecast_revenue,
+            'forecast_gp': forecast_gp,
+            
+            # Target
+            'revenue_target': revenue_target,
+            'gp_target': gp_target,
+            
+            # GAP
+            'gap_revenue': gap_revenue,
+            'gap_gp': gap_gp,
+            'gap_revenue_percent': round(gap_revenue_percent, 1) if gap_revenue_percent else None,
+            'gap_gp_percent': round(gap_gp_percent, 1) if gap_gp_percent else None,
+            
+            # Forecast Achievement
+            'forecast_achievement_revenue': round(forecast_achievement_revenue, 1) if forecast_achievement_revenue else None,
+            'forecast_achievement_gp': round(forecast_achievement_gp, 1) if forecast_achievement_gp else None,
+            
+            # Backlog as % of Target
+            'backlog_coverage_percent': round((in_period_backlog_revenue / revenue_target * 100), 1) if revenue_target else None,
+        }
+    
+    def prepare_backlog_by_month(
+        self,
+        backlog_by_month_df: pd.DataFrame,
+        year: int = None
+    ) -> pd.DataFrame:
+        """
+        Prepare backlog by month for chart display.
+        
+        Args:
+            backlog_by_month_df: Backlog data grouped by ETD month
+            year: Year to filter
+            
+        Returns:
+            DataFrame with monthly backlog
+        """
+        if backlog_by_month_df.empty:
+            return self._get_empty_backlog_monthly()
+        
+        if year is None:
+            year = datetime.now().year
+        
+        # Filter to specified year
+        df = backlog_by_month_df.copy()
+        df['etd_year'] = df['etd_year'].astype(str)
+        df = df[df['etd_year'] == str(year)]
+        
+        if df.empty:
+            return self._get_empty_backlog_monthly()
+        
+        # Rename for consistency
+        df = df.rename(columns={'etd_month': 'month'})
+        
+        # Ensure all months present
+        all_months = pd.DataFrame({'month': MONTH_ORDER})
+        df = all_months.merge(df, on='month', how='left').fillna(0)
+        
+        return df
+    
+    def _get_empty_backlog_monthly(self) -> pd.DataFrame:
+        """Return empty backlog monthly summary."""
+        return pd.DataFrame({
+            'month': MONTH_ORDER,
+            'backlog_revenue': [0] * 12,
+            'backlog_gp': [0] * 12,
+            'order_count': [0] * 12,
+        })

@@ -398,7 +398,7 @@ class SalespersonFilters:
         """Render YoY comparison toggle."""
         return st.sidebar.checkbox(
             "📊 Compare YoY",
-            value=False,
+            value=True,  # Default: enabled
             key="filter_compare_yoy",
             help="Show year-over-year comparison with same period last year"
         )
@@ -408,7 +408,7 @@ class SalespersonFilters:
         return st.sidebar.radio(
             "📈 Primary Metric",
             options=['Revenue', 'Gross Profit', 'GP1'],
-            index=0,
+            index=2,  # Default: GP1 (index 2)
             key="filter_metric_view",
             horizontal=True
         )

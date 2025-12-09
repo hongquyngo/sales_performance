@@ -1,6 +1,6 @@
-# pages/1_salesperson_performance.py
+# pages/1_👤_Salesperson_Performance.py
 """
-Salesperson Performance Dashboard
+👤 Salesperson Performance Dashboard
 
 Track sales performance by salesperson with:
 - Role-based access control (sales see self, managers see team, admin sees all)
@@ -91,6 +91,7 @@ filters_ui = SalespersonFilters(access)
 # =============================================================================
 
 # Get lookup data for filters
+# Salesperson options: all salespeople who have any sales data
 salesperson_options = queries.get_salesperson_options()
 entity_options = queries.get_entity_options()
 available_years = queries.get_available_years()
@@ -136,11 +137,29 @@ def load_all_data(start_date, end_date, employee_ids, entity_ids, year):
     new_products_df = q.get_new_products(start_date, end_date, employee_ids)
     new_business_df = q.get_new_business_revenue(start_date, end_date, employee_ids)
     
-    return sales_df, targets_df, new_customers_df, new_products_df, new_business_df
+    # Backlog data
+    total_backlog_df = q.get_backlog_data(
+        employee_ids=employee_ids,
+        entity_ids=entity_ids if entity_ids else None
+    )
+    in_period_backlog_df = q.get_backlog_in_period(
+        start_date=start_date,
+        end_date=end_date,
+        employee_ids=employee_ids,
+        entity_ids=entity_ids if entity_ids else None
+    )
+    backlog_by_month_df = q.get_backlog_by_month(
+        employee_ids=employee_ids,
+        entity_ids=entity_ids if entity_ids else None
+    )
+    
+    return (sales_df, targets_df, new_customers_df, new_products_df, new_business_df,
+            total_backlog_df, in_period_backlog_df, backlog_by_month_df)
 
 
 # Load data based on filters
-sales_df, targets_df, new_customers_df, new_products_df, new_business_df = load_all_data(
+(sales_df, targets_df, new_customers_df, new_products_df, new_business_df,
+ total_backlog_df, in_period_backlog_df, backlog_by_month_df) = load_all_data(
     start_date=filter_values['start_date'],
     end_date=filter_values['end_date'],
     employee_ids=tuple(filter_values['employee_ids']),
@@ -149,7 +168,7 @@ sales_df, targets_df, new_customers_df, new_products_df, new_business_df = load_
 )
 
 # Check if we have data
-if sales_df.empty:
+if sales_df.empty and total_backlog_df.empty:
     st.warning("📭 No data found for the selected filters")
     st.info("Try adjusting your filter criteria")
     st.stop()
@@ -171,6 +190,14 @@ complex_kpis = metrics_calc.calculate_complex_kpis(
     new_customers_df=new_customers_df,
     new_products_df=new_products_df,
     new_business_df=new_business_df
+)
+
+# Backlog metrics
+backlog_metrics = metrics_calc.calculate_backlog_metrics(
+    total_backlog_df=total_backlog_df,
+    in_period_backlog_df=in_period_backlog_df,
+    period_type=filter_values['period_type'],
+    year=filter_values['year']
 )
 
 # YoY comparison (if enabled)
@@ -213,7 +240,9 @@ SalespersonCharts.render_kpi_cards(
     metrics=overview_metrics,
     yoy_metrics=yoy_metrics,
     complex_kpis=complex_kpis,
-    show_complex=True
+    backlog_metrics=backlog_metrics,
+    show_complex=True,
+    show_backlog=True
 )
 
 st.divider()
@@ -244,6 +273,58 @@ with col2:
         title=""
     )
     st.altair_chart(cumulative_chart, use_container_width=True)
+
+st.divider()
+
+# =============================================================================
+# BACKLOG & FORECAST SECTION
+# =============================================================================
+
+st.subheader("📦 Backlog & Forecast Analysis")
+
+col_bf1, col_bf2 = st.columns(2)
+
+with col_bf1:
+    # Forecast waterfall chart
+    forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+        backlog_metrics=backlog_metrics,
+        title=""
+    )
+    st.altair_chart(forecast_chart, use_container_width=True)
+
+with col_bf2:
+    # Gap analysis bullet chart
+    gap_chart = SalespersonCharts.build_gap_analysis_chart(
+        backlog_metrics=backlog_metrics,
+        title=""
+    )
+    st.altair_chart(gap_chart, use_container_width=True)
+    
+    # Additional backlog summary
+    if backlog_metrics:
+        st.markdown("**📋 Backlog Summary:**")
+        backlog_summary_cols = st.columns(3)
+        with backlog_summary_cols[0]:
+            st.caption(f"🔢 Total Orders: {backlog_metrics.get('backlog_orders', 0):,}")
+        with backlog_summary_cols[1]:
+            st.caption(f"👥 Customers: {backlog_metrics.get('backlog_customers', 0):,}")
+        with backlog_summary_cols[2]:
+            coverage = backlog_metrics.get('backlog_coverage_percent', 0)
+            st.caption(f"📊 Coverage: {coverage:.1f}% of target")
+
+# Backlog by month chart
+backlog_monthly = metrics_calc.prepare_backlog_by_month(
+    backlog_by_month_df=backlog_by_month_df,
+    year=filter_values['year']
+)
+
+if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+    st.markdown("#### 📅 Backlog Distribution by ETD Month")
+    backlog_month_chart = SalespersonCharts.build_backlog_by_month_chart(
+        monthly_df=backlog_monthly,
+        title=""
+    )
+    st.altair_chart(backlog_month_chart, use_container_width=True)
 
 st.divider()
 
