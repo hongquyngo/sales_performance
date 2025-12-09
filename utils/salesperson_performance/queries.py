@@ -763,6 +763,53 @@ class SalespersonQueries:
         return self._execute_query(query, params, "backlog_detail")
     
     # =========================================================================
+    # SALES SPLIT DATA
+    # =========================================================================
+    
+    def get_sales_split_data(
+        self,
+        employee_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get sales split assignments for salespeople.
+        
+        Returns DataFrame with split assignments including customer, product, percentage.
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                ss.sales_id,
+                ss.sales_name,
+                ss.sales_email,
+                c.english_name as customer,
+                c.id as customer_id,
+                COALESCE(p.part_number, 'All Products') as product_pn,
+                p.id as product_id,
+                ss.split_percentage,
+                ss.effective_period,
+                ss.approval_status,
+                ss.created_at,
+                ss.updated_at
+            FROM sales_split_full_looker_view ss
+            LEFT JOIN companies c ON ss.customer_id = c.id
+            LEFT JOIN products p ON ss.product_id = p.id
+            WHERE ss.sales_id IN :employee_ids
+              AND ss.approval_status = 'approved'
+            ORDER BY ss.sales_name, c.english_name
+        """
+        
+        params = {'employee_ids': tuple(employee_ids)}
+        
+        return self._execute_query(query, params, "sales_split_data")
+    
+    # =========================================================================
     # HELPER METHODS
     # =========================================================================
     

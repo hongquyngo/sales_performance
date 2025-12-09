@@ -1,22 +1,21 @@
 # pages/1_👤_Salesperson_Performance.py
 """
-👤 Salesperson Performance Dashboard
+👤 Salesperson Performance Dashboard (Tabbed Version)
 
-Track sales performance by salesperson with:
-- Role-based access control (sales see self, managers see team, admin sees all)
-- KPI summary cards (Revenue, GP, GP1, Achievement)
-- Complex KPIs (New Customers, New Products, New Business Revenue)
-- Monthly trend visualization
-- Target comparison
-- YoY analysis
-- Formatted Excel export
+5 Tabs:
+1. Overview - KPI summary, charts, trends
+2. Sales Detail - Transaction list, pivot analysis
+3. Backlog - Backlog detail, ETD analysis, risk
+4. KPI & Targets - KPI assignments, progress, ranking
+5. Setup - Sales split, customer/product portfolio
 
-Version: 1.0.0
+Version: 2.0.0
 """
 
 import streamlit as st
 from datetime import datetime, date
 import logging
+import pandas as pd
 
 # Shared utilities
 from utils.auth import AuthManager
@@ -31,6 +30,7 @@ from utils.salesperson_performance import (
     SalespersonCharts,
     SalespersonExport,
     PERIOD_TYPES,
+    MONTH_ORDER,
 )
 
 # Configure logging
@@ -74,46 +74,38 @@ if not db_connected:
 # INITIALIZE COMPONENTS
 # =============================================================================
 
-# Access Control
 access = AccessControl(
     user_role=st.session_state.get('user_role', 'viewer'),
     employee_id=st.session_state.get('employee_id')
 )
 
-# Data queries
 queries = SalespersonQueries(access)
-
-# Filters UI
 filters_ui = SalespersonFilters(access)
 
 # =============================================================================
 # SIDEBAR FILTERS
 # =============================================================================
 
-# Get lookup data for filters
-# Salesperson options: all salespeople who have any sales data
 salesperson_options = queries.get_salesperson_options()
 entity_options = queries.get_entity_options()
 available_years = queries.get_available_years()
 
-# Render filters and get selected values
 filter_values = filters_ui.render_all_filters(
     salesperson_df=salesperson_options,
     entity_df=entity_options,
     available_years=available_years
 )
 
-# Validate filters
 is_valid, error_msg = filters_ui.validate_filters(filter_values)
 if not is_valid:
     st.error(f"⚠️ {error_msg}")
     st.stop()
 
 # =============================================================================
-# LOAD DATA
+# LOAD ALL DATA
 # =============================================================================
 
-@st.cache_data(ttl=1800, show_spinner="Loading sales data...")
+@st.cache_data(ttl=1800, show_spinner="Loading data...")
 def load_all_data(start_date, end_date, employee_ids, entity_ids, year):
     """Load all required data with caching."""
     q = SalespersonQueries(AccessControl(
@@ -153,13 +145,32 @@ def load_all_data(start_date, end_date, employee_ids, entity_ids, year):
         entity_ids=entity_ids if entity_ids else None
     )
     
-    return (sales_df, targets_df, new_customers_df, new_products_df, new_business_df,
-            total_backlog_df, in_period_backlog_df, backlog_by_month_df)
+    # Backlog detail
+    backlog_detail_df = q.get_backlog_detail(
+        employee_ids=employee_ids,
+        entity_ids=entity_ids if entity_ids else None,
+        limit=500
+    )
+    
+    # Sales split data
+    sales_split_df = q.get_sales_split_data(employee_ids=employee_ids)
+    
+    return {
+        'sales': sales_df,
+        'targets': targets_df,
+        'new_customers': new_customers_df,
+        'new_products': new_products_df,
+        'new_business': new_business_df,
+        'total_backlog': total_backlog_df,
+        'in_period_backlog': in_period_backlog_df,
+        'backlog_by_month': backlog_by_month_df,
+        'backlog_detail': backlog_detail_df,
+        'sales_split': sales_split_df,
+    }
 
 
-# Load data based on filters
-(sales_df, targets_df, new_customers_df, new_products_df, new_business_df,
- total_backlog_df, in_period_backlog_df, backlog_by_month_df) = load_all_data(
+# Load data
+data = load_all_data(
     start_date=filter_values['start_date'],
     end_date=filter_values['end_date'],
     employee_ids=tuple(filter_values['employee_ids']),
@@ -167,8 +178,8 @@ def load_all_data(start_date, end_date, employee_ids, entity_ids, year):
     year=filter_values['year']
 )
 
-# Check if we have data
-if sales_df.empty and total_backlog_df.empty:
+# Check if we have any data
+if data['sales'].empty and data['total_backlog'].empty:
     st.warning("📭 No data found for the selected filters")
     st.info("Try adjusting your filter criteria")
     st.stop()
@@ -177,33 +188,28 @@ if sales_df.empty and total_backlog_df.empty:
 # CALCULATE METRICS
 # =============================================================================
 
-metrics_calc = SalespersonMetrics(sales_df, targets_df)
+metrics_calc = SalespersonMetrics(data['sales'], data['targets'])
 
-# Overview metrics
 overview_metrics = metrics_calc.calculate_overview_metrics(
     period_type=filter_values['period_type'],
     year=filter_values['year']
 )
 
-# Complex KPIs
 complex_kpis = metrics_calc.calculate_complex_kpis(
-    new_customers_df=new_customers_df,
-    new_products_df=new_products_df,
-    new_business_df=new_business_df
+    new_customers_df=data['new_customers'],
+    new_products_df=data['new_products'],
+    new_business_df=data['new_business']
 )
 
-# Backlog metrics
 backlog_metrics = metrics_calc.calculate_backlog_metrics(
-    total_backlog_df=total_backlog_df,
-    in_period_backlog_df=in_period_backlog_df,
+    total_backlog_df=data['total_backlog'],
+    in_period_backlog_df=data['in_period_backlog'],
     period_type=filter_values['period_type'],
     year=filter_values['year']
 )
 
-# YoY comparison (if enabled)
+# YoY comparison
 yoy_metrics = None
-previous_sales_df = None
-
 if filter_values['compare_yoy']:
     previous_sales_df = queries.get_previous_year_data(
         start_date=filter_values['start_date'],
@@ -225,259 +231,677 @@ if filter_values['compare_yoy']:
 # =============================================================================
 
 st.title("👤 Salesperson Performance")
-
-# Filter summary
 filter_summary = filters_ui.get_filter_summary(filter_values)
 st.caption(f"📊 {filter_summary}")
 
-st.divider()
-
 # =============================================================================
-# KPI CARDS
+# TABS
 # =============================================================================
 
-SalespersonCharts.render_kpi_cards(
-    metrics=overview_metrics,
-    yoy_metrics=yoy_metrics,
-    complex_kpis=complex_kpis,
-    backlog_metrics=backlog_metrics,
-    show_complex=True,
-    show_backlog=True
-)
-
-st.divider()
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 Overview",
+    "📋 Sales Detail",
+    "📦 Backlog",
+    "🎯 KPI & Targets",
+    "⚙️ Setup"
+])
 
 # =============================================================================
-# CHARTS SECTION
+# TAB 1: OVERVIEW
 # =============================================================================
 
-# Prepare monthly data
-monthly_summary = metrics_calc.prepare_monthly_summary()
-
-# Two-column layout for charts
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("📊 Monthly Trend")
-    monthly_chart = SalespersonCharts.build_monthly_trend_chart(
-        monthly_df=monthly_summary,
-        show_gp1=False,
-        title=""
-    )
-    st.altair_chart(monthly_chart, use_container_width=True)
-
-with col2:
-    st.subheader("📈 Cumulative Performance")
-    cumulative_chart = SalespersonCharts.build_cumulative_chart(
-        monthly_df=monthly_summary,
-        title=""
-    )
-    st.altair_chart(cumulative_chart, use_container_width=True)
-
-st.divider()
-
-# =============================================================================
-# BACKLOG & FORECAST SECTION
-# =============================================================================
-
-st.subheader("📦 Backlog & Forecast Analysis")
-
-col_bf1, col_bf2 = st.columns(2)
-
-with col_bf1:
-    # Forecast waterfall chart
-    forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+with tab1:
+    # KPI Cards
+    SalespersonCharts.render_kpi_cards(
+        metrics=overview_metrics,
+        yoy_metrics=yoy_metrics,
+        complex_kpis=complex_kpis,
         backlog_metrics=backlog_metrics,
-        title=""
+        show_complex=True,
+        show_backlog=True
     )
-    st.altair_chart(forecast_chart, use_container_width=True)
-
-with col_bf2:
-    # Gap analysis bullet chart
-    gap_chart = SalespersonCharts.build_gap_analysis_chart(
-        backlog_metrics=backlog_metrics,
-        title=""
-    )
-    st.altair_chart(gap_chart, use_container_width=True)
-    
-    # Additional backlog summary
-    if backlog_metrics:
-        st.markdown("**📋 Backlog Summary:**")
-        backlog_summary_cols = st.columns(3)
-        with backlog_summary_cols[0]:
-            st.caption(f"🔢 Total Orders: {backlog_metrics.get('backlog_orders', 0):,}")
-        with backlog_summary_cols[1]:
-            st.caption(f"👥 Customers: {backlog_metrics.get('backlog_customers', 0):,}")
-        with backlog_summary_cols[2]:
-            coverage = backlog_metrics.get('backlog_coverage_percent', 0)
-            st.caption(f"📊 Coverage: {coverage:.1f}% of target")
-
-# Backlog by month chart
-backlog_monthly = metrics_calc.prepare_backlog_by_month(
-    backlog_by_month_df=backlog_by_month_df,
-    year=filter_values['year']
-)
-
-if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
-    st.markdown("#### 📅 Backlog Distribution by ETD Month")
-    backlog_month_chart = SalespersonCharts.build_backlog_by_month_chart(
-        monthly_df=backlog_monthly,
-        title=""
-    )
-    st.altair_chart(backlog_month_chart, use_container_width=True)
-
-st.divider()
-
-# =============================================================================
-# YoY COMPARISON (if enabled)
-# =============================================================================
-
-if filter_values['compare_yoy'] and previous_sales_df is not None and not previous_sales_df.empty:
-    st.subheader("📊 Year-over-Year Comparison")
-    
-    metric_col_map = {
-        'Revenue': 'revenue',
-        'Gross Profit': 'gross_profit',
-        'GP1': 'gp1'
-    }
-    selected_metric = metric_col_map.get(filter_values['metric_view'], 'revenue')
-    
-    yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
-        current_df=sales_df,
-        previous_df=previous_sales_df,
-        metric=selected_metric,
-        title=f"{filter_values['metric_view']} - Current Year vs Previous Year"
-    )
-    st.altair_chart(yoy_chart, use_container_width=True)
     
     st.divider()
-
-# =============================================================================
-# ACHIEVEMENT BY SALESPERSON
-# =============================================================================
-
-st.subheader("🎯 Achievement by Salesperson")
-
-# Get salesperson summary
-salesperson_summary = metrics_calc.aggregate_by_salesperson()
-
-if not salesperson_summary.empty and len(salesperson_summary) > 1:
-    # Show achievement chart only if multiple salespeople
-    achievement_chart = SalespersonCharts.build_achievement_chart(
-        summary_df=salesperson_summary,
-        metric='revenue',
-        title=""
-    )
-    st.altair_chart(achievement_chart, use_container_width=True)
-
-st.divider()
-
-# =============================================================================
-# TOP CUSTOMERS & BRANDS
-# =============================================================================
-
-col3, col4 = st.columns(2)
-
-with col3:
-    st.subheader("🏆 Top Customers by GP")
-    top_customers = metrics_calc.prepare_top_customers_by_gp(top_percent=0.8)
     
-    if not top_customers.empty:
-        top_customers_chart = SalespersonCharts.build_top_customers_chart(
-            top_df=top_customers,
+    # Monthly charts
+    monthly_summary = metrics_calc.prepare_monthly_summary()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📊 Monthly Trend")
+        monthly_chart = SalespersonCharts.build_monthly_trend_chart(
+            monthly_df=monthly_summary,
+            show_gp1=False,
             title=""
         )
-        st.altair_chart(top_customers_chart, use_container_width=True)
-    else:
-        st.info("No customer data available")
-
-with col4:
-    st.subheader("🏆 Top Brands by GP")
-    top_brands = metrics_calc.prepare_top_brands_by_gp(top_percent=0.8)
+        st.altair_chart(monthly_chart, use_container_width=True)
     
-    if not top_brands.empty:
-        top_brands_chart = SalespersonCharts.build_top_brands_chart(
-            top_df=top_brands,
+    with col2:
+        st.subheader("📈 Cumulative Performance")
+        cumulative_chart = SalespersonCharts.build_cumulative_chart(
+            monthly_df=monthly_summary,
             title=""
         )
-        st.altair_chart(top_brands_chart, use_container_width=True)
+        st.altair_chart(cumulative_chart, use_container_width=True)
+    
+    st.divider()
+    
+    # Forecast section
+    st.subheader("📦 Backlog & Forecast")
+    
+    col_bf1, col_bf2 = st.columns(2)
+    
+    with col_bf1:
+        forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+            backlog_metrics=backlog_metrics,
+            title=""
+        )
+        st.altair_chart(forecast_chart, use_container_width=True)
+    
+    with col_bf2:
+        gap_chart = SalespersonCharts.build_gap_analysis_chart(
+            backlog_metrics=backlog_metrics,
+            title=""
+        )
+        st.altair_chart(gap_chart, use_container_width=True)
+    
+    st.divider()
+    
+    # Top customers/brands
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        st.subheader("🏆 Top Customers by GP")
+        top_customers = metrics_calc.prepare_top_customers_by_gp(top_percent=0.8)
+        if not top_customers.empty:
+            chart = SalespersonCharts.build_top_customers_chart(top_df=top_customers, title="")
+            st.altair_chart(chart, use_container_width=True)
+    
+    with col4:
+        st.subheader("🏆 Top Brands by GP")
+        top_brands = metrics_calc.prepare_top_brands_by_gp(top_percent=0.8)
+        if not top_brands.empty:
+            chart = SalespersonCharts.build_top_brands_chart(top_df=top_brands, title="")
+            st.altair_chart(chart, use_container_width=True)
+    
+    st.divider()
+    
+    # Summary table
+    st.subheader("📋 Performance by Salesperson")
+    salesperson_summary = metrics_calc.aggregate_by_salesperson()
+    
+    if not salesperson_summary.empty:
+        display_cols = ['sales_name', 'revenue', 'gross_profit', 'gp1', 'gp_percent', 'customers', 'invoices']
+        if 'revenue_achievement' in salesperson_summary.columns:
+            display_cols.append('revenue_achievement')
+        
+        display_df = salesperson_summary[[c for c in display_cols if c in salesperson_summary.columns]].copy()
+        display_df.columns = ['Salesperson', 'Revenue', 'Gross Profit', 'GP1', 'GP %', 'Customers', 'Invoices'] + \
+                            (['Achievement %'] if 'revenue_achievement' in display_cols else [])
+        
+        st.dataframe(
+            display_df.style.format({
+                'Revenue': '${:,.0f}',
+                'Gross Profit': '${:,.0f}',
+                'GP1': '${:,.0f}',
+                'GP %': '{:.1f}%',
+                'Achievement %': '{:.1f}%'
+            } if 'Achievement %' in display_df.columns else {
+                'Revenue': '${:,.0f}',
+                'Gross Profit': '${:,.0f}',
+                'GP1': '${:,.0f}',
+                'GP %': '{:.1f}%',
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+# =============================================================================
+# TAB 2: SALES DETAIL
+# =============================================================================
+
+with tab2:
+    st.subheader("📋 Sales Transaction Detail")
+    
+    sales_df = data['sales']
+    
+    if sales_df.empty:
+        st.info("No sales data for selected period")
     else:
-        st.info("No brand data available")
-
-st.divider()
-
-# =============================================================================
-# DETAIL TABLE
-# =============================================================================
-
-st.subheader("📋 Performance Details")
-
-if not salesperson_summary.empty:
-    # Format for display
-    display_df = salesperson_summary.copy()
-    
-    # Select and rename columns
-    display_columns = {
-        'sales_name': 'Salesperson',
-        'revenue': 'Revenue',
-        'gross_profit': 'Gross Profit',
-        'gp1': 'GP1',
-        'gp_percent': 'GP %',
-        'customers': 'Customers',
-        'invoices': 'Invoices',
-    }
-    
-    if 'revenue_achievement' in display_df.columns:
-        display_columns['revenue_achievement'] = 'Achievement %'
-    
-    # Filter to available columns
-    available_display_cols = [c for c in display_columns.keys() if c in display_df.columns]
-    display_df = display_df[available_display_cols].rename(columns=display_columns)
-    
-    # Format numeric columns
-    st.dataframe(
-        display_df.style.format({
-            'Revenue': '${:,.0f}',
-            'Gross Profit': '${:,.0f}',
-            'GP1': '${:,.0f}',
-            'GP %': '{:.1f}%',
-            'Achievement %': '{:.1f}%' if 'Achievement %' in display_df.columns else None,
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-else:
-    st.info("No detail data available")
-
-# =============================================================================
-# EXPORT SECTION
-# =============================================================================
-
-st.divider()
-
-col_export, col_spacer = st.columns([1, 3])
-
-with col_export:
-    if st.button("📥 Export to Excel", use_container_width=True):
-        with st.spinner("Generating report..."):
-            exporter = SalespersonExport()
-            excel_bytes = exporter.create_report(
-                summary_df=salesperson_summary,
-                monthly_df=monthly_summary,
-                metrics=overview_metrics,
-                filters=filter_values,
-                complex_kpis=complex_kpis,
-                yoy_metrics=yoy_metrics,
-                detail_df=sales_df
+        # Sub-tabs for detail views
+        detail_tab1, detail_tab2 = st.tabs(["📄 Transaction List", "📊 Pivot Analysis"])
+        
+        with detail_tab1:
+            # Filters row
+            col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+            
+            with col_f1:
+                customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
+                selected_customer = st.selectbox("Customer", customers, key="detail_customer")
+            
+            with col_f2:
+                brands = ['All'] + sorted(sales_df['brand'].dropna().unique().tolist())
+                selected_brand = st.selectbox("Brand", brands, key="detail_brand")
+            
+            with col_f3:
+                products = ['All'] + sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
+                selected_product = st.selectbox("Product", products, key="detail_product")
+            
+            with col_f4:
+                min_amount = st.number_input("Min Amount ($)", value=0, step=1000, key="detail_min_amount")
+            
+            # Filter data
+            filtered_df = sales_df.copy()
+            if selected_customer != 'All':
+                filtered_df = filtered_df[filtered_df['customer'] == selected_customer]
+            if selected_brand != 'All':
+                filtered_df = filtered_df[filtered_df['brand'] == selected_brand]
+            if selected_product != 'All':
+                filtered_df = filtered_df[filtered_df['product_pn'] == selected_product]
+            if min_amount > 0:
+                filtered_df = filtered_df[filtered_df['sales_by_split_usd'] >= min_amount]
+            
+            # Display columns
+            display_columns = [
+                'inv_date', 'inv_number', 'customer', 'product_pn', 'brand',
+                'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd',
+                'split_rate_percent', 'sales_name'
+            ]
+            available_cols = [c for c in display_columns if c in filtered_df.columns]
+            
+            st.markdown(f"**Showing {len(filtered_df):,} transactions**")
+            
+            # Display table
+            display_detail = filtered_df[available_cols].copy()
+            display_detail.columns = ['Date', 'Invoice#', 'Customer', 'Product', 'Brand',
+                                      'Revenue', 'GP', 'GP1', 'Split %', 'Salesperson'][:len(available_cols)]
+            
+            st.dataframe(
+                display_detail.head(500).style.format({
+                    'Revenue': '${:,.0f}',
+                    'GP': '${:,.0f}',
+                    'GP1': '${:,.0f}',
+                    'Split %': '{:.0f}%'
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=500
             )
             
-            st.download_button(
-                label="⬇️ Download Report",
-                data=excel_bytes,
-                file_name=f"salesperson_performance_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+            # Export button
+            if st.button("📥 Export to Excel", key="export_detail"):
+                exporter = SalespersonExport()
+                excel_bytes = exporter.create_report(
+                    summary_df=salesperson_summary if 'salesperson_summary' in dir() else pd.DataFrame(),
+                    monthly_df=monthly_summary if 'monthly_summary' in dir() else pd.DataFrame(),
+                    metrics=overview_metrics,
+                    filters=filter_values,
+                    detail_df=filtered_df
+                )
+                st.download_button(
+                    label="⬇️ Download",
+                    data=excel_bytes,
+                    file_name=f"sales_detail_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        
+        with detail_tab2:
+            st.markdown("#### 📊 Pivot Analysis")
+            
+            # Pivot configuration
+            col_p1, col_p2, col_p3 = st.columns(3)
+            
+            with col_p1:
+                row_options = ['customer', 'brand', 'sales_name', 'product_pn', 'legal_entity']
+                pivot_rows = st.selectbox("Rows", row_options, index=0, key="pivot_rows")
+            
+            with col_p2:
+                col_options = ['invoice_month', 'brand', 'customer', 'sales_name']
+                pivot_cols = st.selectbox("Columns", col_options, index=0, key="pivot_cols")
+            
+            with col_p3:
+                value_options = ['sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd']
+                pivot_values = st.selectbox("Values", value_options, index=1, key="pivot_values",
+                                           format_func=lambda x: x.replace('_by_split_usd', '').replace('_', ' ').title())
+            
+            # Create pivot
+            if pivot_rows in sales_df.columns and pivot_cols in sales_df.columns:
+                pivot_df = sales_df.pivot_table(
+                    values=pivot_values,
+                    index=pivot_rows,
+                    columns=pivot_cols,
+                    aggfunc='sum',
+                    fill_value=0
+                )
+                
+                # Add totals
+                pivot_df['Total'] = pivot_df.sum(axis=1)
+                pivot_df = pivot_df.sort_values('Total', ascending=False)
+                
+                # Reorder columns (months)
+                if pivot_cols == 'invoice_month':
+                    month_cols = [m for m in MONTH_ORDER if m in pivot_df.columns]
+                    other_cols = [c for c in pivot_df.columns if c not in MONTH_ORDER and c != 'Total']
+                    pivot_df = pivot_df[month_cols + other_cols + ['Total']]
+                
+                st.dataframe(
+                    pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
+                    use_container_width=True,
+                    height=500
+                )
+            else:
+                st.warning("Selected columns not available in data")
+
+# =============================================================================
+# TAB 3: BACKLOG
+# =============================================================================
+
+with tab3:
+    st.subheader("📦 Backlog Analysis")
+    
+    backlog_df = data['backlog_detail']
+    
+    if backlog_df.empty:
+        st.info("No backlog data available")
+    else:
+        # Sub-tabs
+        backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs(["📋 Backlog List", "📅 By ETD", "⚠️ Risk Analysis"])
+        
+        with backlog_tab1:
+            # Summary cards
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            
+            total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
+            total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
+            total_orders = backlog_df['oc_number'].nunique()
+            total_customers = backlog_df['customer_id'].nunique()
+            
+            with col_s1:
+                st.metric("💰 Total Backlog", f"${total_backlog_value:,.0f}")
+            with col_s2:
+                st.metric("📈 Backlog GP", f"${total_backlog_gp:,.0f}")
+            with col_s3:
+                st.metric("📦 Orders", f"{total_orders:,}")
+            with col_s4:
+                st.metric("👥 Customers", f"{total_customers:,}")
+            
+            st.divider()
+            
+            # Filters
+            col_bf1, col_bf2 = st.columns(2)
+            with col_bf1:
+                backlog_customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
+                bl_selected_customer = st.selectbox("Customer", backlog_customers, key="bl_customer")
+            with col_bf2:
+                pending_types = ['All'] + backlog_df['pending_type'].dropna().unique().tolist()
+                bl_selected_type = st.selectbox("Status", pending_types, key="bl_type")
+            
+            # Filter
+            filtered_backlog = backlog_df.copy()
+            if bl_selected_customer != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['customer'] == bl_selected_customer]
+            if bl_selected_type != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['pending_type'] == bl_selected_type]
+            
+            # Display
+            backlog_display_cols = ['oc_number', 'oc_date', 'etd', 'customer', 'product_pn', 'brand',
+                                   'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
+                                   'days_until_etd', 'pending_type', 'sales_name']
+            available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
+            
+            display_bl = filtered_backlog[available_bl_cols].copy()
+            display_bl.columns = ['OC#', 'OC Date', 'ETD', 'Customer', 'Product', 'Brand',
+                                 'Amount', 'GP', 'Days to ETD', 'Status', 'Salesperson'][:len(available_bl_cols)]
+            
+            st.dataframe(
+                display_bl.head(200).style.format({
+                    'Amount': '${:,.0f}',
+                    'GP': '${:,.0f}',
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=400
             )
+        
+        with backlog_tab2:
+            st.markdown("#### 📅 Backlog by ETD Month")
+            
+            # Prepare monthly backlog
+            backlog_monthly = metrics_calc.prepare_backlog_by_month(
+                backlog_by_month_df=data['backlog_by_month'],
+                year=filter_values['year']
+            )
+            
+            if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+                chart = SalespersonCharts.build_backlog_by_month_chart(
+                    monthly_df=backlog_monthly,
+                    title=""
+                )
+                st.altair_chart(chart, use_container_width=True)
+                
+                # Monthly table
+                st.dataframe(
+                    backlog_monthly[['month', 'backlog_revenue', 'backlog_gp', 'order_count']].style.format({
+                        'backlog_revenue': '${:,.0f}',
+                        'backlog_gp': '${:,.0f}',
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No backlog data by month")
+        
+        with backlog_tab3:
+            st.markdown("#### ⚠️ Backlog Risk Analysis")
+            
+            # Calculate risk categories
+            today = date.today()
+            
+            backlog_risk = backlog_df.copy()
+            backlog_risk['days_until_etd'] = pd.to_numeric(backlog_risk['days_until_etd'], errors='coerce')
+            
+            # Categorize
+            overdue = backlog_risk[backlog_risk['days_until_etd'] < 0]
+            this_week = backlog_risk[(backlog_risk['days_until_etd'] >= 0) & (backlog_risk['days_until_etd'] <= 7)]
+            this_month = backlog_risk[(backlog_risk['days_until_etd'] > 7) & (backlog_risk['days_until_etd'] <= 30)]
+            on_track = backlog_risk[backlog_risk['days_until_etd'] > 30]
+            
+            # Display risk summary
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            
+            with col_r1:
+                overdue_value = overdue['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🔴 Overdue",
+                    f"${overdue_value:,.0f}",
+                    delta=f"{len(overdue)} orders",
+                    delta_color="inverse"
+                )
+            
+            with col_r2:
+                week_value = this_week['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟠 This Week",
+                    f"${week_value:,.0f}",
+                    delta=f"{len(this_week)} orders",
+                    delta_color="off"
+                )
+            
+            with col_r3:
+                month_value = this_month['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟡 This Month",
+                    f"${month_value:,.0f}",
+                    delta=f"{len(this_month)} orders",
+                    delta_color="off"
+                )
+            
+            with col_r4:
+                track_value = on_track['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟢 On Track",
+                    f"${track_value:,.0f}",
+                    delta=f"{len(on_track)} orders",
+                    delta_color="normal"
+                )
+            
+            st.divider()
+            
+            # Show overdue details
+            if not overdue.empty:
+                st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
+                overdue_display = overdue[['oc_number', 'etd', 'customer', 'product_pn', 
+                                          'backlog_sales_by_split_usd', 'days_until_etd', 'sales_name']].copy()
+                overdue_display.columns = ['OC#', 'ETD', 'Customer', 'Product', 'Amount', 'Days Overdue', 'Salesperson']
+                overdue_display['Days Overdue'] = overdue_display['Days Overdue'].abs()
+                
+                st.dataframe(
+                    overdue_display.sort_values('Amount', ascending=False).head(20).style.format({
+                        'Amount': '${:,.0f}'
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+# =============================================================================
+# TAB 4: KPI & TARGETS
+# =============================================================================
+
+with tab4:
+    st.subheader("🎯 KPI & Targets")
+    
+    targets_df = data['targets']
+    
+    if targets_df.empty:
+        st.info("No KPI assignments found for selected salespeople")
+    else:
+        # Sub-tabs
+        kpi_tab1, kpi_tab2, kpi_tab3 = st.tabs(["📊 My KPIs", "📈 Progress", "🏆 Ranking"])
+        
+        with kpi_tab1:
+            st.markdown("#### 📊 KPI Assignments")
+            
+            # Group by salesperson
+            for sales_id in targets_df['employee_id'].unique():
+                sales_targets = targets_df[targets_df['employee_id'] == sales_id]
+                sales_name = sales_targets['employee_name'].iloc[0]
+                
+                with st.expander(f"👤 {sales_name}", expanded=True):
+                    kpi_display = sales_targets[['kpi_name', 'annual_target_value', 
+                                                 'monthly_target_value', 'quarterly_target_value',
+                                                 'unit_of_measure', 'weight_numeric']].copy()
+                    kpi_display.columns = ['KPI', 'Annual Target', 'Monthly', 'Quarterly', 'Unit', 'Weight %']
+                    
+                    st.dataframe(kpi_display, use_container_width=True, hide_index=True)
+        
+        with kpi_tab2:
+            st.markdown("#### 📈 KPI Progress")
+            
+            # Calculate progress for each KPI type
+            kpi_progress = []
+            
+            # Revenue
+            revenue_target = targets_df[targets_df['kpi_name'].str.lower() == 'revenue']['annual_target_value_numeric'].sum()
+            revenue_actual = overview_metrics.get('total_revenue', 0)
+            if revenue_target > 0:
+                kpi_progress.append({
+                    'KPI': 'Revenue',
+                    'Actual': revenue_actual,
+                    'Target (Annual)': revenue_target,
+                    'Target (Prorated)': metrics_calc._get_prorated_target('revenue', filter_values['period_type'], filter_values['year']) or 0,
+                    'Achievement %': (revenue_actual / revenue_target * 100) if revenue_target else 0
+                })
+            
+            # Gross Profit
+            gp_target = targets_df[targets_df['kpi_name'].str.lower() == 'gross_profit']['annual_target_value_numeric'].sum()
+            gp_actual = overview_metrics.get('total_gp', 0)
+            if gp_target > 0:
+                kpi_progress.append({
+                    'KPI': 'Gross Profit',
+                    'Actual': gp_actual,
+                    'Target (Annual)': gp_target,
+                    'Target (Prorated)': metrics_calc._get_prorated_target('gross_profit', filter_values['period_type'], filter_values['year']) or 0,
+                    'Achievement %': (gp_actual / gp_target * 100) if gp_target else 0
+                })
+            
+            # New Customers
+            nc_target = targets_df[targets_df['kpi_name'].str.lower() == 'num_new_customers']['annual_target_value_numeric'].sum()
+            nc_actual = complex_kpis.get('new_customer_count', 0)
+            if nc_target > 0:
+                kpi_progress.append({
+                    'KPI': 'New Customers',
+                    'Actual': nc_actual,
+                    'Target (Annual)': nc_target,
+                    'Target (Prorated)': nc_target,
+                    'Achievement %': (nc_actual / nc_target * 100) if nc_target else 0
+                })
+            
+            if kpi_progress:
+                progress_df = pd.DataFrame(kpi_progress)
+                
+                # Display with progress bars
+                for _, row in progress_df.iterrows():
+                    col_k1, col_k2 = st.columns([1, 3])
+                    
+                    with col_k1:
+                        st.markdown(f"**{row['KPI']}**")
+                        achievement = row['Achievement %']
+                        if achievement >= 100:
+                            st.success(f"✅ {achievement:.1f}%")
+                        elif achievement >= 80:
+                            st.warning(f"🟡 {achievement:.1f}%")
+                        else:
+                            st.error(f"🔴 {achievement:.1f}%")
+                    
+                    with col_k2:
+                        st.progress(min(achievement / 100, 1.0))
+                        if 'Revenue' in row['KPI'] or 'Profit' in row['KPI']:
+                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Prorated)']:,.0f}")
+                        else:
+                            st.caption(f"{row['Actual']:.1f} / {row['Target (Annual)']:.0f}")
+        
+        with kpi_tab3:
+            st.markdown("#### 🏆 Team Ranking")
+            
+            # Only show if multiple salespeople
+            salesperson_summary = metrics_calc.aggregate_by_salesperson()
+            
+            if len(salesperson_summary) > 1:
+                ranking_df = salesperson_summary[['sales_name', 'revenue', 'gross_profit', 'gp_percent', 'customers']].copy()
+                ranking_df = ranking_df.sort_values('gross_profit', ascending=False).reset_index(drop=True)
+                ranking_df.index = ranking_df.index + 1  # Start from 1
+                
+                # Add rank emoji
+                def get_rank_emoji(rank):
+                    if rank == 1: return "🥇"
+                    elif rank == 2: return "🥈"
+                    elif rank == 3: return "🥉"
+                    else: return f"#{rank}"
+                
+                ranking_df.insert(0, 'Rank', ranking_df.index.map(get_rank_emoji))
+                ranking_df.columns = ['Rank', 'Salesperson', 'Revenue', 'Gross Profit', 'GP %', 'Customers']
+                
+                st.dataframe(
+                    ranking_df.style.format({
+                        'Revenue': '${:,.0f}',
+                        'Gross Profit': '${:,.0f}',
+                        'GP %': '{:.1f}%'
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Need multiple salespeople to show ranking")
+
+# =============================================================================
+# TAB 5: SETUP
+# =============================================================================
+
+with tab5:
+    st.subheader("⚙️ Setup & Reference")
+    
+    # Sub-tabs
+    setup_tab1, setup_tab2, setup_tab3 = st.tabs(["👥 Sales Split", "📋 My Customers", "📦 My Products"])
+    
+    with setup_tab1:
+        st.markdown("#### 👥 Sales Split Assignments")
+        
+        sales_split_df = data['sales_split']
+        
+        if sales_split_df.empty:
+            st.info("No sales split data available")
+        else:
+            # Filter options
+            col_sp1, col_sp2 = st.columns(2)
+            with col_sp1:
+                split_status = st.selectbox("Status", ['All', 'Active', 'Expired'], key="split_status")
+            with col_sp2:
+                split_sales = st.selectbox("Salesperson", 
+                                          ['All'] + sorted(sales_split_df['sales_name'].dropna().unique().tolist()),
+                                          key="split_sales")
+            
+            filtered_split = sales_split_df.copy()
+            if split_status == 'Active':
+                # Assuming there's an effective_period or status column
+                pass  # Filter logic here
+            if split_sales != 'All':
+                filtered_split = filtered_split[filtered_split['sales_name'] == split_sales]
+            
+            # Display
+            split_display_cols = [c for c in ['customer', 'product_pn', 'split_percentage', 
+                                              'effective_period', 'approval_status', 'sales_name'] 
+                                 if c in filtered_split.columns]
+            
+            if split_display_cols:
+                st.dataframe(
+                    filtered_split[split_display_cols].head(200),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
+    
+    with setup_tab2:
+        st.markdown("#### 📋 Customer Portfolio")
+        
+        sales_df = data['sales']
+        
+        if not sales_df.empty:
+            # Aggregate by customer
+            customer_portfolio = sales_df.groupby(['customer_id', 'customer']).agg({
+                'sales_by_split_usd': 'sum',
+                'gross_profit_by_split_usd': 'sum',
+                'inv_number': pd.Series.nunique,
+                'inv_date': 'max'
+            }).reset_index()
+            
+            customer_portfolio.columns = ['ID', 'Customer', 'Revenue', 'GP', 'Invoices', 'Last Invoice']
+            customer_portfolio['GP %'] = (customer_portfolio['GP'] / customer_portfolio['Revenue'] * 100).round(1)
+            customer_portfolio = customer_portfolio.sort_values('Revenue', ascending=False)
+            
+            st.dataframe(
+                customer_portfolio.style.format({
+                    'Revenue': '${:,.0f}',
+                    'GP': '${:,.0f}',
+                    'GP %': '{:.1f}%'
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+        else:
+            st.info("No customer data available")
+    
+    with setup_tab3:
+        st.markdown("#### 📦 Product Portfolio")
+        
+        sales_df = data['sales']
+        
+        if not sales_df.empty:
+            # Aggregate by brand
+            brand_portfolio = sales_df.groupby('brand').agg({
+                'sales_by_split_usd': 'sum',
+                'gross_profit_by_split_usd': 'sum',
+                'product_pn': pd.Series.nunique,
+                'customer_id': pd.Series.nunique
+            }).reset_index()
+            
+            brand_portfolio.columns = ['Brand', 'Revenue', 'GP', 'Products', 'Customers']
+            brand_portfolio['GP %'] = (brand_portfolio['GP'] / brand_portfolio['Revenue'] * 100).round(1)
+            brand_portfolio = brand_portfolio.sort_values('Revenue', ascending=False)
+            
+            st.dataframe(
+                brand_portfolio.style.format({
+                    'Revenue': '${:,.0f}',
+                    'GP': '${:,.0f}',
+                    'GP %': '{:.1f}%'
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+        else:
+            st.info("No product data available")
 
 # =============================================================================
 # FOOTER
