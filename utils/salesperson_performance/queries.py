@@ -432,51 +432,78 @@ class SalespersonQueries:
     # LOOKUP DATA
     # =========================================================================
     
-    def get_salesperson_options(self) -> pd.DataFrame:
+    def get_salesperson_options(
+        self,
+        start_date: date = None,
+        end_date: date = None,
+        year: int = None
+    ) -> pd.DataFrame:
         """
-        Get list of salespeople for dropdown selection.
+        Get list of salespeople who have sales data for dropdown selection.
+        Only returns salespeople with actual sales records.
         Filtered by access control.
         
-        Returns DataFrame with: employee_id, sales_name, email, status
+        Args:
+            start_date: Optional start date filter (if both dates provided)
+            end_date: Optional end date filter (if both dates provided)
+            year: Optional year filter (alternative to date range)
+        
+        Returns DataFrame with: employee_id, sales_name, email, invoice_count
         """
         accessible_ids = self.access.get_accessible_employee_ids()
         
         if not accessible_ids:
             return pd.DataFrame()
         
+        # Query salespeople from actual sales data
         query = """
             SELECT DISTINCT
-                e.id as employee_id,
-                CONCAT(e.first_name, ' ', e.last_name) as sales_name,
-                e.email,
-                e.status
-            FROM employees e
-            WHERE e.id IN :employee_ids
-              AND e.delete_flag = 0
-            ORDER BY sales_name
+                sales_id as employee_id,
+                sales_name,
+                sales_email as email,
+                COUNT(DISTINCT inv_number) as invoice_count
+            FROM unified_sales_by_salesperson_view
+            WHERE sales_id IN :employee_ids
+              AND sales_id IS NOT NULL
+              AND sales_name IS NOT NULL
         """
         
         params = {'employee_ids': tuple(accessible_ids)}
+        
+        # Add date filter if provided
+        if start_date and end_date:
+            query += " AND inv_date BETWEEN :start_date AND :end_date"
+            params['start_date'] = start_date
+            params['end_date'] = end_date
+        elif year:
+            query += " AND invoice_year = :year"
+            params['year'] = int(year)
+        
+        query += """
+            GROUP BY sales_id, sales_name, sales_email
+            HAVING COUNT(DISTINCT inv_number) > 0
+            ORDER BY sales_name
+        """
         
         return self._execute_query(query, params, "salesperson_options")
     
     def get_entity_options(self) -> pd.DataFrame:
         """
-        Get list of legal entities for dropdown selection.
+        Get list of legal entities that have sales data.
         
-        Returns DataFrame with: entity_id, entity_name, entity_code
+        Returns DataFrame with: entity_id, entity_name, entity_code, invoice_count
         """
         query = """
             SELECT DISTINCT
-                c.id as entity_id,
-                c.english_name as entity_name,
-                c.company_code as entity_code
-            FROM companies c
-            INNER JOIN companies_company_types cct ON c.id = cct.companies_id
-            INNER JOIN company_types ct ON cct.company_type_id = ct.id
-            WHERE ct.name = 'Internal'
-              AND c.delete_flag = 0
-            ORDER BY c.english_name
+                legal_entity_id as entity_id,
+                legal_entity as entity_name,
+                COUNT(DISTINCT inv_number) as invoice_count
+            FROM unified_sales_by_salesperson_view
+            WHERE legal_entity_id IS NOT NULL
+              AND legal_entity IS NOT NULL
+            GROUP BY legal_entity_id, legal_entity
+            HAVING COUNT(DISTINCT inv_number) > 0
+            ORDER BY legal_entity
         """
         
         return self._execute_query(query, {}, "entity_options")
@@ -500,7 +527,8 @@ class SalespersonQueries:
             current_year = datetime.now().year
             return [current_year, current_year - 1]
         
-        return df['invoice_year'].tolist()
+        # Ensure years are integers
+        return [int(y) for y in df['invoice_year'].tolist()]
     
     # =========================================================================
     # YoY COMPARISON DATA

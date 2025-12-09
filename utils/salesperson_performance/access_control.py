@@ -118,17 +118,14 @@ class AccessControl:
     
     def _get_all_sales_employee_ids(self) -> List[int]:
         """
-        Get all active sales employee IDs.
+        Get all employee IDs who have sales data.
         Used for full access roles.
         """
         query = """
-            SELECT DISTINCT e.id 
-            FROM employees e
-            LEFT JOIN users u ON e.id = u.employee_id
-            WHERE e.delete_flag = 0 
-              AND e.status = 'ACTIVE'
-              AND (u.role IN ('sales', 'sales_manager') OR u.role IS NULL)
-            ORDER BY e.id
+            SELECT DISTINCT sales_id 
+            FROM unified_sales_by_salesperson_view
+            WHERE sales_id IS NOT NULL
+            ORDER BY sales_id
         """
         
         try:
@@ -136,22 +133,24 @@ class AccessControl:
             with engine.connect() as conn:
                 result = conn.execute(text(query))
                 ids = [row[0] for row in result]
-                logger.debug(f"Found {len(ids)} total sales employees")
+                logger.debug(f"Found {len(ids)} salespeople with data")
                 return ids
         except Exception as e:
-            logger.error(f"Error fetching all sales employee IDs: {e}")
+            logger.error(f"Error fetching sales employee IDs: {e}")
             return []
     
     def _get_team_member_ids(self) -> List[int]:
         """
         Get team member IDs using recursive CTE.
         Includes the manager themselves + all direct/indirect reports.
+        Only returns members who have sales data.
         """
         if not self.employee_id:
             logger.warning("No employee_id provided for team access")
             return []
         
         # Recursive CTE to traverse manager hierarchy
+        # Then filter by those who have sales data
         query = """
             WITH RECURSIVE team_hierarchy AS (
                 -- Base case: the manager themselves
@@ -176,9 +175,15 @@ class AccessControl:
                 INNER JOIN team_hierarchy th ON e.manager_id = th.id
                 WHERE e.delete_flag = 0 
                   AND e.status = 'ACTIVE'
+            ),
+            team_with_sales AS (
+                SELECT DISTINCT th.id, th.name, th.level
+                FROM team_hierarchy th
+                INNER JOIN unified_sales_by_salesperson_view usv 
+                    ON th.id = usv.sales_id
             )
-            SELECT DISTINCT id, name, level
-            FROM team_hierarchy
+            SELECT id, name, level
+            FROM team_with_sales
             ORDER BY level, name
         """
         
@@ -192,7 +197,7 @@ class AccessControl:
                 self._team_info = pd.DataFrame(rows, columns=['id', 'name', 'level'])
                 
                 ids = [row[0] for row in rows]
-                logger.info(f"Team hierarchy for employee {self.employee_id}: {len(ids)} members")
+                logger.info(f"Team hierarchy for employee {self.employee_id}: {len(ids)} members with sales data")
                 return ids
                 
         except Exception as e:
