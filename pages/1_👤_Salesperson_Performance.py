@@ -285,6 +285,65 @@ with tab1:
         )
         st.altair_chart(cumulative_chart, use_container_width=True)
     
+    # YoY Comparison Section (if enabled)
+    if filter_values['compare_yoy']:
+        st.divider()
+        st.subheader("📊 Year-over-Year Comparison")
+        
+        # Load previous year data for chart
+        previous_sales_df = queries.get_previous_year_data(
+            start_date=filter_values['start_date'],
+            end_date=filter_values['end_date'],
+            employee_ids=filter_values['employee_ids'],
+            entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
+        )
+        
+        if not previous_sales_df.empty:
+            # Metric selector for YoY chart
+            metric_col_map = {
+                'Revenue': 'revenue',
+                'Gross Profit': 'gross_profit',
+                'GP1': 'gp1'
+            }
+            selected_metric = metric_col_map.get(filter_values['metric_view'], 'gross_profit')
+            
+            yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
+                current_df=data['sales'],
+                previous_df=previous_sales_df,
+                metric=selected_metric,
+                title=f"{filter_values['metric_view']} - {filter_values['year']} vs {filter_values['year'] - 1}"
+            )
+            st.altair_chart(yoy_chart, use_container_width=True)
+            
+            # YoY summary table
+            col_yoy1, col_yoy2, col_yoy3 = st.columns(3)
+            
+            current_total = data['sales']['sales_by_split_usd'].sum() if not data['sales'].empty else 0
+            previous_total = previous_sales_df['sales_by_split_usd'].sum() if not previous_sales_df.empty else 0
+            yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
+            
+            with col_yoy1:
+                st.metric(
+                    f"📅 {filter_values['year']} Revenue",
+                    f"${current_total:,.0f}"
+                )
+            
+            with col_yoy2:
+                st.metric(
+                    f"📅 {filter_values['year'] - 1} Revenue",
+                    f"${previous_total:,.0f}"
+                )
+            
+            with col_yoy3:
+                st.metric(
+                    "📈 YoY Change",
+                    f"{yoy_change:+.1f}%",
+                    delta=f"${current_total - previous_total:+,.0f}",
+                    delta_color="normal" if yoy_change >= 0 else "inverse"
+                )
+        else:
+            st.info(f"No data available for {filter_values['year'] - 1} comparison")
+    
     st.divider()
     
     # Forecast section
