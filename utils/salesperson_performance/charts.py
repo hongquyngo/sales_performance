@@ -600,20 +600,163 @@ class SalespersonCharts:
         return chart
     
     # =========================================================================
+    # CUMULATIVE YoY COMPARISON CHART
+    # =========================================================================
+    
+    @staticmethod
+    def build_cumulative_yoy_chart(
+        current_df: pd.DataFrame,
+        previous_df: pd.DataFrame,
+        metric: str = 'revenue',
+        title: str = "📈 Cumulative YoY Comparison"
+    ) -> alt.Chart:
+        """
+        Build line chart comparing cumulative current vs previous year.
+        
+        Args:
+            current_df: Current period sales data
+            previous_df: Previous year sales data
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            title: Chart title
+            
+        Returns:
+            Altair chart with two lines (Current Year, Previous Year)
+        """
+        metric_map = {
+            'revenue': 'sales_by_split_usd',
+            'gross_profit': 'gross_profit_by_split_usd',
+            'gp1': 'gp1_by_split_usd'
+        }
+        
+        col = metric_map.get(metric, metric)
+        
+        def calc_cumulative(df, year_label):
+            """Calculate cumulative by month."""
+            if df.empty:
+                return pd.DataFrame()
+            
+            # Aggregate by month first
+            monthly = df.groupby('invoice_month')[col].sum().reset_index()
+            monthly.columns = ['month', 'amount']
+            
+            # Ensure all months present and in order
+            all_months = pd.DataFrame({'month': MONTH_ORDER})
+            monthly = all_months.merge(monthly, on='month', how='left').fillna(0)
+            
+            # Calculate cumulative
+            monthly['cumulative'] = monthly['amount'].cumsum()
+            monthly['Year'] = year_label
+            
+            # Add month order for sorting
+            monthly['month_order'] = monthly['month'].apply(lambda x: MONTH_ORDER.index(x))
+            
+            return monthly
+        
+        current_cum = calc_cumulative(current_df, 'Current Year')
+        previous_cum = calc_cumulative(previous_df, 'Previous Year')
+        
+        combined = pd.concat([current_cum, previous_cum], ignore_index=True)
+        
+        if combined.empty or combined['cumulative'].sum() == 0:
+            return SalespersonCharts._empty_chart("No data available")
+        
+        # Filter out months with no data for current year (future months)
+        current_max_month = current_cum[current_cum['amount'] > 0]['month_order'].max()
+        if pd.notna(current_max_month):
+            # For current year, only show up to the latest month with data
+            current_filtered = current_cum[current_cum['month_order'] <= current_max_month]
+            # For previous year, show all months
+            combined = pd.concat([current_filtered, previous_cum], ignore_index=True)
+        
+        # Color scale
+        color_scale = alt.Scale(
+            domain=['Current Year', 'Previous Year'],
+            range=[COLORS['current_year'], COLORS['previous_year']]
+        )
+        
+        # Line chart
+        lines = alt.Chart(combined).mark_line(
+            point=alt.OverlayMarkDef(size=60),
+            strokeWidth=2.5
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
+            y=alt.Y('cumulative:Q', title='Cumulative Amount (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color('Year:N', scale=color_scale, legend=alt.Legend(orient='bottom')),
+            strokeDash=alt.condition(
+                alt.datum.Year == 'Previous Year',
+                alt.value([5, 5]),  # Dashed for previous year
+                alt.value([0])      # Solid for current year
+            ),
+            tooltip=[
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip('Year:N', title='Year'),
+                alt.Tooltip('amount:Q', title='Monthly', format=',.0f'),
+                alt.Tooltip('cumulative:Q', title='Cumulative', format=',.0f')
+            ]
+        )
+        
+        # Add area fill for visual distinction (subtle)
+        area_current = alt.Chart(combined[combined['Year'] == 'Current Year']).mark_area(
+            opacity=0.1,
+            color=COLORS['current_year']
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('cumulative:Q')
+        )
+        
+        # Value labels at end points
+        last_points_list = []
+        for year_label in ['Current Year', 'Previous Year']:
+            year_data = combined[combined['Year'] == year_label]
+            valid_data = year_data[year_data['cumulative'] > 0]
+            if not valid_data.empty:
+                last_points_list.append(valid_data.iloc[-1].to_dict())
+        
+        if last_points_list:
+            last_points_df = pd.DataFrame(last_points_list)
+            
+            text = alt.Chart(last_points_df).mark_text(
+                align='left',
+                dx=8,
+                dy=-5,
+                fontSize=11,
+                fontWeight='bold'
+            ).encode(
+                x=alt.X('month:N', sort=MONTH_ORDER),
+                y=alt.Y('cumulative:Q'),
+                text=alt.Text('cumulative:Q', format=',.0f'),
+                color=alt.Color('Year:N', scale=color_scale, legend=None)
+            )
+            
+            chart = alt.layer(area_current, lines, text)
+        else:
+            chart = alt.layer(area_current, lines)
+        
+        chart = chart.properties(
+            width=CHART_WIDTH,
+            height=300,
+            title=title
+        )
+        
+        return chart
+    
+    # =========================================================================
     # TOP CUSTOMERS/BRANDS PARETO CHART
     # =========================================================================
     
     @staticmethod
     def build_top_customers_chart(
         top_df: pd.DataFrame,
-        title: str = "🏆 Top 80% Customers by Gross Profit"
+        metric: str = 'gross_profit',
+        title: str = ""
     ) -> alt.Chart:
         """
         Build Pareto chart (bar + cumulative line) for top customers.
         
         Args:
-            top_df: Top customers data with cumulative_percent
-            title: Chart title
+            top_df: Top customers data from prepare_top_customers_by_metric
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            title: Chart title (auto-generated if empty)
             
         Returns:
             Altair chart
@@ -623,15 +766,39 @@ class SalespersonCharts:
         
         df = top_df.copy()
         
-        # Bar chart (Gross Profit)
+        # Metric display names
+        metric_labels = {
+            'revenue': 'Revenue',
+            'gross_profit': 'Gross Profit',
+            'gp1': 'GP1'
+        }
+        metric_label = metric_labels.get(metric, 'Gross Profit')
+        
+        # Metric colors
+        metric_colors = {
+            'revenue': COLORS['revenue'],
+            'gross_profit': COLORS['gross_profit'],
+            'gp1': COLORS['gp1']
+        }
+        bar_color = metric_colors.get(metric, COLORS['gross_profit'])
+        
+        # Auto-generate title if not provided
+        if not title:
+            title = f"🏆 Top 80% Customers by {metric_label}"
+        
+        # Check if metric column exists
+        if metric not in df.columns:
+            return SalespersonCharts._empty_chart(f"No {metric} data available")
+        
+        # Bar chart
         bars = alt.Chart(df).mark_bar().encode(
             x=alt.X('customer:N', sort='-y', title='Customer'),
-            y=alt.Y('gross_profit:Q', title='Gross Profit (USD)', axis=alt.Axis(format='~s')),
-            color=alt.value(COLORS['gross_profit']),
+            y=alt.Y(f'{metric}:Q', title=f'{metric_label} (USD)', axis=alt.Axis(format='~s')),
+            color=alt.value(bar_color),
             tooltip=[
                 alt.Tooltip('customer:N', title='Customer'),
-                alt.Tooltip('gross_profit:Q', title='Gross Profit', format=',.0f'),
-                alt.Tooltip('gp_percent_contribution:Q', title='% of Total', format='.2f')
+                alt.Tooltip(f'{metric}:Q', title=metric_label, format=',.0f'),
+                alt.Tooltip('percent_contribution:Q', title='% of Total', format='.2f')
             ]
         )
         
@@ -640,8 +807,8 @@ class SalespersonCharts:
             align='center', baseline='bottom', dy=-5, fontSize=10
         ).encode(
             x=alt.X('customer:N', sort='-y'),
-            y=alt.Y('gross_profit:Q'),
-            text=alt.Text('gross_profit:Q', format=',.0f'),
+            y=alt.Y(f'{metric}:Q'),
+            text=alt.Text(f'{metric}:Q', format=',.0f'),
             color=alt.value(COLORS['text_dark'])
         )
         
@@ -683,26 +850,55 @@ class SalespersonCharts:
     @staticmethod
     def build_top_brands_chart(
         top_df: pd.DataFrame,
-        title: str = "🏆 Top 80% Brands by Gross Profit"
+        metric: str = 'gross_profit',
+        title: str = ""
     ) -> alt.Chart:
         """
         Build Pareto chart for top brands.
-        Same structure as top_customers_chart.
+        
+        Args:
+            top_df: Top brands data from prepare_top_brands_by_metric
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            title: Chart title (auto-generated if empty)
         """
         if top_df.empty:
             return SalespersonCharts._empty_chart("No data available")
         
         df = top_df.copy()
         
+        # Metric display names
+        metric_labels = {
+            'revenue': 'Revenue',
+            'gross_profit': 'Gross Profit',
+            'gp1': 'GP1'
+        }
+        metric_label = metric_labels.get(metric, 'Gross Profit')
+        
+        # Metric colors
+        metric_colors = {
+            'revenue': COLORS['revenue'],
+            'gross_profit': COLORS['gross_profit'],
+            'gp1': COLORS['gp1']
+        }
+        bar_color = metric_colors.get(metric, COLORS['gross_profit'])
+        
+        # Auto-generate title if not provided
+        if not title:
+            title = f"🏆 Top 80% Brands by {metric_label}"
+        
+        # Check if metric column exists
+        if metric not in df.columns:
+            return SalespersonCharts._empty_chart(f"No {metric} data available")
+        
         # Bar chart
         bars = alt.Chart(df).mark_bar().encode(
             x=alt.X('brand:N', sort='-y', title='Brand'),
-            y=alt.Y('gross_profit:Q', title='Gross Profit (USD)', axis=alt.Axis(format='~s')),
-            color=alt.value(COLORS['gross_profit']),
+            y=alt.Y(f'{metric}:Q', title=f'{metric_label} (USD)', axis=alt.Axis(format='~s')),
+            color=alt.value(bar_color),
             tooltip=[
                 alt.Tooltip('brand:N', title='Brand'),
-                alt.Tooltip('gross_profit:Q', title='Gross Profit', format=',.0f'),
-                alt.Tooltip('gp_percent_contribution:Q', title='% of Total', format='.2f')
+                alt.Tooltip(f'{metric}:Q', title=metric_label, format=',.0f'),
+                alt.Tooltip('percent_contribution:Q', title='% of Total', format='.2f')
             ]
         )
         
@@ -710,8 +906,8 @@ class SalespersonCharts:
             align='center', baseline='bottom', dy=-5, fontSize=10
         ).encode(
             x=alt.X('brand:N', sort='-y'),
-            y=alt.Y('gross_profit:Q'),
-            text=alt.Text('gross_profit:Q', format=',.0f'),
+            y=alt.Y(f'{metric}:Q'),
+            text=alt.Text(f'{metric}:Q', format=',.0f'),
             color=alt.value(COLORS['text_dark'])
         )
         
@@ -771,13 +967,15 @@ class SalespersonCharts:
     @staticmethod
     def build_forecast_waterfall_chart(
         backlog_metrics: Dict,
-        title: str = "🔮 Revenue Forecast vs Target"
+        metric: str = 'revenue',
+        title: str = ""
     ) -> alt.Chart:
         """
         Build a waterfall-style chart showing Invoiced + Backlog = Forecast vs Target.
         
         Args:
             backlog_metrics: Dict with backlog metrics
+            metric: 'revenue', 'gp', or 'gp1'
             title: Chart title
             
         Returns:
@@ -786,24 +984,61 @@ class SalespersonCharts:
         if not backlog_metrics:
             return SalespersonCharts._empty_chart("No backlog data")
         
+        # Map metric to keys
+        metric_keys = {
+            'revenue': {
+                'invoiced': 'current_invoiced_revenue',
+                'backlog': 'in_period_backlog_revenue',
+                'target': 'revenue_target',
+                'forecast': 'forecast_revenue',
+                'label': 'Revenue'
+            },
+            'gp': {
+                'invoiced': 'current_invoiced_gp',
+                'backlog': 'in_period_backlog_gp',
+                'target': 'gp_target',
+                'forecast': 'forecast_gp',
+                'label': 'Gross Profit'
+            },
+            'gp1': {
+                'invoiced': 'current_invoiced_gp1',
+                'backlog': 'in_period_backlog_gp1',
+                'target': 'gp1_target',
+                'forecast': 'forecast_gp1',
+                'label': 'GP1'
+            }
+        }
+        
+        keys = metric_keys.get(metric, metric_keys['revenue'])
+        
+        # Get values with fallback
+        invoiced = backlog_metrics.get(keys['invoiced'], 0) or 0
+        backlog = backlog_metrics.get(keys['backlog'], 0) or 0
+        target = backlog_metrics.get(keys['target'], 0) or 0
+        forecast = backlog_metrics.get(keys['forecast'], invoiced + backlog) or (invoiced + backlog)
+        
+        # Auto-generate title if not provided
+        if not title:
+            title = f"🔮 {keys['label']} Forecast vs Target"
+        
         # Prepare data for stacked bar
         data = pd.DataFrame([
             {
                 'category': 'Performance',
                 'component': '✅ Invoiced',
-                'value': backlog_metrics.get('current_invoiced_revenue', 0),
+                'value': invoiced,
                 'order': 1
             },
             {
                 'category': 'Performance',
                 'component': '📅 In-Period Backlog',
-                'value': backlog_metrics.get('in_period_backlog_revenue', 0),
+                'value': backlog,
                 'order': 2
             },
             {
                 'category': 'Target',
                 'component': '🎯 Target',
-                'value': backlog_metrics.get('revenue_target', 0) or 0,
+                'value': target,
                 'order': 1
             }
         ])
@@ -827,9 +1062,8 @@ class SalespersonCharts:
             ]
         )
         
-        # Add forecast line
-        forecast_value = backlog_metrics.get('forecast_revenue', 0)
-        forecast_line = alt.Chart(pd.DataFrame({'y': [forecast_value]})).mark_rule(
+        # Add forecast line (use calculated forecast value)
+        forecast_line = alt.Chart(pd.DataFrame({'y': [forecast]})).mark_rule(
             color=COLORS['gross_profit_percent'],
             strokeWidth=2,
             strokeDash=[5, 5]
@@ -840,8 +1074,8 @@ class SalespersonCharts:
         # Add forecast label
         forecast_text = alt.Chart(pd.DataFrame({
             'x': ['Target'],
-            'y': [forecast_value],
-            'label': [f'Forecast: ${forecast_value:,.0f}']
+            'y': [forecast],
+            'label': [f'Forecast: ${forecast:,.0f}']
         })).mark_text(
             align='left',
             dx=35,
@@ -924,13 +1158,16 @@ class SalespersonCharts:
     @staticmethod
     def build_gap_analysis_chart(
         backlog_metrics: Dict,
+        metrics_to_show: list = None,
         title: str = "📊 Target vs Forecast Analysis"
     ) -> alt.Chart:
         """
         Build a bullet/progress chart showing current progress, forecast, and target.
+        Supports multiple metrics (Revenue, GP, GP1).
         
         Args:
             backlog_metrics: Dict with backlog metrics
+            metrics_to_show: List of metrics to show ['revenue', 'gp', 'gp1']. Default: all 3
             title: Chart title
             
         Returns:
@@ -939,22 +1176,58 @@ class SalespersonCharts:
         if not backlog_metrics:
             return SalespersonCharts._empty_chart("No data available")
         
-        target = backlog_metrics.get('revenue_target', 0) or 0
-        invoiced = backlog_metrics.get('current_invoiced_revenue', 0)
-        forecast = backlog_metrics.get('forecast_revenue', 0)
+        if metrics_to_show is None:
+            metrics_to_show = ['revenue', 'gp', 'gp1']
         
-        if target == 0:
+        # Define metric configurations
+        metric_configs = {
+            'revenue': {
+                'target_key': 'revenue_target',
+                'invoiced_key': 'current_invoiced_revenue',
+                'forecast_key': 'forecast_revenue',
+                'label': 'Revenue'
+            },
+            'gp': {
+                'target_key': 'gp_target',
+                'invoiced_key': 'current_invoiced_gp',
+                'forecast_key': 'forecast_gp',
+                'label': 'Gross Profit'
+            },
+            'gp1': {
+                'target_key': 'gp1_target',
+                'invoiced_key': 'current_invoiced_gp1',
+                'forecast_key': 'forecast_gp1',
+                'label': 'GP1'
+            }
+        }
+        
+        # Build data for all metrics
+        all_data = []
+        for metric_name in metrics_to_show:
+            if metric_name not in metric_configs:
+                continue
+            
+            config = metric_configs[metric_name]
+            target = backlog_metrics.get(config['target_key'], 0) or 0
+            invoiced = backlog_metrics.get(config['invoiced_key'], 0) or 0
+            forecast = backlog_metrics.get(config['forecast_key'], invoiced) or invoiced
+            
+            if target == 0:
+                continue
+            
+            invoiced_pct = (invoiced / target) * 100
+            forecast_pct = (forecast / target) * 100
+            
+            all_data.extend([
+                {'metric': config['label'], 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct},
+                {'metric': config['label'], 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct},
+                {'metric': config['label'], 'type': 'Target', 'value': target, 'percent': 100},
+            ])
+        
+        if not all_data:
             return SalespersonCharts._empty_chart("No target set")
         
-        # Calculate percentages
-        invoiced_pct = (invoiced / target) * 100
-        forecast_pct = (forecast / target) * 100
-        
-        data = pd.DataFrame([
-            {'metric': 'Revenue', 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct},
-            {'metric': 'Revenue', 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct},
-            {'metric': 'Revenue', 'type': 'Target', 'value': target, 'percent': 100},
-        ])
+        data = pd.DataFrame(all_data)
         
         # Base bar (target as background)
         base = alt.Chart(data[data['type'] == 'Target']).mark_bar(
@@ -962,7 +1235,7 @@ class SalespersonCharts:
             size=40
         ).encode(
             x=alt.X('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s')),
-            y=alt.Y('metric:N', title='')
+            y=alt.Y('metric:N', title='', sort=['Revenue', 'Gross Profit', 'GP1'])
         )
         
         # Forecast bar
@@ -971,8 +1244,9 @@ class SalespersonCharts:
             size=25
         ).encode(
             x=alt.X('value:Q'),
-            y=alt.Y('metric:N'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
             tooltip=[
+                alt.Tooltip('metric:N', title='Metric'),
                 alt.Tooltip('type:N', title='Type'),
                 alt.Tooltip('value:Q', title='Amount', format=',.0f'),
                 alt.Tooltip('percent:Q', title='% of Target', format='.1f')
@@ -985,8 +1259,9 @@ class SalespersonCharts:
             size=15
         ).encode(
             x=alt.X('value:Q'),
-            y=alt.Y('metric:N'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
             tooltip=[
+                alt.Tooltip('metric:N', title='Metric'),
                 alt.Tooltip('type:N', title='Type'),
                 alt.Tooltip('value:Q', title='Amount', format=',.0f'),
                 alt.Tooltip('percent:Q', title='% of Target', format='.1f')
@@ -1000,12 +1275,33 @@ class SalespersonCharts:
             size=50
         ).encode(
             x=alt.X('value:Q'),
-            y=alt.Y('metric:N')
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1'])
         )
         
-        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule).properties(
+        # Achievement % text at end
+        forecast_data = data[data['type'] == 'Forecast'].copy()
+        text = alt.Chart(forecast_data).mark_text(
+            align='left',
+            dx=5,
+            fontSize=11,
+            fontWeight='bold'
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
+            text=alt.Text('percent:Q', format='.0f'),
+            color=alt.condition(
+                alt.datum.percent >= 100,
+                alt.value(COLORS['achievement_good']),
+                alt.value(COLORS['achievement_bad'])
+            )
+        )
+        
+        num_metrics = len([m for m in metrics_to_show if m in metric_configs])
+        chart_height = max(120, num_metrics * 60)
+        
+        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(
             width=CHART_WIDTH,
-            height=150,
+            height=chart_height,
             title=title
         )
         

@@ -378,6 +378,24 @@ with tab1:
                         delta=f"{yoy_change:+.1f}% (${current_total - previous_total:+,.0f})",
                         delta_color="normal" if yoy_change >= 0 else "inverse"
                     )
+            
+            # ========== CUMULATIVE YoY COMPARISON ==========
+            st.markdown("##### 📈 Cumulative YoY Comparison")
+            
+            col_cum1, col_cum2, col_cum3 = st.columns(3)
+            
+            for col, (metric_name, chart_metric, data_col) in zip(
+                [col_cum1, col_cum2, col_cum3], 
+                metrics_config
+            ):
+                with col:
+                    cum_yoy_chart = SalespersonCharts.build_cumulative_yoy_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric=chart_metric,
+                        title=f"Cumulative {metric_name}"
+                    )
+                    st.altair_chart(cum_yoy_chart, use_container_width=True)
         else:
             st.info(f"No data available for {filter_values['year'] - 1} comparison")
     
@@ -386,40 +404,129 @@ with tab1:
     # Forecast section
     st.subheader("📦 Backlog & Forecast")
     
-    col_bf1, col_bf2 = st.columns(2)
+    # Tabs for different metrics
+    bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
     
-    with col_bf1:
-        forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
-            backlog_metrics=backlog_metrics,
-            title=""
-        )
-        st.altair_chart(forecast_chart, use_container_width=True)
+    with bf_tab1:
+        col_bf1, col_bf2 = st.columns(2)
+        with col_bf1:
+            forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+                backlog_metrics=backlog_metrics,
+                metric='revenue',
+                title="Revenue Forecast vs Target"
+            )
+            st.altair_chart(forecast_chart, use_container_width=True)
+        with col_bf2:
+            gap_chart = SalespersonCharts.build_gap_analysis_chart(
+                backlog_metrics=backlog_metrics,
+                metrics_to_show=['revenue'],
+                title="Revenue: Target vs Forecast"
+            )
+            st.altair_chart(gap_chart, use_container_width=True)
     
-    with col_bf2:
-        gap_chart = SalespersonCharts.build_gap_analysis_chart(
-            backlog_metrics=backlog_metrics,
-            title=""
-        )
-        st.altair_chart(gap_chart, use_container_width=True)
+    with bf_tab2:
+        col_bf1, col_bf2 = st.columns(2)
+        with col_bf1:
+            forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+                backlog_metrics=backlog_metrics,
+                metric='gp',
+                title="GP Forecast vs Target"
+            )
+            st.altair_chart(forecast_chart, use_container_width=True)
+        with col_bf2:
+            gap_chart = SalespersonCharts.build_gap_analysis_chart(
+                backlog_metrics=backlog_metrics,
+                metrics_to_show=['gp'],
+                title="GP: Target vs Forecast"
+            )
+            st.altair_chart(gap_chart, use_container_width=True)
+    
+    with bf_tab3:
+        col_bf1, col_bf2 = st.columns(2)
+        with col_bf1:
+            forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
+                backlog_metrics=backlog_metrics,
+                metric='gp1',
+                title="GP1 Forecast vs Target"
+            )
+            st.altair_chart(forecast_chart, use_container_width=True)
+        with col_bf2:
+            gap_chart = SalespersonCharts.build_gap_analysis_chart(
+                backlog_metrics=backlog_metrics,
+                metrics_to_show=['gp1'],
+                title="GP1: Target vs Forecast"
+            )
+            st.altair_chart(gap_chart, use_container_width=True)
     
     st.divider()
     
-    # Top customers/brands
-    col3, col4 = st.columns(2)
+    # Top customers/brands with metric tabs
+    st.subheader("🏆 Top Customers & Brands Analysis")
     
-    with col3:
-        st.subheader("🏆 Top Customers by GP")
-        top_customers = metrics_calc.prepare_top_customers_by_gp(top_percent=0.8)
-        if not top_customers.empty:
-            chart = SalespersonCharts.build_top_customers_chart(top_df=top_customers, title="")
-            st.altair_chart(chart, use_container_width=True)
+    ranking_tab1, ranking_tab2, ranking_tab3 = st.tabs(["💰 By Revenue", "📈 By Gross Profit", "📊 By GP1"])
     
-    with col4:
-        st.subheader("🏆 Top Brands by GP")
-        top_brands = metrics_calc.prepare_top_brands_by_gp(top_percent=0.8)
-        if not top_brands.empty:
-            chart = SalespersonCharts.build_top_brands_chart(top_df=top_brands, title="")
-            st.altair_chart(chart, use_container_width=True)
+    with ranking_tab1:
+        col3, col4 = st.columns(2)
+        with col3:
+            top_customers = metrics_calc.prepare_top_customers_by_metric('revenue', top_percent=0.8)
+            if not top_customers.empty:
+                chart = SalespersonCharts.build_top_customers_chart(
+                    top_df=top_customers, 
+                    metric='revenue',
+                    title="Top Customers by Revenue"
+                )
+                st.altair_chart(chart, use_container_width=True)
+        with col4:
+            top_brands = metrics_calc.prepare_top_brands_by_metric('revenue', top_percent=0.8)
+            if not top_brands.empty:
+                chart = SalespersonCharts.build_top_brands_chart(
+                    top_df=top_brands,
+                    metric='revenue',
+                    title="Top Brands by Revenue"
+                )
+                st.altair_chart(chart, use_container_width=True)
+    
+    with ranking_tab2:
+        col3, col4 = st.columns(2)
+        with col3:
+            top_customers = metrics_calc.prepare_top_customers_by_metric('gross_profit', top_percent=0.8)
+            if not top_customers.empty:
+                chart = SalespersonCharts.build_top_customers_chart(
+                    top_df=top_customers,
+                    metric='gross_profit',
+                    title="Top Customers by Gross Profit"
+                )
+                st.altair_chart(chart, use_container_width=True)
+        with col4:
+            top_brands = metrics_calc.prepare_top_brands_by_metric('gross_profit', top_percent=0.8)
+            if not top_brands.empty:
+                chart = SalespersonCharts.build_top_brands_chart(
+                    top_df=top_brands,
+                    metric='gross_profit',
+                    title="Top Brands by Gross Profit"
+                )
+                st.altair_chart(chart, use_container_width=True)
+    
+    with ranking_tab3:
+        col3, col4 = st.columns(2)
+        with col3:
+            top_customers = metrics_calc.prepare_top_customers_by_metric('gp1', top_percent=0.8)
+            if not top_customers.empty:
+                chart = SalespersonCharts.build_top_customers_chart(
+                    top_df=top_customers,
+                    metric='gp1',
+                    title="Top Customers by GP1"
+                )
+                st.altair_chart(chart, use_container_width=True)
+        with col4:
+            top_brands = metrics_calc.prepare_top_brands_by_metric('gp1', top_percent=0.8)
+            if not top_brands.empty:
+                chart = SalespersonCharts.build_top_brands_chart(
+                    top_df=top_brands,
+                    metric='gp1',
+                    title="Top Brands by GP1"
+                )
+                st.altair_chart(chart, use_container_width=True)
     
     st.divider()
     
