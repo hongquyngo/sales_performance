@@ -38,6 +38,49 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def _is_period_active(period_str: str, today_str: str) -> bool:
+    """
+    Check if today falls within the effective period.
+    
+    Args:
+        period_str: Period string in format "YYYY-MM-DD -> YYYY-MM-DD"
+        today_str: Today's date in format "YYYY-MM-DD"
+    
+    Returns:
+        True if period is active (today is within range)
+    """
+    if not period_str or ' -> ' not in str(period_str):
+        return True  # No period defined = always active
+    try:
+        start, end = str(period_str).split(' -> ')
+        return start.strip() <= today_str <= end.strip()
+    except:
+        return True
+
+
+def _is_period_expired(period_str: str, today_str: str) -> bool:
+    """
+    Check if the effective period has ended.
+    
+    Args:
+        period_str: Period string in format "YYYY-MM-DD -> YYYY-MM-DD"
+        today_str: Today's date in format "YYYY-MM-DD"
+    
+    Returns:
+        True if period has expired (end date < today)
+    """
+    if not period_str or ' -> ' not in str(period_str):
+        return False  # No period defined = never expired
+    try:
+        _, end = str(period_str).split(' -> ')
+        return end.strip() < today_str
+    except:
+        return False
+
+# =============================================================================
 # PAGE CONFIGURATION
 # =============================================================================
 
@@ -881,11 +924,29 @@ with tab5:
                                           key="split_sales")
             
             filtered_split = sales_split_df.copy()
-            if split_status == 'Active':
-                # Assuming there's an effective_period or status column
-                pass  # Filter logic here
+            
+            # Filter by effective period status
+            if split_status in ['Active', 'Expired']:
+                today_str = date.today().strftime('%Y-%m-%d')
+                if split_status == 'Active':
+                    filtered_split = filtered_split[
+                        filtered_split['effective_period'].apply(
+                            lambda x: _is_period_active(x, today_str)
+                        )
+                    ]
+                elif split_status == 'Expired':
+                    filtered_split = filtered_split[
+                        filtered_split['effective_period'].apply(
+                            lambda x: _is_period_expired(x, today_str)
+                        )
+                    ]
+            
+            # Filter by salesperson
             if split_sales != 'All':
                 filtered_split = filtered_split[filtered_split['sales_name'] == split_sales]
+            
+            # Show record count
+            st.caption(f"📊 Showing {len(filtered_split):,} split assignments")
             
             # Display
             split_display_cols = [c for c in ['customer', 'product_pn', 'split_percentage', 
