@@ -168,14 +168,15 @@ queries = SalespersonQueries(access)
 filters_ui = SalespersonFilters(access)
 
 # =============================================================================
-# SIDEBAR FILTERS
+# SIDEBAR FILTERS (Form-based - only applies on click)
 # =============================================================================
 
 salesperson_options = queries.get_salesperson_options()
 entity_options = queries.get_entity_options()
 available_years = queries.get_available_years()
 
-filter_values = filters_ui.render_all_filters(
+# Use form-based filters to prevent rerun on every change
+filter_values, filters_submitted = filters_ui.render_filter_form(
     salesperson_df=salesperson_options,
     entity_df=entity_options,
     available_years=available_years

@@ -109,6 +109,182 @@ class SalespersonFilters:
             'compare_yoy': True,  # Always enabled
         }
     
+    def render_filter_form(
+        self,
+        salesperson_df: pd.DataFrame,
+        entity_df: pd.DataFrame,
+        available_years: List[int]
+    ) -> Tuple[Dict, bool]:
+        """
+        Render filters inside a form - only applies when user clicks Apply.
+        This prevents page reruns on every filter change.
+        
+        Returns:
+            Tuple of (filter_values dict, submitted boolean)
+        """
+        # Initialize session state for filter values if not exists
+        if 'applied_filters' not in st.session_state:
+            st.session_state.applied_filters = None
+        
+        with st.sidebar:
+            st.header("🎛️ Filters")
+            
+            with st.form("filter_form", border=False):
+                # Period and Year
+                col1, col2 = st.columns(2)
+                
+                current_year = datetime.now().year
+                if not available_years:
+                    available_years = [current_year, current_year - 1]
+                else:
+                    available_years = [int(y) for y in available_years]
+                
+                with col1:
+                    period_type = st.selectbox(
+                        "📅 Period",
+                        options=PERIOD_TYPES,
+                        index=0,
+                        key="form_period_type"
+                    )
+                
+                with col2:
+                    year = st.selectbox(
+                        "📆 Year",
+                        options=available_years,
+                        index=0,
+                        key="form_year"
+                    )
+                    year = int(year)
+                
+                # Date range for Custom period
+                if period_type == 'Custom':
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        start_date = st.date_input(
+                            "Start Date",
+                            value=date(year, 1, 1),
+                            key="form_start_date"
+                        )
+                    with col_d2:
+                        end_date = st.date_input(
+                            "End Date",
+                            value=min(date.today(), date(year, 12, 31)),
+                            key="form_end_date"
+                        )
+                else:
+                    start_date, end_date = self._calculate_period_dates(period_type, year)
+                    st.caption(f"📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
+                
+                st.divider()
+                
+                # Salesperson filter
+                st.markdown("**👤 Salesperson**")
+                if salesperson_df.empty:
+                    employee_ids = []
+                    st.warning("No salespeople available")
+                else:
+                    # Build options based on access control
+                    all_salespeople = salesperson_df['sales_name'].tolist()
+                    id_map = dict(zip(salesperson_df['sales_name'], salesperson_df['employee_id']))
+                    
+                    if self.access.get_access_level() == 'full':
+                        # Admin/Manager - can see all
+                        options = ['All'] + all_salespeople
+                        default = ['All']
+                    elif self.access.get_access_level() == 'team':
+                        # Team leader - can see team
+                        team_ids = self.access.get_team_member_ids()
+                        team_names = salesperson_df[
+                            salesperson_df['employee_id'].isin(team_ids)
+                        ]['sales_name'].tolist()
+                        options = ['All Team'] + team_names
+                        default = ['All Team']
+                    else:
+                        # Individual - only self
+                        my_id = self.access.employee_id
+                        my_row = salesperson_df[salesperson_df['employee_id'] == my_id]
+                        if not my_row.empty:
+                            options = [my_row.iloc[0]['sales_name']]
+                            default = options
+                        else:
+                            options = all_salespeople[:1]
+                            default = options
+                    
+                    selected_names = st.multiselect(
+                        "Select Salespeople",
+                        options=options,
+                        default=default,
+                        key="form_salesperson",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Convert to IDs
+                    if 'All' in selected_names or 'All Team' in selected_names:
+                        if self.access.get_access_level() == 'team':
+                            employee_ids = self.access.get_team_member_ids()
+                        else:
+                            employee_ids = salesperson_df['employee_id'].tolist()
+                    else:
+                        employee_ids = [id_map[n] for n in selected_names if n in id_map]
+                
+                # Entity filter
+                st.markdown("**🏢 Legal Entity**")
+                if entity_df.empty:
+                    entity_ids = []
+                else:
+                    entity_options = ['All Entities'] + entity_df['entity_name'].tolist()
+                    entity_id_map = dict(zip(entity_df['entity_name'], entity_df['entity_id']))
+                    
+                    selected_entities = st.multiselect(
+                        "Select Entities",
+                        options=entity_options,
+                        default=['All Entities'],
+                        key="form_entity",
+                        label_visibility="collapsed"
+                    )
+                    
+                    if 'All Entities' in selected_entities or not selected_entities:
+                        entity_ids = []
+                    else:
+                        entity_ids = [entity_id_map[n] for n in selected_entities if n in entity_id_map]
+                
+                st.divider()
+                
+                # Submit button
+                col_btn1, col_btn2 = st.columns([2, 1])
+                with col_btn1:
+                    submitted = st.form_submit_button(
+                        "🔍 Apply Filters",
+                        type="primary",
+                        use_container_width=True
+                    )
+                
+            # Access info outside form
+            self._render_access_info()
+        
+        # Build filter values
+        filter_values = {
+            'period_type': period_type,
+            'year': year,
+            'start_date': start_date,
+            'end_date': end_date,
+            'employee_ids': employee_ids,
+            'entity_ids': entity_ids,
+            'compare_yoy': True,
+        }
+        
+        # Store applied filters on submit
+        if submitted:
+            st.session_state.applied_filters = filter_values
+        
+        # Return applied filters (or current if first load)
+        if st.session_state.applied_filters is not None:
+            return st.session_state.applied_filters, submitted
+        else:
+            # First load - apply current filters
+            st.session_state.applied_filters = filter_values
+            return filter_values, True
+    
     # =========================================================================
     # PERIOD & YEAR SELECTORS
     # =========================================================================
