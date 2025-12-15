@@ -71,35 +71,7 @@ class SalespersonCharts:
         # 💰 PERFORMANCE SECTION
         # =====================================================================
         with st.container(border=True):
-            col_header, col_help = st.columns([6, 1])
-            with col_header:
-                st.markdown("**💰 PERFORMANCE**")
-            with col_help:
-                with st.popover("ℹ️ Help"):
-                    st.markdown("""
-                    **📊 Performance Metrics Definitions**
-                    
-                    **Row 1 - Financial KPIs:**
-                    | Metric | Formula |
-                    |--------|---------|
-                    | Revenue | `Σ sales_by_split_usd` |
-                    | Gross Profit | `Σ gross_profit_by_split_usd` |
-                    | GP1 | `Gross Profit - Broker Commission` |
-                    | Overall Achievement | `Σ(KPI_Ach × Weight) / Σ Weight` |
-                    
-                    **Row 2 - Activity & Margins:**
-                    | Metric | Formula |
-                    |--------|---------|
-                    | Customers | `COUNT(DISTINCT customer_id)` |
-                    | GP % | `Gross Profit / Revenue × 100` |
-                    | GP1 % | `GP1 / Revenue × 100` |
-                    | Orders | `COUNT(DISTINCT oc_number)` |
-                    
-                    **Notes:**
-                    - All values are **split-adjusted** based on sales split %
-                    - YoY comparison uses same period from previous year
-                    - Targets are **prorated** based on period type (YTD/QTD/MTD)
-                    """)
+            st.markdown("**💰 PERFORMANCE**")
             
             # Row 1: Revenue | GP | GP1 | Overall Achievement
             col1, col2, col3, col4 = st.columns(4)

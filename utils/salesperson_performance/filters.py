@@ -96,9 +96,6 @@ class SalespersonFilters:
         
         st.sidebar.divider()
         
-        # Additional options
-        compare_yoy = self._render_yoy_toggle()
-        
         # Display access info
         self._render_access_info()
         
@@ -109,7 +106,7 @@ class SalespersonFilters:
             'end_date': end_date,
             'employee_ids': employee_ids,
             'entity_ids': entity_ids,
-            'compare_yoy': compare_yoy,
+            'compare_yoy': True,  # Always enabled
         }
     
     # =========================================================================
@@ -387,19 +384,6 @@ class SalespersonFilters:
             return []  # No filter - return empty list to indicate "all"
         
         return [id_map[name] for name in selected if name in id_map]
-    
-    # =========================================================================
-    # ADDITIONAL OPTIONS
-    # =========================================================================
-    
-    def _render_yoy_toggle(self) -> bool:
-        """Render YoY comparison toggle."""
-        return st.sidebar.checkbox(
-            "📊 Compare YoY",
-            value=True,  # Default: enabled
-            key="filter_compare_yoy",
-            help="Show year-over-year comparison with same period last year"
-        )
     
     # =========================================================================
     # ACCESS INFO

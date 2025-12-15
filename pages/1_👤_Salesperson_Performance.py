@@ -302,65 +302,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # =============================================================================
 
 with tab1:
-    # Master Help Expander
-    with st.expander("📖 **Metrics Reference Guide** - Click to expand", expanded=False):
-        st.markdown("""
-        ### 📊 Complete Metrics & Formulas Reference
-        
-        #### 💰 PERFORMANCE METRICS
-        | Metric | Formula | Description |
-        |--------|---------|-------------|
-        | **Revenue** | `Σ sales_by_split_usd` | Total invoiced sales (split-adjusted) |
-        | **Gross Profit** | `Σ gross_profit_by_split_usd` | Revenue - COGS (split-adjusted) |
-        | **GP1** | `GP - Broker Commission` | Net profit after broker fees |
-        | **GP %** | `Gross Profit / Revenue × 100` | Gross margin percentage |
-        | **GP1 %** | `GP1 / Revenue × 100` | Net margin percentage |
-        | **Customers** | `COUNT(DISTINCT customer_id)` | Unique customers invoiced |
-        | **Orders** | `COUNT(DISTINCT oc_number)` | Unique order confirmations |
-        
-        #### 🎯 OVERALL KPI ACHIEVEMENT
-        ```
-        Overall Achievement = Σ(Individual KPI Achievement × Weight) / Σ Weight
-        ```
-        
-        **Supported KPIs:**
-        | KPI Type | Weight | Target Proration |
-        |----------|--------|------------------|
-        | Revenue | Varies by employee | YTD: Annual × (months/12) |
-        | Gross Profit | Varies by employee | QTD: Annual / 4 |
-        | New Customers | Varies by employee | MTD: Annual / 12 |
-        | New Products | Varies by employee | Custom: Full annual |
-        | New Business Revenue | Varies by employee | |
-        
-        #### 📦 PIPELINE & FORECAST
-        | Metric | Formula | Description |
-        |--------|---------|-------------|
-        | **Total Backlog** | `Σ backlog_sales_by_split_usd` | All pending orders |
-        | **In-Period Backlog** | Backlog WHERE `ETD` in period | Expected to ship in period |
-        | **Forecast** | `Invoiced + In-Period Backlog` | Projected period total |
-        | **GAP** | `Forecast - Target` | Distance from prorated target |
-        
-        #### 🆕 NEW BUSINESS (5-Year Lookback)
-        | Metric | Definition | Counting |
-        |--------|------------|----------|
-        | **New Customers** | First invoice for (customer, salesperson) | Proportional by split % |
-        | **New Products** | First sale of product ever | Attributed to first seller |
-        | **New Business Revenue** | First (customer, product) combination | Full revenue amount |
-        
-        #### 📊 YoY COMPARISON
-        ```
-        YoY Growth % = (Current Period - Same Period Last Year) / Same Period Last Year × 100
-        ```
-        
-        #### 🏆 PARETO ANALYSIS
-        - Shows customers/brands contributing to **80%** of metric
-        - Sorted by contribution (descending)
-        - Cumulative % line shows running total
-        
-        ---
-        *💡 Tip: Hover over any metric card for quick tooltip. Click ℹ️ buttons for section-specific help.*
-        """)
-    
     # KPI Cards
     SalespersonCharts.render_kpi_cards(
         metrics=overview_metrics,
@@ -380,23 +321,7 @@ with tab1:
     col1, col2 = st.columns(2)
     
     with col1:
-        col_mt_header, col_mt_help = st.columns([5, 1])
-        with col_mt_header:
-            st.subheader("📊 Monthly Trend")
-        with col_mt_help:
-            with st.popover("ℹ️"):
-                st.markdown("""
-                **📊 Monthly Trend Chart**
-                
-                **Bars:** Revenue & Gross Profit by month
-                **Line:** GP% trend (right axis)
-                
-                **Data Source:**
-                - Aggregated from `unified_sales_by_salesperson_view`
-                - Split-adjusted values
-                
-                **Month Order:** Jan → Dec
-                """)
+        st.subheader("📊 Monthly Trend")
         monthly_chart = SalespersonCharts.build_monthly_trend_chart(
             monthly_df=monthly_summary,
             show_gp1=False,
@@ -405,27 +330,7 @@ with tab1:
         st.altair_chart(monthly_chart, use_container_width=True)
     
     with col2:
-        col_cp_header, col_cp_help = st.columns([5, 1])
-        with col_cp_header:
-            st.subheader("📈 Cumulative Performance")
-        with col_cp_help:
-            with st.popover("ℹ️"):
-                st.markdown("""
-                **📈 Cumulative Performance**
-                
-                Shows running total (YTD progress).
-                
-                **Lines:**
-                - Revenue (cumulative)
-                - Gross Profit (cumulative)
-                
-                **Formula:**
-                ```
-                Cumulative[month] = Σ values[Jan..month]
-                ```
-                
-                **Use:** Track progress toward annual goals
-                """)
+        st.subheader("📈 Cumulative Performance")
         cumulative_chart = SalespersonCharts.build_cumulative_chart(
             monthly_df=monthly_summary,
             title=""
@@ -441,32 +346,11 @@ with tab1:
         with col_yoy_header:
             st.subheader("📊 Year-over-Year Comparison")
         with col_yoy_help:
-            with st.popover("ℹ️ Help"):
+            with st.popover("ℹ️"):
                 st.markdown("""
-                **📊 Year-over-Year Comparison**
-                
-                **What it shows:**
-                Compare current period performance vs same period last year.
-                
-                **Metrics compared:**
-                | Metric | Formula |
-                |--------|---------|
-                | Revenue | `Σ sales_by_split_usd` |
-                | Gross Profit | `Σ gross_profit_by_split_usd` |
-                | GP1 | `Σ gp1_by_split_usd` |
-                
-                **YoY Growth Calculation:**
-                ```
-                YoY % = (Current - Previous) / Previous × 100
-                ```
-                
                 **Period Matching:**
-                - YTD 2025 vs YTD 2024 (same date range)
-                - Handles leap year (Feb 29 → Feb 28)
-                
-                **Charts:**
-                - **Monthly**: Side-by-side bars for each month
-                - **Cumulative**: Running total comparison
+                - Compares same date range: e.g., YTD 2025 vs YTD 2024
+                - Leap year handled: Feb 29 → Feb 28
                 """)
         
         # Load previous year data
