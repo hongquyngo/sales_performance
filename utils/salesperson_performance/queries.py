@@ -790,7 +790,7 @@ class SalespersonQueries:
                 ss.sales_email,
                 c.english_name as customer,
                 c.id as customer_id,
-                COALESCE(p.part_number, 'All Products') as product_pn,
+                COALESCE(p.name, 'All Products') as product_pn,
                 p.id as product_id,
                 ss.split_percentage,
                 ss.effective_period,
