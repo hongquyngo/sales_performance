@@ -16,6 +16,7 @@ import streamlit as st
 from datetime import datetime, date
 import logging
 import pandas as pd
+import time
 
 # Shared utilities
 from utils.auth import AuthManager
@@ -41,6 +42,46 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean dataframe to avoid Arrow serialization errors.
+    Fixes mixed type columns (especially year columns from SQL DATE_FORMAT).
+    """
+    if df.empty:
+        return df
+    
+    df_clean = df.copy()
+    
+    # Columns that should be numeric but might be strings from SQL DATE_FORMAT
+    year_columns = ['etd_year', 'oc_year', 'invoice_year', 'year']
+    numeric_columns = ['days_until_etd', 'days_since_order', 'split_rate_percent', 'split_percentage']
+    
+    for col in year_columns:
+        if col in df_clean.columns:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0).astype(int)
+    
+    for col in numeric_columns:
+        if col in df_clean.columns:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+    
+    # Fix object columns with mixed types (but preserve dates)
+    for col in df_clean.columns:
+        if df_clean[col].dtype == 'object':
+            # Skip date-like columns
+            if any(x in col.lower() for x in ['date', '_at', 'etd', 'due']):
+                continue
+            
+            # Check if this column has truly mixed types
+            unique_types = set(type(x).__name__ for x in df_clean[col].dropna().head(100))
+            if len(unique_types) > 1 and 'str' in unique_types:
+                try:
+                    df_clean[col] = df_clean[col].astype(str).replace('nan', '').replace('None', '')
+                except:
+                    pass
+    
+    return df_clean
+
 
 def _is_period_active(period_str: str, today_str: str) -> bool:
     """
@@ -146,81 +187,147 @@ if not is_valid:
     st.stop()
 
 # =============================================================================
-# LOAD ALL DATA
+# LOAD ALL DATA WITH SMART CACHING
 # =============================================================================
 
-@st.cache_data(ttl=1800, show_spinner="Loading data...")
-def load_all_data(start_date, end_date, employee_ids, entity_ids, year):
-    """Load all required data with caching."""
+def get_filter_cache_key(filter_values: dict) -> str:
+    """Generate cache key from filter values."""
+    return f"{filter_values['start_date']}_{filter_values['end_date']}_{tuple(sorted(filter_values['employee_ids']))}_{tuple(sorted(filter_values['entity_ids'])) if filter_values['entity_ids'] else 'all'}_{filter_values['year']}"
+
+
+def load_data_with_progress(filter_values: dict) -> dict:
+    """Load all data with progress indicator."""
     q = SalespersonQueries(AccessControl(
         st.session_state.get('user_role', 'viewer'),
         st.session_state.get('employee_id')
     ))
     
-    # Main sales data
-    sales_df = q.get_sales_data(
-        start_date=start_date,
-        end_date=end_date,
-        employee_ids=employee_ids,
-        entity_ids=entity_ids if entity_ids else None
-    )
+    start_date = filter_values['start_date']
+    end_date = filter_values['end_date']
+    employee_ids = tuple(filter_values['employee_ids'])
+    entity_ids = tuple(filter_values['entity_ids']) if filter_values['entity_ids'] else None
+    year = filter_values['year']
     
-    # KPI targets
-    targets_df = q.get_kpi_targets(year=year, employee_ids=employee_ids)
+    # Progress bar with status
+    progress_bar = st.progress(0, text="🔄 Initializing...")
     
-    # Complex KPIs
-    new_customers_df = q.get_new_customers(start_date, end_date, employee_ids)
-    new_products_df = q.get_new_products(start_date, end_date, employee_ids)
-    new_business_df = q.get_new_business_revenue(start_date, end_date, employee_ids)
+    data = {}
     
-    # Backlog data
-    total_backlog_df = q.get_backlog_data(
-        employee_ids=employee_ids,
-        entity_ids=entity_ids if entity_ids else None
-    )
-    in_period_backlog_df = q.get_backlog_in_period(
-        start_date=start_date,
-        end_date=end_date,
-        employee_ids=employee_ids,
-        entity_ids=entity_ids if entity_ids else None
-    )
-    backlog_by_month_df = q.get_backlog_by_month(
-        employee_ids=employee_ids,
-        entity_ids=entity_ids if entity_ids else None
-    )
+    try:
+        # Step 1: Sales data (largest query)
+        progress_bar.progress(10, text="📊 Loading sales data...")
+        data['sales'] = q.get_sales_data(
+            start_date=start_date,
+            end_date=end_date,
+            employee_ids=employee_ids,
+            entity_ids=entity_ids
+        )
+        
+        # Step 2: KPI targets
+        progress_bar.progress(25, text="🎯 Loading KPI targets...")
+        data['targets'] = q.get_kpi_targets(year=year, employee_ids=employee_ids)
+        
+        # Step 3: Complex KPIs
+        progress_bar.progress(40, text="🆕 Loading new business metrics...")
+        data['new_customers'] = q.get_new_customers(start_date, end_date, employee_ids)
+        data['new_products'] = q.get_new_products(start_date, end_date, employee_ids)
+        data['new_business'] = q.get_new_business_revenue(start_date, end_date, employee_ids)
+        
+        # Step 4: Backlog data
+        progress_bar.progress(60, text="📦 Loading backlog data...")
+        data['total_backlog'] = q.get_backlog_data(
+            employee_ids=employee_ids,
+            entity_ids=entity_ids
+        )
+        data['in_period_backlog'] = q.get_backlog_in_period(
+            start_date=start_date,
+            end_date=end_date,
+            employee_ids=employee_ids,
+            entity_ids=entity_ids
+        )
+        data['backlog_by_month'] = q.get_backlog_by_month(
+            employee_ids=employee_ids,
+            entity_ids=entity_ids
+        )
+        
+        # Step 5: Backlog detail
+        progress_bar.progress(80, text="📋 Loading backlog details...")
+        data['backlog_detail'] = q.get_backlog_detail(
+            employee_ids=employee_ids,
+            entity_ids=entity_ids,
+            limit=500
+        )
+        
+        # Step 6: Sales split data
+        progress_bar.progress(95, text="👥 Loading sales split data...")
+        data['sales_split'] = q.get_sales_split_data(employee_ids=employee_ids)
+        
+        # Step 7: Clean all dataframes to avoid Arrow serialization issues
+        for key in data:
+            if isinstance(data[key], pd.DataFrame) and not data[key].empty:
+                data[key] = _clean_dataframe_for_display(data[key])
+        
+        # Complete
+        progress_bar.progress(100, text="✅ Data loaded successfully!")
+        
+    except Exception as e:
+        progress_bar.empty()
+        st.error(f"❌ Error loading data: {str(e)}")
+        st.stop()
     
-    # Backlog detail
-    backlog_detail_df = q.get_backlog_detail(
-        employee_ids=employee_ids,
-        entity_ids=entity_ids if entity_ids else None,
-        limit=500
-    )
+    # Clear progress bar after short delay
+    time.sleep(0.5)
+    progress_bar.empty()
     
-    # Sales split data
-    sales_split_df = q.get_sales_split_data(employee_ids=employee_ids)
-    
-    return {
-        'sales': sales_df,
-        'targets': targets_df,
-        'new_customers': new_customers_df,
-        'new_products': new_products_df,
-        'new_business': new_business_df,
-        'total_backlog': total_backlog_df,
-        'in_period_backlog': in_period_backlog_df,
-        'backlog_by_month': backlog_by_month_df,
-        'backlog_detail': backlog_detail_df,
-        'sales_split': sales_split_df,
-    }
+    return data
 
 
-# Load data
-data = load_all_data(
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date'],
-    employee_ids=tuple(filter_values['employee_ids']),
-    entity_ids=tuple(filter_values['entity_ids']) if filter_values['entity_ids'] else None,
-    year=filter_values['year']
-)
+# Generate current cache key
+current_cache_key = get_filter_cache_key(filter_values)
+
+# Check if we have cached data with same filters
+if 'data_cache_key' not in st.session_state:
+    st.session_state.data_cache_key = None
+    st.session_state.cached_data = None
+
+# Determine if filters have changed
+filters_changed = st.session_state.data_cache_key != current_cache_key
+has_cached_data = st.session_state.cached_data is not None
+
+# Smart loading logic
+if filters_changed:
+    if has_cached_data:
+        # Filters changed - show confirmation
+        st.info("🔄 **Filters have changed.** Click the button below to refresh data.")
+        
+        col1, col2, col3 = st.columns([2, 2, 4])
+        with col1:
+            if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
+                data = load_data_with_progress(filter_values)
+                st.session_state.cached_data = data
+                st.session_state.data_cache_key = current_cache_key
+                st.rerun()
+        with col2:
+            if st.button("↩️ Use Cached Data", use_container_width=True):
+                # Restore previous filters from cache key
+                st.info("Using previously loaded data. Filters reset to match cached data.")
+        
+        # Use cached data temporarily
+        data = st.session_state.cached_data
+    else:
+        # First load - load with progress
+        data = load_data_with_progress(filter_values)
+        st.session_state.cached_data = data
+        st.session_state.data_cache_key = current_cache_key
+else:
+    # Same filters - use cached data
+    data = st.session_state.cached_data
+    
+    # Safety check
+    if data is None:
+        data = load_data_with_progress(filter_values)
+        st.session_state.cached_data = data
+        st.session_state.data_cache_key = current_cache_key
 
 # Check if we have any data
 if data['sales'].empty and data['total_backlog'].empty:

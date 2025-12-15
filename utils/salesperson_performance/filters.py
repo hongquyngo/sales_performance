@@ -137,11 +137,16 @@ class SalespersonFilters:
                 # Ensure all years are integers
                 available_years = [int(y) for y in available_years]
             
+            # Disable Year selector when Custom is selected (user will pick dates)
+            is_custom = period_type == 'Custom'
+            
             year = st.selectbox(
                 "📆 Year",
                 options=available_years,
                 index=0,  # Default to most recent
-                key="filter_year"
+                key="filter_year",
+                disabled=is_custom,
+                help="Disabled for Custom period - year is determined by date range" if is_custom else None
             )
             
             # Ensure year is integer
