@@ -10,6 +10,10 @@ Handles all database interactions:
 
 All queries respect access control filtering.
 Uses @st.cache_data for performance.
+
+CHANGELOG:
+- v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
+          Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 """
 
 import logging
@@ -224,15 +228,21 @@ class SalespersonQueries:
         employee_ids: List[int] = None
     ) -> pd.DataFrame:
         """
-        Get customers with first invoice in period (vs 5-year lookback).
+        Get customers with first invoice to COMPANY in period (vs 5-year lookback).
         
-        A customer is "new" for a salesperson if:
-        - The first invoice for this (customer, salesperson) combo
+        A customer is "new to company" if:
+        - The first invoice for this customer (globally, any salesperson)
         - Falls within the specified date range
         - When looking back LOOKBACK_YEARS years
         
+        Credit is given to the salesperson who made the first sale.
+        
         Returns DataFrame with: customer_id, customer, sales_id, sales_name,
                                split_rate_percent, first_invoice_date
+        
+        UPDATED v1.1.0: Changed from "new to salesperson" to "new to company"
+        - Old: PARTITION BY customer_id, sales_id (customer is new if first sale BY THIS SALESPERSON)
+        - New: PARTITION BY customer_id (customer is new if first sale EVER TO COMPANY)
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -244,6 +254,8 @@ class SalespersonQueries:
         
         lookback_start = date(start_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # FIXED: Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
+        # This ensures customer is "new to company" not "new to salesperson"
         query = """
             WITH first_customer_invoice AS (
                 SELECT 
@@ -254,12 +266,11 @@ class SalespersonQueries:
                     split_rate_percent,
                     inv_date,
                     ROW_NUMBER() OVER (
-                        PARTITION BY customer_id, sales_id 
+                        PARTITION BY customer_id
                         ORDER BY inv_date ASC
                     ) as rn
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                  AND sales_id IN :employee_ids
             )
             SELECT 
                 customer_id,
@@ -271,6 +282,7 @@ class SalespersonQueries:
             FROM first_customer_invoice
             WHERE rn = 1
               AND inv_date BETWEEN :start_date AND :end_date
+              AND sales_id IN :employee_ids
             ORDER BY inv_date DESC
         """
         

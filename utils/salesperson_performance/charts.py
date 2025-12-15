@@ -9,6 +9,12 @@ All visualization components using Altair:
 - Achievement comparison charts
 - YoY comparison charts
 - Top customers/brands Pareto charts
+
+CHANGELOG:
+- v1.1.0: Updated NEW BUSINESS section tooltips to reflect correct business logic
+          - New Customers: "new to COMPANY" (not "new to salesperson")
+          - New Products: "first sale ever to ANY customer"
+          - New Business Revenue: "first customer-product combo"
 """
 
 import logging
@@ -291,7 +297,7 @@ class SalespersonCharts:
                         
                         | Metric | Definition | Lookback |
                         |--------|------------|----------|
-                        | New Customers | Customers with **first invoice** in period | 5 years |
+                        | New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
                         | New Products | Products with **first sale ever** in period | 5 years |
                         | New Business Revenue | Revenue from **first product-customer combo** | 5 years |
                         
@@ -299,12 +305,17 @@ class SalespersonCharts:
                         - Values are **proportionally counted** based on split %
                         - Example: If salesperson has 50% split on a new customer, they get 0.5 new customer credit
                         
-                        **"New" Definition:**
-                        - A customer is "new" if their first invoice (with this salesperson) is within the period
-                        - A product is "new" if its first sale ever (any salesperson) is within the period
-                        - New business = first time a specific product is sold to a specific customer
+                        **"New" Definitions:**
+                        - **New Customer**: Customer has NEVER purchased from the company before (globally, any salesperson). Credit goes to salesperson who made the first sale.
+                        - **New Product**: Product has NEVER been sold to ANY customer before. Credit goes to salesperson who introduced it.
+                        - **New Business Revenue**: Revenue from first time a specific product is sold to a specific customer.
                         
                         **Lookback Period:** 5 years from period start date
+                        
+                        **Formula Summary:**
+                        - New Customer Count = Σ(split_rate / 100) for each first-time customer
+                        - New Product Count = Σ(split_rate / 100) for each first-time product
+                        - New Business Revenue = Σ(sales_by_split_usd) for first customer-product combos
                         """)
                 
                 col9, col10, col11 = st.columns(3)
@@ -317,7 +328,7 @@ class SalespersonCharts:
                         label="New Customers",
                         value=f"{complex_kpis['new_customer_count']:.1f}",
                         delta=delta_str,
-                        help="Customers with first invoice in period (5-year lookback). Counted proportionally by split %. Formula: Σ(split_rate / 100) for each new customer"
+                        help="Customers with first-ever invoice to COMPANY in period (5-year lookback). Credit goes to salesperson who made first sale. Counted proportionally by split %. Formula: Σ(split_rate / 100)"
                     )
                 
                 with col10:
@@ -328,7 +339,7 @@ class SalespersonCharts:
                         label="New Products",
                         value=f"{complex_kpis['new_product_count']:.1f}",
                         delta=delta_str,
-                        help="Products with first sale ever in period (5-year lookback). Attributed to salesperson who made the first sale. Formula: Σ(split_rate / 100) for each new product"
+                        help="Products with first-ever sale to ANY customer in period (5-year lookback). Credit goes to salesperson who introduced the product. Formula: Σ(split_rate / 100)"
                     )
                 
                 with col11:
@@ -339,7 +350,7 @@ class SalespersonCharts:
                         label="New Business Revenue",
                         value=f"${complex_kpis['new_business_revenue']:,.0f}",
                         delta=delta_str,
-                        help="Revenue from first product-customer combinations (5-year lookback). Measures revenue from introducing products to new customers."
+                        help="Revenue from first-time product-customer combinations (5-year lookback). Captures revenue when a product is sold to a customer for the first time ever. Formula: Σ(sales_by_split_usd) for first-time combos"
                     )
     
     # =========================================================================
