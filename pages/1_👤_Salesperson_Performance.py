@@ -187,26 +187,24 @@ if not is_valid:
     st.stop()
 
 # =============================================================================
-# LOAD ALL DATA WITH SMART CACHING
+# LOAD ALL DATA WITH SMART CACHING (Client-Side Filtering)
 # =============================================================================
 
-def get_filter_cache_key(filter_values: dict) -> str:
-    """Generate cache key from filter values."""
-    return f"{filter_values['start_date']}_{filter_values['end_date']}_{tuple(sorted(filter_values['employee_ids']))}_{tuple(sorted(filter_values['entity_ids'])) if filter_values['entity_ids'] else 'all'}_{filter_values['year']}"
-
-
-def load_data_with_progress(filter_values: dict) -> dict:
-    """Load all data with progress indicator."""
+def load_all_data_once() -> dict:
+    """
+    Load ALL data without any filters.
+    This data will be cached and ALL filtering done client-side.
+    Only reloads when user clicks Refresh button.
+    """
     q = SalespersonQueries(AccessControl(
         st.session_state.get('user_role', 'viewer'),
         st.session_state.get('employee_id')
     ))
     
-    start_date = filter_values['start_date']
-    end_date = filter_values['end_date']
-    employee_ids = tuple(filter_values['employee_ids'])
-    entity_ids = tuple(filter_values['entity_ids']) if filter_values['entity_ids'] else None
-    year = filter_values['year']
+    # Load data for reasonable date range (last 3 years + current year)
+    current_year = date.today().year
+    start_date = date(current_year - 2, 1, 1)  # 3 years of data
+    end_date = date(current_year, 12, 31)
     
     # Progress bar with status
     progress_bar = st.progress(0, text="🔄 Initializing...")
@@ -214,58 +212,67 @@ def load_data_with_progress(filter_values: dict) -> dict:
     data = {}
     
     try:
-        # Step 1: Sales data (largest query)
-        progress_bar.progress(10, text="📊 Loading sales data...")
+        # Step 1: Sales data - NO filters
+        progress_bar.progress(10, text="📊 Loading all sales data...")
         data['sales'] = q.get_sales_data(
             start_date=start_date,
             end_date=end_date,
-            employee_ids=employee_ids,
-            entity_ids=entity_ids
+            employee_ids=None,
+            entity_ids=None
         )
         
-        # Step 2: KPI targets
-        progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        data['targets'] = q.get_kpi_targets(year=year, employee_ids=employee_ids)
+        # Step 2: KPI targets - ALL years, ALL employees
+        progress_bar.progress(25, text="🎯 Loading all KPI targets...")
+        # Load targets for multiple years
+        targets_list = []
+        for yr in range(current_year - 2, current_year + 1):
+            t = q.get_kpi_targets(year=yr, employee_ids=None)
+            if not t.empty:
+                targets_list.append(t)
+        data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         
-        # Step 3: Complex KPIs
+        # Step 3: Complex KPIs - NO filters
         progress_bar.progress(40, text="🆕 Loading new business metrics...")
-        data['new_customers'] = q.get_new_customers(start_date, end_date, employee_ids)
-        data['new_products'] = q.get_new_products(start_date, end_date, employee_ids)
-        data['new_business'] = q.get_new_business_revenue(start_date, end_date, employee_ids)
+        data['new_customers'] = q.get_new_customers(start_date, end_date, None)
+        data['new_products'] = q.get_new_products(start_date, end_date, None)
+        data['new_business'] = q.get_new_business_revenue(start_date, end_date, None)
         
-        # Step 4: Backlog data
-        progress_bar.progress(60, text="📦 Loading backlog data...")
+        # Step 4: Backlog data - NO filters
+        progress_bar.progress(60, text="📦 Loading all backlog data...")
         data['total_backlog'] = q.get_backlog_data(
-            employee_ids=employee_ids,
-            entity_ids=entity_ids
+            employee_ids=None,
+            entity_ids=None
         )
         data['in_period_backlog'] = q.get_backlog_in_period(
             start_date=start_date,
             end_date=end_date,
-            employee_ids=employee_ids,
-            entity_ids=entity_ids
+            employee_ids=None,
+            entity_ids=None
         )
         data['backlog_by_month'] = q.get_backlog_by_month(
-            employee_ids=employee_ids,
-            entity_ids=entity_ids
+            employee_ids=None,
+            entity_ids=None
         )
         
-        # Step 5: Backlog detail
+        # Step 5: Backlog detail - NO filters
         progress_bar.progress(80, text="📋 Loading backlog details...")
         data['backlog_detail'] = q.get_backlog_detail(
-            employee_ids=employee_ids,
-            entity_ids=entity_ids,
-            limit=500
+            employee_ids=None,
+            entity_ids=None,
+            limit=2000
         )
         
-        # Step 6: Sales split data
+        # Step 6: Sales split data - NO filter
         progress_bar.progress(95, text="👥 Loading sales split data...")
-        data['sales_split'] = q.get_sales_split_data(employee_ids=employee_ids)
+        data['sales_split'] = q.get_sales_split_data(employee_ids=None)
         
-        # Step 7: Clean all dataframes to avoid Arrow serialization issues
+        # Step 7: Clean all dataframes
         for key in data:
             if isinstance(data[key], pd.DataFrame) and not data[key].empty:
                 data[key] = _clean_dataframe_for_display(data[key])
+        
+        # Store load timestamp
+        data['_loaded_at'] = datetime.now()
         
         # Complete
         progress_bar.progress(100, text="✅ Data loaded successfully!")
@@ -282,52 +289,102 @@ def load_data_with_progress(filter_values: dict) -> dict:
     return data
 
 
-# Generate current cache key
-current_cache_key = get_filter_cache_key(filter_values)
-
-# Check if we have cached data with same filters
-if 'data_cache_key' not in st.session_state:
-    st.session_state.data_cache_key = None
-    st.session_state.cached_data = None
-
-# Determine if filters have changed
-filters_changed = st.session_state.data_cache_key != current_cache_key
-has_cached_data = st.session_state.cached_data is not None
-
-# Smart loading logic
-if filters_changed:
-    if has_cached_data:
-        # Filters changed - show confirmation
-        st.info("🔄 **Filters have changed.** Click the button below to refresh data.")
-        
-        col1, col2, col3 = st.columns([2, 2, 4])
-        with col1:
-            if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
-                data = load_data_with_progress(filter_values)
-                st.session_state.cached_data = data
-                st.session_state.data_cache_key = current_cache_key
-                st.rerun()
-        with col2:
-            if st.button("↩️ Use Cached Data", use_container_width=True):
-                # Restore previous filters from cache key
-                st.info("Using previously loaded data. Filters reset to match cached data.")
-        
-        # Use cached data temporarily
-        data = st.session_state.cached_data
-    else:
-        # First load - load with progress
-        data = load_data_with_progress(filter_values)
-        st.session_state.cached_data = data
-        st.session_state.data_cache_key = current_cache_key
-else:
-    # Same filters - use cached data
-    data = st.session_state.cached_data
+def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
+    """
+    Filter cached data client-side based on ALL filters.
+    This is instant - no DB query needed.
+    """
+    start_date = filter_values['start_date']
+    end_date = filter_values['end_date']
+    employee_ids = filter_values['employee_ids']
+    entity_ids = filter_values['entity_ids']
+    year = filter_values['year']
     
-    # Safety check
-    if data is None:
-        data = load_data_with_progress(filter_values)
-        st.session_state.cached_data = data
-        st.session_state.data_cache_key = current_cache_key
+    filtered = {}
+    
+    for key, df in raw_data.items():
+        # Skip metadata
+        if key.startswith('_'):
+            continue
+            
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            filtered[key] = df
+            continue
+        
+        df_filtered = df.copy()
+        
+        # Filter by date range
+        date_cols = ['inv_date', 'oc_date', 'invoiced_date']
+        for date_col in date_cols:
+            if date_col in df_filtered.columns:
+                df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
+                df_filtered = df_filtered[
+                    (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
+                    (df_filtered[date_col] <= pd.Timestamp(end_date))
+                ]
+                break
+        
+        # Filter by employee_ids (salesperson)
+        if employee_ids:
+            emp_ids_set = set(employee_ids)
+            if 'sales_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['sales_id'].isin(emp_ids_set)]
+            elif 'employee_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['employee_id'].isin(emp_ids_set)]
+        
+        # Filter by entity_ids
+        if entity_ids:
+            entity_ids_set = set(entity_ids)
+            if 'entity_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['entity_id'].isin(entity_ids_set)]
+            elif 'legal_entity_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['legal_entity_id'].isin(entity_ids_set)]
+        
+        # Special handling for targets - filter by year
+        if key == 'targets' and 'year' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['year'] == year]
+        
+        filtered[key] = df_filtered
+    
+    return filtered
+
+
+# =============================================================================
+# CACHING LOGIC - Load once, filter client-side
+# =============================================================================
+
+# Initialize session state
+if 'raw_cached_data' not in st.session_state:
+    st.session_state.raw_cached_data = None
+
+# Add Refresh button in sidebar
+with st.sidebar:
+    st.divider()
+    col_r1, col_r2 = st.columns([1, 1])
+    with col_r1:
+        if st.button("🔄 Refresh Data", use_container_width=True, help="Reload data from database"):
+            st.session_state.raw_cached_data = None
+            st.rerun()
+    with col_r2:
+        if st.session_state.raw_cached_data and '_loaded_at' in st.session_state.raw_cached_data:
+            loaded_at = st.session_state.raw_cached_data['_loaded_at']
+            st.caption(f"📅 {loaded_at.strftime('%H:%M')}")
+
+# Load data if not cached
+if st.session_state.raw_cached_data is None:
+    raw_data = load_all_data_once()
+    st.session_state.raw_cached_data = raw_data
+else:
+    raw_data = st.session_state.raw_cached_data
+
+# =============================================================================
+# APPLY CLIENT-SIDE FILTERING (Instant - no DB query)
+# =============================================================================
+
+data = filter_data_client_side(
+    raw_data=raw_data,
+    filter_values=filter_values
+)
 
 # Check if we have any data
 if data['sales'].empty and data['total_backlog'].empty:
