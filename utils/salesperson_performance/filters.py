@@ -517,3 +517,42 @@ def render_period_selector_simple() -> Tuple[str, int, date, date]:
     start_date, end_date = SalespersonFilters._calculate_period_dates(period_type, year)
     
     return period_type, year, start_date, end_date
+
+
+def analyze_period(filter_values: Dict) -> Dict:
+    """
+    Analyze period to determine comparison type and which sections to show.
+    
+    Args:
+        filter_values: Dict containing start_date, end_date, year
+        
+    Returns:
+        Dict with:
+        - is_historical: True if end_date < today
+        - is_multi_year: True if period spans more than 1 year
+        - years_in_period: List of years covered [2023, 2024, 2025]
+        - show_backlog: True if backlog section should be shown
+        - comparison_type: 'yoy' or 'multi_year'
+    """
+    today = date.today()
+    start = filter_values['start_date']
+    end = filter_values['end_date']
+    
+    # Get list of years in period
+    years_in_period = list(range(start.year, end.year + 1))
+    is_multi_year = len(years_in_period) > 1
+    
+    # Historical = end date is in the past
+    is_historical = end < today
+    
+    # Only show backlog for current/future periods
+    # Allow if end_date is within current month or future
+    show_backlog = end >= date(today.year, today.month, 1)
+    
+    return {
+        'is_historical': is_historical,
+        'is_multi_year': is_multi_year,
+        'years_in_period': years_in_period,
+        'show_backlog': show_backlog,
+        'comparison_type': 'multi_year' if is_multi_year else 'yoy',
+    }
