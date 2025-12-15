@@ -98,7 +98,6 @@ class SalespersonFilters:
         
         # Additional options
         compare_yoy = self._render_yoy_toggle()
-        metric_view = self._render_metric_selector()
         
         # Display access info
         self._render_access_info()
@@ -111,7 +110,6 @@ class SalespersonFilters:
             'employee_ids': employee_ids,
             'entity_ids': entity_ids,
             'compare_yoy': compare_yoy,
-            'metric_view': metric_view,
         }
     
     # =========================================================================
@@ -401,16 +399,6 @@ class SalespersonFilters:
             value=True,  # Default: enabled
             key="filter_compare_yoy",
             help="Show year-over-year comparison with same period last year"
-        )
-    
-    def _render_metric_selector(self) -> str:
-        """Render metric view selector for quick toggle."""
-        return st.sidebar.radio(
-            "📈 Primary Metric",
-            options=['Revenue', 'Gross Profit', 'GP1'],
-            index=2,  # Default: GP1 (index 2)
-            key="filter_metric_view",
-            horizontal=True
         )
     
     # =========================================================================

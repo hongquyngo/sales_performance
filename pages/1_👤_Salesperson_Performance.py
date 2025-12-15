@@ -342,48 +342,42 @@ with tab1:
         )
         
         if not previous_sales_df.empty:
-            # Metric selector for YoY chart
-            metric_col_map = {
-                'Revenue': 'revenue',
-                'Gross Profit': 'gross_profit',
-                'GP1': 'gp1'
-            }
-            selected_metric = metric_col_map.get(filter_values['metric_view'], 'gross_profit')
+            # Calculate YoY for all 3 metrics
+            metrics_config = [
+                ('Revenue', 'revenue', 'sales_by_split_usd'),
+                ('Gross Profit', 'gross_profit', 'gross_profit_by_split_usd'),
+                ('GP1', 'gp1', 'gp1_by_split_usd')
+            ]
             
-            yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
-                current_df=data['sales'],
-                previous_df=previous_sales_df,
-                metric=selected_metric,
-                title=f"{filter_values['metric_view']} - {filter_values['year']} vs {filter_values['year'] - 1}"
-            )
-            st.altair_chart(yoy_chart, use_container_width=True)
-            
-            # YoY summary table
+            # Display 3 charts side by side
             col_yoy1, col_yoy2, col_yoy3 = st.columns(3)
             
-            current_total = data['sales']['sales_by_split_usd'].sum() if not data['sales'].empty else 0
-            previous_total = previous_sales_df['sales_by_split_usd'].sum() if not previous_sales_df.empty else 0
-            yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
-            
-            with col_yoy1:
-                st.metric(
-                    f"📅 {filter_values['year']} Revenue",
-                    f"${current_total:,.0f}"
-                )
-            
-            with col_yoy2:
-                st.metric(
-                    f"📅 {filter_values['year'] - 1} Revenue",
-                    f"${previous_total:,.0f}"
-                )
-            
-            with col_yoy3:
-                st.metric(
-                    "📈 YoY Change",
-                    f"{yoy_change:+.1f}%",
-                    delta=f"${current_total - previous_total:+,.0f}",
-                    delta_color="normal" if yoy_change >= 0 else "inverse"
-                )
+            for col, (metric_name, chart_metric, data_col) in zip(
+                [col_yoy1, col_yoy2, col_yoy3], 
+                metrics_config
+            ):
+                with col:
+                    # Calculate totals
+                    current_total = data['sales'][data_col].sum() if not data['sales'].empty else 0
+                    previous_total = previous_sales_df[data_col].sum() if not previous_sales_df.empty else 0
+                    yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
+                    
+                    # Mini chart
+                    yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric=chart_metric,
+                        title=metric_name
+                    )
+                    st.altair_chart(yoy_chart, use_container_width=True)
+                    
+                    # Summary metrics below chart
+                    st.metric(
+                        label=f"{filter_values['year']} vs {filter_values['year'] - 1}",
+                        value=f"${current_total:,.0f}",
+                        delta=f"{yoy_change:+.1f}% (${current_total - previous_total:+,.0f})",
+                        delta_color="normal" if yoy_change >= 0 else "inverse"
+                    )
         else:
             st.info(f"No data available for {filter_values['year'] - 1} comparison")
     

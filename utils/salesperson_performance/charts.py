@@ -48,206 +48,214 @@ class SalespersonCharts:
         show_backlog: bool = True
     ):
         """
-        Render KPI summary cards using Streamlit metrics.
+        Render KPI summary cards using Streamlit metrics with visual grouping.
+        
+        Layout:
+        - 💰 PERFORMANCE: Revenue, GP, GP1, Achievement + Customers, Invoices, Orders, GP%
+        - 📦 PIPELINE & FORECAST: Backlog, In-Period, Forecast, GAP
+        - 🆕 NEW BUSINESS: New Customers, New Products, New Business Revenue
         
         Args:
             metrics: Overview metrics dict
             yoy_metrics: YoY comparison metrics (optional)
             complex_kpis: Complex KPI metrics (optional)
             backlog_metrics: Backlog and forecast metrics (optional)
-            show_complex: Whether to show complex KPI row
-            show_backlog: Whether to show backlog/forecast row
+            show_complex: Whether to show complex KPI section
+            show_backlog: Whether to show backlog/forecast section
         """
-        # Row 1: Main Financial KPIs
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            delta = None
-            if yoy_metrics and yoy_metrics.get('total_revenue_yoy') is not None:
-                delta = f"{yoy_metrics['total_revenue_yoy']:+.1f}% YoY"
+        # =====================================================================
+        # 💰 PERFORMANCE SECTION
+        # =====================================================================
+        with st.container(border=True):
+            st.markdown("**💰 PERFORMANCE**")
             
-            st.metric(
-                label="💰 Revenue",
-                value=f"${metrics['total_revenue']:,.0f}",
-                delta=delta
-            )
-        
-        with col2:
-            delta = None
-            if yoy_metrics and yoy_metrics.get('total_gp_yoy') is not None:
-                delta = f"{yoy_metrics['total_gp_yoy']:+.1f}% YoY"
+            # Row 1: Main Financial KPIs
+            col1, col2, col3, col4 = st.columns(4)
             
-            st.metric(
-                label="📈 Gross Profit",
-                value=f"${metrics['total_gp']:,.0f}",
-                delta=delta
-            )
-        
-        with col3:
-            st.metric(
-                label="🎯 GP1",
-                value=f"${metrics['total_gp1']:,.0f}",
-                delta=f"{metrics['gp1_percent']:.1f}% margin"
-            )
-        
-        with col4:
-            achievement = metrics.get('revenue_achievement')
-            if achievement is not None:
-                delta_color = "normal" if achievement >= 100 else "inverse"
-                st.metric(
-                    label="🏆 Achievement",
-                    value=f"{achievement:.1f}%",
-                    delta=f"vs ${metrics.get('revenue_target', 0):,.0f} target",
-                    delta_color=delta_color
-                )
-            else:
-                st.metric(
-                    label="🏆 Achievement",
-                    value="N/A",
-                    delta="No target set"
-                )
-        
-        # Row 2: Secondary metrics
-        col5, col6, col7, col8 = st.columns(4)
-        
-        with col5:
-            delta = None
-            if yoy_metrics and yoy_metrics.get('total_customers_yoy') is not None:
-                delta = f"{yoy_metrics['total_customers_yoy']:+.1f}% YoY"
-            
-            st.metric(
-                label="👥 Customers",
-                value=f"{metrics['total_customers']:,}",
-                delta=delta
-            )
-        
-        with col6:
-            st.metric(
-                label="🧾 Invoices",
-                value=f"{metrics['total_invoices']:,}",
-            )
-        
-        with col7:
-            st.metric(
-                label="📦 Orders",
-                value=f"{metrics['total_orders']:,}",
-            )
-        
-        with col8:
-            st.metric(
-                label="📊 GP %",
-                value=f"{metrics['gp_percent']:.1f}%",
-            )
-        
-        # Row 3: Backlog & Forecast (if provided and enabled)
-        if show_backlog and backlog_metrics:
-            st.divider()
-            st.markdown("##### 📦 Backlog & Forecast")
-            
-            col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
-            
-            with col_b1:
-                st.metric(
-                    label="📦 Total Backlog",
-                    value=f"${backlog_metrics.get('total_backlog_revenue', 0):,.0f}",
-                    delta=f"{backlog_metrics.get('backlog_orders', 0):,} orders",
-                    delta_color="off"
-                )
-            
-            with col_b2:
-                coverage = backlog_metrics.get('backlog_coverage_percent')
-                delta_str = f"{coverage:.0f}% of target" if coverage else None
-                st.metric(
-                    label="📅 In-Period Backlog",
-                    value=f"${backlog_metrics.get('in_period_backlog_revenue', 0):,.0f}",
-                    delta=delta_str,
-                    delta_color="off"
-                )
-            
-            with col_b3:
-                st.metric(
-                    label="✅ Current Invoiced",
-                    value=f"${backlog_metrics.get('current_invoiced_revenue', 0):,.0f}",
-                    help="Revenue already invoiced in period"
-                )
-            
-            with col_b4:
-                forecast_achievement = backlog_metrics.get('forecast_achievement_revenue')
-                delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
-                delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
-                st.metric(
-                    label="🔮 Forecast",
-                    value=f"${backlog_metrics.get('forecast_revenue', 0):,.0f}",
-                    delta=delta_str,
-                    delta_color=delta_color if delta_str else "off",
-                    help="Invoiced + In-Period Backlog"
-                )
-            
-            with col_b5:
-                gap = backlog_metrics.get('gap_revenue')
-                gap_percent = backlog_metrics.get('gap_revenue_percent')
+            with col1:
+                delta = None
+                if yoy_metrics and yoy_metrics.get('total_revenue_yoy') is not None:
+                    delta = f"{yoy_metrics['total_revenue_yoy']:+.1f}% YoY"
                 
-                if gap is not None:
-                    # Positive gap = exceeding target, Negative = shortfall
-                    if gap >= 0:
-                        gap_label = "🟢 Surplus"
-                        delta_color = "normal"
-                    else:
-                        gap_label = "🔴 GAP"
-                        delta_color = "inverse"
-                    
-                    delta_str = f"{gap_percent:+.1f}%" if gap_percent else None
+                st.metric(
+                    label="Revenue",
+                    value=f"${metrics['total_revenue']:,.0f}",
+                    delta=delta
+                )
+            
+            with col2:
+                delta = None
+                if yoy_metrics and yoy_metrics.get('total_gp_yoy') is not None:
+                    delta = f"{yoy_metrics['total_gp_yoy']:+.1f}% YoY"
+                
+                st.metric(
+                    label="Gross Profit",
+                    value=f"${metrics['total_gp']:,.0f}",
+                    delta=delta
+                )
+            
+            with col3:
+                st.metric(
+                    label="GP1",
+                    value=f"${metrics['total_gp1']:,.0f}",
+                    delta=f"{metrics['gp1_percent']:.1f}% margin"
+                )
+            
+            with col4:
+                achievement = metrics.get('revenue_achievement')
+                if achievement is not None:
+                    delta_color = "normal" if achievement >= 100 else "inverse"
                     st.metric(
-                        label=gap_label,
-                        value=f"${gap:+,.0f}",
-                        delta=delta_str,
-                        delta_color=delta_color,
-                        help="Forecast - Target"
+                        label="Achievement",
+                        value=f"{achievement:.1f}%",
+                        delta=f"vs ${metrics.get('revenue_target', 0):,.0f} target",
+                        delta_color=delta_color
                     )
                 else:
                     st.metric(
-                        label="⚠️ GAP",
+                        label="Achievement",
                         value="N/A",
-                        delta="No target",
+                        delta="No target set"
+                    )
+            
+            # Row 2: Activity metrics
+            col5, col6, col7, col8 = st.columns(4)
+            
+            with col5:
+                delta = None
+                if yoy_metrics and yoy_metrics.get('total_customers_yoy') is not None:
+                    delta = f"{yoy_metrics['total_customers_yoy']:+.1f}% YoY"
+                
+                st.metric(
+                    label="Customers",
+                    value=f"{metrics['total_customers']:,}",
+                    delta=delta
+                )
+            
+            with col6:
+                st.metric(
+                    label="Invoices",
+                    value=f"{metrics['total_invoices']:,}",
+                )
+            
+            with col7:
+                st.metric(
+                    label="Orders",
+                    value=f"{metrics['total_orders']:,}",
+                )
+            
+            with col8:
+                st.metric(
+                    label="GP %",
+                    value=f"{metrics['gp_percent']:.1f}%",
+                )
+        
+        # =====================================================================
+        # 📦 PIPELINE & FORECAST SECTION
+        # =====================================================================
+        if show_backlog and backlog_metrics:
+            with st.container(border=True):
+                st.markdown("**📦 PIPELINE & FORECAST**")
+                
+                col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+                
+                with col_b1:
+                    st.metric(
+                        label="Total Backlog",
+                        value=f"${backlog_metrics.get('total_backlog_revenue', 0):,.0f}",
+                        delta=f"{backlog_metrics.get('backlog_orders', 0):,} orders",
                         delta_color="off"
                     )
+                
+                with col_b2:
+                    coverage = backlog_metrics.get('backlog_coverage_percent')
+                    delta_str = f"{coverage:.0f}% of target" if coverage else None
+                    st.metric(
+                        label="In-Period Backlog",
+                        value=f"${backlog_metrics.get('in_period_backlog_revenue', 0):,.0f}",
+                        delta=delta_str,
+                        delta_color="off",
+                        help="Backlog with ETD within selected period"
+                    )
+                
+                with col_b3:
+                    forecast_achievement = backlog_metrics.get('forecast_achievement_revenue')
+                    delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
+                    delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
+                    st.metric(
+                        label="Forecast",
+                        value=f"${backlog_metrics.get('forecast_revenue', 0):,.0f}",
+                        delta=delta_str,
+                        delta_color=delta_color if delta_str else "off",
+                        help="Revenue + In-Period Backlog"
+                    )
+                
+                with col_b4:
+                    gap = backlog_metrics.get('gap_revenue')
+                    gap_percent = backlog_metrics.get('gap_revenue_percent')
+                    
+                    if gap is not None:
+                        if gap >= 0:
+                            gap_label = "Surplus"
+                            delta_color = "normal"
+                        else:
+                            gap_label = "GAP"
+                            delta_color = "inverse"
+                        
+                        delta_str = f"{gap_percent:+.1f}%" if gap_percent else None
+                        st.metric(
+                            label=gap_label,
+                            value=f"${gap:+,.0f}",
+                            delta=delta_str,
+                            delta_color=delta_color,
+                            help="Forecast - Target"
+                        )
+                    else:
+                        st.metric(
+                            label="GAP",
+                            value="N/A",
+                            delta="No target",
+                            delta_color="off"
+                        )
         
-        # Row 4: Complex KPIs (if provided and enabled)
+        # =====================================================================
+        # 🆕 NEW BUSINESS SECTION
+        # =====================================================================
         if show_complex and complex_kpis:
-            st.divider()
-            st.markdown("##### 🆕 New Business KPIs")
-            
-            col9, col10, col11 = st.columns(3)
-            
-            with col9:
-                achievement = complex_kpis.get('new_customer_achievement')
-                delta_str = f"{achievement:.0f}% of target" if achievement else None
+            with st.container(border=True):
+                st.markdown("**🆕 NEW BUSINESS**")
                 
-                st.metric(
-                    label="👥 New Customers",
-                    value=f"{complex_kpis['new_customer_count']:.1f}",
-                    delta=delta_str
-                )
-            
-            with col10:
-                achievement = complex_kpis.get('new_product_achievement')
-                delta_str = f"{achievement:.0f}% of target" if achievement else None
+                col9, col10, col11 = st.columns(3)
                 
-                st.metric(
-                    label="📦 New Products",
-                    value=f"{complex_kpis['new_product_count']:.1f}",
-                    delta=delta_str
-                )
-            
-            with col11:
-                achievement = complex_kpis.get('new_business_achievement')
-                delta_str = f"{achievement:.0f}% of target" if achievement else None
+                with col9:
+                    achievement = complex_kpis.get('new_customer_achievement')
+                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    
+                    st.metric(
+                        label="New Customers",
+                        value=f"{complex_kpis['new_customer_count']:.1f}",
+                        delta=delta_str
+                    )
                 
-                st.metric(
-                    label="💼 New Business Revenue",
-                    value=f"${complex_kpis['new_business_revenue']:,.0f}",
-                    delta=delta_str
-                )
+                with col10:
+                    achievement = complex_kpis.get('new_product_achievement')
+                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    
+                    st.metric(
+                        label="New Products",
+                        value=f"{complex_kpis['new_product_count']:.1f}",
+                        delta=delta_str
+                    )
+                
+                with col11:
+                    achievement = complex_kpis.get('new_business_achievement')
+                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    
+                    st.metric(
+                        label="New Business Revenue",
+                        value=f"${complex_kpis['new_business_revenue']:,.0f}",
+                        delta=delta_str
+                    )
     
     # =========================================================================
     # MONTHLY TREND CHART
