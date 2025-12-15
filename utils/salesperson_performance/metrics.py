@@ -49,6 +49,184 @@ class SalespersonMetrics:
         self.targets_df = targets_df if targets_df is not None else pd.DataFrame()
     
     # =========================================================================
+    # PERIOD CONTEXT ANALYSIS
+    # =========================================================================
+    
+    @staticmethod
+    def analyze_period_context(start_date: date, end_date: date) -> Dict:
+        """
+        Analyze the selected period relative to today.
+        
+        Determines if period is historical, current, or future for proper
+        handling of backlog and forecast displays.
+        
+        Args:
+            start_date: Period start date
+            end_date: Period end date
+            
+        Returns:
+            Dict with period context information:
+            {
+                'is_historical': bool,  # end_date < today
+                'is_current': bool,     # start_date <= today <= end_date
+                'is_future': bool,      # start_date > today
+                'today': date,
+                'days_until_end': int,  # negative if past
+                'period_status': str,   # 'historical', 'current', 'future'
+                'show_forecast': bool,  # Whether forecast is applicable
+                'forecast_message': str # Message to display if forecast N/A
+            }
+        """
+        today = date.today()
+        
+        is_historical = end_date < today
+        is_future = start_date > today
+        is_current = not is_historical and not is_future
+        
+        days_until_end = (end_date - today).days
+        
+        if is_historical:
+            period_status = 'historical'
+            show_forecast = False
+            forecast_message = "📅 Forecast not available for historical periods"
+        elif is_future:
+            period_status = 'future'
+            show_forecast = True
+            forecast_message = "📅 Future period - showing projected backlog only"
+        else:
+            period_status = 'current'
+            show_forecast = True
+            forecast_message = None
+        
+        return {
+            'is_historical': is_historical,
+            'is_current': is_current,
+            'is_future': is_future,
+            'today': today,
+            'days_until_end': days_until_end,
+            'period_status': period_status,
+            'show_forecast': show_forecast,
+            'forecast_message': forecast_message
+        }
+    
+    @staticmethod
+    def analyze_in_period_backlog(
+        backlog_detail_df: pd.DataFrame,
+        start_date: date,
+        end_date: date
+    ) -> Dict:
+        """
+        Analyze backlog with ETD within the selected period.
+        
+        Provides detailed breakdown of overdue vs on-track orders.
+        
+        Args:
+            backlog_detail_df: Detailed backlog data with ETD
+            start_date: Period start date
+            end_date: Period end date
+            
+        Returns:
+            Dict with detailed backlog analysis:
+            {
+                'total_value': float,
+                'total_gp': float,
+                'total_count': int,
+                'overdue_value': float,
+                'overdue_gp': float,
+                'overdue_count': int,
+                'on_track_value': float,
+                'on_track_gp': float,
+                'on_track_count': int,
+                'status': str,  # 'empty', 'historical', 'has_overdue', 'healthy'
+                'overdue_warning': str  # Warning message if applicable
+            }
+        """
+        today = date.today()
+        result = {
+            'total_value': 0,
+            'total_gp': 0,
+            'total_count': 0,
+            'overdue_value': 0,
+            'overdue_gp': 0,
+            'overdue_count': 0,
+            'on_track_value': 0,
+            'on_track_gp': 0,
+            'on_track_count': 0,
+            'status': 'empty',
+            'overdue_warning': None
+        }
+        
+        if backlog_detail_df.empty:
+            return result
+        
+        df = backlog_detail_df.copy()
+        
+        # Ensure ETD is datetime
+        if 'etd' in df.columns:
+            df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+        else:
+            return result
+        
+        # Filter to in-period (ETD within date range)
+        in_period = df[
+            (df['etd'].dt.date >= start_date) & 
+            (df['etd'].dt.date <= end_date)
+        ]
+        
+        if in_period.empty:
+            return result
+        
+        # Get value columns
+        value_col = 'backlog_sales_by_split_usd' if 'backlog_sales_by_split_usd' in in_period.columns else None
+        gp_col = 'backlog_gp_by_split_usd' if 'backlog_gp_by_split_usd' in in_period.columns else None
+        
+        # Total in-period
+        result['total_count'] = len(in_period)
+        if value_col:
+            result['total_value'] = in_period[value_col].sum()
+        if gp_col:
+            result['total_gp'] = in_period[gp_col].sum()
+        
+        # Split: Overdue (ETD < today) vs On-track (ETD >= today)
+        overdue = in_period[in_period['etd'].dt.date < today]
+        on_track = in_period[in_period['etd'].dt.date >= today]
+        
+        # Overdue metrics
+        result['overdue_count'] = len(overdue)
+        if value_col and not overdue.empty:
+            result['overdue_value'] = overdue[value_col].sum()
+        if gp_col and not overdue.empty:
+            result['overdue_gp'] = overdue[gp_col].sum()
+        
+        # On-track metrics
+        result['on_track_count'] = len(on_track)
+        if value_col and not on_track.empty:
+            result['on_track_value'] = on_track[value_col].sum()
+        if gp_col and not on_track.empty:
+            result['on_track_gp'] = on_track[gp_col].sum()
+        
+        # Determine status
+        is_historical_period = end_date < today
+        
+        if is_historical_period:
+            result['status'] = 'historical'
+            if result['overdue_count'] > 0:
+                result['overdue_warning'] = (
+                    f"⚠️ {result['overdue_count']} orders with ETD in period are overdue. "
+                    f"Total value: ${result['overdue_value']:,.0f}. Please review and update."
+                )
+        elif result['overdue_count'] > 0:
+            result['status'] = 'has_overdue'
+            result['overdue_warning'] = (
+                f"⚠️ {result['overdue_count']} orders are past ETD. "
+                f"Value: ${result['overdue_value']:,.0f}"
+            )
+        else:
+            result['status'] = 'healthy'
+        
+        return result
+    
+    # =========================================================================
     # PERIOD DATE CALCULATIONS
     # =========================================================================
     
@@ -830,7 +1008,9 @@ class SalespersonMetrics:
         total_backlog_df: pd.DataFrame,
         in_period_backlog_df: pd.DataFrame,
         period_type: str = 'YTD',
-        year: int = None
+        year: int = None,
+        start_date: date = None,
+        end_date: date = None
     ) -> Dict:
         """
         Calculate backlog and forecast metrics for Revenue, GP, and GP1.
@@ -843,12 +1023,23 @@ class SalespersonMetrics:
             in_period_backlog_df: Backlog with ETD in period
             period_type: Period type for target lookup
             year: Year for target lookup
+            start_date: Period start date (for context analysis)
+            end_date: Period end date (for context analysis)
             
         Returns:
-            Dict with backlog metrics for all 3 metrics
+            Dict with backlog metrics for all 3 metrics, including period context
         """
         if year is None:
             year = datetime.now().year
+        
+        # Analyze period context
+        today = date.today()
+        if start_date is None:
+            start_date = date(year, 1, 1)
+        if end_date is None:
+            end_date = today
+        
+        period_context = self.analyze_period_context(start_date, end_date)
         
         # Calculate GP1/GP ratio from current sales data for estimation
         gp1_gp_ratio = 1.0  # Default: GP1 = GP (no commission)
@@ -897,22 +1088,29 @@ class SalespersonMetrics:
         current_invoiced_gp = self.sales_df['gross_profit_by_split_usd'].sum() if not self.sales_df.empty else 0
         current_invoiced_gp1 = self.sales_df['gp1_by_split_usd'].sum() if not self.sales_df.empty else 0
         
-        # Forecast = Current Invoiced + In-Period Backlog
-        forecast_revenue = current_invoiced_revenue + in_period_backlog_revenue
-        forecast_gp = current_invoiced_gp + in_period_backlog_gp
-        forecast_gp1 = current_invoiced_gp1 + in_period_backlog_gp1
+        # Forecast calculation - depends on period context
+        if period_context['show_forecast']:
+            # For current/future periods: Forecast = Current Invoiced + In-Period Backlog
+            forecast_revenue = current_invoiced_revenue + in_period_backlog_revenue
+            forecast_gp = current_invoiced_gp + in_period_backlog_gp
+            forecast_gp1 = current_invoiced_gp1 + in_period_backlog_gp1
+        else:
+            # For historical periods: Forecast is not applicable
+            forecast_revenue = None
+            forecast_gp = None
+            forecast_gp1 = None
         
         # Get targets
         revenue_target = self._get_prorated_target('revenue', period_type, year)
         gp_target = self._get_prorated_target('gross_profit', period_type, year)
         gp1_target = self._get_prorated_target('gp1', period_type, year)
         
-        # GAP calculations for Revenue
+        # GAP calculations for Revenue (only if forecast available)
         gap_revenue = None
         gap_revenue_percent = None
         forecast_achievement_revenue = None
         
-        if revenue_target and revenue_target > 0:
+        if period_context['show_forecast'] and revenue_target and revenue_target > 0 and forecast_revenue is not None:
             gap_revenue = forecast_revenue - revenue_target
             gap_revenue_percent = (gap_revenue / revenue_target) * 100
             forecast_achievement_revenue = (forecast_revenue / revenue_target) * 100
@@ -922,7 +1120,7 @@ class SalespersonMetrics:
         gap_gp_percent = None
         forecast_achievement_gp = None
         
-        if gp_target and gp_target > 0:
+        if period_context['show_forecast'] and gp_target and gp_target > 0 and forecast_gp is not None:
             gap_gp = forecast_gp - gp_target
             gap_gp_percent = (gap_gp / gp_target) * 100
             forecast_achievement_gp = (forecast_gp / gp_target) * 100
@@ -932,12 +1130,15 @@ class SalespersonMetrics:
         gap_gp1_percent = None
         forecast_achievement_gp1 = None
         
-        if gp1_target and gp1_target > 0:
+        if period_context['show_forecast'] and gp1_target and gp1_target > 0 and forecast_gp1 is not None:
             gap_gp1 = forecast_gp1 - gp1_target
             gap_gp1_percent = (gap_gp1 / gp1_target) * 100
             forecast_achievement_gp1 = (forecast_gp1 / gp1_target) * 100
         
         return {
+            # Period Context
+            'period_context': period_context,
+            
             # Total Backlog
             'total_backlog_revenue': total_backlog_revenue,
             'total_backlog_gp': total_backlog_gp,
@@ -956,7 +1157,7 @@ class SalespersonMetrics:
             'current_invoiced_gp': current_invoiced_gp,
             'current_invoiced_gp1': current_invoiced_gp1,
             
-            # Forecast
+            # Forecast (None if historical period)
             'forecast_revenue': forecast_revenue,
             'forecast_gp': forecast_gp,
             'forecast_gp1': forecast_gp1,

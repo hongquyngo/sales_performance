@@ -173,13 +173,16 @@ filters_ui = SalespersonFilters(access)
 
 salesperson_options = queries.get_salesperson_options()
 entity_options = queries.get_entity_options()
-available_years = queries.get_available_years()
+
+# Get default date range from database
+default_start, default_end = queries.get_default_date_range()
 
 # Use form-based filters to prevent rerun on every change
 filter_values, filters_submitted = filters_ui.render_filter_form(
     salesperson_df=salesperson_options,
     entity_df=entity_options,
-    available_years=available_years
+    default_start_date=default_start,
+    default_end_date=default_end
 )
 
 is_valid, error_msg = filters_ui.validate_filters(filter_values)
@@ -414,8 +417,20 @@ backlog_metrics = metrics_calc.calculate_backlog_metrics(
     total_backlog_df=data['total_backlog'],
     in_period_backlog_df=data['in_period_backlog'],
     period_type=filter_values['period_type'],
-    year=filter_values['year']
+    year=filter_values['year'],
+    start_date=filter_values['start_date'],
+    end_date=filter_values['end_date']
 )
+
+# Analyze in-period backlog for overdue detection
+in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
+    backlog_detail_df=data['backlog_detail'],
+    start_date=filter_values['start_date'],
+    end_date=filter_values['end_date']
+)
+
+# Get period context for display logic
+period_context = backlog_metrics.get('period_context', {})
 
 # =============================================================================
 # ANALYZE PERIOD TYPE
@@ -517,12 +532,20 @@ with tab1:
     
     st.divider()
     
-    if period_info['is_multi_year']:
+    # Get years that actually have sales data (not just from date range)
+    if not data['sales'].empty and 'invoice_year' in data['sales'].columns:
+        actual_years = sorted(data['sales']['invoice_year'].dropna().unique().astype(int).tolist())
+    else:
+        actual_years = []
+    
+    # Decide comparison type based on ACTUAL DATA, not date range
+    if len(actual_years) >= 2:
         # =====================================================================
-        # MULTI-YEAR COMPARISON
+        # MULTI-YEAR COMPARISON (2+ years of actual data)
         # =====================================================================
-        years_str = ', '.join(map(str, period_info['years_in_period']))
+        years_str = ', '.join(map(str, actual_years))
         st.subheader(f"📊 Multi-Year Comparison ({years_str})")
+        st.caption(f"ℹ️ Comparing performance across years with actual data in selected date range.")
         
         # Create 3 tabs for each metric
         my_tab1, my_tab2, my_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
@@ -532,13 +555,13 @@ with tab1:
             # Summary table
             summary_df = SalespersonCharts.build_multi_year_summary_table(
                 sales_df=data['sales'],
-                years=period_info['years_in_period'],
+                years=actual_years,
                 metric='revenue'
             )
             
             if not summary_df.empty:
                 # Display yearly totals
-                cols = st.columns(len(period_info['years_in_period']) + 1)
+                cols = st.columns(len(actual_years) + 1)
                 for idx, (_, row) in enumerate(summary_df.iterrows()):
                     with cols[idx]:
                         st.metric(
@@ -556,7 +579,7 @@ with tab1:
                 st.markdown("##### 📊 Monthly Revenue by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='revenue',
                     title=""
                 )
@@ -566,7 +589,7 @@ with tab1:
                 st.markdown("##### 📈 Cumulative Revenue by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='revenue',
                     title=""
                 )
@@ -576,12 +599,12 @@ with tab1:
         with my_tab2:
             summary_df = SalespersonCharts.build_multi_year_summary_table(
                 sales_df=data['sales'],
-                years=period_info['years_in_period'],
+                years=actual_years,
                 metric='gross_profit'
             )
             
             if not summary_df.empty:
-                cols = st.columns(len(period_info['years_in_period']) + 1)
+                cols = st.columns(len(actual_years) + 1)
                 for idx, (_, row) in enumerate(summary_df.iterrows()):
                     with cols[idx]:
                         st.metric(
@@ -598,7 +621,7 @@ with tab1:
                 st.markdown("##### 📊 Monthly Gross Profit by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='gross_profit',
                     title=""
                 )
@@ -608,7 +631,7 @@ with tab1:
                 st.markdown("##### 📈 Cumulative Gross Profit by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='gross_profit',
                     title=""
                 )
@@ -618,12 +641,12 @@ with tab1:
         with my_tab3:
             summary_df = SalespersonCharts.build_multi_year_summary_table(
                 sales_df=data['sales'],
-                years=period_info['years_in_period'],
+                years=actual_years,
                 metric='gp1'
             )
             
             if not summary_df.empty:
-                cols = st.columns(len(period_info['years_in_period']) + 1)
+                cols = st.columns(len(actual_years) + 1)
                 for idx, (_, row) in enumerate(summary_df.iterrows()):
                     with cols[idx]:
                         st.metric(
@@ -640,7 +663,7 @@ with tab1:
                 st.markdown("##### 📊 Monthly GP1 by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='gp1',
                     title=""
                 )
@@ -650,7 +673,7 @@ with tab1:
                 st.markdown("##### 📈 Cumulative GP1 by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
                     sales_df=data['sales'],
-                    years=period_info['years_in_period'],
+                    years=actual_years,
                     metric='gp1',
                     title=""
                 )
@@ -658,11 +681,18 @@ with tab1:
     
     else:
         # =====================================================================
-        # YOY COMPARISON (Single Year)
+        # YOY COMPARISON (0 or 1 year of actual data)
         # =====================================================================
+        
+        # Determine primary year for comparison
+        if len(actual_years) == 1:
+            primary_year = actual_years[0]
+        else:
+            primary_year = filter_values['end_date'].year
+        
         col_yoy_header, col_yoy_help = st.columns([6, 1])
         with col_yoy_header:
-            st.subheader("📊 Year-over-Year Comparison")
+            st.subheader(f"📊 Year-over-Year Comparison ({primary_year} vs {primary_year - 1})")
         with col_yoy_help:
             with st.popover("ℹ️"):
                 st.markdown("""
@@ -693,14 +723,14 @@ with tab1:
                 col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
                 with col_s1:
                     st.metric(
-                        label=f"{filter_values['year']} Revenue",
+                        label=f"{primary_year} Revenue",
                         value=f"${current_total:,.0f}",
                         delta=f"{yoy_change:+.1f}% YoY",
                         delta_color="normal" if yoy_change >= 0 else "inverse"
                     )
                 with col_s2:
                     st.metric(
-                        label=f"{filter_values['year'] - 1} Revenue",
+                        label=f"{primary_year - 1} Revenue",
                         value=f"${previous_total:,.0f}",
                         delta=f"${yoy_abs:+,.0f} difference",
                         delta_color="off"
@@ -739,14 +769,14 @@ with tab1:
                 col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
                 with col_s1:
                     st.metric(
-                        label=f"{filter_values['year']} Gross Profit",
+                        label=f"{primary_year} Gross Profit",
                         value=f"${current_total:,.0f}",
                         delta=f"{yoy_change:+.1f}% YoY",
                         delta_color="normal" if yoy_change >= 0 else "inverse"
                     )
                 with col_s2:
                     st.metric(
-                        label=f"{filter_values['year'] - 1} Gross Profit",
+                        label=f"{primary_year - 1} Gross Profit",
                         value=f"${previous_total:,.0f}",
                         delta=f"${yoy_abs:+,.0f} difference",
                         delta_color="off"
@@ -785,14 +815,14 @@ with tab1:
                 col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
                 with col_s1:
                     st.metric(
-                        label=f"{filter_values['year']} GP1",
+                        label=f"{primary_year} GP1",
                         value=f"${current_total:,.0f}",
                         delta=f"{yoy_change:+.1f}% YoY",
                         delta_color="normal" if yoy_change >= 0 else "inverse"
                     )
                 with col_s2:
                     st.metric(
-                        label=f"{filter_values['year'] - 1} GP1",
+                        label=f"{primary_year - 1} GP1",
                         value=f"${previous_total:,.0f}",
                         delta=f"${yoy_abs:+,.0f} difference",
                         delta_color="off"
@@ -821,12 +851,12 @@ with tab1:
                     )
                     st.altair_chart(cum_chart, use_container_width=True)
         else:
-            st.info(f"No data available for {filter_values['year'] - 1} comparison")
+            st.info(f"No data available for {primary_year - 1} comparison")
     
     st.divider()
     
     # Forecast section - only show for current/future periods
-    if period_info['show_backlog']:
+    if period_context.get('show_forecast', True):
         col_bf_header, col_bf_help = st.columns([6, 1])
         with col_bf_header:
             st.subheader("📦 Backlog & Forecast")
@@ -863,7 +893,14 @@ with tab1:
                 ```
                 Backlog GP1 = Backlog GP × (Sales GP1 / Sales GP)
                 ```
+                
+                **Note:** Forecast only available for current or future periods.
+                If end date is in the past, Forecast is not available.
                 """)
+        
+        # Show overdue warning if applicable
+        if in_period_backlog_analysis.get('overdue_warning'):
+            st.warning(in_period_backlog_analysis['overdue_warning'])
         
         # Tabs for different metrics
         bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
@@ -921,8 +958,15 @@ with tab1:
         
         st.divider()
     else:
-        # Historical period - show info message
-        st.info("📦 Backlog & Forecast analysis is not available for historical periods. Backlog data represents current outstanding orders, not historical snapshots.")
+        # Historical period - show info message with detailed explanation
+        st.info(f"""
+        📅 **Forecast not available for historical periods**
+        
+        End date ({filter_values['end_date'].strftime('%Y-%m-%d')}) is in the past.
+        Forecast is only meaningful when end date >= today.
+        
+        💡 **Tip:** To view Forecast, adjust End Date to today or a future date.
+        """)
         st.divider()
     
     # Top customers/brands with metric tabs and help
@@ -1197,180 +1241,226 @@ with tab2:
 # =============================================================================
 
 with tab3:
-    st.subheader("📦 Backlog Analysis")
-    
-    # Check if period is historical
-    if not period_info['show_backlog']:
-        st.info("""
-        📦 **Backlog Analysis không khả dụng cho period trong quá khứ.**
-        
-        Backlog data hiển thị các orders đang pending **tại thời điểm hiện tại**, không phải snapshot lịch sử.
-        Để xem backlog analysis, vui lòng chọn period bao gồm tháng hiện tại hoặc tương lai.
-        """)
-    else:
-        backlog_df = data['backlog_detail']
-        
-        if backlog_df.empty:
-            st.info("No backlog data available")
-        else:
-            # Sub-tabs
-            backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs(["📋 Backlog List", "📅 By ETD", "⚠️ Risk Analysis"])
+    col_bl_header, col_bl_help = st.columns([6, 1])
+    with col_bl_header:
+        st.subheader("📦 Backlog Analysis")
+    with col_bl_help:
+        with st.popover("ℹ️ Help"):
+            st.markdown("""
+            **📦 Backlog Analysis**
             
-            with backlog_tab1:
-                # Summary cards
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            Backlog là snapshot của tất cả orders đang pending **tại thời điểm hiện tại**.
+            
+            | Metric | Description |
+            |--------|-------------|
+            | Total Backlog | All pending orders |
+            | In-Period | Orders with ETD in date range |
+            | Overdue | Orders with ETD already passed |
+            
+            **⚠️ Note:**
+            - Backlog is not historical data
+            - Always shows current status
+            - Date range only filters In-Period Backlog
+            """)
+    
+    backlog_df = data['backlog_detail']
+    
+    if backlog_df.empty:
+        st.info("📦 No backlog data available")
+    else:
+        # Show overdue warning at top if applicable
+        if in_period_backlog_analysis.get('overdue_warning'):
+            st.warning(in_period_backlog_analysis['overdue_warning'])
+        
+        # In-period summary card
+        if in_period_backlog_analysis['total_count'] > 0:
+            col_ip1, col_ip2, col_ip3, col_ip4 = st.columns(4)
+            with col_ip1:
+                st.metric(
+                    "📅 In-Period Backlog",
+                    f"${in_period_backlog_analysis['total_value']:,.0f}",
+                    help="Orders with ETD in selected date range"
+                )
+            with col_ip2:
+                st.metric(
+                    "✅ On Track",
+                    f"${in_period_backlog_analysis['on_track_value']:,.0f}",
+                    f"{in_period_backlog_analysis['on_track_count']} orders"
+                )
+            with col_ip3:
+                st.metric(
+                    "⚠️ Overdue",
+                    f"${in_period_backlog_analysis['overdue_value']:,.0f}",
+                    f"{in_period_backlog_analysis['overdue_count']} orders",
+                    delta_color="inverse" if in_period_backlog_analysis['overdue_count'] > 0 else "off"
+                )
+            with col_ip4:
+                st.metric(
+                    "📊 Status",
+                    in_period_backlog_analysis['status'].upper(),
+                    help="healthy: no overdue, has_overdue: some orders past due"
+                )
+            
+            st.divider()
+        
+        # Sub-tabs
+        backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs(["📋 Backlog List", "📅 By ETD", "⚠️ Risk Analysis"])
+        
+        with backlog_tab1:
+            # Summary cards - Total backlog (not filtered by date)
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            
+            total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
+            total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
+            total_orders = backlog_df['oc_number'].nunique()
+            total_customers = backlog_df['customer_id'].nunique()
+            
+            with col_s1:
+                st.metric("💰 Total Backlog", f"${total_backlog_value:,.0f}", help="All pending orders, not filtered by date")
+            with col_s2:
+                st.metric("📈 Backlog GP", f"${total_backlog_gp:,.0f}")
+            with col_s3:
+                st.metric("📦 Orders", f"{total_orders:,}")
+            with col_s4:
+                st.metric("👥 Customers", f"{total_customers:,}")
+            
+            st.divider()
+            
+            # Filters
+            col_bf1, col_bf2 = st.columns(2)
+            with col_bf1:
+                backlog_customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
+                bl_selected_customer = st.selectbox("Customer", backlog_customers, key="bl_customer")
+            with col_bf2:
+                pending_types = ['All'] + backlog_df['pending_type'].dropna().unique().tolist()
+                bl_selected_type = st.selectbox("Status", pending_types, key="bl_type")
+            
+            # Filter
+            filtered_backlog = backlog_df.copy()
+            if bl_selected_customer != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['customer'] == bl_selected_customer]
+            if bl_selected_type != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['pending_type'] == bl_selected_type]
+            
+            # Display
+            backlog_display_cols = ['oc_number', 'oc_date', 'etd', 'customer', 'product_pn', 'brand',
+                                   'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
+                                   'days_until_etd', 'pending_type', 'sales_name']
+            available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
+            
+            display_bl = filtered_backlog[available_bl_cols].copy()
+            display_bl.columns = ['OC#', 'OC Date', 'ETD', 'Customer', 'Product', 'Brand',
+                                 'Amount', 'GP', 'Days to ETD', 'Status', 'Salesperson'][:len(available_bl_cols)]
+            
+            st.dataframe(
+                display_bl.head(200).style.format({
+                    'Amount': '${:,.0f}',
+                    'GP': '${:,.0f}',
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+        
+        with backlog_tab2:
+            st.markdown("#### 📅 Backlog by ETD Month")
+            
+            # Prepare monthly backlog
+            backlog_monthly = metrics_calc.prepare_backlog_by_month(
+                backlog_by_month_df=data['backlog_by_month'],
+                year=filter_values['year']
+            )
+            
+            if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+                chart = SalespersonCharts.build_backlog_by_month_chart(
+                    monthly_df=backlog_monthly,
+                    title=""
+                )
+                st.altair_chart(chart, use_container_width=True)
                 
-                total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
-                total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
-                total_orders = backlog_df['oc_number'].nunique()
-                total_customers = backlog_df['customer_id'].nunique()
-                
-                with col_s1:
-                    st.metric("💰 Total Backlog", f"${total_backlog_value:,.0f}")
-                with col_s2:
-                    st.metric("📈 Backlog GP", f"${total_backlog_gp:,.0f}")
-                with col_s3:
-                    st.metric("📦 Orders", f"{total_orders:,}")
-                with col_s4:
-                    st.metric("👥 Customers", f"{total_customers:,}")
-                
-                st.divider()
-                
-                # Filters
-                col_bf1, col_bf2 = st.columns(2)
-                with col_bf1:
-                    backlog_customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
-                    bl_selected_customer = st.selectbox("Customer", backlog_customers, key="bl_customer")
-                with col_bf2:
-                    pending_types = ['All'] + backlog_df['pending_type'].dropna().unique().tolist()
-                    bl_selected_type = st.selectbox("Status", pending_types, key="bl_type")
-                
-                # Filter
-                filtered_backlog = backlog_df.copy()
-                if bl_selected_customer != 'All':
-                    filtered_backlog = filtered_backlog[filtered_backlog['customer'] == bl_selected_customer]
-                if bl_selected_type != 'All':
-                    filtered_backlog = filtered_backlog[filtered_backlog['pending_type'] == bl_selected_type]
-                
-                # Display
-                backlog_display_cols = ['oc_number', 'oc_date', 'etd', 'customer', 'product_pn', 'brand',
-                                       'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
-                                       'days_until_etd', 'pending_type', 'sales_name']
-                available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
-                
-                display_bl = filtered_backlog[available_bl_cols].copy()
-                display_bl.columns = ['OC#', 'OC Date', 'ETD', 'Customer', 'Product', 'Brand',
-                                     'Amount', 'GP', 'Days to ETD', 'Status', 'Salesperson'][:len(available_bl_cols)]
-                
+                # Monthly table
                 st.dataframe(
-                    display_bl.head(200).style.format({
-                        'Amount': '${:,.0f}',
-                        'GP': '${:,.0f}',
+                    backlog_monthly[['month', 'backlog_revenue', 'backlog_gp', 'order_count']].style.format({
+                        'backlog_revenue': '${:,.0f}',
+                        'backlog_gp': '${:,.0f}',
                     }),
                     use_container_width=True,
-                    hide_index=True,
-                    height=400
+                    hide_index=True
+                )
+            else:
+                st.info("No backlog data by month")
+        
+        with backlog_tab3:
+            st.markdown("#### ⚠️ Backlog Risk Analysis")
+            
+            # Calculate risk categories
+            today = date.today()
+            
+            backlog_risk = backlog_df.copy()
+            backlog_risk['days_until_etd'] = pd.to_numeric(backlog_risk['days_until_etd'], errors='coerce')
+            
+            # Categorize
+            overdue = backlog_risk[backlog_risk['days_until_etd'] < 0]
+            this_week = backlog_risk[(backlog_risk['days_until_etd'] >= 0) & (backlog_risk['days_until_etd'] <= 7)]
+            this_month = backlog_risk[(backlog_risk['days_until_etd'] > 7) & (backlog_risk['days_until_etd'] <= 30)]
+            on_track = backlog_risk[backlog_risk['days_until_etd'] > 30]
+            
+            # Display risk summary
+            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            
+            with col_r1:
+                overdue_value = overdue['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🔴 Overdue",
+                    f"${overdue_value:,.0f}",
+                    delta=f"{len(overdue)} orders",
+                    delta_color="inverse"
                 )
             
-            with backlog_tab2:
-                st.markdown("#### 📅 Backlog by ETD Month")
-                
-                # Prepare monthly backlog
-                backlog_monthly = metrics_calc.prepare_backlog_by_month(
-                    backlog_by_month_df=data['backlog_by_month'],
-                    year=filter_values['year']
+            with col_r2:
+                week_value = this_week['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟠 This Week",
+                    f"${week_value:,.0f}",
+                    delta=f"{len(this_week)} orders",
+                    delta_color="off"
                 )
-                
-                if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
-                    chart = SalespersonCharts.build_backlog_by_month_chart(
-                        monthly_df=backlog_monthly,
-                        title=""
-                    )
-                    st.altair_chart(chart, use_container_width=True)
-                    
-                    # Monthly table
-                    st.dataframe(
-                        backlog_monthly[['month', 'backlog_revenue', 'backlog_gp', 'order_count']].style.format({
-                            'backlog_revenue': '${:,.0f}',
-                            'backlog_gp': '${:,.0f}',
-                        }),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.info("No backlog data by month")
             
-            with backlog_tab3:
-                st.markdown("#### ⚠️ Backlog Risk Analysis")
+            with col_r3:
+                month_value = this_month['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟡 This Month",
+                    f"${month_value:,.0f}",
+                    delta=f"{len(this_month)} orders",
+                    delta_color="off"
+                )
+            
+            with col_r4:
+                track_value = on_track['backlog_sales_by_split_usd'].sum()
+                st.metric(
+                    "🟢 On Track",
+                    f"${track_value:,.0f}",
+                    delta=f"{len(on_track)} orders",
+                    delta_color="normal"
+                )
+            
+            st.divider()
+            
+            # Show overdue details
+            if not overdue.empty:
+                st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
+                overdue_display = overdue[['oc_number', 'etd', 'customer', 'product_pn', 
+                                          'backlog_sales_by_split_usd', 'days_until_etd', 'sales_name']].copy()
+                overdue_display.columns = ['OC#', 'ETD', 'Customer', 'Product', 'Amount', 'Days Overdue', 'Salesperson']
+                overdue_display['Days Overdue'] = overdue_display['Days Overdue'].abs()
                 
-                # Calculate risk categories
-                today = date.today()
-                
-                backlog_risk = backlog_df.copy()
-                backlog_risk['days_until_etd'] = pd.to_numeric(backlog_risk['days_until_etd'], errors='coerce')
-                
-                # Categorize
-                overdue = backlog_risk[backlog_risk['days_until_etd'] < 0]
-                this_week = backlog_risk[(backlog_risk['days_until_etd'] >= 0) & (backlog_risk['days_until_etd'] <= 7)]
-                this_month = backlog_risk[(backlog_risk['days_until_etd'] > 7) & (backlog_risk['days_until_etd'] <= 30)]
-                on_track = backlog_risk[backlog_risk['days_until_etd'] > 30]
-                
-                # Display risk summary
-                col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-                
-                with col_r1:
-                    overdue_value = overdue['backlog_sales_by_split_usd'].sum()
-                    st.metric(
-                        "🔴 Overdue",
-                        f"${overdue_value:,.0f}",
-                        delta=f"{len(overdue)} orders",
-                        delta_color="inverse"
-                    )
-                
-                with col_r2:
-                    week_value = this_week['backlog_sales_by_split_usd'].sum()
-                    st.metric(
-                        "🟠 This Week",
-                        f"${week_value:,.0f}",
-                        delta=f"{len(this_week)} orders",
-                        delta_color="off"
-                    )
-                
-                with col_r3:
-                    month_value = this_month['backlog_sales_by_split_usd'].sum()
-                    st.metric(
-                        "🟡 This Month",
-                        f"${month_value:,.0f}",
-                        delta=f"{len(this_month)} orders",
-                        delta_color="off"
-                    )
-                
-                with col_r4:
-                    track_value = on_track['backlog_sales_by_split_usd'].sum()
-                    st.metric(
-                        "🟢 On Track",
-                        f"${track_value:,.0f}",
-                        delta=f"{len(on_track)} orders",
-                        delta_color="normal"
-                    )
-                
-                st.divider()
-                
-                # Show overdue details
-                if not overdue.empty:
-                    st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
-                    overdue_display = overdue[['oc_number', 'etd', 'customer', 'product_pn', 
-                                              'backlog_sales_by_split_usd', 'days_until_etd', 'sales_name']].copy()
-                    overdue_display.columns = ['OC#', 'ETD', 'Customer', 'Product', 'Amount', 'Days Overdue', 'Salesperson']
-                    overdue_display['Days Overdue'] = overdue_display['Days Overdue'].abs()
-                    
-                    st.dataframe(
-                        overdue_display.sort_values('Amount', ascending=False).head(20).style.format({
-                            'Amount': '${:,.0f}'
-                        }),
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                st.dataframe(
+                    overdue_display.sort_values('Amount', ascending=False).head(20).style.format({
+                        'Amount': '${:,.0f}'
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
 # =============================================================================
 # TAB 4: KPI & TARGETS

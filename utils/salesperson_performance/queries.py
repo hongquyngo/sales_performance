@@ -530,6 +530,40 @@ class SalespersonQueries:
         # Ensure years are integers
         return [int(y) for y in df['invoice_year'].tolist()]
     
+    def get_default_date_range(self) -> Tuple[date, date]:
+        """
+        Get default date range based on actual data in database.
+        
+        Start: January 1st of the most recent year with sales data
+        End: Today (for current period analysis)
+        
+        Note: Backlog is NOT filtered by this date range.
+        Date range only applies to sales/invoice data.
+        
+        Returns:
+            Tuple of (start_date, end_date)
+        """
+        today = date.today()
+        
+        # Get most recent year with sales
+        query_year = """
+            SELECT MAX(invoice_year) as max_year
+            FROM unified_sales_by_salesperson_view
+            WHERE invoice_year IS NOT NULL
+        """
+        df_year = self._execute_query(query_year, {}, "max_sales_year")
+        
+        if df_year.empty or df_year['max_year'].iloc[0] is None:
+            start_date = date(today.year, 1, 1)
+        else:
+            max_year = int(df_year['max_year'].iloc[0])
+            start_date = date(max_year, 1, 1)
+        
+        # End date is always today for current period
+        end_date = today
+        
+        return start_date, end_date
+    
     # =========================================================================
     # YoY COMPARISON DATA
     # =========================================================================
