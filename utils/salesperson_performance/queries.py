@@ -788,15 +788,14 @@ class SalespersonQueries:
                 ss.sales_id,
                 ss.sales_name,
                 ss.sales_email,
+                ss.employment_status,
                 c.english_name as customer,
                 c.id as customer_id,
                 COALESCE(p.name, 'All Products') as product_pn,
                 p.id as product_id,
                 ss.split_percentage,
                 ss.effective_period,
-                ss.approval_status,
-                ss.created_at,
-                ss.updated_at
+                ss.approval_status
             FROM sales_split_full_looker_view ss
             LEFT JOIN companies c ON ss.customer_id = c.id
             LEFT JOIN products p ON ss.product_id = p.id
