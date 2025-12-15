@@ -44,6 +44,7 @@ class SalespersonCharts:
         yoy_metrics: Dict = None,
         complex_kpis: Dict = None,
         backlog_metrics: Dict = None,
+        overall_achievement: Dict = None,
         show_complex: bool = True,
         show_backlog: bool = True
     ):
@@ -51,7 +52,9 @@ class SalespersonCharts:
         Render KPI summary cards using Streamlit metrics with visual grouping.
         
         Layout:
-        - 💰 PERFORMANCE: Revenue, GP, GP1, Achievement + Customers, Invoices, Orders, GP%
+        - 💰 PERFORMANCE: 
+          Row 1: Revenue, GP (value), GP1 (value), Overall Achievement
+          Row 2: Customers, GP%, GP1%, Orders
         - 📦 PIPELINE & FORECAST: Backlog, In-Period, Forecast, GAP
         - 🆕 NEW BUSINESS: New Customers, New Products, New Business Revenue
         
@@ -60,6 +63,7 @@ class SalespersonCharts:
             yoy_metrics: YoY comparison metrics (optional)
             complex_kpis: Complex KPI metrics (optional)
             backlog_metrics: Backlog and forecast metrics (optional)
+            overall_achievement: Overall weighted KPI achievement (optional)
             show_complex: Whether to show complex KPI section
             show_backlog: Whether to show backlog/forecast section
         """
@@ -67,9 +71,37 @@ class SalespersonCharts:
         # 💰 PERFORMANCE SECTION
         # =====================================================================
         with st.container(border=True):
-            st.markdown("**💰 PERFORMANCE**")
+            col_header, col_help = st.columns([6, 1])
+            with col_header:
+                st.markdown("**💰 PERFORMANCE**")
+            with col_help:
+                with st.popover("ℹ️ Help"):
+                    st.markdown("""
+                    **📊 Performance Metrics Definitions**
+                    
+                    **Row 1 - Financial KPIs:**
+                    | Metric | Formula |
+                    |--------|---------|
+                    | Revenue | `Σ sales_by_split_usd` |
+                    | Gross Profit | `Σ gross_profit_by_split_usd` |
+                    | GP1 | `Gross Profit - Broker Commission` |
+                    | Overall Achievement | `Σ(KPI_Ach × Weight) / Σ Weight` |
+                    
+                    **Row 2 - Activity & Margins:**
+                    | Metric | Formula |
+                    |--------|---------|
+                    | Customers | `COUNT(DISTINCT customer_id)` |
+                    | GP % | `Gross Profit / Revenue × 100` |
+                    | GP1 % | `GP1 / Revenue × 100` |
+                    | Orders | `COUNT(DISTINCT oc_number)` |
+                    
+                    **Notes:**
+                    - All values are **split-adjusted** based on sales split %
+                    - YoY comparison uses same period from previous year
+                    - Targets are **prorated** based on period type (YTD/QTD/MTD)
+                    """)
             
-            # Row 1: Main Financial KPIs
+            # Row 1: Revenue | GP | GP1 | Overall Achievement
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -80,45 +112,67 @@ class SalespersonCharts:
                 st.metric(
                     label="Revenue",
                     value=f"${metrics['total_revenue']:,.0f}",
-                    delta=delta
+                    delta=delta,
+                    help="Total invoiced revenue (split-adjusted). Formula: Σ sales_by_split_usd"
                 )
             
             with col2:
+                # GP value with YoY delta
                 delta = None
                 if yoy_metrics and yoy_metrics.get('total_gp_yoy') is not None:
                     delta = f"{yoy_metrics['total_gp_yoy']:+.1f}% YoY"
-                
                 st.metric(
                     label="Gross Profit",
                     value=f"${metrics['total_gp']:,.0f}",
-                    delta=delta
+                    delta=delta,
+                    help="Revenue minus COGS (split-adjusted). Formula: Σ gross_profit_by_split_usd"
                 )
             
             with col3:
+                # GP1 value with YoY delta
+                delta = None
+                if yoy_metrics and yoy_metrics.get('total_gp1_yoy') is not None:
+                    delta = f"{yoy_metrics['total_gp1_yoy']:+.1f}% YoY"
                 st.metric(
                     label="GP1",
                     value=f"${metrics['total_gp1']:,.0f}",
-                    delta=f"{metrics['gp1_percent']:.1f}% margin"
+                    delta=delta,
+                    help="Gross Profit after deducting broker commission. Formula: GP - Broker Commission (split-adjusted)"
                 )
             
             with col4:
-                achievement = metrics.get('revenue_achievement')
-                if achievement is not None:
+                # Overall KPI Achievement (weighted)
+                if overall_achievement and overall_achievement.get('overall_achievement') is not None:
+                    achievement = overall_achievement['overall_achievement']
+                    delta_color = "normal" if achievement >= 100 else "inverse"
+                    kpi_count = overall_achievement.get('kpi_count', 0)
+                    st.metric(
+                        label="Overall Achievement",
+                        value=f"{achievement:.1f}%",
+                        delta=f"weighted avg of {kpi_count} KPIs",
+                        delta_color=delta_color,
+                        help="Weighted average of all KPI achievements. Formula: Σ(KPI_Achievement × Weight) / Σ Weight. Each KPI's target is prorated based on period type."
+                    )
+                elif metrics.get('revenue_achievement') is not None:
+                    # Fallback to revenue achievement if no overall
+                    achievement = metrics['revenue_achievement']
                     delta_color = "normal" if achievement >= 100 else "inverse"
                     st.metric(
                         label="Achievement",
                         value=f"{achievement:.1f}%",
                         delta=f"vs ${metrics.get('revenue_target', 0):,.0f} target",
-                        delta_color=delta_color
+                        delta_color=delta_color,
+                        help="Revenue achievement vs prorated target. Formula: Actual Revenue / Prorated Target × 100%"
                     )
                 else:
                     st.metric(
                         label="Achievement",
                         value="N/A",
-                        delta="No target set"
+                        delta="No target set",
+                        help="No KPI targets assigned for selected salespeople"
                     )
             
-            # Row 2: Activity metrics
+            # Row 2: Customers | GP% | GP1% | Orders
             col5, col6, col7, col8 = st.columns(4)
             
             with col5:
@@ -129,25 +183,35 @@ class SalespersonCharts:
                 st.metric(
                     label="Customers",
                     value=f"{metrics['total_customers']:,}",
-                    delta=delta
+                    delta=delta,
+                    help="Unique customers with invoices in period. Formula: COUNT(DISTINCT customer_id)"
                 )
             
             with col6:
+                # GP% standalone
                 st.metric(
-                    label="Invoices",
-                    value=f"{metrics['total_invoices']:,}",
+                    label="GP %",
+                    value=f"{metrics['gp_percent']:.1f}%",
+                    delta="margin",
+                    delta_color="off",
+                    help="Gross profit margin. Formula: Gross Profit / Revenue × 100%"
                 )
             
             with col7:
+                # GP1% standalone
                 st.metric(
-                    label="Orders",
-                    value=f"{metrics['total_orders']:,}",
+                    label="GP1 %",
+                    value=f"{metrics['gp1_percent']:.1f}%",
+                    delta="margin",
+                    delta_color="off",
+                    help="GP1 margin (after broker commission). Formula: GP1 / Revenue × 100%"
                 )
             
             with col8:
                 st.metric(
-                    label="GP %",
-                    value=f"{metrics['gp_percent']:.1f}%",
+                    label="Orders",
+                    value=f"{metrics['total_orders']:,}",
+                    help="Unique order confirmations in period. Formula: COUNT(DISTINCT oc_number)"
                 )
         
         # =====================================================================
@@ -155,7 +219,28 @@ class SalespersonCharts:
         # =====================================================================
         if show_backlog and backlog_metrics:
             with st.container(border=True):
-                st.markdown("**📦 PIPELINE & FORECAST**")
+                col_header, col_help = st.columns([6, 1])
+                with col_header:
+                    st.markdown("**📦 PIPELINE & FORECAST**")
+                with col_help:
+                    with st.popover("ℹ️ Help"):
+                        st.markdown("""
+                        **📦 Pipeline & Forecast Definitions**
+                        
+                        | Metric | Formula | Description |
+                        |--------|---------|-------------|
+                        | Total Backlog | `Σ backlog_sales_by_split_usd` | All outstanding orders not yet invoiced |
+                        | In-Period Backlog | `Σ backlog WHERE ETD in period` | Backlog expected to ship within selected period |
+                        | Forecast | `Invoiced + In-Period Backlog` | Projected total for the period |
+                        | GAP/Surplus | `Forecast - Target` | Difference from prorated target |
+                        
+                        **Key Concepts:**
+                        - **ETD** = Estimated Time of Departure
+                        - **Backlog** = Orders confirmed but not yet invoiced
+                        - **Target** is prorated: YTD uses `Annual × (elapsed months / 12)`
+                        - Positive GAP = Surplus (ahead of target)
+                        - Negative GAP = Need more sales to hit target
+                        """)
                 
                 col_b1, col_b2, col_b3, col_b4 = st.columns(4)
                 
@@ -164,7 +249,8 @@ class SalespersonCharts:
                         label="Total Backlog",
                         value=f"${backlog_metrics.get('total_backlog_revenue', 0):,.0f}",
                         delta=f"{backlog_metrics.get('backlog_orders', 0):,} orders",
-                        delta_color="off"
+                        delta_color="off",
+                        help="All outstanding orders (split-adjusted). Formula: Σ backlog_sales_by_split_usd from all pending OCs"
                     )
                 
                 with col_b2:
@@ -175,7 +261,7 @@ class SalespersonCharts:
                         value=f"${backlog_metrics.get('in_period_backlog_revenue', 0):,.0f}",
                         delta=delta_str,
                         delta_color="off",
-                        help="Backlog with ETD within selected period"
+                        help="Backlog with ETD within selected period. This is expected to convert to invoiced revenue within the period."
                     )
                 
                 with col_b3:
@@ -187,7 +273,7 @@ class SalespersonCharts:
                         value=f"${backlog_metrics.get('forecast_revenue', 0):,.0f}",
                         delta=delta_str,
                         delta_color=delta_color if delta_str else "off",
-                        help="Revenue + In-Period Backlog"
+                        help="Projected period total. Formula: Current Invoiced Revenue + In-Period Backlog"
                     )
                 
                 with col_b4:
@@ -208,7 +294,7 @@ class SalespersonCharts:
                             value=f"${gap:+,.0f}",
                             delta=delta_str,
                             delta_color=delta_color,
-                            help="Forecast - Target"
+                            help="Forecast vs Target difference. Formula: Forecast - Prorated Target. Positive = ahead of target, Negative = behind target"
                         )
                     else:
                         st.metric(
@@ -223,7 +309,31 @@ class SalespersonCharts:
         # =====================================================================
         if show_complex and complex_kpis:
             with st.container(border=True):
-                st.markdown("**🆕 NEW BUSINESS**")
+                col_header, col_help = st.columns([6, 1])
+                with col_header:
+                    st.markdown("**🆕 NEW BUSINESS**")
+                with col_help:
+                    with st.popover("ℹ️ Help"):
+                        st.markdown("""
+                        **🆕 New Business Metrics Definitions**
+                        
+                        | Metric | Definition | Lookback |
+                        |--------|------------|----------|
+                        | New Customers | Customers with **first invoice** in period | 5 years |
+                        | New Products | Products with **first sale ever** in period | 5 years |
+                        | New Business Revenue | Revenue from **first product-customer combo** | 5 years |
+                        
+                        **Counting Method:**
+                        - Values are **proportionally counted** based on split %
+                        - Example: If salesperson has 50% split on a new customer, they get 0.5 new customer credit
+                        
+                        **"New" Definition:**
+                        - A customer is "new" if their first invoice (with this salesperson) is within the period
+                        - A product is "new" if its first sale ever (any salesperson) is within the period
+                        - New business = first time a specific product is sold to a specific customer
+                        
+                        **Lookback Period:** 5 years from period start date
+                        """)
                 
                 col9, col10, col11 = st.columns(3)
                 
@@ -234,7 +344,8 @@ class SalespersonCharts:
                     st.metric(
                         label="New Customers",
                         value=f"{complex_kpis['new_customer_count']:.1f}",
-                        delta=delta_str
+                        delta=delta_str,
+                        help="Customers with first invoice in period (5-year lookback). Counted proportionally by split %. Formula: Σ(split_rate / 100) for each new customer"
                     )
                 
                 with col10:
@@ -244,7 +355,8 @@ class SalespersonCharts:
                     st.metric(
                         label="New Products",
                         value=f"{complex_kpis['new_product_count']:.1f}",
-                        delta=delta_str
+                        delta=delta_str,
+                        help="Products with first sale ever in period (5-year lookback). Attributed to salesperson who made the first sale. Formula: Σ(split_rate / 100) for each new product"
                     )
                 
                 with col11:
@@ -254,7 +366,8 @@ class SalespersonCharts:
                     st.metric(
                         label="New Business Revenue",
                         value=f"${complex_kpis['new_business_revenue']:,.0f}",
-                        delta=delta_str
+                        delta=delta_str,
+                        help="Revenue from first product-customer combinations (5-year lookback). Measures revenue from introducing products to new customers."
                     )
     
     # =========================================================================

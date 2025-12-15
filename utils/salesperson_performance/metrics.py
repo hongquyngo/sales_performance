@@ -372,6 +372,133 @@ class SalespersonMetrics:
         return round(actual / target * 100, 1)
     
     # =========================================================================
+    # OVERALL KPI ACHIEVEMENT (Weighted Average)
+    # =========================================================================
+    
+    def calculate_overall_kpi_achievement(
+        self,
+        overview_metrics: Dict,
+        complex_kpis: Dict = None,
+        period_type: str = 'YTD',
+        year: int = None
+    ) -> Dict:
+        """
+        Calculate overall weighted KPI achievement.
+        
+        Formula: Overall = Σ (KPI_Achievement × Weight) / Σ Weight
+        
+        Supports KPIs:
+        - revenue (kpi_type_id: 1)
+        - gross_profit (kpi_type_id: 2)
+        - num_new_customers (kpi_type_id: 3)
+        - new_business_revenue (kpi_type_id: 4)
+        - num_new_projects (kpi_type_id: 5)
+        - num_new_products (kpi_type_id: 6)
+        
+        Args:
+            overview_metrics: Basic metrics from calculate_overview_metrics()
+            complex_kpis: Complex KPIs from calculate_complex_kpis()
+            period_type: Period type for target proration
+            year: Year for calculation
+            
+        Returns:
+            Dict with:
+            - overall_achievement: Weighted average %
+            - kpi_details: List of individual KPI achievements
+            - kpi_count: Number of KPIs with targets
+            - total_weight: Sum of weights used
+        """
+        if self.targets_df.empty:
+            return {
+                'overall_achievement': None,
+                'kpi_details': [],
+                'kpi_count': 0,
+                'total_weight': 0
+            }
+        
+        if year is None:
+            year = datetime.now().year
+        
+        # Map KPI names to actual values
+        kpi_actuals = {
+            'revenue': overview_metrics.get('total_revenue', 0),
+            'gross_profit': overview_metrics.get('total_gp', 0),
+        }
+        
+        # Add complex KPIs if available
+        if complex_kpis:
+            kpi_actuals['num_new_customers'] = complex_kpis.get('new_customer_count', 0)
+            kpi_actuals['num_new_products'] = complex_kpis.get('new_product_count', 0)
+            kpi_actuals['new_business_revenue'] = complex_kpis.get('new_business_revenue', 0)
+            # num_new_projects would need to be added if tracked
+        
+        # Group targets by KPI type and calculate aggregate
+        kpi_details = []
+        weighted_sum = 0
+        total_weight = 0
+        
+        # Get unique KPI types from targets
+        kpi_groups = self.targets_df.groupby('kpi_name').agg({
+            'annual_target_value_numeric': 'sum',
+            'weight_numeric': 'mean'  # Average weight across salespeople
+        }).reset_index()
+        
+        for _, row in kpi_groups.iterrows():
+            kpi_name = row['kpi_name'].lower()
+            annual_target = row['annual_target_value_numeric']
+            weight = row['weight_numeric']
+            
+            if annual_target <= 0 or weight <= 0:
+                continue
+            
+            # Prorate target based on period
+            if period_type == 'YTD':
+                elapsed_months = self.get_elapsed_months(year)
+                prorated_target = annual_target * elapsed_months / 12
+            elif period_type == 'QTD':
+                prorated_target = annual_target / 4
+            elif period_type == 'MTD':
+                prorated_target = annual_target / 12
+            else:
+                prorated_target = annual_target
+            
+            # Get actual value
+            actual = kpi_actuals.get(kpi_name, 0)
+            
+            # Calculate achievement
+            if prorated_target > 0:
+                achievement = (actual / prorated_target) * 100
+            else:
+                achievement = 0
+            
+            # Add to weighted calculation
+            weighted_sum += achievement * weight
+            total_weight += weight
+            
+            kpi_details.append({
+                'kpi_name': kpi_name,
+                'actual': actual,
+                'target_annual': annual_target,
+                'target_prorated': prorated_target,
+                'achievement': round(achievement, 1),
+                'weight': weight,
+                'weighted_achievement': round(achievement * weight / 100, 2)
+            })
+        
+        # Calculate overall weighted achievement
+        if total_weight > 0:
+            overall_achievement = weighted_sum / total_weight
+        else:
+            overall_achievement = None
+        
+        return {
+            'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
+            'kpi_details': kpi_details,
+            'kpi_count': len(kpi_details),
+            'total_weight': total_weight
+        }
+    
+    # =========================================================================
     # YoY COMPARISON
     # =========================================================================
     

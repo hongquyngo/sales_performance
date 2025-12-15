@@ -269,6 +269,14 @@ if filter_values['compare_yoy']:
         )
         yoy_metrics = metrics_calc.calculate_yoy_comparison(overview_metrics, prev_overview)
 
+# Overall KPI Achievement (weighted average)
+overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
+    overview_metrics=overview_metrics,
+    complex_kpis=complex_kpis,
+    period_type=filter_values['period_type'],
+    year=filter_values['year']
+)
+
 # =============================================================================
 # PAGE HEADER
 # =============================================================================
@@ -294,12 +302,72 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # =============================================================================
 
 with tab1:
+    # Master Help Expander
+    with st.expander("📖 **Metrics Reference Guide** - Click to expand", expanded=False):
+        st.markdown("""
+        ### 📊 Complete Metrics & Formulas Reference
+        
+        #### 💰 PERFORMANCE METRICS
+        | Metric | Formula | Description |
+        |--------|---------|-------------|
+        | **Revenue** | `Σ sales_by_split_usd` | Total invoiced sales (split-adjusted) |
+        | **Gross Profit** | `Σ gross_profit_by_split_usd` | Revenue - COGS (split-adjusted) |
+        | **GP1** | `GP - Broker Commission` | Net profit after broker fees |
+        | **GP %** | `Gross Profit / Revenue × 100` | Gross margin percentage |
+        | **GP1 %** | `GP1 / Revenue × 100` | Net margin percentage |
+        | **Customers** | `COUNT(DISTINCT customer_id)` | Unique customers invoiced |
+        | **Orders** | `COUNT(DISTINCT oc_number)` | Unique order confirmations |
+        
+        #### 🎯 OVERALL KPI ACHIEVEMENT
+        ```
+        Overall Achievement = Σ(Individual KPI Achievement × Weight) / Σ Weight
+        ```
+        
+        **Supported KPIs:**
+        | KPI Type | Weight | Target Proration |
+        |----------|--------|------------------|
+        | Revenue | Varies by employee | YTD: Annual × (months/12) |
+        | Gross Profit | Varies by employee | QTD: Annual / 4 |
+        | New Customers | Varies by employee | MTD: Annual / 12 |
+        | New Products | Varies by employee | Custom: Full annual |
+        | New Business Revenue | Varies by employee | |
+        
+        #### 📦 PIPELINE & FORECAST
+        | Metric | Formula | Description |
+        |--------|---------|-------------|
+        | **Total Backlog** | `Σ backlog_sales_by_split_usd` | All pending orders |
+        | **In-Period Backlog** | Backlog WHERE `ETD` in period | Expected to ship in period |
+        | **Forecast** | `Invoiced + In-Period Backlog` | Projected period total |
+        | **GAP** | `Forecast - Target` | Distance from prorated target |
+        
+        #### 🆕 NEW BUSINESS (5-Year Lookback)
+        | Metric | Definition | Counting |
+        |--------|------------|----------|
+        | **New Customers** | First invoice for (customer, salesperson) | Proportional by split % |
+        | **New Products** | First sale of product ever | Attributed to first seller |
+        | **New Business Revenue** | First (customer, product) combination | Full revenue amount |
+        
+        #### 📊 YoY COMPARISON
+        ```
+        YoY Growth % = (Current Period - Same Period Last Year) / Same Period Last Year × 100
+        ```
+        
+        #### 🏆 PARETO ANALYSIS
+        - Shows customers/brands contributing to **80%** of metric
+        - Sorted by contribution (descending)
+        - Cumulative % line shows running total
+        
+        ---
+        *💡 Tip: Hover over any metric card for quick tooltip. Click ℹ️ buttons for section-specific help.*
+        """)
+    
     # KPI Cards
     SalespersonCharts.render_kpi_cards(
         metrics=overview_metrics,
         yoy_metrics=yoy_metrics,
         complex_kpis=complex_kpis,
         backlog_metrics=backlog_metrics,
+        overall_achievement=overall_achievement,
         show_complex=True,
         show_backlog=True
     )
@@ -312,7 +380,23 @@ with tab1:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📊 Monthly Trend")
+        col_mt_header, col_mt_help = st.columns([5, 1])
+        with col_mt_header:
+            st.subheader("📊 Monthly Trend")
+        with col_mt_help:
+            with st.popover("ℹ️"):
+                st.markdown("""
+                **📊 Monthly Trend Chart**
+                
+                **Bars:** Revenue & Gross Profit by month
+                **Line:** GP% trend (right axis)
+                
+                **Data Source:**
+                - Aggregated from `unified_sales_by_salesperson_view`
+                - Split-adjusted values
+                
+                **Month Order:** Jan → Dec
+                """)
         monthly_chart = SalespersonCharts.build_monthly_trend_chart(
             monthly_df=monthly_summary,
             show_gp1=False,
@@ -321,19 +405,71 @@ with tab1:
         st.altair_chart(monthly_chart, use_container_width=True)
     
     with col2:
-        st.subheader("📈 Cumulative Performance")
+        col_cp_header, col_cp_help = st.columns([5, 1])
+        with col_cp_header:
+            st.subheader("📈 Cumulative Performance")
+        with col_cp_help:
+            with st.popover("ℹ️"):
+                st.markdown("""
+                **📈 Cumulative Performance**
+                
+                Shows running total (YTD progress).
+                
+                **Lines:**
+                - Revenue (cumulative)
+                - Gross Profit (cumulative)
+                
+                **Formula:**
+                ```
+                Cumulative[month] = Σ values[Jan..month]
+                ```
+                
+                **Use:** Track progress toward annual goals
+                """)
         cumulative_chart = SalespersonCharts.build_cumulative_chart(
             monthly_df=monthly_summary,
             title=""
         )
         st.altair_chart(cumulative_chart, use_container_width=True)
     
-    # YoY Comparison Section (if enabled)
+    # YoY Comparison Section (if enabled) - REDESIGNED WITH TABS
     if filter_values['compare_yoy']:
         st.divider()
-        st.subheader("📊 Year-over-Year Comparison")
         
-        # Load previous year data for chart
+        # Header with help
+        col_yoy_header, col_yoy_help = st.columns([6, 1])
+        with col_yoy_header:
+            st.subheader("📊 Year-over-Year Comparison")
+        with col_yoy_help:
+            with st.popover("ℹ️ Help"):
+                st.markdown("""
+                **📊 Year-over-Year Comparison**
+                
+                **What it shows:**
+                Compare current period performance vs same period last year.
+                
+                **Metrics compared:**
+                | Metric | Formula |
+                |--------|---------|
+                | Revenue | `Σ sales_by_split_usd` |
+                | Gross Profit | `Σ gross_profit_by_split_usd` |
+                | GP1 | `Σ gp1_by_split_usd` |
+                
+                **YoY Growth Calculation:**
+                ```
+                YoY % = (Current - Previous) / Previous × 100
+                ```
+                
+                **Period Matching:**
+                - YTD 2025 vs YTD 2024 (same date range)
+                - Handles leap year (Feb 29 → Feb 28)
+                
+                **Charts:**
+                - **Monthly**: Side-by-side bars for each month
+                - **Cumulative**: Running total comparison
+                """)
+        
+        # Load previous year data
         previous_sales_df = queries.get_previous_year_data(
             start_date=filter_values['start_date'],
             end_date=filter_values['end_date'],
@@ -342,67 +478,204 @@ with tab1:
         )
         
         if not previous_sales_df.empty:
-            # Calculate YoY for all 3 metrics
-            metrics_config = [
-                ('Revenue', 'revenue', 'sales_by_split_usd'),
-                ('Gross Profit', 'gross_profit', 'gross_profit_by_split_usd'),
-                ('GP1', 'gp1', 'gp1_by_split_usd')
-            ]
+            # Create 3 tabs for each metric
+            yoy_tab1, yoy_tab2, yoy_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
             
-            # Display 3 charts side by side
-            col_yoy1, col_yoy2, col_yoy3 = st.columns(3)
-            
-            for col, (metric_name, chart_metric, data_col) in zip(
-                [col_yoy1, col_yoy2, col_yoy3], 
-                metrics_config
-            ):
-                with col:
-                    # Calculate totals
-                    current_total = data['sales'][data_col].sum() if not data['sales'].empty else 0
-                    previous_total = previous_sales_df[data_col].sum() if not previous_sales_df.empty else 0
-                    yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
-                    
-                    # Mini chart
+            # Tab 1: Revenue
+            with yoy_tab1:
+                # Calculate totals
+                current_total = data['sales']['sales_by_split_usd'].sum() if not data['sales'].empty else 0
+                previous_total = previous_sales_df['sales_by_split_usd'].sum() if not previous_sales_df.empty else 0
+                yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
+                yoy_abs = current_total - previous_total
+                
+                # Summary metrics at top
+                col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
+                with col_s1:
+                    st.metric(
+                        label=f"{filter_values['year']} Revenue",
+                        value=f"${current_total:,.0f}",
+                        delta=f"{yoy_change:+.1f}% YoY",
+                        delta_color="normal" if yoy_change >= 0 else "inverse",
+                        help="Current period total revenue (split-adjusted)"
+                    )
+                with col_s2:
+                    st.metric(
+                        label=f"{filter_values['year'] - 1} Revenue",
+                        value=f"${previous_total:,.0f}",
+                        delta=f"${yoy_abs:+,.0f} difference",
+                        delta_color="off",
+                        help="Same period last year revenue for comparison"
+                    )
+                
+                st.divider()
+                
+                # Charts side by side
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    st.markdown("##### 📊 Monthly Revenue Comparison")
                     yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
                         current_df=data['sales'],
                         previous_df=previous_sales_df,
-                        metric=chart_metric,
-                        title=metric_name
+                        metric='revenue',
+                        title=""
                     )
                     st.altair_chart(yoy_chart, use_container_width=True)
-                    
-                    # Summary metrics below chart
-                    st.metric(
-                        label=f"{filter_values['year']} vs {filter_values['year'] - 1}",
-                        value=f"${current_total:,.0f}",
-                        delta=f"{yoy_change:+.1f}% (${current_total - previous_total:+,.0f})",
-                        delta_color="normal" if yoy_change >= 0 else "inverse"
-                    )
-            
-            # ========== CUMULATIVE YoY COMPARISON ==========
-            st.markdown("##### 📈 Cumulative YoY Comparison")
-            
-            col_cum1, col_cum2, col_cum3 = st.columns(3)
-            
-            for col, (metric_name, chart_metric, data_col) in zip(
-                [col_cum1, col_cum2, col_cum3], 
-                metrics_config
-            ):
-                with col:
-                    cum_yoy_chart = SalespersonCharts.build_cumulative_yoy_chart(
+                
+                with col_c2:
+                    st.markdown("##### 📈 Cumulative Revenue")
+                    cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
                         current_df=data['sales'],
                         previous_df=previous_sales_df,
-                        metric=chart_metric,
-                        title=f"Cumulative {metric_name}"
+                        metric='revenue',
+                        title=""
                     )
-                    st.altair_chart(cum_yoy_chart, use_container_width=True)
+                    st.altair_chart(cum_chart, use_container_width=True)
+            
+            # Tab 2: Gross Profit
+            with yoy_tab2:
+                # Calculate totals
+                current_total = data['sales']['gross_profit_by_split_usd'].sum() if not data['sales'].empty else 0
+                previous_total = previous_sales_df['gross_profit_by_split_usd'].sum() if not previous_sales_df.empty else 0
+                yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
+                yoy_abs = current_total - previous_total
+                
+                # Summary metrics at top
+                col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
+                with col_s1:
+                    st.metric(
+                        label=f"{filter_values['year']} Gross Profit",
+                        value=f"${current_total:,.0f}",
+                        delta=f"{yoy_change:+.1f}% YoY",
+                        delta_color="normal" if yoy_change >= 0 else "inverse",
+                        help="Current period gross profit (split-adjusted)"
+                    )
+                with col_s2:
+                    st.metric(
+                        label=f"{filter_values['year'] - 1} Gross Profit",
+                        value=f"${previous_total:,.0f}",
+                        delta=f"${yoy_abs:+,.0f} difference",
+                        delta_color="off",
+                        help="Same period last year gross profit for comparison"
+                    )
+                
+                st.divider()
+                
+                # Charts side by side
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    st.markdown("##### 📊 Monthly Gross Profit Comparison")
+                    yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric='gross_profit',
+                        title=""
+                    )
+                    st.altair_chart(yoy_chart, use_container_width=True)
+                
+                with col_c2:
+                    st.markdown("##### 📈 Cumulative Gross Profit")
+                    cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric='gross_profit',
+                        title=""
+                    )
+                    st.altair_chart(cum_chart, use_container_width=True)
+            
+            # Tab 3: GP1
+            with yoy_tab3:
+                # Calculate totals
+                current_total = data['sales']['gp1_by_split_usd'].sum() if not data['sales'].empty else 0
+                previous_total = previous_sales_df['gp1_by_split_usd'].sum() if not previous_sales_df.empty else 0
+                yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
+                yoy_abs = current_total - previous_total
+                
+                # Summary metrics at top
+                col_s1, col_s2, col_s3 = st.columns([2, 2, 1])
+                with col_s1:
+                    st.metric(
+                        label=f"{filter_values['year']} GP1",
+                        value=f"${current_total:,.0f}",
+                        delta=f"{yoy_change:+.1f}% YoY",
+                        delta_color="normal" if yoy_change >= 0 else "inverse",
+                        help="Current period GP1 - Gross Profit after broker commission (split-adjusted)"
+                    )
+                with col_s2:
+                    st.metric(
+                        label=f"{filter_values['year'] - 1} GP1",
+                        value=f"${previous_total:,.0f}",
+                        delta=f"${yoy_abs:+,.0f} difference",
+                        delta_color="off",
+                        help="Same period last year GP1 for comparison"
+                    )
+                
+                st.divider()
+                
+                # Charts side by side
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    st.markdown("##### 📊 Monthly GP1 Comparison")
+                    yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric='gp1',
+                        title=""
+                    )
+                    st.altair_chart(yoy_chart, use_container_width=True)
+                
+                with col_c2:
+                    st.markdown("##### 📈 Cumulative GP1")
+                    cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
+                        current_df=data['sales'],
+                        previous_df=previous_sales_df,
+                        metric='gp1',
+                        title=""
+                    )
+                    st.altair_chart(cum_chart, use_container_width=True)
         else:
             st.info(f"No data available for {filter_values['year'] - 1} comparison")
     
     st.divider()
     
-    # Forecast section
-    st.subheader("📦 Backlog & Forecast")
+    # Forecast section with help
+    col_bf_header, col_bf_help = st.columns([6, 1])
+    with col_bf_header:
+        st.subheader("📦 Backlog & Forecast")
+    with col_bf_help:
+        with st.popover("ℹ️ Help"):
+            st.markdown("""
+            **📦 Backlog & Forecast Charts**
+            
+            **Waterfall Chart (Left):**
+            Shows how forecast is built from invoiced + backlog.
+            
+            ```
+            Forecast = Invoiced + In-Period Backlog
+            ```
+            
+            | Component | Description |
+            |-----------|-------------|
+            | Invoiced | Already shipped & invoiced |
+            | In-Period Backlog | Expected to ship in period |
+            | Forecast | Total projected |
+            | Target | Prorated annual target |
+            
+            **Bullet Chart (Right):**
+            Visual comparison of performance vs target.
+            
+            | Element | Meaning |
+            |---------|---------|
+            | Gray bar | Target (prorated) |
+            | Cyan bar | Forecast |
+            | Blue bar | Already invoiced |
+            
+            **GP1 Estimation:**
+            When backlog doesn't have GP1, it's estimated using:
+            ```
+            Backlog GP1 = Backlog GP × (Sales GP1 / Sales GP)
+            ```
+            """)
     
     # Tabs for different metrics
     bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
@@ -460,8 +733,39 @@ with tab1:
     
     st.divider()
     
-    # Top customers/brands with metric tabs
-    st.subheader("🏆 Top Customers & Brands Analysis")
+    # Top customers/brands with metric tabs and help
+    col_tc_header, col_tc_help = st.columns([6, 1])
+    with col_tc_header:
+        st.subheader("🏆 Top Customers & Brands Analysis")
+    with col_tc_help:
+        with st.popover("ℹ️ Help"):
+            st.markdown("""
+            **🏆 Pareto Analysis (80/20 Rule)**
+            
+            Shows customers/brands contributing to **80%** of the selected metric.
+            
+            **Chart Elements:**
+            | Element | Description |
+            |---------|-------------|
+            | Bars | Individual contribution |
+            | Line | Cumulative % |
+            | 80% line | Pareto threshold |
+            
+            **Calculation:**
+            1. Sort by metric (descending)
+            2. Calculate cumulative sum
+            3. Show items until 80% reached
+            
+            **Metrics Available:**
+            - **Revenue**: Total sales by customer/brand
+            - **Gross Profit**: GP contribution
+            - **GP1**: GP1 contribution
+            
+            **Use Cases:**
+            - Identify key accounts
+            - Focus sales efforts
+            - Risk assessment (concentration)
+            """)
     
     ranking_tab1, ranking_tab2, ranking_tab3 = st.tabs(["💰 By Revenue", "📈 By Gross Profit", "📊 By GP1"])
     
