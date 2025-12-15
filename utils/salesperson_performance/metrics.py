@@ -708,6 +708,9 @@ class SalespersonMetrics:
         """
         Calculate backlog and forecast metrics for Revenue, GP, and GP1.
         
+        Note: Backlog view doesn't have GP1 directly (no commission data for pending orders).
+        We estimate GP1 backlog = GP backlog (conservative assumption - no commission deduction).
+        
         Args:
             total_backlog_df: Total backlog data
             in_period_backlog_df: Backlog with ETD in period
@@ -720,6 +723,14 @@ class SalespersonMetrics:
         if year is None:
             year = datetime.now().year
         
+        # Calculate GP1/GP ratio from current sales data for estimation
+        gp1_gp_ratio = 1.0  # Default: GP1 = GP (no commission)
+        if not self.sales_df.empty:
+            total_gp = self.sales_df['gross_profit_by_split_usd'].sum()
+            total_gp1 = self.sales_df['gp1_by_split_usd'].sum()
+            if total_gp > 0:
+                gp1_gp_ratio = total_gp1 / total_gp
+        
         # Total backlog (all outstanding)
         total_backlog_revenue = 0
         total_backlog_gp = 0
@@ -730,11 +741,11 @@ class SalespersonMetrics:
         if not total_backlog_df.empty:
             total_backlog_revenue = total_backlog_df['total_backlog_revenue'].sum()
             total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
-            # GP1 from backlog if available
+            # GP1 backlog: use actual if available, otherwise estimate from GP using ratio
             if 'total_backlog_gp1' in total_backlog_df.columns:
                 total_backlog_gp1 = total_backlog_df['total_backlog_gp1'].sum()
             else:
-                total_backlog_gp1 = total_backlog_gp * 1.2  # Estimate based on commission multiplier
+                total_backlog_gp1 = total_backlog_gp * gp1_gp_ratio
             backlog_orders = total_backlog_df['backlog_orders'].sum() if 'backlog_orders' in total_backlog_df.columns else 0
             backlog_customers = total_backlog_df['backlog_customers'].sum() if 'backlog_customers' in total_backlog_df.columns else 0
         
@@ -747,11 +758,11 @@ class SalespersonMetrics:
         if not in_period_backlog_df.empty:
             in_period_backlog_revenue = in_period_backlog_df['in_period_backlog_revenue'].sum()
             in_period_backlog_gp = in_period_backlog_df['in_period_backlog_gp'].sum()
-            # GP1 from in-period backlog if available
+            # GP1 in-period backlog: use actual if available, otherwise estimate
             if 'in_period_backlog_gp1' in in_period_backlog_df.columns:
                 in_period_backlog_gp1 = in_period_backlog_df['in_period_backlog_gp1'].sum()
             else:
-                in_period_backlog_gp1 = in_period_backlog_gp * 1.2  # Estimate
+                in_period_backlog_gp1 = in_period_backlog_gp * gp1_gp_ratio
             in_period_orders = in_period_backlog_df['in_period_orders'].sum() if 'in_period_orders' in in_period_backlog_df.columns else 0
         
         # Current invoiced (from sales_df)
@@ -847,6 +858,9 @@ class SalespersonMetrics:
             
             # Backlog as % of Target (Revenue)
             'backlog_coverage_percent': round((in_period_backlog_revenue / revenue_target * 100), 1) if revenue_target else None,
+            
+            # GP1/GP ratio used for estimation
+            'gp1_gp_ratio': round(gp1_gp_ratio, 4),
         }
     
     def prepare_backlog_by_month(
