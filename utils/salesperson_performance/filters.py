@@ -7,8 +7,12 @@ Renders filter UI elements:
 - Year selector
 - Salesperson selector (role-based)
 - Entity selector
+- Internal revenue filter (NEW)
 - YoY comparison toggle
 - Metric view selector
+
+CHANGELOG:
+- v1.1.0: Added exclude_internal_revenue checkbox to filter out internal company revenue
 """
 
 import logging
@@ -75,6 +79,7 @@ class SalespersonFilters:
                 'employee_ids': List[int],
                 'entity_ids': List[int],
                 'compare_yoy': bool,
+                'exclude_internal_revenue': bool,
                 'metric_view': str
             }
         """
@@ -107,6 +112,7 @@ class SalespersonFilters:
             'employee_ids': employee_ids,
             'entity_ids': entity_ids,
             'compare_yoy': True,  # Always enabled
+            'exclude_internal_revenue': True,  # Default exclude
         }
     
     def render_filter_form(
@@ -248,6 +254,41 @@ class SalespersonFilters:
                 
                 st.divider()
                 
+                # =====================================================
+                # INTERNAL REVENUE FILTER (NEW)
+                # =====================================================
+                st.markdown("**🏠 Internal Sales**")
+                
+                exclude_internal_revenue = st.checkbox(
+                    "Exclude Internal Revenue",
+                    value=True,  # Mặc định checked = loại bỏ internal revenue
+                    key="form_exclude_internal",
+                    help="""
+**Exclude revenue from internal companies**
+
+✅ When ON (default):
+• Revenue from internal customers is set to **$0**
+• **GP and GP1 remain unchanged**
+
+❌ When OFF:
+• All revenue is included, including internal transactions
+
+**Why GP is preserved:**
+Although internal sales do not generate real external revenue,  
+GP still reflects the value created by the sales team  
+and is counted toward KPI performance.
+
+**Purpose:**
+To evaluate sales performance based on **external customers only**.
+"""
+
+                )
+                
+                if exclude_internal_revenue:
+                    st.caption("📊 Internal Revenue = $0 • GP giữ nguyên")
+                
+                st.divider()
+                
                 # Submit button
                 submitted = st.form_submit_button(
                     "🔍 Apply Filters",
@@ -267,6 +308,7 @@ class SalespersonFilters:
             'employee_ids': employee_ids,
             'entity_ids': entity_ids,
             'compare_yoy': True,
+            'exclude_internal_revenue': exclude_internal_revenue,  # NEW
         }
         
         # Store applied filters on submit
@@ -639,6 +681,10 @@ class SalespersonFilters:
             parts.append("1 salesperson")
         elif emp_count > 1:
             parts.append(f"{emp_count} salespeople")
+        
+        # Internal revenue status (NEW)
+        if filters.get('exclude_internal_revenue', True):
+            parts.append("excl. internal")
         
         return " • ".join(parts)
     

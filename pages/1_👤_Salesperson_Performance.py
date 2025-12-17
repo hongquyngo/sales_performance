@@ -297,12 +297,18 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     """
     Filter cached data client-side based on ALL filters.
     This is instant - no DB query needed.
+    
+    UPDATED v1.1.0: Added exclude_internal_revenue handling
+    - Uses customer_type column from unified_sales_by_salesperson_view
+    - When True: Sets revenue to 0 for Internal customers, keeps GP intact
+    - Purpose: Evaluate sales performance with real (external) customers only
     """
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     employee_ids = filter_values['employee_ids']
     entity_ids = filter_values['entity_ids']
     year = filter_values['year']
+    exclude_internal_revenue = filter_values.get('exclude_internal_revenue', True)  # NEW
     
     filtered = {}
     
@@ -355,10 +361,33 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         if key == 'targets' and 'year' in df_filtered.columns:
             df_filtered = df_filtered[df_filtered['year'] == year]
         
+        # =====================================================================
+        # NEW: Exclude Internal Revenue (but keep GP)
+        # Uses customer_type column from unified_sales_by_salesperson_view
+        # customer_type = 'Internal' for internal companies
+        # =====================================================================
+        if exclude_internal_revenue and key == 'sales':
+            if 'customer_type' in df_filtered.columns and 'sales_by_split_usd' in df_filtered.columns:
+                # Create mask for internal customers
+                is_internal = df_filtered['customer_type'].str.lower() == 'internal'
+                
+                # Log for debugging
+                internal_count = is_internal.sum()
+                if internal_count > 0:
+                    internal_revenue = df_filtered.loc[is_internal, 'sales_by_split_usd'].sum()
+                    logger.info(
+                        f"Excluding internal revenue: {internal_count} rows, "
+                        f"${internal_revenue:,.0f} revenue zeroed (GP kept intact)"
+                    )
+                
+                # Zero out ONLY revenue for internal customers
+                # GP columns (gross_profit_by_split_usd, gp1_by_split_usd) are kept intact
+                # This allows evaluation of sales performance with real customers
+                df_filtered.loc[is_internal, 'sales_by_split_usd'] = 0
+        
         filtered[key] = df_filtered
     
     return filtered
-
 
 # =============================================================================
 # CACHING LOGIC - Load once, filter client-side
