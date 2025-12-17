@@ -337,9 +337,11 @@ class SalespersonMetrics:
         # === Target Comparison ===
         revenue_target = self._get_prorated_target('revenue', period_type, year)
         gp_target = self._get_prorated_target('gross_profit', period_type, year)
+        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)  # GP1 KPI type
         
         revenue_achievement = (total_revenue / revenue_target * 100) if revenue_target else None
         gp_achievement = (total_gp / gp_target * 100) if gp_target else None
+        gp1_achievement = (total_gp1 / gp1_target * 100) if gp1_target else None  # GP1 achievement
         
         return {
             # Counts
@@ -360,8 +362,10 @@ class SalespersonMetrics:
             # Targets
             'revenue_target': revenue_target,
             'gp_target': gp_target,
+            'gp1_target': gp1_target,  # GP1 target
             'revenue_achievement': round(revenue_achievement, 1) if revenue_achievement else None,
             'gp_achievement': round(gp_achievement, 1) if gp_achievement else None,
+            'gp1_achievement': round(gp1_achievement, 1) if gp1_achievement else None,  # GP1 achievement
         }
     
     def _get_empty_metrics(self) -> Dict:
@@ -378,8 +382,10 @@ class SalespersonMetrics:
             'gp1_percent': 0,
             'revenue_target': None,
             'gp_target': None,
+            'gp1_target': None,  # GP1 target
             'revenue_achievement': None,
             'gp_achievement': None,
+            'gp1_achievement': None,  # GP1 achievement
         }
     
     # =========================================================================
@@ -572,6 +578,7 @@ class SalespersonMetrics:
         - new_business_revenue (kpi_type_id: 4)
         - num_new_projects (kpi_type_id: 5)
         - num_new_products (kpi_type_id: 6)
+        - gross_profit_1 (kpi_type_id: 8) - GP1 = GP - Broker Commission * 1.2
         
         Args:
             overview_metrics: Basic metrics from calculate_overview_metrics()
@@ -598,9 +605,11 @@ class SalespersonMetrics:
             year = datetime.now().year
         
         # Map KPI names to actual values
+        # NOTE: gross_profit_1 maps to total_gp1 (GP1 = GP - Broker Commission * 1.2)
         kpi_actuals = {
             'revenue': overview_metrics.get('total_revenue', 0),
             'gross_profit': overview_metrics.get('total_gp', 0),
+            'gross_profit_1': overview_metrics.get('total_gp1', 0),  # GP1 KPI type
         }
         
         # Add complex KPIs if available
@@ -1103,7 +1112,7 @@ class SalespersonMetrics:
         # Get targets
         revenue_target = self._get_prorated_target('revenue', period_type, year)
         gp_target = self._get_prorated_target('gross_profit', period_type, year)
-        gp1_target = self._get_prorated_target('gp1', period_type, year)
+        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)  # GP1 KPI type
         
         # GAP calculations for Revenue (only if forecast available)
         gap_revenue = None

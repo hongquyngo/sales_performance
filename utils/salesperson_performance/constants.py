@@ -8,6 +8,9 @@ Centralized configuration for:
 - Chart settings
 - KPI configurations
 - Period definitions
+
+CHANGELOG:
+- v1.1.0: Added gross_profit_1 KPI type support (GP1 = GP - Broker Commission * 1.2)
 """
 
 # =====================================================================
@@ -32,6 +35,7 @@ COLORS = {
     "revenue": "#FFA500",              # Orange
     "gross_profit": "#1f77b4",         # Blue
     "gp1": "#2ca02c",                  # Green
+    "gross_profit_1": "#2ca02c",       # Green (same as gp1)
     "gross_profit_percent": "#800080", # Purple
     
     # Target & Achievement
@@ -105,6 +109,15 @@ KPI_TYPES = {
         "unit": "USD",
         "format": "${:,.0f}",
         "icon": "📈"
+    },
+    # NEW: GP1 KPI type (added 2025-12-17)
+    # GP1 = Gross Profit - (Broker Commission * 1.2)
+    "gross_profit_1": {
+        "name": "gross_profit_1",
+        "display_name": "GP1",
+        "unit": "USD",
+        "format": "${:,.0f}",
+        "icon": "📊"
     },
     "num_new_customers": {
         "name": "num_new_customers",
