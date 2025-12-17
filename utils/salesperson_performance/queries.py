@@ -12,6 +12,12 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v1.4.0: REFACTORED get_new_products() to use legacy_code from unified view
+          - No longer needs JOIN with products table
+          - Uses COALESCE(product_id, legacy_code) as unified product key
+          - Correctly identifies products sold in history (via legacy_code) 
+            that appear in realtime (via product_id)
+          - Handles edge cases: NULL product_id in history, NULL legacy_code in old realtime
 - v1.3.0: Fixed duplicate counting bug - unified view has multiple rows per invoice (1 per product)
           Added GROUP BY deduplication: each customer/product + salesperson combo counted once
           NEW BUSINESS REVENUE: Now includes ALL revenue from new combos in period (not just first day)
@@ -325,7 +331,7 @@ class SalespersonQueries:
         return self._execute_query(query, params, "new_customers")
     
     # =========================================================================
-    # COMPLEX KPIs - NEW PRODUCTS
+    # COMPLEX KPIs - NEW PRODUCTS (REFACTORED v1.4.0)
     # =========================================================================
     
     def get_new_products(
@@ -342,10 +348,24 @@ class SalespersonQueries:
         - Falls within the specified date range
         - When looking back LOOKBACK_YEARS years
         
-        Note: We attribute the "new product" to the salesperson who made the first sale.
+        REFACTORED v1.4.0: 
+        - Uses COALESCE(product_id, legacy_code) as unified product key
+        - Handles history data (has legacy_code, may lack product_id)
+        - Handles realtime data (has product_id, now also has legacy_code)
+        - No longer needs JOIN with products table
+        - Correctly identifies same product across different identifier systems
         
-        Returns DataFrame with: product_id, product_pn, sales_id, sales_name,
-                               split_rate_percent, first_sale_date
+        Logic:
+        1. Create unified product key using COALESCE(legacy_code, product_id)
+           - Prefer legacy_code because it bridges history and realtime
+           - Fall back to product_id for products without legacy mapping
+        2. Find MIN(inv_date) for each unified product key
+        3. Filter to products where first sale is within selected period
+        4. Credit all salespeople who sold on the first day (split scenario)
+        5. Deduplicate per (product, salesperson) combo
+        
+        Returns DataFrame with: product_id, product_pn, legacy_code, brand,
+                               sales_id, sales_name, split_rate_percent, first_sale_date
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -358,58 +378,90 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        # FIXED v1.2.0: RANK() instead of ROW_NUMBER() to credit all salespeople 
-        #               who made first sale on same day
-        # FIXED v1.3.0: Added deduplication - each product+salesperson combo counted once
         query = """
-            WITH first_product_date AS (
-                -- Step 1: Find first sale date for each product (globally)
+            WITH 
+            -- ================================================================
+            -- Step 1: Create unified product key and find first sale date
+            -- Priority: legacy_code (bridges systems) > product_id (fallback)
+            -- ================================================================
+            first_sale_by_product AS (
                 SELECT 
-                    product_id,
+                    -- Unified key: prefer legacy_code, fallback to product_id
+                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
                     MIN(inv_date) as first_sale_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                GROUP BY product_id
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY COALESCE(legacy_code, CAST(product_id AS CHAR))
             ),
+            
+            -- ================================================================
+            -- Step 2: Filter to products with first sale in selected period
+            -- ================================================================
+            new_products AS (
+                SELECT product_key, first_sale_date
+                FROM first_sale_by_product
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- ================================================================
+            -- Step 3: Get all sales records from first sale date
+            -- Join back to get full product info and salesperson attribution
+            -- ================================================================
             first_day_records AS (
-                -- Step 2: Get all records from first sale date
                 SELECT 
                     u.product_id,
                     u.product_pn,
+                    u.legacy_code,
                     u.brand,
                     u.sales_id,
                     u.sales_name,
                     u.split_rate_percent,
-                    fpd.first_sale_date
-                FROM first_product_date fpd
+                    np.first_sale_date
+                FROM new_products np
                 JOIN unified_sales_by_salesperson_view u 
-                    ON fpd.product_id = u.product_id 
-                    AND u.inv_date = fpd.first_sale_date
+                    ON COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = np.product_key
+                    AND u.inv_date = np.first_sale_date
             ),
+            
+            -- ================================================================
+            -- Step 4: Deduplicate - Each (product_key, sales_id) counted once
+            -- Handles multiple invoice lines for same product on same day
+            -- ================================================================
             deduplicated AS (
-                -- Step 3: Deduplicate per product + salesperson (count each combo once)
                 SELECT 
-                    product_id,
+                    -- Use MAX to get non-null values where available
+                    MAX(product_id) as product_id,
                     MAX(product_pn) as product_pn,
+                    MAX(legacy_code) as legacy_code,
                     MAX(brand) as brand,
                     sales_id,
                     MAX(sales_name) as sales_name,
                     MAX(split_rate_percent) as split_rate_percent,
-                    first_sale_date
+                    first_sale_date,
+                    -- Keep product_key for grouping
+                    COALESCE(MAX(legacy_code), CAST(MAX(product_id) AS CHAR)) as product_key
                 FROM first_day_records
-                GROUP BY product_id, sales_id, first_sale_date
+                GROUP BY 
+                    COALESCE(legacy_code, CAST(product_id AS CHAR)),
+                    sales_id, 
+                    first_sale_date
             )
+            
+            -- ================================================================
+            -- Final: Return results filtered by accessible salespeople
+            -- ================================================================
             SELECT 
                 product_id,
                 product_pn,
+                legacy_code,
                 brand,
                 sales_id,
                 sales_name,
                 split_rate_percent,
                 first_sale_date
             FROM deduplicated
-            WHERE first_sale_date BETWEEN :start_date AND :end_date
-              AND sales_id IN :employee_ids
+            WHERE sales_id IN :employee_ids
             ORDER BY first_sale_date DESC
         """
         
@@ -438,6 +490,9 @@ class SalespersonQueries:
         "New business" = first time a specific product is sold to a specific customer.
         Revenue is attributed based on the sales split percentage.
         
+        UPDATED v1.4.0: Uses unified product key (legacy_code or product_id)
+        to correctly identify customer-product combinations across systems.
+        
         Returns DataFrame with: sales_id, sales_name, new_business_revenue, new_combos_count
         """
         if employee_ids:
@@ -454,28 +509,41 @@ class SalespersonQueries:
         # FIXED v1.3.0: Get ALL revenue from "new" combos within period
         #               A combo is "new" if its first sale ever (in lookback) falls within period
         #               Revenue = all sales of that combo in period, not just first day
+        # UPDATED v1.4.0: Use unified product key for consistent combo identification
         query = """
-            WITH first_combo_date AS (
-                -- Step 1: Find first sale date for each customer-product combo (globally)
+            WITH 
+            -- ================================================================
+            -- Step 1: Find first sale date for each customer-product combo
+            -- Use unified product key to bridge history and realtime
+            -- ================================================================
+            first_combo_date AS (
                 SELECT 
                     customer_id,
-                    product_id,
+                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
                     MIN(inv_date) as first_combo_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                GROUP BY customer_id, product_id
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(legacy_code, CAST(product_id AS CHAR))
             ),
+            
+            -- ================================================================
+            -- Step 2: Identify combos that are "new" (first sale within period)
+            -- ================================================================
             new_combos AS (
-                -- Step 2: Identify combos that are "new" (first sale within selected period)
-                SELECT customer_id, product_id, first_combo_date
+                SELECT customer_id, product_key, first_combo_date
                 FROM first_combo_date
                 WHERE first_combo_date BETWEEN :start_date AND :end_date
             ),
+            
+            -- ================================================================
+            -- Step 3: Get ALL revenue from new combos within period
+            -- (not just first day - includes repeat orders of new combos)
+            -- ================================================================
             all_revenue_in_period AS (
-                -- Step 3: Get ALL revenue from new combos within period (not just first day)
                 SELECT 
                     u.customer_id,
-                    u.product_id,
+                    COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) AS product_key,
                     u.sales_id,
                     u.sales_name,
                     u.sales_by_split_usd,
@@ -483,15 +551,19 @@ class SalespersonQueries:
                 FROM new_combos nc
                 JOIN unified_sales_by_salesperson_view u 
                     ON nc.customer_id = u.customer_id 
-                    AND nc.product_id = u.product_id
+                    AND COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = nc.product_key
                 WHERE u.inv_date BETWEEN :start_date AND :end_date
             )
+            
+            -- ================================================================
+            -- Final: Aggregate by salesperson
+            -- ================================================================
             SELECT 
                 sales_id,
                 sales_name,
                 SUM(sales_by_split_usd) as new_business_revenue,
                 SUM(gross_profit_by_split_usd) as new_business_gp,
-                COUNT(DISTINCT CONCAT(customer_id, '-', product_id)) as new_combos_count
+                COUNT(DISTINCT CONCAT(customer_id, '-', product_key)) as new_combos_count
             FROM all_revenue_in_period
             WHERE sales_id IN :employee_ids
             GROUP BY sales_id, sales_name
