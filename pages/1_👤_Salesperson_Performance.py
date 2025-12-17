@@ -196,14 +196,38 @@ if not is_valid:
 
 def load_all_data_once() -> dict:
     """
-    Load ALL data without any filters.
-    This data will be cached and ALL filtering done client-side.
-    Only reloads when user clicks Refresh button.
+    Load data based on user's access control.
+    
+    OPTIMIZED v2.0:
+    - Full access (admin/GM/MD): Load all data
+    - Team access (sales_manager): Load only team members' data
+    - Self access (sales): Load only own data
+    
+    This significantly reduces load time for non-admin users.
     """
-    q = SalespersonQueries(AccessControl(
+    # Initialize AccessControl
+    access_control = AccessControl(
         st.session_state.get('user_role', 'viewer'),
         st.session_state.get('employee_id')
-    ))
+    )
+    
+    # Get accessible employee IDs based on role
+    access_level = access_control.get_access_level()
+    accessible_ids = access_control.get_accessible_employee_ids()
+    
+    # For full access, pass None to load all (more efficient than huge IN clause)
+    # For restricted access, pass the specific IDs
+    if access_level == 'full':
+        filter_employee_ids = None  # Load all
+        load_msg = "all salespeople"
+    else:
+        filter_employee_ids = accessible_ids if accessible_ids else None
+        if access_level == 'team':
+            load_msg = f"team ({len(accessible_ids)} members)"
+        else:
+            load_msg = "your data only"
+    
+    q = SalespersonQueries(access_control)
     
     # Load data for reasonable date range (last 3 years + current year)
     current_year = date.today().year
@@ -211,72 +235,73 @@ def load_all_data_once() -> dict:
     end_date = date(current_year, 12, 31)
     
     # Progress bar with status
-    progress_bar = st.progress(0, text="🔄 Initializing...")
+    progress_bar = st.progress(0, text=f"🔄 Loading {load_msg}...")
     
     data = {}
     
     try:
-        # Step 1: Sales data - NO filters
-        progress_bar.progress(10, text="📊 Loading all sales data...")
+        # Step 1: Sales data - FILTERED by access control
+        progress_bar.progress(10, text=f"📊 Loading sales data ({load_msg})...")
         data['sales'] = q.get_sales_data(
             start_date=start_date,
             end_date=end_date,
-            employee_ids=None,
+            employee_ids=filter_employee_ids,
             entity_ids=None
         )
         
-        # Step 2: KPI targets - ALL years, ALL employees
-        progress_bar.progress(25, text="🎯 Loading all KPI targets...")
-        # Load targets for multiple years
+        # Step 2: KPI targets - FILTERED by access control
+        progress_bar.progress(25, text="🎯 Loading KPI targets...")
         targets_list = []
         for yr in range(current_year - 2, current_year + 1):
-            t = q.get_kpi_targets(year=yr, employee_ids=None)
+            t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
             if not t.empty:
                 targets_list.append(t)
         data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         
-        # Step 3: Complex KPIs - NO filters
+        # Step 3: Complex KPIs - FILTERED by access control
         progress_bar.progress(40, text="🆕 Loading new business metrics...")
-        data['new_customers'] = q.get_new_customers(start_date, end_date, None)
-        data['new_products'] = q.get_new_products(start_date, end_date, None)
-        data['new_business'] = q.get_new_business_revenue(start_date, end_date, None)
+        data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids)
+        data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids)
+        data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids)
         
-        # Step 4: Backlog data - NO filters
-        progress_bar.progress(60, text="📦 Loading all backlog data...")
+        # Step 4: Backlog data - FILTERED by access control
+        progress_bar.progress(60, text="📦 Loading backlog data...")
         data['total_backlog'] = q.get_backlog_data(
-            employee_ids=None,
+            employee_ids=filter_employee_ids,
             entity_ids=None
         )
         data['in_period_backlog'] = q.get_backlog_in_period(
             start_date=start_date,
             end_date=end_date,
-            employee_ids=None,
+            employee_ids=filter_employee_ids,
             entity_ids=None
         )
         data['backlog_by_month'] = q.get_backlog_by_month(
-            employee_ids=None,
+            employee_ids=filter_employee_ids,
             entity_ids=None
         )
         
-        # Step 5: Backlog detail - NO filters
+        # Step 5: Backlog detail - FILTERED by access control
         progress_bar.progress(80, text="📋 Loading backlog details...")
         data['backlog_detail'] = q.get_backlog_detail(
-            employee_ids=None,
+            employee_ids=filter_employee_ids,
             entity_ids=None,
             limit=2000
         )
         
-        # Step 6: Sales split data - NO filter
+        # Step 6: Sales split data - FILTERED by access control
         progress_bar.progress(95, text="👥 Loading sales split data...")
-        data['sales_split'] = q.get_sales_split_data(employee_ids=None)
+        data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
         
         # Step 7: Clean all dataframes
         for key in data:
             if isinstance(data[key], pd.DataFrame) and not data[key].empty:
                 data[key] = _clean_dataframe_for_display(data[key])
         
-        # Store load timestamp
+        # Store metadata
         data['_loaded_at'] = datetime.now()
+        data['_access_level'] = access_level
+        data['_accessible_ids'] = accessible_ids
         
         # Complete
         progress_bar.progress(100, text="✅ Data loaded successfully!")
@@ -1193,32 +1218,125 @@ with tab2:
             if min_amount > 0:
                 filtered_df = filtered_df[filtered_df['sales_by_split_usd'] >= min_amount]
             
-            # Display columns
+            # =================================================================
+            # Calculate Original (pre-split) values
+            # Formula: Original = Split Value / (Split % / 100)
+            # Note: GP1 is calculated field, no "original" value exists
+            # =================================================================
+            filtered_df = filtered_df.copy()
+            
+            # Avoid division by zero
+            split_pct = filtered_df['split_rate_percent'].replace(0, 100) / 100
+            
+            # Calculate original values (before split) - only Revenue and GP
+            filtered_df['total_revenue_usd'] = filtered_df['sales_by_split_usd'] / split_pct
+            filtered_df['total_gp_usd'] = filtered_df['gross_profit_by_split_usd'] / split_pct
+            
+            # Display columns - reordered with original values
             display_columns = [
                 'inv_date', 'inv_number', 'customer', 'product_pn', 'brand',
-                'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd',
-                'split_rate_percent', 'sales_name'
+                'total_revenue_usd', 'total_gp_usd',  # Original values (Revenue, GP only)
+                'split_rate_percent',
+                'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd',  # Split values
+                'sales_name'
             ]
             available_cols = [c for c in display_columns if c in filtered_df.columns]
             
             st.markdown(f"**Showing {len(filtered_df):,} transactions**")
             
-            # Display table
-            display_detail = filtered_df[available_cols].copy()
-            display_detail.columns = ['Date', 'Invoice#', 'Customer', 'Product', 'Brand',
-                                      'Revenue', 'GP', 'GP1', 'Split %', 'Salesperson'][:len(available_cols)]
+            # Prepare display dataframe
+            display_detail = filtered_df[available_cols].head(500).copy()
             
+            # =================================================================
+            # Configure columns with tooltips using st.column_config
+            # =================================================================
+            column_config = {
+                'inv_date': st.column_config.DateColumn(
+                    "Date",
+                    help="Invoice date"
+                ),
+                'inv_number': st.column_config.TextColumn(
+                    "Invoice#",
+                    help="Invoice number"
+                ),
+                'customer': st.column_config.TextColumn(
+                    "Customer",
+                    help="Customer name",
+                    width="medium"
+                ),
+                'product_pn': st.column_config.TextColumn(
+                    "Product",
+                    help="Product part number",
+                    width="medium"
+                ),
+                'brand': st.column_config.TextColumn(
+                    "Brand",
+                    help="Product brand/manufacturer"
+                ),
+                # Original values (before split)
+                'total_revenue_usd': st.column_config.NumberColumn(
+                    "Total Revenue",
+                    help="💰 ORIGINAL invoice revenue (100% of line item)\n\nThis is the full value BEFORE applying sales split.",
+                    format="$%.0f"
+                ),
+                'total_gp_usd': st.column_config.NumberColumn(
+                    "Total GP",
+                    help="📈 ORIGINAL gross profit (100% of line item)\n\nFormula: Revenue - COGS\n\nThis is the full GP BEFORE applying sales split.",
+                    format="$%.0f"
+                ),
+                # Split percentage
+                'split_rate_percent': st.column_config.NumberColumn(
+                    "Split %",
+                    help="👥 Sales credit split percentage\n\nThis salesperson receives this % of the total revenue/GP/GP1.\n\n100% = Full credit\n50% = Shared equally with another salesperson",
+                    format="%.0f%%"
+                ),
+                # Split values (after split)
+                'sales_by_split_usd': st.column_config.NumberColumn(
+                    "Revenue",
+                    help="💰 CREDITED revenue for this salesperson\n\n📐 Formula: Total Revenue × Split %\n\nThis is the revenue credited to this salesperson after applying their split percentage.",
+                    format="$%.0f"
+                ),
+                'gross_profit_by_split_usd': st.column_config.NumberColumn(
+                    "GP",
+                    help="📈 CREDITED gross profit for this salesperson\n\n📐 Formula: Total GP × Split %\n\nThis is the GP credited to this salesperson after applying their split percentage.",
+                    format="$%.0f"
+                ),
+                'gp1_by_split_usd': st.column_config.NumberColumn(
+                    "GP1",
+                    help="📊 CREDITED GP1 for this salesperson\n\n📐 Formula: (GP - Broker Commission × 1.2) × Split %\n\nGP1 is calculated from GP after deducting commission, then split.",
+                    format="$%.0f"
+                ),
+                'sales_name': st.column_config.TextColumn(
+                    "Salesperson",
+                    help="Salesperson receiving credit for this transaction"
+                ),
+            }
+            
+            # Display table with column configuration
             st.dataframe(
-                display_detail.head(500).style.format({
-                    'Revenue': '${:,.0f}',
-                    'GP': '${:,.0f}',
-                    'GP1': '${:,.0f}',
-                    'Split %': '{:.0f}%'
-                }),
+                display_detail,
+                column_config=column_config,
                 use_container_width=True,
                 hide_index=True,
                 height=500
             )
+            
+            # Legend for quick reference
+            with st.expander("📖 Column Legend", expanded=False):
+                st.markdown("""
+                | Column | Description | Formula |
+                |--------|-------------|---------|
+                | **Total Revenue** | Original invoice amount (100%) | Full line item value |
+                | **Total GP** | Original gross profit (100%) | Revenue - COGS |
+                | **Split %** | Credit allocation to salesperson | Assigned by sales split rules |
+                | **Revenue** | Credited revenue | Total Revenue × Split % |
+                | **GP** | Credited gross profit | Total GP × Split % |
+                | **GP1** | Credited GP1 | (GP - Broker Commission × 1.2) × Split % |
+                
+                > 💡 **Note:** GP1 is a calculated field (GP minus commission), so there's no "original" GP1 value.
+                
+                > 💡 **Tip:** Hover over column headers to see detailed tooltips.
+                """)
             
             # Export button
             if st.button("📥 Export to Excel", key="export_detail"):
@@ -1544,50 +1662,78 @@ with tab4:
         with kpi_tab2:
             st.markdown("#### 📈 KPI Progress")
             
-            # Calculate progress for each KPI type
+            # =================================================================
+            # DYNAMIC KPI Progress - Show ALL assigned KPIs
+            # =================================================================
+            
+            # Map KPI names to actual values
+            # Key = kpi_name (lowercase), Value = actual value from data
+            kpi_actual_map = {
+                'revenue': overview_metrics.get('total_revenue', 0),
+                'gross_profit': overview_metrics.get('total_gp', 0),
+                'gross_profit_1': overview_metrics.get('total_gp1', 0),
+                'num_new_customers': complex_kpis.get('new_customer_count', 0),
+                'num_new_products': complex_kpis.get('new_product_count', 0),
+                'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
+                # Add more KPI mappings as needed
+            }
+            
+            # Display name mapping for better UI
+            kpi_display_names = {
+                'revenue': 'Revenue',
+                'gross_profit': 'Gross Profit',
+                'gross_profit_1': 'GP1',
+                'num_new_customers': 'New Customers',
+                'num_new_products': 'New Products',
+                'new_business_revenue': 'New Business Revenue',
+                'num_new_projects': 'New Projects',
+            }
+            
+            # KPIs that should show currency format
+            currency_kpis = ['revenue', 'gross_profit', 'gross_profit_1', 'new_business_revenue']
+            
+            # Get unique KPI types from targets
             kpi_progress = []
             
-            # Revenue
-            revenue_target = targets_df[targets_df['kpi_name'].str.lower() == 'revenue']['annual_target_value_numeric'].sum()
-            revenue_actual = overview_metrics.get('total_revenue', 0)
-            if revenue_target > 0:
+            for kpi_name in targets_df['kpi_name'].str.lower().unique():
+                # Get target for this KPI
+                kpi_target = targets_df[
+                    targets_df['kpi_name'].str.lower() == kpi_name
+                ]['annual_target_value_numeric'].sum()
+                
+                if kpi_target <= 0:
+                    continue
+                
+                # Get actual value
+                actual = kpi_actual_map.get(kpi_name, 0)
+                
+                # Get display name
+                display_name = kpi_display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
+                
+                # Get prorated target
+                prorated_target = metrics_calc._get_prorated_target(kpi_name, filter_values['period_type'], filter_values['year'])
+                if prorated_target is None:
+                    prorated_target = kpi_target  # Fallback to annual
+                
+                # Calculate achievement
+                achievement = (actual / kpi_target * 100) if kpi_target > 0 else 0
+                
                 kpi_progress.append({
-                    'KPI': 'Revenue',
-                    'Actual': revenue_actual,
-                    'Target (Annual)': revenue_target,
-                    'Target (Prorated)': metrics_calc._get_prorated_target('revenue', filter_values['period_type'], filter_values['year']) or 0,
-                    'Achievement %': (revenue_actual / revenue_target * 100) if revenue_target else 0
-                })
-            
-            # Gross Profit
-            gp_target = targets_df[targets_df['kpi_name'].str.lower() == 'gross_profit']['annual_target_value_numeric'].sum()
-            gp_actual = overview_metrics.get('total_gp', 0)
-            if gp_target > 0:
-                kpi_progress.append({
-                    'KPI': 'Gross Profit',
-                    'Actual': gp_actual,
-                    'Target (Annual)': gp_target,
-                    'Target (Prorated)': metrics_calc._get_prorated_target('gross_profit', filter_values['period_type'], filter_values['year']) or 0,
-                    'Achievement %': (gp_actual / gp_target * 100) if gp_target else 0
-                })
-            
-            # New Customers
-            nc_target = targets_df[targets_df['kpi_name'].str.lower() == 'num_new_customers']['annual_target_value_numeric'].sum()
-            nc_actual = complex_kpis.get('new_customer_count', 0)
-            if nc_target > 0:
-                kpi_progress.append({
-                    'KPI': 'New Customers',
-                    'Actual': nc_actual,
-                    'Target (Annual)': nc_target,
-                    'Target (Prorated)': nc_target,
-                    'Achievement %': (nc_actual / nc_target * 100) if nc_target else 0
+                    'kpi_name': kpi_name,
+                    'KPI': display_name,
+                    'Actual': actual,
+                    'Target (Annual)': kpi_target,
+                    'Target (Prorated)': prorated_target,
+                    'Achievement %': achievement,
+                    'is_currency': kpi_name in currency_kpis
                 })
             
             if kpi_progress:
-                progress_df = pd.DataFrame(kpi_progress)
+                # Sort by KPI name for consistent ordering
+                kpi_progress.sort(key=lambda x: x['KPI'])
                 
                 # Display with progress bars
-                for _, row in progress_df.iterrows():
+                for row in kpi_progress:
                     col_k1, col_k2 = st.columns([1, 3])
                     
                     with col_k1:
@@ -1602,10 +1748,14 @@ with tab4:
                     
                     with col_k2:
                         st.progress(min(achievement / 100, 1.0))
-                        if 'Revenue' in row['KPI'] or 'Profit' in row['KPI']:
-                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Prorated)']:,.0f}")
+                        
+                        # Format based on KPI type
+                        if row['is_currency']:
+                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Annual)']:,.0f}")
                         else:
                             st.caption(f"{row['Actual']:.1f} / {row['Target (Annual)']:.0f}")
+            else:
+                st.info("No KPI targets assigned for selected salespeople")
         
         with kpi_tab3:
             st.markdown("#### 🏆 Team Ranking")
