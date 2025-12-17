@@ -318,7 +318,14 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         df_filtered = df.copy()
         
         # Filter by date range
-        date_cols = ['inv_date', 'oc_date', 'invoiced_date']
+        # FIXED v1.3.0: Added date columns for complex KPIs
+        date_cols = [
+            'inv_date',              # sales data
+            'oc_date',               # order confirmation
+            'invoiced_date',         # backlog
+            'first_invoice_date',    # new_customers
+            'first_sale_date',       # new_products
+        ]
         for date_col in date_cols:
             if date_col in df_filtered.columns:
                 df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
@@ -407,10 +414,18 @@ overview_metrics = metrics_calc.calculate_overview_metrics(
     year=filter_values['year']
 )
 
+# FIXED v1.3.0: Query new_business fresh with correct date range
+# new_business is aggregated data without date column, cannot filter client-side
+fresh_new_business_df = queries.get_new_business_revenue(
+    start_date=filter_values['start_date'],
+    end_date=filter_values['end_date'],
+    employee_ids=filter_values['employee_ids']
+)
+
 complex_kpis = metrics_calc.calculate_complex_kpis(
     new_customers_df=data['new_customers'],
     new_products_df=data['new_products'],
-    new_business_df=data['new_business']
+    new_business_df=fresh_new_business_df  # Use fresh data instead of cached
 )
 
 backlog_metrics = metrics_calc.calculate_backlog_metrics(

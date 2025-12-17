@@ -12,6 +12,13 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v1.3.0: Fixed duplicate counting bug - unified view has multiple rows per invoice (1 per product)
+          Added GROUP BY deduplication: each customer/product + salesperson combo counted once
+          NEW BUSINESS REVENUE: Now includes ALL revenue from new combos in period (not just first day)
+          A combo is "new" if first sale (in 5yr lookback) falls within selected period
+- v1.2.0: Fixed lookback calculation - now uses end_date.year instead of start_date.year
+          Fixed RANK() instead of ROW_NUMBER() to credit all salespeople who made
+          first sale on same day (split credit scenario)
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 """
@@ -252,25 +259,48 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
-        lookback_start = date(start_date.year - LOOKBACK_YEARS, 1, 1)
+        # Lookback: 5 years from start of end_date's year
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        # FIXED: Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
-        # This ensures customer is "new to company" not "new to salesperson"
+        # FIXED v1.1.0: PARTITION BY customer_id (new to company, not new to salesperson)
+        # FIXED v1.2.0: RANK() instead of ROW_NUMBER() to credit all salespeople 
+        #               who made first sale on same day
+        # FIXED v1.3.0: Added deduplication - each customer+salesperson combo counted once
         query = """
-            WITH first_customer_invoice AS (
+            WITH first_customer_date AS (
+                -- Step 1: Find first invoice date for each customer (globally)
                 SELECT 
                     customer_id,
-                    customer,
-                    sales_id,
-                    sales_name,
-                    split_rate_percent,
-                    inv_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY customer_id
-                        ORDER BY inv_date ASC
-                    ) as rn
+                    MIN(inv_date) as first_invoice_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
+                GROUP BY customer_id
+            ),
+            first_day_records AS (
+                -- Step 2: Get all records from first invoice date
+                SELECT 
+                    u.customer_id,
+                    u.customer,
+                    u.sales_id,
+                    u.sales_name,
+                    u.split_rate_percent,
+                    fcd.first_invoice_date
+                FROM first_customer_date fcd
+                JOIN unified_sales_by_salesperson_view u 
+                    ON fcd.customer_id = u.customer_id 
+                    AND u.inv_date = fcd.first_invoice_date
+            ),
+            deduplicated AS (
+                -- Step 3: Deduplicate per customer + salesperson (count each combo once)
+                SELECT 
+                    customer_id,
+                    MAX(customer) as customer,
+                    sales_id,
+                    MAX(sales_name) as sales_name,
+                    MAX(split_rate_percent) as split_rate_percent,
+                    first_invoice_date
+                FROM first_day_records
+                GROUP BY customer_id, sales_id, first_invoice_date
             )
             SELECT 
                 customer_id,
@@ -278,12 +308,11 @@ class SalespersonQueries:
                 sales_id,
                 sales_name,
                 split_rate_percent,
-                inv_date as first_invoice_date
-            FROM first_customer_invoice
-            WHERE rn = 1
-              AND inv_date BETWEEN :start_date AND :end_date
+                first_invoice_date
+            FROM deduplicated
+            WHERE first_invoice_date BETWEEN :start_date AND :end_date
               AND sales_id IN :employee_ids
-            ORDER BY inv_date DESC
+            ORDER BY first_invoice_date DESC
         """
         
         params = {
@@ -326,24 +355,49 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
-        lookback_start = date(start_date.year - LOOKBACK_YEARS, 1, 1)
+        # Lookback: 5 years from start of end_date's year
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # FIXED v1.2.0: RANK() instead of ROW_NUMBER() to credit all salespeople 
+        #               who made first sale on same day
+        # FIXED v1.3.0: Added deduplication - each product+salesperson combo counted once
         query = """
-            WITH first_product_sale AS (
+            WITH first_product_date AS (
+                -- Step 1: Find first sale date for each product (globally)
                 SELECT 
                     product_id,
-                    product_pn,
-                    brand,
-                    sales_id,
-                    sales_name,
-                    split_rate_percent,
-                    inv_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY product_id 
-                        ORDER BY inv_date ASC
-                    ) as rn
+                    MIN(inv_date) as first_sale_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
+                GROUP BY product_id
+            ),
+            first_day_records AS (
+                -- Step 2: Get all records from first sale date
+                SELECT 
+                    u.product_id,
+                    u.product_pn,
+                    u.brand,
+                    u.sales_id,
+                    u.sales_name,
+                    u.split_rate_percent,
+                    fpd.first_sale_date
+                FROM first_product_date fpd
+                JOIN unified_sales_by_salesperson_view u 
+                    ON fpd.product_id = u.product_id 
+                    AND u.inv_date = fpd.first_sale_date
+            ),
+            deduplicated AS (
+                -- Step 3: Deduplicate per product + salesperson (count each combo once)
+                SELECT 
+                    product_id,
+                    MAX(product_pn) as product_pn,
+                    MAX(brand) as brand,
+                    sales_id,
+                    MAX(sales_name) as sales_name,
+                    MAX(split_rate_percent) as split_rate_percent,
+                    first_sale_date
+                FROM first_day_records
+                GROUP BY product_id, sales_id, first_sale_date
             )
             SELECT 
                 product_id,
@@ -352,12 +406,11 @@ class SalespersonQueries:
                 sales_id,
                 sales_name,
                 split_rate_percent,
-                inv_date as first_sale_date
-            FROM first_product_sale
-            WHERE rn = 1
-              AND inv_date BETWEEN :start_date AND :end_date
+                first_sale_date
+            FROM deduplicated
+            WHERE first_sale_date BETWEEN :start_date AND :end_date
               AND sales_id IN :employee_ids
-            ORDER BY inv_date DESC
+            ORDER BY first_sale_date DESC
         """
         
         params = {
@@ -395,27 +448,43 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
-        lookback_start = date(start_date.year - LOOKBACK_YEARS, 1, 1)
+        # Lookback: 5 years from start of end_date's year
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # FIXED v1.3.0: Get ALL revenue from "new" combos within period
+        #               A combo is "new" if its first sale ever (in lookback) falls within period
+        #               Revenue = all sales of that combo in period, not just first day
         query = """
-            WITH first_combo_sale AS (
+            WITH first_combo_date AS (
+                -- Step 1: Find first sale date for each customer-product combo (globally)
                 SELECT 
                     customer_id,
-                    customer,
                     product_id,
-                    product_pn,
-                    sales_id,
-                    sales_name,
-                    sales_by_split_usd,
-                    gross_profit_by_split_usd,
-                    split_rate_percent,
-                    inv_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY customer_id, product_id 
-                        ORDER BY inv_date ASC
-                    ) as rn
+                    MIN(inv_date) as first_combo_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
+                GROUP BY customer_id, product_id
+            ),
+            new_combos AS (
+                -- Step 2: Identify combos that are "new" (first sale within selected period)
+                SELECT customer_id, product_id, first_combo_date
+                FROM first_combo_date
+                WHERE first_combo_date BETWEEN :start_date AND :end_date
+            ),
+            all_revenue_in_period AS (
+                -- Step 3: Get ALL revenue from new combos within period (not just first day)
+                SELECT 
+                    u.customer_id,
+                    u.product_id,
+                    u.sales_id,
+                    u.sales_name,
+                    u.sales_by_split_usd,
+                    u.gross_profit_by_split_usd
+                FROM new_combos nc
+                JOIN unified_sales_by_salesperson_view u 
+                    ON nc.customer_id = u.customer_id 
+                    AND nc.product_id = u.product_id
+                WHERE u.inv_date BETWEEN :start_date AND :end_date
             )
             SELECT 
                 sales_id,
@@ -423,10 +492,8 @@ class SalespersonQueries:
                 SUM(sales_by_split_usd) as new_business_revenue,
                 SUM(gross_profit_by_split_usd) as new_business_gp,
                 COUNT(DISTINCT CONCAT(customer_id, '-', product_id)) as new_combos_count
-            FROM first_combo_sale
-            WHERE rn = 1
-              AND inv_date BETWEEN :start_date AND :end_date
-              AND sales_id IN :employee_ids
+            FROM all_revenue_in_period
+            WHERE sales_id IN :employee_ids
             GROUP BY sales_id, sales_name
             ORDER BY new_business_revenue DESC
         """
