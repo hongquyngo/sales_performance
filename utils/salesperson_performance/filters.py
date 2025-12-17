@@ -191,7 +191,7 @@ class SalespersonFilters:
                         options = ['All'] + all_salespeople
                         default = ['All']
                     elif self.access.get_access_level() == 'team':
-                        team_ids = self.access.get_team_member_ids()
+                        team_ids = self.access.get_accessible_employee_ids()
                         team_names = salesperson_df[
                             salesperson_df['employee_id'].isin(team_ids)
                         ]['sales_name'].tolist()
@@ -219,7 +219,7 @@ class SalespersonFilters:
                     if 'All' in selected_names:
                         employee_ids = salesperson_df['employee_id'].tolist()
                     elif 'All Team' in selected_names:
-                        employee_ids = self.access.get_team_member_ids()
+                        employee_ids = self.access.get_accessible_employee_ids()
                     else:
                         employee_ids = [id_map[n] for n in selected_names if n in id_map]
                 

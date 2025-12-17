@@ -243,16 +243,29 @@ class SalespersonCharts:
                     )
                 
                 with col_b3:
+                    forecast_revenue = backlog_metrics.get('forecast_revenue')
                     forecast_achievement = backlog_metrics.get('forecast_achievement_revenue')
-                    delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
-                    delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
-                    st.metric(
-                        label="Forecast",
-                        value=f"${backlog_metrics.get('forecast_revenue', 0):,.0f}",
-                        delta=delta_str,
-                        delta_color=delta_color if delta_str else "off",
-                        help="Projected period total. Formula: Current Invoiced Revenue + In-Period Backlog"
-                    )
+                    
+                    # Handle None for historical periods
+                    if forecast_revenue is not None:
+                        delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
+                        delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
+                        st.metric(
+                            label="Forecast",
+                            value=f"${forecast_revenue:,.0f}",
+                            delta=delta_str,
+                            delta_color=delta_color if delta_str else "off",
+                            help="Projected period total. Formula: Current Invoiced Revenue + In-Period Backlog"
+                        )
+                    else:
+                        # Historical period - forecast not applicable
+                        st.metric(
+                            label="Forecast",
+                            value="N/A",
+                            delta="Historical period",
+                            delta_color="off",
+                            help="Forecast is not available for historical periods (end date is in the past)"
+                        )
                 
                 with col_b4:
                     gap = backlog_metrics.get('gap_revenue')
