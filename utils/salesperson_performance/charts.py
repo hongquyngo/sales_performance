@@ -344,7 +344,6 @@ class SalespersonCharts:
                 # NEW CUSTOMERS with Detail Popover
                 # ---------------------------------------------------------
                 with col9:
-                    # Header row with metric and detail button
                     metric_col, btn_col = st.columns([4, 1])
                     
                     with metric_col:
@@ -359,62 +358,42 @@ class SalespersonCharts:
                         )
                     
                     with btn_col:
-                        # Detail popover button
                         if new_customers_df is not None and not new_customers_df.empty:
-                            with st.popover("📋", use_container_width=False):
+                            with st.popover("📋"):
                                 # Force wider container
-                                st.markdown("""
-                                <div style="min-width: 550px;">
-                                <h4>📋 New Customers Detail</h4>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.caption(f"Total: {len(new_customers_df)} records | Sorted by First Invoice Date")
+                                st.markdown('<div style="min-width:550px"><b>📋 New Customers Detail</b></div>', unsafe_allow_html=True)
+                                st.caption(f"Total: {len(new_customers_df)} records")
                                 
-                                # Prepare display dataframe - show all available columns
                                 display_cols = ['customer', 'sales_name', 'split_rate_percent', 'first_invoice_date']
                                 available_cols = [c for c in display_cols if c in new_customers_df.columns]
-                                
-                                # Debug: show what columns are available
-                                st.caption(f"Columns: {', '.join(new_customers_df.columns)}")
                                 
                                 if available_cols:
                                     display_df = new_customers_df[available_cols].copy()
                                     
-                                    # Rename columns for display
-                                    col_rename = {
-                                        'customer': 'Customer',
-                                        'sales_name': 'Salesperson',
-                                        'split_rate_percent': 'Split %',
-                                        'first_invoice_date': 'First Invoice'
-                                    }
-                                    display_df.rename(columns=col_rename, inplace=True)
-                                    
-                                    # Format date if present
-                                    if 'First Invoice' in display_df.columns:
-                                        display_df['First Invoice'] = pd.to_datetime(
-                                            display_df['First Invoice']
+                                    # Sort by date descending
+                                    if 'first_invoice_date' in display_df.columns:
+                                        display_df = display_df.sort_values('first_invoice_date', ascending=False)
+                                        display_df['first_invoice_date'] = pd.to_datetime(
+                                            display_df['first_invoice_date']
                                         ).dt.strftime('%Y-%m-%d')
                                     
-                                    # Sort by date descending
-                                    if 'First Invoice' in display_df.columns:
-                                        display_df = display_df.sort_values('First Invoice', ascending=False)
+                                    # Format Split %
+                                    if 'split_rate_percent' in display_df.columns:
+                                        display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
+                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
+                                        )
+                                    
+                                    # Rename columns
+                                    display_df.columns = ['Customer', 'Salesperson', 'Split %', 'First Invoice'][:len(display_df.columns)]
                                     
                                     st.dataframe(
                                         display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=min(450, len(display_df) * 35 + 40),
-                                        column_config={
-                                            "Customer": st.column_config.TextColumn("Customer", width="large"),
-                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="medium"),
-                                            "Split %": st.column_config.NumberColumn("Split %", format="%.0f%%", width="small"),
-                                            "First Invoice": st.column_config.TextColumn("First Invoice", width="small")
-                                        }
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
-                                else:
-                                    st.warning(f"Expected columns not found. Available: {list(new_customers_df.columns)}")
                         else:
-                            st.caption("")  # Placeholder for alignment
+                            st.caption("")
                 
                 # ---------------------------------------------------------
                 # NEW PRODUCTS with Detail Popover
@@ -435,52 +414,39 @@ class SalespersonCharts:
                     
                     with btn_col:
                         if new_products_df is not None and not new_products_df.empty:
-                            with st.popover("📋", use_container_width=False):
+                            with st.popover("📋"):
                                 # Force wider container
-                                st.markdown("""
-                                <div style="min-width: 600px;">
-                                <h4>📋 New Products Detail</h4>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.caption(f"Total: {len(new_products_df)} records | Sorted by First Sale Date")
+                                st.markdown('<div style="min-width:600px"><b>📋 New Products Detail</b></div>', unsafe_allow_html=True)
+                                st.caption(f"Total: {len(new_products_df)} records")
                                 
-                                # Prepare display dataframe
                                 display_cols = ['product_pn', 'brand', 'sales_name', 'split_rate_percent', 'first_sale_date']
                                 available_cols = [c for c in display_cols if c in new_products_df.columns]
                                 
                                 if available_cols:
                                     display_df = new_products_df[available_cols].copy()
                                     
-                                    col_rename = {
-                                        'product_pn': 'Product',
-                                        'brand': 'Brand',
-                                        'sales_name': 'Salesperson',
-                                        'split_rate_percent': 'Split %',
-                                        'first_sale_date': 'First Sale'
-                                    }
-                                    display_df.rename(columns=col_rename, inplace=True)
-                                    
-                                    if 'First Sale' in display_df.columns:
-                                        display_df['First Sale'] = pd.to_datetime(
-                                            display_df['First Sale']
+                                    # Sort by date descending
+                                    if 'first_sale_date' in display_df.columns:
+                                        display_df = display_df.sort_values('first_sale_date', ascending=False)
+                                        display_df['first_sale_date'] = pd.to_datetime(
+                                            display_df['first_sale_date']
                                         ).dt.strftime('%Y-%m-%d')
-                                        display_df = display_df.sort_values('First Sale', ascending=False)
+                                    
+                                    # Format Split %
+                                    if 'split_rate_percent' in display_df.columns:
+                                        display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
+                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
+                                        )
+                                    
+                                    # Rename columns
+                                    display_df.columns = ['Product', 'Brand', 'Salesperson', 'Split %', 'First Sale'][:len(display_df.columns)]
                                     
                                     st.dataframe(
                                         display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=min(450, len(display_df) * 35 + 40),
-                                        column_config={
-                                            "Product": st.column_config.TextColumn("Product", width="large"),
-                                            "Brand": st.column_config.TextColumn("Brand", width="medium"),
-                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="medium"),
-                                            "Split %": st.column_config.NumberColumn("Split %", format="%.0f%%", width="small"),
-                                            "First Sale": st.column_config.TextColumn("First Sale", width="small")
-                                        }
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
-                                else:
-                                    st.info("No detail columns available")
                         else:
                             st.caption("")
                 
@@ -503,48 +469,44 @@ class SalespersonCharts:
                     
                     with btn_col:
                         if new_business_df is not None and not new_business_df.empty:
-                            with st.popover("📋", use_container_width=False):
+                            with st.popover("📋"):
                                 # Force wider container
-                                st.markdown("""
-                                <div style="min-width: 550px;">
-                                <h4>📋 New Business Revenue Detail</h4>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.caption(f"By Salesperson | Sorted by Revenue")
+                                st.markdown('<div style="min-width:550px"><b>📋 New Business Revenue Detail</b></div>', unsafe_allow_html=True)
+                                st.caption(f"By Salesperson | Total: {len(new_business_df)} records")
                                 
-                                # Prepare display dataframe
                                 display_cols = ['sales_name', 'new_business_revenue', 'new_business_gp', 'new_combos_count']
                                 available_cols = [c for c in display_cols if c in new_business_df.columns]
                                 
                                 if available_cols:
                                     display_df = new_business_df[available_cols].copy()
                                     
-                                    col_rename = {
-                                        'sales_name': 'Salesperson',
-                                        'new_business_revenue': 'Revenue',
-                                        'new_business_gp': 'Gross Profit',
-                                        'new_combos_count': 'New Combos'
-                                    }
-                                    display_df.rename(columns=col_rename, inplace=True)
+                                    # Sort by revenue descending
+                                    if 'new_business_revenue' in display_df.columns:
+                                        display_df = display_df.sort_values('new_business_revenue', ascending=False)
                                     
-                                    # Sort by Revenue descending
-                                    if 'Revenue' in display_df.columns:
-                                        display_df = display_df.sort_values('Revenue', ascending=False)
+                                    # Format currency columns
+                                    if 'new_business_revenue' in display_df.columns:
+                                        display_df['new_business_revenue'] = display_df['new_business_revenue'].apply(
+                                            lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                        )
+                                    if 'new_business_gp' in display_df.columns:
+                                        display_df['new_business_gp'] = display_df['new_business_gp'].apply(
+                                            lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                        )
+                                    if 'new_combos_count' in display_df.columns:
+                                        display_df['new_combos_count'] = display_df['new_combos_count'].apply(
+                                            lambda x: f"{int(x):,}" if pd.notna(x) else "0"
+                                        )
+                                    
+                                    # Rename columns for display
+                                    display_df.columns = ['Salesperson', 'Revenue', 'Gross Profit', 'New Combos'][:len(display_df.columns)]
                                     
                                     st.dataframe(
                                         display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=min(450, len(display_df) * 35 + 40),
-                                        column_config={
-                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="large"),
-                                            "Revenue": st.column_config.NumberColumn("Revenue", format="$%,.0f", width="medium"),
-                                            "Gross Profit": st.column_config.NumberColumn("Gross Profit", format="$%,.0f", width="medium"),
-                                            "New Combos": st.column_config.NumberColumn("New Combos", format="%d", width="small")
-                                        }
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
-                                else:
-                                    st.info("No detail columns available")
                         else:
                             st.caption("")
     
