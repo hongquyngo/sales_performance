@@ -541,7 +541,11 @@ with tab1:
         backlog_metrics=backlog_metrics if period_info['show_backlog'] else None,
         overall_achievement=overall_achievement,
         show_complex=True,
-        show_backlog=period_info['show_backlog']
+        show_backlog=period_info['show_backlog'],
+        # NEW v1.2.0: Pass detail dataframes for popup buttons
+        new_customers_df=data['new_customers'],
+        new_products_df=data['new_products'],
+        new_business_df=fresh_new_business_df
     )
     
     st.divider()

@@ -52,7 +52,11 @@ class SalespersonCharts:
         backlog_metrics: Dict = None,
         overall_achievement: Dict = None,
         show_complex: bool = True,
-        show_backlog: bool = True
+        show_backlog: bool = True,
+        # NEW v1.2.0: Detail dataframes for popup buttons
+        new_customers_df: pd.DataFrame = None,
+        new_products_df: pd.DataFrame = None,
+        new_business_df: pd.DataFrame = None
     ):
         """
         Render KPI summary cards using Streamlit metrics with visual grouping.
@@ -72,6 +76,9 @@ class SalespersonCharts:
             overall_achievement: Overall weighted KPI achievement (optional)
             show_complex: Whether to show complex KPI section
             show_backlog: Whether to show backlog/forecast section
+            new_customers_df: DataFrame with new customer details for popup (optional)
+            new_products_df: DataFrame with new product details for popup (optional)
+            new_business_df: DataFrame with new business revenue details for popup (optional)
         """
         # =====================================================================
         # 💰 PERFORMANCE SECTION
@@ -296,7 +303,7 @@ class SalespersonCharts:
                         )
         
         # =====================================================================
-        # 🆕 NEW BUSINESS SECTION
+        # 🆕 NEW BUSINESS SECTION (UPDATED v1.2.0 with Detail Popovers)
         # =====================================================================
         if show_complex and complex_kpis:
             with st.container(border=True):
@@ -333,38 +340,213 @@ class SalespersonCharts:
                 
                 col9, col10, col11 = st.columns(3)
                 
+                # ---------------------------------------------------------
+                # NEW CUSTOMERS with Detail Popover
+                # ---------------------------------------------------------
                 with col9:
-                    achievement = complex_kpis.get('new_customer_achievement')
-                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    # Header row with metric and detail button
+                    metric_col, btn_col = st.columns([4, 1])
                     
-                    st.metric(
-                        label="New Customers",
-                        value=f"{complex_kpis['new_customer_count']:.1f}",
-                        delta=delta_str,
-                        help="Customers with first-ever invoice to COMPANY in period (5-year lookback). Credit goes to salesperson who made first sale. Counted proportionally by split %. Formula: Σ(split_rate / 100)"
-                    )
+                    with metric_col:
+                        achievement = complex_kpis.get('new_customer_achievement')
+                        delta_str = f"{achievement:.0f}% of target" if achievement else None
+                        
+                        st.metric(
+                            label="New Customers",
+                            value=f"{complex_kpis['new_customer_count']:.1f}",
+                            delta=delta_str,
+                            help="Customers with first-ever invoice to COMPANY in period (5-year lookback)."
+                        )
+                    
+                    with btn_col:
+                        # Detail popover button
+                        if new_customers_df is not None and not new_customers_df.empty:
+                            with st.popover("📋", use_container_width=False):
+                                # Force wider container
+                                st.markdown("""
+                                <div style="min-width: 550px;">
+                                <h4>📋 New Customers Detail</h4>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.caption(f"Total: {len(new_customers_df)} records | Sorted by First Invoice Date")
+                                
+                                # Prepare display dataframe - show all available columns
+                                display_cols = ['customer', 'sales_name', 'split_rate_percent', 'first_invoice_date']
+                                available_cols = [c for c in display_cols if c in new_customers_df.columns]
+                                
+                                # Debug: show what columns are available
+                                st.caption(f"Columns: {', '.join(new_customers_df.columns)}")
+                                
+                                if available_cols:
+                                    display_df = new_customers_df[available_cols].copy()
+                                    
+                                    # Rename columns for display
+                                    col_rename = {
+                                        'customer': 'Customer',
+                                        'sales_name': 'Salesperson',
+                                        'split_rate_percent': 'Split %',
+                                        'first_invoice_date': 'First Invoice'
+                                    }
+                                    display_df.rename(columns=col_rename, inplace=True)
+                                    
+                                    # Format date if present
+                                    if 'First Invoice' in display_df.columns:
+                                        display_df['First Invoice'] = pd.to_datetime(
+                                            display_df['First Invoice']
+                                        ).dt.strftime('%Y-%m-%d')
+                                    
+                                    # Sort by date descending
+                                    if 'First Invoice' in display_df.columns:
+                                        display_df = display_df.sort_values('First Invoice', ascending=False)
+                                    
+                                    st.dataframe(
+                                        display_df,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                        height=min(450, len(display_df) * 35 + 40),
+                                        column_config={
+                                            "Customer": st.column_config.TextColumn("Customer", width="large"),
+                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="medium"),
+                                            "Split %": st.column_config.NumberColumn("Split %", format="%.0f%%", width="small"),
+                                            "First Invoice": st.column_config.TextColumn("First Invoice", width="small")
+                                        }
+                                    )
+                                else:
+                                    st.warning(f"Expected columns not found. Available: {list(new_customers_df.columns)}")
+                        else:
+                            st.caption("")  # Placeholder for alignment
                 
+                # ---------------------------------------------------------
+                # NEW PRODUCTS with Detail Popover
+                # ---------------------------------------------------------
                 with col10:
-                    achievement = complex_kpis.get('new_product_achievement')
-                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    metric_col, btn_col = st.columns([4, 1])
                     
-                    st.metric(
-                        label="New Products",
-                        value=f"{complex_kpis['new_product_count']:.1f}",
-                        delta=delta_str,
-                        help="Products with first-ever sale to ANY customer in period (5-year lookback). Credit goes to salesperson who introduced the product. Formula: Σ(split_rate / 100)"
-                    )
+                    with metric_col:
+                        achievement = complex_kpis.get('new_product_achievement')
+                        delta_str = f"{achievement:.0f}% of target" if achievement else None
+                        
+                        st.metric(
+                            label="New Products",
+                            value=f"{complex_kpis['new_product_count']:.1f}",
+                            delta=delta_str,
+                            help="Products with first-ever sale to ANY customer in period (5-year lookback)."
+                        )
+                    
+                    with btn_col:
+                        if new_products_df is not None and not new_products_df.empty:
+                            with st.popover("📋", use_container_width=False):
+                                # Force wider container
+                                st.markdown("""
+                                <div style="min-width: 600px;">
+                                <h4>📋 New Products Detail</h4>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.caption(f"Total: {len(new_products_df)} records | Sorted by First Sale Date")
+                                
+                                # Prepare display dataframe
+                                display_cols = ['product_pn', 'brand', 'sales_name', 'split_rate_percent', 'first_sale_date']
+                                available_cols = [c for c in display_cols if c in new_products_df.columns]
+                                
+                                if available_cols:
+                                    display_df = new_products_df[available_cols].copy()
+                                    
+                                    col_rename = {
+                                        'product_pn': 'Product',
+                                        'brand': 'Brand',
+                                        'sales_name': 'Salesperson',
+                                        'split_rate_percent': 'Split %',
+                                        'first_sale_date': 'First Sale'
+                                    }
+                                    display_df.rename(columns=col_rename, inplace=True)
+                                    
+                                    if 'First Sale' in display_df.columns:
+                                        display_df['First Sale'] = pd.to_datetime(
+                                            display_df['First Sale']
+                                        ).dt.strftime('%Y-%m-%d')
+                                        display_df = display_df.sort_values('First Sale', ascending=False)
+                                    
+                                    st.dataframe(
+                                        display_df,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                        height=min(450, len(display_df) * 35 + 40),
+                                        column_config={
+                                            "Product": st.column_config.TextColumn("Product", width="large"),
+                                            "Brand": st.column_config.TextColumn("Brand", width="medium"),
+                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="medium"),
+                                            "Split %": st.column_config.NumberColumn("Split %", format="%.0f%%", width="small"),
+                                            "First Sale": st.column_config.TextColumn("First Sale", width="small")
+                                        }
+                                    )
+                                else:
+                                    st.info("No detail columns available")
+                        else:
+                            st.caption("")
                 
+                # ---------------------------------------------------------
+                # NEW BUSINESS REVENUE with Detail Popover
+                # ---------------------------------------------------------
                 with col11:
-                    achievement = complex_kpis.get('new_business_achievement')
-                    delta_str = f"{achievement:.0f}% of target" if achievement else None
+                    metric_col, btn_col = st.columns([4, 1])
                     
-                    st.metric(
-                        label="New Business Revenue",
-                        value=f"${complex_kpis['new_business_revenue']:,.0f}",
-                        delta=delta_str,
-                        help="Revenue from first-time product-customer combinations (5-year lookback). Captures revenue when a product is sold to a customer for the first time ever. Formula: Σ(sales_by_split_usd) for first-time combos"
-                    )
+                    with metric_col:
+                        achievement = complex_kpis.get('new_business_achievement')
+                        delta_str = f"{achievement:.0f}% of target" if achievement else None
+                        
+                        st.metric(
+                            label="New Business Revenue",
+                            value=f"${complex_kpis['new_business_revenue']:,.0f}",
+                            delta=delta_str,
+                            help="Revenue from first-time product-customer combinations (5-year lookback)."
+                        )
+                    
+                    with btn_col:
+                        if new_business_df is not None and not new_business_df.empty:
+                            with st.popover("📋", use_container_width=False):
+                                # Force wider container
+                                st.markdown("""
+                                <div style="min-width: 550px;">
+                                <h4>📋 New Business Revenue Detail</h4>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                st.caption(f"By Salesperson | Sorted by Revenue")
+                                
+                                # Prepare display dataframe
+                                display_cols = ['sales_name', 'new_business_revenue', 'new_business_gp', 'new_combos_count']
+                                available_cols = [c for c in display_cols if c in new_business_df.columns]
+                                
+                                if available_cols:
+                                    display_df = new_business_df[available_cols].copy()
+                                    
+                                    col_rename = {
+                                        'sales_name': 'Salesperson',
+                                        'new_business_revenue': 'Revenue',
+                                        'new_business_gp': 'Gross Profit',
+                                        'new_combos_count': 'New Combos'
+                                    }
+                                    display_df.rename(columns=col_rename, inplace=True)
+                                    
+                                    # Sort by Revenue descending
+                                    if 'Revenue' in display_df.columns:
+                                        display_df = display_df.sort_values('Revenue', ascending=False)
+                                    
+                                    st.dataframe(
+                                        display_df,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                        height=min(450, len(display_df) * 35 + 40),
+                                        column_config={
+                                            "Salesperson": st.column_config.TextColumn("Salesperson", width="large"),
+                                            "Revenue": st.column_config.NumberColumn("Revenue", format="$%,.0f", width="medium"),
+                                            "Gross Profit": st.column_config.NumberColumn("Gross Profit", format="$%,.0f", width="medium"),
+                                            "New Combos": st.column_config.NumberColumn("New Combos", format="%d", width="small")
+                                        }
+                                    )
+                                else:
+                                    st.info("No detail columns available")
+                        else:
+                            st.caption("")
     
     # =========================================================================
     # MONTHLY TREND CHART
