@@ -9,9 +9,18 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.2.0
+Version: 2.3.0
 
 CHANGELOG:
+- v2.3.0: FIXED KPI Progress logic when multiple salespeople selected
+          - Each KPI now only counts actual from employees who have that specific KPI target
+          - Example: GP Achievement only includes GP from employees with GP target assigned
+          - Added employee count display in KPI progress caption
+          - Team Ranking now supports multiple sort criteria:
+            Revenue / GP / GP1 / GP% / KPI Achievement %
+          - Default ranking changed to KPI Achievement %
+          - Added GP1 and GP1% columns to ranking table
+          - Highlight sort column with yellow background
 - v2.2.0: Added Period Type radio buttons in sidebar
           - YTD/QTD/MTD: Auto-calculate dates for current year
           - Custom: Manual date selection
@@ -2052,18 +2061,21 @@ with tab4:
             
             # =================================================================
             # DYNAMIC KPI Progress - Show ALL assigned KPIs
+            # FIXED v2.3.0: Only count actual from employees who have that KPI target
             # =================================================================
             
-            # Map KPI names to actual values
-            # Key = kpi_name (lowercase), Value = actual value from data
-            kpi_actual_map = {
-                'revenue': overview_metrics.get('total_revenue', 0),
-                'gross_profit': overview_metrics.get('total_gp', 0),
-                'gross_profit_1': overview_metrics.get('total_gp1', 0),
+            # Map KPI names to column names in sales_df
+            kpi_column_map = {
+                'revenue': 'sales_by_split_usd',
+                'gross_profit': 'gross_profit_by_split_usd',
+                'gross_profit_1': 'gp1_by_split_usd',
+            }
+            
+            # Complex KPIs that need special handling (not from sales_df)
+            complex_kpi_actual_map = {
                 'num_new_customers': complex_kpis.get('new_customer_count', 0),
                 'num_new_products': complex_kpis.get('new_product_count', 0),
                 'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
-                # Add more KPI mappings as needed
             }
             
             # Display name mapping for better UI
@@ -2082,9 +2094,15 @@ with tab4:
             
             # Get unique KPI types from targets
             kpi_progress = []
+            sales_df = data['sales']
             
             for kpi_name in targets_df['kpi_name'].str.lower().unique():
-                # Get target for this KPI
+                # Get employees who have this specific KPI target
+                employees_with_target = targets_df[
+                    targets_df['kpi_name'].str.lower() == kpi_name
+                ]['employee_id'].unique().tolist()
+                
+                # Get target for this KPI (sum of all employees with this target)
                 kpi_target = targets_df[
                     targets_df['kpi_name'].str.lower() == kpi_name
                 ]['annual_target_value_numeric'].sum()
@@ -2092,8 +2110,21 @@ with tab4:
                 if kpi_target <= 0:
                     continue
                 
-                # Get actual value
-                actual = kpi_actual_map.get(kpi_name, 0)
+                # Calculate actual value - ONLY from employees who have this KPI target
+                if kpi_name in kpi_column_map:
+                    # For sales-based KPIs: filter sales_df by employees with target
+                    col_name = kpi_column_map[kpi_name]
+                    if not sales_df.empty and col_name in sales_df.columns:
+                        filtered_sales = sales_df[sales_df['sales_id'].isin(employees_with_target)]
+                        actual = filtered_sales[col_name].sum() if not filtered_sales.empty else 0
+                    else:
+                        actual = 0
+                elif kpi_name in complex_kpi_actual_map:
+                    # For complex KPIs: use pre-calculated values
+                    # Note: These are already filtered by selected employees in the query
+                    actual = complex_kpi_actual_map[kpi_name]
+                else:
+                    actual = 0
                 
                 # Get display name
                 display_name = kpi_display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
@@ -2113,7 +2144,8 @@ with tab4:
                     'Target (Annual)': kpi_target,
                     'Target (Prorated)': prorated_target,
                     'Achievement %': achievement,
-                    'is_currency': kpi_name in currency_kpis
+                    'is_currency': kpi_name in currency_kpis,
+                    'employee_count': len(employees_with_target)
                 })
             
             if kpi_progress:
@@ -2139,9 +2171,9 @@ with tab4:
                         
                         # Format based on KPI type
                         if row['is_currency']:
-                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Annual)']:,.0f}")
+                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Annual)']:,.0f} ({row['employee_count']} people)")
                         else:
-                            st.caption(f"{row['Actual']:.1f} / {row['Target (Annual)']:.0f}")
+                            st.caption(f"{row['Actual']:.1f} / {row['Target (Annual)']:.0f} ({row['employee_count']} people)")
             else:
                 st.info("No KPI targets assigned for selected salespeople")
         
