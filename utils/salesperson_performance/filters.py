@@ -619,73 +619,96 @@ class SalespersonFilters:
         with st.sidebar:
             st.header("🎛️ Filters")
             
-            with st.form("filter_form", border=False):
-                # =====================================================
-                # PERIOD TYPE SELECTION (Radio buttons)
-                # =====================================================
-                st.markdown("**📅 Date Range**")
-                st.caption("📊 Applies to Sales data. Backlog shows full pipeline.")
+            # =====================================================
+            # PERIOD TYPE SELECTION (Outside form for reactivity)
+            # =====================================================
+            st.markdown("**📅 Date Range**")
+            st.caption("📊 Applies to Sales data. Backlog shows full pipeline.")
+            
+            # Radio buttons for period type - OUTSIDE form for immediate reactivity
+            period_type = st.radio(
+                "Period",
+                options=['YTD', 'QTD', 'MTD', 'Custom'],
+                index=0,  # Default to YTD
+                horizontal=True,
+                key="sidebar_period_type",
+                help="**YTD**: Year to Date (Jan 1 → Today)\n\n**QTD**: Quarter to Date (Quarter start → Today)\n\n**MTD**: Month to Date (Month start → Today)\n\n**Custom**: Select your own date range"
+            )
+            
+            # Calculate dates based on period type
+            year = today.year
+            
+            # Always show date inputs, but behavior depends on period_type
+            col_d1, col_d2 = st.columns(2)
+            
+            if period_type == 'Custom':
+                # Custom: User can edit dates
+                with col_d1:
+                    start_date = st.date_input(
+                        "Start",
+                        value=default_start_date,
+                        key="sidebar_start_date",
+                        help="📅 **Custom mode**: Select your start date"
+                    )
+                with col_d2:
+                    end_date = st.date_input(
+                        "End",
+                        value=default_end_date,
+                        key="sidebar_end_date",
+                        help="📅 **Custom mode**: Select your end date"
+                    )
                 
-                # Radio buttons for period type
-                period_type = st.radio(
-                    "Period",
-                    options=['YTD', 'QTD', 'MTD', 'Custom'],
-                    index=0,  # Default to YTD
-                    horizontal=True,
-                    key="form_period_type",
-                    help="YTD/QTD/MTD use current year. Custom allows date selection."
-                )
+                # Validation
+                if start_date > end_date:
+                    st.error("⚠️ Start date must be before end date")
+                    end_date = start_date
                 
-                # Calculate dates based on period type
-                year = today.year
+                # Use start_date's year for KPI matching
+                year = start_date.year
                 
+            else:
+                # YTD/QTD/MTD: Auto-calculate dates, show as disabled
                 if period_type == 'YTD':
-                    # Year to Date: Jan 1 to today
                     start_date = date(year, 1, 1)
                     end_date = today
-                    st.caption(f"📆 {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
-                    
+                    period_label = "Year to Date"
                 elif period_type == 'QTD':
-                    # Quarter to Date: Quarter start to today
                     current_quarter = (today.month - 1) // 3 + 1
                     quarter_start_month = (current_quarter - 1) * 3 + 1
                     start_date = date(year, quarter_start_month, 1)
                     end_date = today
-                    st.caption(f"📆 Q{current_quarter}: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
-                    
-                elif period_type == 'MTD':
-                    # Month to Date: Month start to today
+                    period_label = f"Q{current_quarter} to Date"
+                else:  # MTD
                     start_date = date(year, today.month, 1)
                     end_date = today
-                    st.caption(f"📆 {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
-                    
-                else:  # Custom
-                    col_d1, col_d2 = st.columns(2)
-                    with col_d1:
-                        start_date = st.date_input(
-                            "Start",
-                            value=default_start_date,
-                            key="form_start_date",
-                            help="Period start date."
-                        )
-                    with col_d2:
-                        end_date = st.date_input(
-                            "End",
-                            value=default_end_date,
-                            key="form_end_date",
-                            help="Period end date."
-                        )
-                    
-                    # Validation
-                    if start_date > end_date:
-                        st.error("⚠️ Start date must be before end date")
-                        end_date = start_date
-                    
-                    # Use start_date's year for KPI matching
-                    year = start_date.year
+                    period_label = f"{today.strftime('%B')} to Date"
                 
-                st.divider()
+                # Show dates as disabled (read-only visual)
+                with col_d1:
+                    st.date_input(
+                        "Start",
+                        value=start_date,
+                        key="sidebar_start_date_auto",
+                        disabled=True,
+                        help=f"🔒 **{period_type} mode**: Auto-calculated ({period_label})"
+                    )
+                with col_d2:
+                    st.date_input(
+                        "End",
+                        value=end_date,
+                        key="sidebar_end_date_auto",
+                        disabled=True,
+                        help=f"🔒 **{period_type} mode**: Auto-calculated ({period_label})"
+                    )
                 
+                st.caption(f"📆 {period_label}: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
+            
+            st.divider()
+            
+            # =====================================================
+            # FORM FOR OTHER FILTERS
+            # =====================================================
+            with st.form("filter_form", border=False):
                 # =====================================================
                 # SALESPERSON FILTER
                 # =====================================================
