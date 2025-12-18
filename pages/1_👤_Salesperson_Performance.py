@@ -9,7 +9,15 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.0.0
+Version: 2.1.0
+
+CHANGELOG:
+- v2.1.0: Improved filters with MultiSelect + Excluded option
+          - All filters now support multi-selection
+          - Added "Excl" checkbox to exclude selected values instead of include
+          - Added filter summary display showing active filters
+          - Consistent filter UI across Sales Detail and Backlog tabs
+- v2.0.0: Initial tabbed version
 """
 
 import streamlit as st
@@ -33,7 +41,16 @@ from utils.salesperson_performance import (
     PERIOD_TYPES,
     MONTH_ORDER,
 )
-from utils.salesperson_performance.filters import analyze_period
+from utils.salesperson_performance.filters import (
+    analyze_period,
+    render_multiselect_filter,
+    apply_multiselect_filter,
+    render_text_search_filter,
+    apply_text_search_filter,
+    render_number_filter,
+    apply_number_filter,
+    FilterResult,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1199,46 +1216,99 @@ with tab2:
         
         with detail_tab1:
             # =================================================================
-            # FILTERS - Synchronized structure with Backlog tab
+            # IMPROVED FILTERS - MultiSelect with Excluded option
             # =================================================================
             col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
             
+            # Customer filter
             with col_f1:
-                customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
-                selected_customer = st.selectbox("Customer", customers, key="detail_customer")
+                customer_options = sorted(sales_df['customer'].dropna().unique().tolist())
+                customer_filter = render_multiselect_filter(
+                    label="Customer",
+                    options=customer_options,
+                    key="detail_customer",
+                    placeholder="All customers..."
+                )
             
+            # Brand filter
             with col_f2:
-                brands = ['All'] + sorted(sales_df['brand'].dropna().unique().tolist())
-                selected_brand = st.selectbox("Brand", brands, key="detail_brand")
+                brand_options = sorted(sales_df['brand'].dropna().unique().tolist())
+                brand_filter = render_multiselect_filter(
+                    label="Brand",
+                    options=brand_options,
+                    key="detail_brand",
+                    placeholder="All brands..."
+                )
             
+            # Product filter
             with col_f3:
-                products = ['All'] + sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
-                selected_product = st.selectbox("Product", products, key="detail_product")
+                product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
+                product_filter = render_multiselect_filter(
+                    label="Product",
+                    options=product_options,
+                    key="detail_product",
+                    placeholder="All products..."
+                )
             
+            # OC# / Customer PO search
             with col_f4:
-                # OC/Customer PO filter (NEW)
-                oc_po_search = st.text_input("OC# / Customer PO", placeholder="Search...", key="detail_oc_po")
+                oc_po_filter = render_text_search_filter(
+                    label="OC# / Customer PO",
+                    key="detail_oc_po",
+                    placeholder="Search..."
+                )
             
+            # Min Amount filter
             with col_f5:
-                min_amount = st.number_input("Min Amount ($)", value=0, step=1000, key="detail_min_amount")
+                amount_filter = render_number_filter(
+                    label="Min Amount ($)",
+                    key="detail_min_amount",
+                    default_min=0,
+                    step=1000
+                )
             
-            # Filter data
+            # =================================================================
+            # APPLY ALL FILTERS
+            # =================================================================
             filtered_df = sales_df.copy()
-            if selected_customer != 'All':
-                filtered_df = filtered_df[filtered_df['customer'] == selected_customer]
-            if selected_brand != 'All':
-                filtered_df = filtered_df[filtered_df['brand'] == selected_brand]
-            if selected_product != 'All':
-                filtered_df = filtered_df[filtered_df['product_pn'] == selected_product]
-            if min_amount > 0:
-                filtered_df = filtered_df[filtered_df['sales_by_split_usd'] >= min_amount]
             
-            # NEW: Filter by OC# or Customer PO
-            if oc_po_search:
-                search_lower = oc_po_search.lower()
-                oc_mask = filtered_df['oc_number'].astype(str).str.lower().str.contains(search_lower, na=False)
-                po_mask = filtered_df['customer_po_number'].astype(str).str.lower().str.contains(search_lower, na=False)
-                filtered_df = filtered_df[oc_mask | po_mask]
+            # Apply multiselect filters
+            filtered_df = apply_multiselect_filter(filtered_df, 'customer', customer_filter)
+            filtered_df = apply_multiselect_filter(filtered_df, 'brand', brand_filter)
+            filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', product_filter)
+            
+            # Apply text search on multiple columns
+            filtered_df = apply_text_search_filter(
+                filtered_df, 
+                columns=['oc_number', 'customer_po_number'],
+                search_result=oc_po_filter
+            )
+            
+            # Apply number filter
+            filtered_df = apply_number_filter(filtered_df, 'sales_by_split_usd', amount_filter)
+            
+            # =================================================================
+            # Show filter summary
+            # =================================================================
+            active_filters = []
+            if customer_filter.is_active:
+                mode = "excl" if customer_filter.excluded else "incl"
+                active_filters.append(f"Customer: {len(customer_filter.selected)} ({mode})")
+            if brand_filter.is_active:
+                mode = "excl" if brand_filter.excluded else "incl"
+                active_filters.append(f"Brand: {len(brand_filter.selected)} ({mode})")
+            if product_filter.is_active:
+                mode = "excl" if product_filter.excluded else "incl"
+                active_filters.append(f"Product: {len(product_filter.selected)} ({mode})")
+            if oc_po_filter.is_active:
+                mode = "excl" if oc_po_filter.excluded else "incl"
+                active_filters.append(f"OC/PO: '{oc_po_filter.query}' ({mode})")
+            if amount_filter.is_active:
+                mode = "excl" if amount_filter.excluded else "incl"
+                active_filters.append(f"Amount: ≥${amount_filter.min_value:,.0f} ({mode})")
+            
+            if active_filters:
+                st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
             
             # =================================================================
             # Calculate Original (pre-split) values
@@ -1296,7 +1366,7 @@ with tab2:
             ]
             available_cols = [c for c in display_columns if c in filtered_df.columns]
             
-            st.markdown(f"**Showing {len(filtered_df):,} transactions**")
+            st.markdown(f"**Showing {len(filtered_df):,} transactions** (of {len(sales_df):,} total)")
             
             # Prepare display dataframe
             display_detail = filtered_df[available_cols].head(500).copy()
@@ -1560,47 +1630,98 @@ with tab3:
             st.divider()
             
             # =================================================================
-            # FILTERS - Synchronized with Sales Transaction List
+            # IMPROVED FILTERS - MultiSelect with Excluded option
             # =================================================================
             col_bf1, col_bf2, col_bf3, col_bf4, col_bf5 = st.columns(5)
             
+            # Customer filter
             with col_bf1:
-                backlog_customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
-                bl_selected_customer = st.selectbox("Customer", backlog_customers, key="bl_customer")
+                bl_customer_options = sorted(backlog_df['customer'].dropna().unique().tolist())
+                bl_customer_filter = render_multiselect_filter(
+                    label="Customer",
+                    options=bl_customer_options,
+                    key="bl_customer",
+                    placeholder="All customers..."
+                )
             
+            # Brand filter
             with col_bf2:
-                backlog_brands = ['All'] + sorted(backlog_df['brand'].dropna().unique().tolist())
-                bl_selected_brand = st.selectbox("Brand", backlog_brands, key="bl_brand")
+                bl_brand_options = sorted(backlog_df['brand'].dropna().unique().tolist())
+                bl_brand_filter = render_multiselect_filter(
+                    label="Brand",
+                    options=bl_brand_options,
+                    key="bl_brand",
+                    placeholder="All brands..."
+                )
             
+            # Product filter
             with col_bf3:
-                backlog_products = ['All'] + sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100]
-                bl_selected_product = st.selectbox("Product", backlog_products, key="bl_product")
+                bl_product_options = sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100]
+                bl_product_filter = render_multiselect_filter(
+                    label="Product",
+                    options=bl_product_options,
+                    key="bl_product",
+                    placeholder="All products..."
+                )
             
+            # OC# / Customer PO search
             with col_bf4:
-                # OC/Customer PO filter (NEW - synchronized with Sales Transaction)
-                bl_oc_po_search = st.text_input("OC# / Customer PO", placeholder="Search...", key="bl_oc_po")
+                bl_oc_po_filter = render_text_search_filter(
+                    label="OC# / Customer PO",
+                    key="bl_oc_po",
+                    placeholder="Search..."
+                )
             
+            # Status filter
             with col_bf5:
-                pending_types = ['All'] + backlog_df['pending_type'].dropna().unique().tolist()
-                bl_selected_type = st.selectbox("Status", pending_types, key="bl_type")
+                bl_status_options = backlog_df['pending_type'].dropna().unique().tolist()
+                bl_status_filter = render_multiselect_filter(
+                    label="Status",
+                    options=bl_status_options,
+                    key="bl_status",
+                    placeholder="All statuses..."
+                )
             
-            # Filter data
+            # =================================================================
+            # APPLY ALL FILTERS
+            # =================================================================
             filtered_backlog = backlog_df.copy()
-            if bl_selected_customer != 'All':
-                filtered_backlog = filtered_backlog[filtered_backlog['customer'] == bl_selected_customer]
-            if bl_selected_brand != 'All':
-                filtered_backlog = filtered_backlog[filtered_backlog['brand'] == bl_selected_brand]
-            if bl_selected_product != 'All':
-                filtered_backlog = filtered_backlog[filtered_backlog['product_pn'] == bl_selected_product]
-            if bl_selected_type != 'All':
-                filtered_backlog = filtered_backlog[filtered_backlog['pending_type'] == bl_selected_type]
             
-            # NEW: Filter by OC# or Customer PO
-            if bl_oc_po_search:
-                search_lower = bl_oc_po_search.lower()
-                oc_mask = filtered_backlog['oc_number'].astype(str).str.lower().str.contains(search_lower, na=False)
-                po_mask = filtered_backlog['customer_po_number'].astype(str).str.lower().str.contains(search_lower, na=False) if 'customer_po_number' in filtered_backlog.columns else pd.Series([False] * len(filtered_backlog))
-                filtered_backlog = filtered_backlog[oc_mask | po_mask]
+            # Apply multiselect filters
+            filtered_backlog = apply_multiselect_filter(filtered_backlog, 'customer', bl_customer_filter)
+            filtered_backlog = apply_multiselect_filter(filtered_backlog, 'brand', bl_brand_filter)
+            filtered_backlog = apply_multiselect_filter(filtered_backlog, 'product_pn', bl_product_filter)
+            filtered_backlog = apply_multiselect_filter(filtered_backlog, 'pending_type', bl_status_filter)
+            
+            # Apply text search on multiple columns
+            filtered_backlog = apply_text_search_filter(
+                filtered_backlog, 
+                columns=['oc_number', 'customer_po_number'] if 'customer_po_number' in backlog_df.columns else ['oc_number'],
+                search_result=bl_oc_po_filter
+            )
+            
+            # =================================================================
+            # Show filter summary
+            # =================================================================
+            active_bl_filters = []
+            if bl_customer_filter.is_active:
+                mode = "excl" if bl_customer_filter.excluded else "incl"
+                active_bl_filters.append(f"Customer: {len(bl_customer_filter.selected)} ({mode})")
+            if bl_brand_filter.is_active:
+                mode = "excl" if bl_brand_filter.excluded else "incl"
+                active_bl_filters.append(f"Brand: {len(bl_brand_filter.selected)} ({mode})")
+            if bl_product_filter.is_active:
+                mode = "excl" if bl_product_filter.excluded else "incl"
+                active_bl_filters.append(f"Product: {len(bl_product_filter.selected)} ({mode})")
+            if bl_oc_po_filter.is_active:
+                mode = "excl" if bl_oc_po_filter.excluded else "incl"
+                active_bl_filters.append(f"OC/PO: '{bl_oc_po_filter.query}' ({mode})")
+            if bl_status_filter.is_active:
+                mode = "excl" if bl_status_filter.excluded else "incl"
+                active_bl_filters.append(f"Status: {len(bl_status_filter.selected)} ({mode})")
+            
+            if active_bl_filters:
+                st.caption(f"🔍 Active filters: {' | '.join(active_bl_filters)}")
             
             # =================================================================
             # NEW: Format Product as "pt_code | Name | Package size"
@@ -1634,7 +1755,7 @@ with tab3:
             
             filtered_backlog['oc_po_display'] = filtered_backlog.apply(format_oc_po, axis=1)
             
-            st.markdown(f"**Showing {len(filtered_backlog):,} backlog items**")
+            st.markdown(f"**Showing {len(filtered_backlog):,} backlog items** (of {len(backlog_df):,} total)")
             
             # Display with column configuration
             backlog_display_cols = ['oc_po_display', 'oc_date', 'etd', 'customer', 'product_display', 'brand',
