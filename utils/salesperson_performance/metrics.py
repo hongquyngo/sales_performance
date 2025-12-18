@@ -8,6 +8,15 @@ Handles all metric calculations:
 - YoY growth calculations
 - Complex KPI metrics (new customers/products/business)
 - Data aggregations by salesperson/period
+
+CHANGELOG:
+- v2.3.0: FIXED KPI Achievement calculation bug
+          - calculate_overview_metrics(): Now calculates achievements using
+            actuals from ONLY employees who have that specific KPI target
+          - calculate_overall_kpi_achievement(): Same fix applied
+          - Added _get_actual_for_kpi() helper method
+          - Example fix: GP Achievement now only includes GP from employees
+            who have GP target assigned, not from all selected employees
 """
 
 import logging
@@ -304,6 +313,9 @@ class SalespersonMetrics:
         """
         Calculate overview KPIs for display in metric cards.
         
+        FIXED v2.3.0: Achievement calculations now only include actual values
+        from employees who have the corresponding KPI target assigned.
+        
         Args:
             period_type: Period type for target proration
             year: Year for target lookup
@@ -319,12 +331,12 @@ class SalespersonMetrics:
         if df.empty:
             return self._get_empty_metrics()
         
-        # === Basic Counts ===
+        # === Basic Counts (from ALL selected salespeople) ===
         total_customers = df['customer_id'].nunique()
         total_invoices = df['inv_number'].nunique()
         total_orders = df['oc_number'].nunique()
         
-        # === Financial Metrics ===
+        # === Financial Metrics (from ALL selected salespeople - for display) ===
         total_revenue = df['sales_by_split_usd'].sum()
         total_gp = df['gross_profit_by_split_usd'].sum()
         total_gp1 = df['gp1_by_split_usd'].sum()
@@ -335,13 +347,20 @@ class SalespersonMetrics:
         gp1_percent = (total_gp1 / total_revenue * 100) if total_revenue else 0
         
         # === Target Comparison ===
+        # FIXED v2.3.0: Get targets and calculate actuals only from employees with targets
         revenue_target = self._get_prorated_target('revenue', period_type, year)
         gp_target = self._get_prorated_target('gross_profit', period_type, year)
-        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)  # GP1 KPI type
+        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)
         
-        revenue_achievement = (total_revenue / revenue_target * 100) if revenue_target else None
-        gp_achievement = (total_gp / gp_target * 100) if gp_target else None
-        gp1_achievement = (total_gp1 / gp1_target * 100) if gp1_target else None  # GP1 achievement
+        # Get actuals only from employees who have each specific KPI target
+        revenue_actual_for_achievement = self._get_actual_for_kpi('revenue', 'sales_by_split_usd')
+        gp_actual_for_achievement = self._get_actual_for_kpi('gross_profit', 'gross_profit_by_split_usd')
+        gp1_actual_for_achievement = self._get_actual_for_kpi('gross_profit_1', 'gp1_by_split_usd')
+        
+        # Calculate achievements using filtered actuals
+        revenue_achievement = (revenue_actual_for_achievement / revenue_target * 100) if revenue_target else None
+        gp_achievement = (gp_actual_for_achievement / gp_target * 100) if gp_target else None
+        gp1_achievement = (gp1_actual_for_achievement / gp1_target * 100) if gp1_target else None
         
         return {
             # Counts
@@ -349,7 +368,7 @@ class SalespersonMetrics:
             'total_invoices': total_invoices,
             'total_orders': total_orders,
             
-            # Financial
+            # Financial (ALL salespeople - for display)
             'total_revenue': total_revenue,
             'total_gp': total_gp,
             'total_gp1': total_gp1,
@@ -362,10 +381,17 @@ class SalespersonMetrics:
             # Targets
             'revenue_target': revenue_target,
             'gp_target': gp_target,
-            'gp1_target': gp1_target,  # GP1 target
+            'gp1_target': gp1_target,
+            
+            # Achievements (from employees with corresponding targets only)
             'revenue_achievement': round(revenue_achievement, 1) if revenue_achievement else None,
             'gp_achievement': round(gp_achievement, 1) if gp_achievement else None,
-            'gp1_achievement': round(gp1_achievement, 1) if gp1_achievement else None,  # GP1 achievement
+            'gp1_achievement': round(gp1_achievement, 1) if gp1_achievement else None,
+            
+            # Actuals for achievement (for reference)
+            'revenue_actual_for_achievement': revenue_actual_for_achievement,
+            'gp_actual_for_achievement': gp_actual_for_achievement,
+            'gp1_actual_for_achievement': gp1_actual_for_achievement,
         }
     
     def _get_empty_metrics(self) -> Dict:
@@ -382,11 +408,53 @@ class SalespersonMetrics:
             'gp1_percent': 0,
             'revenue_target': None,
             'gp_target': None,
-            'gp1_target': None,  # GP1 target
+            'gp1_target': None,
             'revenue_achievement': None,
             'gp_achievement': None,
-            'gp1_achievement': None,  # GP1 achievement
+            'gp1_achievement': None,
+            'revenue_actual_for_achievement': 0,
+            'gp_actual_for_achievement': 0,
+            'gp1_actual_for_achievement': 0,
         }
+    
+    def _get_actual_for_kpi(
+        self,
+        kpi_name: str,
+        value_column: str
+    ) -> float:
+        """
+        Get actual value for a KPI from ONLY employees who have that KPI target.
+        
+        ADDED v2.3.0: Fixes the bug where achievements were calculated using
+        all employees' values even if they didn't have the corresponding target.
+        
+        Args:
+            kpi_name: KPI name (e.g., 'revenue', 'gross_profit', 'gross_profit_1')
+            value_column: Column name in sales_df to sum
+            
+        Returns:
+            Sum of value_column from employees with the KPI target
+        """
+        if self.targets_df.empty or self.sales_df.empty:
+            return 0
+        
+        # Get employee IDs who have this specific KPI target
+        employees_with_target = self.targets_df[
+            self.targets_df['kpi_name'].str.lower() == kpi_name.lower()
+        ]['employee_id'].unique().tolist()
+        
+        if not employees_with_target:
+            return 0
+        
+        # Filter sales data to only these employees
+        filtered_sales = self.sales_df[
+            self.sales_df['sales_id'].isin(employees_with_target)
+        ]
+        
+        if filtered_sales.empty or value_column not in filtered_sales.columns:
+            return 0
+        
+        return filtered_sales[value_column].sum()
     
     # =========================================================================
     # TARGET CALCULATIONS
@@ -571,6 +639,9 @@ class SalespersonMetrics:
         
         Formula: Overall = Σ (KPI_Achievement × Weight) / Σ Weight
         
+        FIXED v2.3.0: Now calculates actuals from ONLY employees who have
+        each specific KPI target assigned.
+        
         Supports KPIs:
         - revenue (kpi_type_id: 1)
         - gross_profit (kpi_type_id: 2)
@@ -604,20 +675,22 @@ class SalespersonMetrics:
         if year is None:
             year = datetime.now().year
         
-        # Map KPI names to actual values
-        # NOTE: gross_profit_1 maps to total_gp1 (GP1 = GP - Broker Commission * 1.2)
-        kpi_actuals = {
-            'revenue': overview_metrics.get('total_revenue', 0),
-            'gross_profit': overview_metrics.get('total_gp', 0),
-            'gross_profit_1': overview_metrics.get('total_gp1', 0),  # GP1 KPI type
+        # Map KPI names to value columns for sales-based KPIs
+        # These will be calculated using _get_actual_for_kpi (filtered by employees with target)
+        kpi_column_map = {
+            'revenue': 'sales_by_split_usd',
+            'gross_profit': 'gross_profit_by_split_usd',
+            'gross_profit_1': 'gp1_by_split_usd',
         }
         
-        # Add complex KPIs if available
+        # Complex KPIs use pre-calculated values (already filtered in queries)
+        complex_kpi_values = {}
         if complex_kpis:
-            kpi_actuals['num_new_customers'] = complex_kpis.get('new_customer_count', 0)
-            kpi_actuals['num_new_products'] = complex_kpis.get('new_product_count', 0)
-            kpi_actuals['new_business_revenue'] = complex_kpis.get('new_business_revenue', 0)
-            # num_new_projects would need to be added if tracked
+            complex_kpi_values = {
+                'num_new_customers': complex_kpis.get('new_customer_count', 0),
+                'num_new_products': complex_kpis.get('new_product_count', 0),
+                'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
+            }
         
         # Group targets by KPI type and calculate aggregate
         kpi_details = []
@@ -649,8 +722,15 @@ class SalespersonMetrics:
             else:
                 prorated_target = annual_target
             
-            # Get actual value
-            actual = kpi_actuals.get(kpi_name, 0)
+            # Get actual value - FIXED: from employees with this KPI target only
+            if kpi_name in kpi_column_map:
+                # Sales-based KPIs: filter by employees with target
+                actual = self._get_actual_for_kpi(kpi_name, kpi_column_map[kpi_name])
+            elif kpi_name in complex_kpi_values:
+                # Complex KPIs: use pre-calculated values
+                actual = complex_kpi_values[kpi_name]
+            else:
+                actual = 0
             
             # Calculate achievement
             if prorated_target > 0:
