@@ -3,15 +3,19 @@
 Sidebar Filter Components for Salesperson Performance
 
 Renders filter UI elements:
-- Period selector (YTD/QTD/MTD/Custom)
+- Period selector (YTD/QTD/MTD/Custom) with radio buttons
 - Year selector
 - Salesperson selector (role-based)
 - Entity selector
-- Internal revenue filter (NEW)
+- Internal revenue filter
 - YoY comparison toggle
 - Metric view selector
 
 CHANGELOG:
+- v1.3.0: Added Period Type radio buttons (YTD/QTD/MTD/Custom)
+          - Only Custom shows date pickers
+          - YTD/QTD/MTD auto-calculate dates for current year
+          - KPI targets prorate based on period_type
 - v1.2.0: Added MultiSelectFilter with Excluded option
           - render_multiselect_filter(): Reusable filter component
           - apply_multiselect_filter(): Apply filter logic to DataFrame
@@ -617,34 +621,68 @@ class SalespersonFilters:
             
             with st.form("filter_form", border=False):
                 # =====================================================
-                # DATE RANGE (Simple picker - no period type needed)
+                # PERIOD TYPE SELECTION (Radio buttons)
                 # =====================================================
                 st.markdown("**📅 Date Range**")
                 st.caption("📊 Applies to Sales data. Backlog shows full pipeline.")
                 
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    start_date = st.date_input(
-                        "Start",
-                        value=default_start_date,
-                        key="form_start_date",
-                        help="Period start date. Sales/Invoice data will be filtered from this date."
-                    )
-                with col_d2:
-                    end_date = st.date_input(
-                        "End",
-                        value=default_end_date,
-                        key="form_end_date",
-                        help="Period end date. If in the past, Forecast will not be available."
-                    )
+                # Radio buttons for period type
+                period_type = st.radio(
+                    "Period",
+                    options=['YTD', 'QTD', 'MTD', 'Custom'],
+                    index=0,  # Default to YTD
+                    horizontal=True,
+                    key="form_period_type",
+                    help="YTD/QTD/MTD use current year. Custom allows date selection."
+                )
                 
-                # Validation
-                if start_date > end_date:
-                    st.error("⚠️ Start date must be before end date")
-                    end_date = start_date
+                # Calculate dates based on period type
+                year = today.year
                 
-                # Derive year from start_date for KPI target matching
-                year = start_date.year
+                if period_type == 'YTD':
+                    # Year to Date: Jan 1 to today
+                    start_date = date(year, 1, 1)
+                    end_date = today
+                    st.caption(f"📆 {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
+                    
+                elif period_type == 'QTD':
+                    # Quarter to Date: Quarter start to today
+                    current_quarter = (today.month - 1) // 3 + 1
+                    quarter_start_month = (current_quarter - 1) * 3 + 1
+                    start_date = date(year, quarter_start_month, 1)
+                    end_date = today
+                    st.caption(f"📆 Q{current_quarter}: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
+                    
+                elif period_type == 'MTD':
+                    # Month to Date: Month start to today
+                    start_date = date(year, today.month, 1)
+                    end_date = today
+                    st.caption(f"📆 {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
+                    
+                else:  # Custom
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        start_date = st.date_input(
+                            "Start",
+                            value=default_start_date,
+                            key="form_start_date",
+                            help="Period start date."
+                        )
+                    with col_d2:
+                        end_date = st.date_input(
+                            "End",
+                            value=default_end_date,
+                            key="form_end_date",
+                            help="Period end date."
+                        )
+                    
+                    # Validation
+                    if start_date > end_date:
+                        st.error("⚠️ Start date must be before end date")
+                        end_date = start_date
+                    
+                    # Use start_date's year for KPI matching
+                    year = start_date.year
                 
                 st.divider()
                 
@@ -734,9 +772,7 @@ class SalespersonFilters:
             # Show access info outside form
             self._render_access_info()
         
-        # Determine period type based on date range
-        period_type = self._infer_period_type(start_date, end_date, year)
-        
+        # period_type is already set from radio button selection
         filter_values = {
             'period_type': period_type,
             'year': year,

@@ -9,9 +9,13 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.1.0
+Version: 2.2.0
 
 CHANGELOG:
+- v2.2.0: Added Period Type radio buttons in sidebar
+          - YTD/QTD/MTD: Auto-calculate dates for current year
+          - Custom: Manual date selection
+          - KPI targets prorate based on period type
 - v2.1.0: Improved filters with MultiSelect + Excluded option
           - All filters now support multi-selection
           - Added "Excl" checkbox to exclude selected values instead of include
