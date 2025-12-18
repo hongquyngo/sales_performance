@@ -1499,9 +1499,9 @@ with tab3:
         if in_period_backlog_analysis.get('overdue_warning'):
             st.warning(in_period_backlog_analysis['overdue_warning'])
         
-        # In-period summary card
+        # In-period summary card - UPDATED: Added GP metric
         if in_period_backlog_analysis['total_count'] > 0:
-            col_ip1, col_ip2, col_ip3, col_ip4 = st.columns(4)
+            col_ip1, col_ip2, col_ip3, col_ip4, col_ip5 = st.columns(5)
             with col_ip1:
                 st.metric(
                     "📅 In-Period Backlog",
@@ -1510,18 +1510,24 @@ with tab3:
                 )
             with col_ip2:
                 st.metric(
+                    "📈 In-Period GP",
+                    f"${in_period_backlog_analysis.get('total_gp', 0):,.0f}",
+                    help="Gross profit from in-period backlog"
+                )
+            with col_ip3:
+                st.metric(
                     "✅ On Track",
                     f"${in_period_backlog_analysis['on_track_value']:,.0f}",
                     f"{in_period_backlog_analysis['on_track_count']} orders"
                 )
-            with col_ip3:
+            with col_ip4:
                 st.metric(
                     "⚠️ Overdue",
                     f"${in_period_backlog_analysis['overdue_value']:,.0f}",
                     f"{in_period_backlog_analysis['overdue_count']} orders",
                     delta_color="inverse" if in_period_backlog_analysis['overdue_count'] > 0 else "off"
                 )
-            with col_ip4:
+            with col_ip5:
                 st.metric(
                     "📊 Status",
                     in_period_backlog_analysis['status'].upper(),
@@ -1783,20 +1789,106 @@ with tab3:
             
             st.divider()
             
-            # Show overdue details
+            # Show overdue details - UPDATED: Synchronized format with Sales/Backlog list
             if not overdue.empty:
                 st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
-                overdue_display = overdue[['oc_number', 'etd', 'customer', 'product_pn', 
-                                          'backlog_sales_by_split_usd', 'days_until_etd', 'sales_name']].copy()
-                overdue_display.columns = ['OC#', 'ETD', 'Customer', 'Product', 'Amount', 'Days Overdue', 'Salesperson']
-                overdue_display['Days Overdue'] = overdue_display['Days Overdue'].abs()
+                
+                # Create formatted columns
+                overdue_display = overdue.copy()
+                
+                # Format Product as "pt_code | Name | Package size"
+                def format_product_display(row):
+                    parts = []
+                    if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                        parts.append(str(row['pt_code']))
+                    if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                        parts.append(str(row['product_pn']))
+                    if pd.notna(row.get('package_size')) and row.get('package_size'):
+                        parts.append(str(row['package_size']))
+                    return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+                
+                overdue_display['product_display'] = overdue_display.apply(format_product_display, axis=1)
+                
+                # Format OC with Customer PO
+                def format_oc_po(row):
+                    oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+                    po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+                    if oc and po:
+                        return f"{oc}\n(PO: {po})"
+                    elif oc:
+                        return oc
+                    elif po:
+                        return f"(PO: {po})"
+                    return ''
+                
+                overdue_display['oc_po_display'] = overdue_display.apply(format_oc_po, axis=1)
+                overdue_display['days_overdue'] = overdue_display['days_until_etd'].abs()
+                
+                # Select columns for display
+                display_cols = ['oc_po_display', 'etd', 'customer', 'product_display', 'brand',
+                               'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
+                               'days_overdue', 'pending_type', 'sales_name']
+                available_cols = [c for c in display_cols if c in overdue_display.columns]
+                
+                display_df = overdue_display[available_cols].sort_values(
+                    'backlog_sales_by_split_usd', ascending=False
+                ).head(50).copy()
+                
+                # Column configuration
+                column_config = {
+                    'oc_po_display': st.column_config.TextColumn(
+                        "OC / PO",
+                        help="Order Confirmation and Customer PO",
+                        width="medium"
+                    ),
+                    'etd': st.column_config.DateColumn(
+                        "ETD",
+                        help="Estimated time of departure (PASSED)"
+                    ),
+                    'customer': st.column_config.TextColumn(
+                        "Customer",
+                        help="Customer name",
+                        width="medium"
+                    ),
+                    'product_display': st.column_config.TextColumn(
+                        "Product",
+                        help="Product: PT Code | Name | Package Size",
+                        width="large"
+                    ),
+                    'brand': st.column_config.TextColumn(
+                        "Brand",
+                        help="Product brand/manufacturer"
+                    ),
+                    'backlog_sales_by_split_usd': st.column_config.NumberColumn(
+                        "Amount",
+                        help="Backlog amount (split-adjusted)",
+                        format="$%.0f"
+                    ),
+                    'backlog_gp_by_split_usd': st.column_config.NumberColumn(
+                        "GP",
+                        help="Backlog gross profit (split-adjusted)",
+                        format="$%.0f"
+                    ),
+                    'days_overdue': st.column_config.NumberColumn(
+                        "Days Overdue",
+                        help="Number of days past ETD"
+                    ),
+                    'pending_type': st.column_config.TextColumn(
+                        "Status",
+                        help="Both Pending / Delivery Pending / Invoice Pending"
+                    ),
+                    'sales_name': st.column_config.TextColumn(
+                        "Salesperson",
+                        help="Salesperson receiving credit"
+                    ),
+                }
                 
                 st.dataframe(
-                    overdue_display.sort_values('Amount', ascending=False).head(20).style.format({
-                        'Amount': '${:,.0f}'
-                    }),
+                    display_df,
+                    column_config=column_config,
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    height=400
                 )
 
 # =============================================================================
