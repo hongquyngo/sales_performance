@@ -476,6 +476,13 @@ fresh_new_business_df = queries.get_new_business_revenue(
     employee_ids=filter_values['employee_ids']
 )
 
+# NEW v1.5.0: Query new_business detail for combo-level display in popover
+fresh_new_business_detail_df = queries.get_new_business_detail(
+    start_date=filter_values['start_date'],
+    end_date=filter_values['end_date'],
+    employee_ids=filter_values['employee_ids']
+)
+
 complex_kpis = metrics_calc.calculate_complex_kpis(
     new_customers_df=data['new_customers'],
     new_products_df=data['new_products'],
@@ -570,7 +577,9 @@ with tab1:
         # NEW v1.2.0: Pass detail dataframes for popup buttons
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=fresh_new_business_df
+        new_business_df=fresh_new_business_df,
+        # NEW v1.5.0: Pass combo detail for New Business popup
+        new_business_detail_df=fresh_new_business_detail_df
     )
     
     st.divider()
@@ -1189,8 +1198,10 @@ with tab2:
         detail_tab1, detail_tab2 = st.tabs(["📄 Transaction List", "📊 Pivot Analysis"])
         
         with detail_tab1:
-            # Filters row
-            col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+            # =================================================================
+            # FILTERS - Synchronized structure with Backlog tab
+            # =================================================================
+            col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
             
             with col_f1:
                 customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
@@ -1205,6 +1216,10 @@ with tab2:
                 selected_product = st.selectbox("Product", products, key="detail_product")
             
             with col_f4:
+                # OC/Customer PO filter (NEW)
+                oc_po_search = st.text_input("OC# / Customer PO", placeholder="Search...", key="detail_oc_po")
+            
+            with col_f5:
                 min_amount = st.number_input("Min Amount ($)", value=0, step=1000, key="detail_min_amount")
             
             # Filter data
@@ -1217,6 +1232,13 @@ with tab2:
                 filtered_df = filtered_df[filtered_df['product_pn'] == selected_product]
             if min_amount > 0:
                 filtered_df = filtered_df[filtered_df['sales_by_split_usd'] >= min_amount]
+            
+            # NEW: Filter by OC# or Customer PO
+            if oc_po_search:
+                search_lower = oc_po_search.lower()
+                oc_mask = filtered_df['oc_number'].astype(str).str.lower().str.contains(search_lower, na=False)
+                po_mask = filtered_df['customer_po_number'].astype(str).str.lower().str.contains(search_lower, na=False)
+                filtered_df = filtered_df[oc_mask | po_mask]
             
             # =================================================================
             # Calculate Original (pre-split) values
@@ -1232,9 +1254,41 @@ with tab2:
             filtered_df['total_revenue_usd'] = filtered_df['sales_by_split_usd'] / split_pct
             filtered_df['total_gp_usd'] = filtered_df['gross_profit_by_split_usd'] / split_pct
             
-            # Display columns - reordered with original values
+            # =================================================================
+            # NEW: Format Product as "pt_code | Name | Package size"
+            # =================================================================
+            def format_product_display(row):
+                parts = []
+                if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                    parts.append(str(row['pt_code']))
+                if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                    parts.append(str(row['product_pn']))
+                if pd.notna(row.get('package_size')) and row.get('package_size'):
+                    parts.append(str(row['package_size']))
+                return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+            
+            filtered_df['product_display'] = filtered_df.apply(format_product_display, axis=1)
+            
+            # =================================================================
+            # NEW: Format OC with Customer PO
+            # Format: OC#\n(PO: xxx)
+            # =================================================================
+            def format_oc_po(row):
+                oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+                po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+                if oc and po:
+                    return f"{oc}\n(PO: {po})"
+                elif oc:
+                    return oc
+                elif po:
+                    return f"(PO: {po})"
+                return ''
+            
+            filtered_df['oc_po_display'] = filtered_df.apply(format_oc_po, axis=1)
+            
+            # Display columns - reordered with new formatted columns
             display_columns = [
-                'inv_date', 'inv_number', 'customer', 'product_pn', 'brand',
+                'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
                 'total_revenue_usd', 'total_gp_usd',  # Original values (Revenue, GP only)
                 'split_rate_percent',
                 'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd',  # Split values
@@ -1259,15 +1313,20 @@ with tab2:
                     "Invoice#",
                     help="Invoice number"
                 ),
+                'oc_po_display': st.column_config.TextColumn(
+                    "OC / PO",
+                    help="Order Confirmation number and Customer PO",
+                    width="medium"
+                ),
                 'customer': st.column_config.TextColumn(
                     "Customer",
                     help="Customer name",
                     width="medium"
                 ),
-                'product_pn': st.column_config.TextColumn(
+                'product_display': st.column_config.TextColumn(
                     "Product",
-                    help="Product part number",
-                    width="medium"
+                    help="Product: PT Code | Name | Package Size",
+                    width="large"
                 ),
                 'brand': st.column_config.TextColumn(
                     "Brand",
@@ -1326,6 +1385,8 @@ with tab2:
                 st.markdown("""
                 | Column | Description | Formula |
                 |--------|-------------|---------|
+                | **OC / PO** | Order Confirmation & Customer PO | Combined display |
+                | **Product** | PT Code \| Name \| Package Size | Formatted product info |
                 | **Total Revenue** | Original invoice amount (100%) | Full line item value |
                 | **Total GP** | Original gross profit (100%) | Revenue - COGS |
                 | **Split %** | Credit allocation to salesperson | Assigned by sales split rules |
@@ -1492,37 +1553,147 @@ with tab3:
             
             st.divider()
             
-            # Filters
-            col_bf1, col_bf2 = st.columns(2)
+            # =================================================================
+            # FILTERS - Synchronized with Sales Transaction List
+            # =================================================================
+            col_bf1, col_bf2, col_bf3, col_bf4, col_bf5 = st.columns(5)
+            
             with col_bf1:
                 backlog_customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
                 bl_selected_customer = st.selectbox("Customer", backlog_customers, key="bl_customer")
+            
             with col_bf2:
+                backlog_brands = ['All'] + sorted(backlog_df['brand'].dropna().unique().tolist())
+                bl_selected_brand = st.selectbox("Brand", backlog_brands, key="bl_brand")
+            
+            with col_bf3:
+                backlog_products = ['All'] + sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100]
+                bl_selected_product = st.selectbox("Product", backlog_products, key="bl_product")
+            
+            with col_bf4:
+                # OC/Customer PO filter (NEW - synchronized with Sales Transaction)
+                bl_oc_po_search = st.text_input("OC# / Customer PO", placeholder="Search...", key="bl_oc_po")
+            
+            with col_bf5:
                 pending_types = ['All'] + backlog_df['pending_type'].dropna().unique().tolist()
                 bl_selected_type = st.selectbox("Status", pending_types, key="bl_type")
             
-            # Filter
+            # Filter data
             filtered_backlog = backlog_df.copy()
             if bl_selected_customer != 'All':
                 filtered_backlog = filtered_backlog[filtered_backlog['customer'] == bl_selected_customer]
+            if bl_selected_brand != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['brand'] == bl_selected_brand]
+            if bl_selected_product != 'All':
+                filtered_backlog = filtered_backlog[filtered_backlog['product_pn'] == bl_selected_product]
             if bl_selected_type != 'All':
                 filtered_backlog = filtered_backlog[filtered_backlog['pending_type'] == bl_selected_type]
             
-            # Display
-            backlog_display_cols = ['oc_number', 'oc_date', 'etd', 'customer', 'product_pn', 'brand',
+            # NEW: Filter by OC# or Customer PO
+            if bl_oc_po_search:
+                search_lower = bl_oc_po_search.lower()
+                oc_mask = filtered_backlog['oc_number'].astype(str).str.lower().str.contains(search_lower, na=False)
+                po_mask = filtered_backlog['customer_po_number'].astype(str).str.lower().str.contains(search_lower, na=False) if 'customer_po_number' in filtered_backlog.columns else pd.Series([False] * len(filtered_backlog))
+                filtered_backlog = filtered_backlog[oc_mask | po_mask]
+            
+            # =================================================================
+            # NEW: Format Product as "pt_code | Name | Package size"
+            # =================================================================
+            def format_product_display(row):
+                parts = []
+                if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                    parts.append(str(row['pt_code']))
+                if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                    parts.append(str(row['product_pn']))
+                if pd.notna(row.get('package_size')) and row.get('package_size'):
+                    parts.append(str(row['package_size']))
+                return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+            
+            filtered_backlog = filtered_backlog.copy()
+            filtered_backlog['product_display'] = filtered_backlog.apply(format_product_display, axis=1)
+            
+            # =================================================================
+            # NEW: Format OC with Customer PO
+            # =================================================================
+            def format_oc_po(row):
+                oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+                po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+                if oc and po:
+                    return f"{oc}\n(PO: {po})"
+                elif oc:
+                    return oc
+                elif po:
+                    return f"(PO: {po})"
+                return ''
+            
+            filtered_backlog['oc_po_display'] = filtered_backlog.apply(format_oc_po, axis=1)
+            
+            st.markdown(f"**Showing {len(filtered_backlog):,} backlog items**")
+            
+            # Display with column configuration
+            backlog_display_cols = ['oc_po_display', 'oc_date', 'etd', 'customer', 'product_display', 'brand',
                                    'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
                                    'days_until_etd', 'pending_type', 'sales_name']
             available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
             
-            display_bl = filtered_backlog[available_bl_cols].copy()
-            display_bl.columns = ['OC#', 'OC Date', 'ETD', 'Customer', 'Product', 'Brand',
-                                 'Amount', 'GP', 'Days to ETD', 'Status', 'Salesperson'][:len(available_bl_cols)]
+            display_bl = filtered_backlog[available_bl_cols].head(200).copy()
+            
+            # Column configuration
+            column_config = {
+                'oc_po_display': st.column_config.TextColumn(
+                    "OC / PO",
+                    help="Order Confirmation and Customer PO",
+                    width="medium"
+                ),
+                'oc_date': st.column_config.DateColumn(
+                    "OC Date",
+                    help="Order confirmation date"
+                ),
+                'etd': st.column_config.DateColumn(
+                    "ETD",
+                    help="Estimated time of departure"
+                ),
+                'customer': st.column_config.TextColumn(
+                    "Customer",
+                    help="Customer name",
+                    width="medium"
+                ),
+                'product_display': st.column_config.TextColumn(
+                    "Product",
+                    help="Product: PT Code | Name | Package Size",
+                    width="large"
+                ),
+                'brand': st.column_config.TextColumn(
+                    "Brand",
+                    help="Product brand/manufacturer"
+                ),
+                'backlog_sales_by_split_usd': st.column_config.NumberColumn(
+                    "Amount",
+                    help="Backlog amount (split-adjusted)",
+                    format="$%.0f"
+                ),
+                'backlog_gp_by_split_usd': st.column_config.NumberColumn(
+                    "GP",
+                    help="Backlog gross profit (split-adjusted)",
+                    format="$%.0f"
+                ),
+                'days_until_etd': st.column_config.NumberColumn(
+                    "Days to ETD",
+                    help="Days until ETD (negative = overdue)"
+                ),
+                'pending_type': st.column_config.TextColumn(
+                    "Status",
+                    help="Both Pending / Delivery Pending / Invoice Pending"
+                ),
+                'sales_name': st.column_config.TextColumn(
+                    "Salesperson",
+                    help="Salesperson receiving credit"
+                ),
+            }
             
             st.dataframe(
-                display_bl.head(200).style.format({
-                    'Amount': '${:,.0f}',
-                    'GP': '${:,.0f}',
-                }),
+                display_bl,
+                column_config=column_config,
                 use_container_width=True,
                 hide_index=True,
                 height=400

@@ -12,6 +12,11 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v1.5.0: FIXED backlog queries to filter uninvoiced only
+          - Added condition: invoice_completion_percent < 100 OR IS NULL
+          - Affects: get_backlog_data, get_backlog_in_period, 
+                     get_backlog_by_month, get_backlog_detail
+          - Backlog now correctly represents UNINVOICED value only
 - v1.4.0: REFACTORED get_new_products() to use legacy_code from unified view
           - No longer needs JOIN with products table
           - Uses COALESCE(product_id, legacy_code) as unified product key
@@ -407,11 +412,14 @@ class SalespersonQueries:
             -- ================================================================
             -- Step 3: Get all sales records from first sale date
             -- Join back to get full product info and salesperson attribution
+            -- UPDATED v1.5.0: Added pt_code, package_size from unified view
             -- ================================================================
             first_day_records AS (
                 SELECT 
                     u.product_id,
                     u.product_pn,
+                    u.pt_code,
+                    u.package_size,
                     u.legacy_code,
                     u.brand,
                     u.sales_id,
@@ -433,6 +441,8 @@ class SalespersonQueries:
                     -- Use MAX to get non-null values where available
                     MAX(product_id) as product_id,
                     MAX(product_pn) as product_pn,
+                    MAX(pt_code) as pt_code,
+                    MAX(package_size) as package_size,
                     MAX(legacy_code) as legacy_code,
                     MAX(brand) as brand,
                     sales_id,
@@ -450,10 +460,13 @@ class SalespersonQueries:
             
             -- ================================================================
             -- Final: Return results filtered by accessible salespeople
+            -- UPDATED v1.5.0: pt_code, package_size from unified view directly
             -- ================================================================
             SELECT 
                 product_id,
                 product_pn,
+                pt_code,
+                package_size,
                 legacy_code,
                 brand,
                 sales_id,
@@ -578,6 +591,118 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_business_revenue")
+    
+    def get_new_business_detail(
+        self,
+        start_date: date,
+        end_date: date,
+        employee_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get detailed line items for new business (first customer-product combos).
+        
+        NEW v1.5.0: Returns line-by-line detail instead of aggregate.
+        Used for popover display showing each new combo.
+        
+        Returns DataFrame with: customer, product info (pt_code, product_pn, package_size),
+                               brand, salesperson, revenue, GP, first_combo_date
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        # Lookback: 5 years from start of end_date's year
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        query = """
+            WITH 
+            -- ================================================================
+            -- Step 1: Find first sale date for each customer-product combo
+            -- ================================================================
+            first_combo_date AS (
+                SELECT 
+                    customer_id,
+                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
+                    MIN(inv_date) as first_combo_date
+                FROM unified_sales_by_salesperson_view
+                WHERE inv_date >= :lookback_start
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(legacy_code, CAST(product_id AS CHAR))
+            ),
+            
+            -- ================================================================
+            -- Step 2: Identify combos that are "new" (first sale within period)
+            -- ================================================================
+            new_combos AS (
+                SELECT customer_id, product_key, first_combo_date
+                FROM first_combo_date
+                WHERE first_combo_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- ================================================================
+            -- Step 3: Get detailed revenue data for new combos
+            -- Aggregate by combo + salesperson
+            -- UPDATED: package_size from unified view directly
+            -- ================================================================
+            combo_detail AS (
+                SELECT 
+                    u.customer_id,
+                    u.customer,
+                    MAX(u.product_id) as product_id,
+                    MAX(u.product_pn) as product_pn,
+                    MAX(u.pt_code) as pt_code,
+                    MAX(u.package_size) as package_size,
+                    MAX(u.brand) as brand,
+                    u.sales_id,
+                    MAX(u.sales_name) as sales_name,
+                    MAX(u.split_rate_percent) as split_rate_percent,
+                    nc.first_combo_date,
+                    SUM(u.sales_by_split_usd) as revenue,
+                    SUM(u.gross_profit_by_split_usd) as gross_profit
+                FROM new_combos nc
+                JOIN unified_sales_by_salesperson_view u 
+                    ON nc.customer_id = u.customer_id 
+                    AND COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = nc.product_key
+                WHERE u.inv_date BETWEEN :start_date AND :end_date
+                  AND u.sales_id IN :employee_ids
+                GROUP BY 
+                    u.customer_id, 
+                    u.customer,
+                    COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)),
+                    u.sales_id,
+                    nc.first_combo_date
+            )
+            
+            -- ================================================================
+            -- Final: Return directly from combo_detail (no JOIN needed)
+            -- ================================================================
+            SELECT 
+                customer,
+                product_pn,
+                pt_code,
+                package_size,
+                brand,
+                sales_name,
+                split_rate_percent,
+                first_combo_date,
+                revenue,
+                gross_profit
+            FROM combo_detail
+            ORDER BY revenue DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'employee_ids': tuple(employee_ids)
+        }
+        
+        return self._execute_query(query, params, "new_business_detail")
     
     # =========================================================================
     # LOOKUP DATA
@@ -772,6 +897,8 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # UPDATED: Backlog = Uninvoiced value only
+        # Filter out rows where invoice_completion_percent = 100
         query = """
             SELECT 
                 sales_id,
@@ -782,6 +909,7 @@ class SalespersonQueries:
                 COUNT(DISTINCT customer_id) as backlog_customers
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
         """
         
         params = {'employee_ids': tuple(employee_ids)}
@@ -821,6 +949,7 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # UPDATED: Backlog = Uninvoiced value only
         query = """
             SELECT 
                 sales_id,
@@ -832,6 +961,7 @@ class SalespersonQueries:
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
               AND etd BETWEEN :start_date AND :end_date
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
         """
         
         params = {
@@ -866,6 +996,7 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # UPDATED: Backlog = Uninvoiced value only
         query = """
             SELECT 
                 etd_year,
@@ -876,6 +1007,7 @@ class SalespersonQueries:
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
               AND etd IS NOT NULL
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
         """
         
         params = {'employee_ids': tuple(employee_ids)}
@@ -912,6 +1044,8 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # UPDATED v1.5.0: Backlog = Uninvoiced value only
+        # Added: customer_po_number, pt_code, package_size for enhanced display
         query = """
             SELECT 
                 oc_number,
@@ -919,7 +1053,10 @@ class SalespersonQueries:
                 etd,
                 customer,
                 customer_id,
+                customer_po_number,
                 product_pn,
+                pt_code,
+                package_size,
                 brand,
                 sales_name,
                 sales_id,
@@ -929,9 +1066,11 @@ class SalespersonQueries:
                 split_rate_percent,
                 pending_type,
                 days_until_etd,
-                status
+                status,
+                invoice_completion_percent
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
         """
         
         params = {'employee_ids': tuple(employee_ids)}
