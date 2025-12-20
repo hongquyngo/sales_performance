@@ -9,9 +9,16 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.3.0
+Version: 2.4.0
 
 CHANGELOG:
+- v2.4.0: FIXED KPI Progress calculation inconsistency
+          - Bug: Achievement % used annual target while Overall used prorated target
+          - Fix: KPI Progress now uses prorated target (consistent with Overall Achievement)
+          - Fix: Complex KPIs (New Customers, New Products, New Business Revenue) now
+                 correctly filter actuals by employees who have that specific KPI target
+          - Added explanatory note about KPI Progress calculation method
+          - Caption now shows prorated target instead of annual target
 - v2.3.0: FIXED KPI Progress logic when multiple salespeople selected
           - Each KPI now only counts actual from employees who have that specific KPI target
           - Example: GP Achievement only includes GP from employees with GP target assigned
@@ -1338,7 +1345,6 @@ with tab1:
             use_container_width=True,
             hide_index=True
         )
-
 # =============================================================================
 # TAB 2: SALES DETAIL
 # =============================================================================
@@ -2187,8 +2193,40 @@ with tab4:
             st.markdown("#### 📈 KPI Progress")
             
             # =================================================================
+            # EXPLANATORY NOTE - NEW v2.4.0
+            # =================================================================
+            with st.expander("ℹ️ How KPI Progress is calculated", expanded=False):
+                st.markdown(f"""
+                **📐 Calculation Method**
+                
+                Achievement % is calculated using **Prorated Target** based on the selected period type:
+                
+                | Period Type | Target Proration |
+                |-------------|------------------|
+                | **YTD** | Annual Target × (Elapsed Months / 12) |
+                | **QTD** | Annual Target / 4 |
+                | **MTD** | Annual Target / 12 |
+                | **Custom** | Annual Target (full year) |
+                
+                **Current Settings:** {filter_values['period_type']} for {filter_values['year']}
+                
+                **📊 Why Prorated?**
+                
+                Using prorated targets allows fair comparison:
+                - In June (YTD), achieving 50% of annual target = 100% achievement
+                - This is consistent with how **Overall Achievement** is calculated
+                
+                **👥 Employee Filtering**
+                
+                Each KPI only counts actuals from employees who have that specific KPI target assigned.
+                This ensures accurate achievement measurement when viewing multiple salespeople.
+                """)
+            
+            # =================================================================
             # DYNAMIC KPI Progress - Show ALL assigned KPIs
-            # FIXED v2.3.0: Only count actual from employees who have that KPI target
+            # FIXED v2.4.0: 
+            # 1. Use prorated target instead of annual target for achievement
+            # 2. Complex KPIs now filter by employees with target
             # =================================================================
             
             # Map KPI names to column names in sales_df
@@ -2198,12 +2236,8 @@ with tab4:
                 'gross_profit_1': 'gp1_by_split_usd',
             }
             
-            # Complex KPIs that need special handling (not from sales_df)
-            complex_kpi_actual_map = {
-                'num_new_customers': complex_kpis.get('new_customer_count', 0),
-                'num_new_products': complex_kpis.get('new_product_count', 0),
-                'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
-            }
+            # Complex KPIs that need special handling (query fresh for each)
+            complex_kpi_names = ['num_new_customers', 'num_new_products', 'new_business_revenue']
             
             # Display name mapping for better UI
             kpi_display_names = {
@@ -2246,10 +2280,18 @@ with tab4:
                         actual = filtered_sales[col_name].sum() if not filtered_sales.empty else 0
                     else:
                         actual = 0
-                elif kpi_name in complex_kpi_actual_map:
-                    # For complex KPIs: use pre-calculated values
-                    # Note: These are already filtered by selected employees in the query
-                    actual = complex_kpi_actual_map[kpi_name]
+                elif kpi_name in complex_kpi_names:
+                    # =============================================================
+                    # FIXED v2.4.0: Query complex KPIs filtered by employees with target
+                    # Instead of using pre-calculated values from all selected employees,
+                    # we now query fresh with only the employees who have this KPI target
+                    # =============================================================
+                    actual = queries.calculate_complex_kpi_value(
+                        kpi_name=kpi_name,
+                        start_date=filter_values['start_date'],
+                        end_date=filter_values['end_date'],
+                        employee_ids=employees_with_target
+                    )
                 else:
                     actual = 0
                 
@@ -2261,8 +2303,11 @@ with tab4:
                 if prorated_target is None:
                     prorated_target = kpi_target  # Fallback to annual
                 
-                # Calculate achievement
-                achievement = (actual / kpi_target * 100) if kpi_target > 0 else 0
+                # =============================================================
+                # FIXED v2.4.0: Use prorated_target instead of kpi_target
+                # This makes Achievement % consistent with Overall Achievement
+                # =============================================================
+                achievement = (actual / prorated_target * 100) if prorated_target and prorated_target > 0 else 0
                 
                 kpi_progress.append({
                     'kpi_name': kpi_name,
@@ -2296,11 +2341,19 @@ with tab4:
                     with col_k2:
                         st.progress(min(achievement / 100, 1.0))
                         
-                        # Format based on KPI type
+                        # =============================================================
+                        # FIXED v2.4.0: Show prorated target in caption (not annual)
+                        # =============================================================
                         if row['is_currency']:
-                            st.caption(f"${row['Actual']:,.0f} / ${row['Target (Annual)']:,.0f} ({row['employee_count']} people)")
+                            st.caption(
+                                f"${row['Actual']:,.0f} / ${row['Target (Prorated)']:,.0f} prorated "
+                                f"(${row['Target (Annual)']:,.0f} annual) • {row['employee_count']} people"
+                            )
                         else:
-                            st.caption(f"{row['Actual']:.1f} / {row['Target (Annual)']:.0f} ({row['employee_count']} people)")
+                            st.caption(
+                                f"{row['Actual']:.1f} / {row['Target (Prorated)']:,.0f} prorated "
+                                f"({row['Target (Annual)']:,.0f} annual) • {row['employee_count']} people"
+                            )
             else:
                 st.info("No KPI targets assigned for selected salespeople")
         

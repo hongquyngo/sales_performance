@@ -10,6 +10,18 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.5.0: FIXED weighted average calculation in calculate_overall_kpi_achievement()
+          - Old bug: Used mean weight across salespeople (incorrect when weights differ)
+          - New fix: Calculates at individual employee level
+          - Formula: Overall = Σ(Individual_Achievement × Individual_Weight) / Σ(Weight)
+          - Added _get_individual_employee_actual() helper method
+- v2.4.0: UPDATED calculate_backlog_metrics() for PIPELINE & FORECAST enhancement
+          - Added calculate_pipeline_forecast_metrics() method
+          - For each KPI (Revenue/GP/GP1): Only includes invoiced + backlog from 
+            employees who have that specific KPI target assigned
+          - Returns detailed breakdown: invoiced, in_period_backlog, forecast, 
+            target, gap for Revenue, GP, and GP1 separately
+          - employee_count for each metric shows # employees with that KPI target
 - v2.3.0: FIXED KPI Achievement calculation bug
           - calculate_overview_metrics(): Now calculates achievements using
             actuals from ONLY employees who have that specific KPI target
@@ -302,6 +314,33 @@ class SalespersonMetrics:
             return 0
     
     # =========================================================================
+    # HELPER: GET EMPLOYEES WITH SPECIFIC KPI TARGET
+    # =========================================================================
+    
+    def _get_employees_with_kpi(self, kpi_name: str) -> List[int]:
+        """
+        Get list of employee IDs who have a specific KPI target assigned.
+        
+        Args:
+            kpi_name: KPI name (e.g., 'revenue', 'gross_profit', 'gross_profit_1')
+            
+        Returns:
+            List of employee_ids with the KPI target
+        """
+        if self.targets_df.empty:
+            return []
+        
+        employees = self.targets_df[
+            self.targets_df['kpi_name'].str.lower() == kpi_name.lower()
+        ]['employee_id'].unique().tolist()
+        
+        return employees
+    
+    def _get_employees_with_kpi_count(self, kpi_name: str) -> int:
+        """Get count of employees with a specific KPI target."""
+        return len(self._get_employees_with_kpi(kpi_name))
+    
+    # =========================================================================
     # OVERVIEW METRICS
     # =========================================================================
     
@@ -439,9 +478,7 @@ class SalespersonMetrics:
             return 0
         
         # Get employee IDs who have this specific KPI target
-        employees_with_target = self.targets_df[
-            self.targets_df['kpi_name'].str.lower() == kpi_name.lower()
-        ]['employee_id'].unique().tolist()
+        employees_with_target = self._get_employees_with_kpi(kpi_name)
         
         if not employees_with_target:
             return 0
@@ -455,6 +492,41 @@ class SalespersonMetrics:
             return 0
         
         return filtered_sales[value_column].sum()
+    
+    def _get_individual_employee_actual(
+        self,
+        employee_id: int,
+        value_column: str
+    ) -> float:
+        """
+        Get actual value for a specific employee from sales data.
+        
+        NEW v2.5.0: Helper method for individual-level achievement calculation.
+        
+        Args:
+            employee_id: Employee ID to filter
+            value_column: Column name in sales_df to sum
+            
+        Returns:
+            Sum of value_column for this specific employee
+        """
+        if self.sales_df.empty:
+            return 0
+        
+        if 'sales_id' not in self.sales_df.columns:
+            return 0
+        
+        if value_column not in self.sales_df.columns:
+            return 0
+        
+        employee_sales = self.sales_df[
+            self.sales_df['sales_id'] == employee_id
+        ]
+        
+        if employee_sales.empty:
+            return 0
+        
+        return employee_sales[value_column].sum()
     
     # =========================================================================
     # TARGET CALCULATIONS
@@ -692,18 +764,22 @@ class SalespersonMetrics:
                 'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
             }
         
-        # Group targets by KPI type and calculate aggregate
-        kpi_details = []
+        # =====================================================================
+        # FIXED v2.5.0: Calculate at INDIVIDUAL employee level
+        # Old bug: Used mean weight across salespeople
+        # New: Overall = Σ(Individual_Achievement × Individual_Weight) / Σ(Weight)
+        # =====================================================================
+        
         weighted_sum = 0
         total_weight = 0
+        kpi_details = []
         
-        # Get unique KPI types from targets
-        kpi_groups = self.targets_df.groupby('kpi_name').agg({
-            'annual_target_value_numeric': 'sum',
-            'weight_numeric': 'mean'  # Average weight across salespeople
-        }).reset_index()
+        # Track KPIs we've already processed (for summary)
+        processed_kpis = {}
         
-        for _, row in kpi_groups.iterrows():
+        # Iterate through each employee's KPI assignment
+        for _, row in self.targets_df.iterrows():
+            employee_id = row['employee_id']
             kpi_name = row['kpi_name'].lower()
             annual_target = row['annual_target_value_numeric']
             weight = row['weight_numeric']
@@ -722,41 +798,79 @@ class SalespersonMetrics:
             else:
                 prorated_target = annual_target
             
-            # Get actual value - FIXED: from employees with this KPI target only
+            if prorated_target <= 0:
+                continue
+            
+            # Get actual value for THIS SPECIFIC EMPLOYEE
             if kpi_name in kpi_column_map:
-                # Sales-based KPIs: filter by employees with target
-                actual = self._get_actual_for_kpi(kpi_name, kpi_column_map[kpi_name])
+                # Sales-based KPIs: get actual for this specific employee
+                actual = self._get_individual_employee_actual(
+                    employee_id, 
+                    kpi_column_map[kpi_name]
+                )
             elif kpi_name in complex_kpi_values:
-                # Complex KPIs: use pre-calculated values
-                actual = complex_kpi_values[kpi_name]
+                # Complex KPIs: use proportional share based on target
+                # (Since complex KPIs are aggregated, we distribute based on target proportion)
+                total_target_for_kpi = self.targets_df[
+                    self.targets_df['kpi_name'].str.lower() == kpi_name
+                ]['annual_target_value_numeric'].sum()
+                
+                if total_target_for_kpi > 0:
+                    proportion = annual_target / total_target_for_kpi
+                    actual = complex_kpi_values[kpi_name] * proportion
+                else:
+                    actual = 0
             else:
                 actual = 0
             
-            # Calculate achievement
-            if prorated_target > 0:
-                achievement = (actual / prorated_target) * 100
-            else:
-                achievement = 0
+            # Calculate individual achievement
+            achievement = (actual / prorated_target) * 100
             
-            # Add to weighted calculation
+            # Add to weighted sum
             weighted_sum += achievement * weight
             total_weight += weight
             
+            # Track for KPI details (aggregate by kpi_name for summary)
+            if kpi_name not in processed_kpis:
+                processed_kpis[kpi_name] = {
+                    'actual_sum': 0,
+                    'target_annual_sum': 0,
+                    'target_prorated_sum': 0,
+                    'weight_sum': 0,
+                    'weighted_achievement_sum': 0,
+                    'employee_count': 0
+                }
+            
+            processed_kpis[kpi_name]['actual_sum'] += actual
+            processed_kpis[kpi_name]['target_annual_sum'] += annual_target
+            processed_kpis[kpi_name]['target_prorated_sum'] += prorated_target
+            processed_kpis[kpi_name]['weight_sum'] += weight
+            processed_kpis[kpi_name]['weighted_achievement_sum'] += achievement * weight
+            processed_kpis[kpi_name]['employee_count'] += 1
+        
+        # Build KPI details for output
+        for kpi_name, data in processed_kpis.items():
+            # Calculate aggregate achievement for this KPI type
+            if data['target_prorated_sum'] > 0:
+                kpi_achievement = (data['actual_sum'] / data['target_prorated_sum']) * 100
+            else:
+                kpi_achievement = 0
+            
+            # Calculate effective weight (sum of individual weights)
+            effective_weight = data['weight_sum']
+            
             kpi_details.append({
                 'kpi_name': kpi_name,
-                'actual': actual,
-                'target_annual': annual_target,
-                'target_prorated': prorated_target,
-                'achievement': round(achievement, 1),
-                'weight': weight,
-                'weighted_achievement': round(achievement * weight / 100, 2)
+                'actual': data['actual_sum'],
+                'target_annual': data['target_annual_sum'],
+                'target_prorated': data['target_prorated_sum'],
+                'achievement': round(kpi_achievement, 1),
+                'weight': effective_weight,  # Total weight, not mean
+                'employee_count': data['employee_count']
             })
         
-        # Calculate overall weighted achievement
-        if total_weight > 0:
-            overall_achievement = weighted_sum / total_weight
-        else:
-            overall_achievement = None
+        # Calculate overall weighted average
+        overall_achievement = (weighted_sum / total_weight) if total_weight > 0 else None
         
         return {
             'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
@@ -766,330 +880,260 @@ class SalespersonMetrics:
         }
     
     # =========================================================================
-    # YoY COMPARISON
+    # PIPELINE & FORECAST METRICS (NEW v2.4.0)
     # =========================================================================
     
-    def calculate_yoy_comparison(
+    def calculate_pipeline_forecast_metrics(
         self,
-        current_metrics: Dict,
-        previous_metrics: Dict
+        total_backlog_df: pd.DataFrame,
+        in_period_backlog_df: pd.DataFrame,
+        backlog_detail_df: pd.DataFrame,
+        period_type: str = 'YTD',
+        year: int = None,
+        start_date: date = None,
+        end_date: date = None
     ) -> Dict:
         """
-        Calculate YoY growth for all metrics.
+        Calculate Pipeline & Forecast metrics for Revenue, GP, and GP1.
+        
+        NEW v2.4.0: For each KPI type, ONLY includes invoiced + backlog from 
+        employees who have that specific KPI target assigned.
+        
+        This aligns with KPI Progress logic where:
+        - Revenue achievement only counts revenue from employees with Revenue KPI
+        - GP achievement only counts GP from employees with GP KPI
+        - GP1 achievement only counts GP1 from employees with GP1 KPI
         
         Args:
-            current_metrics: Current period metrics
-            previous_metrics: Same period last year metrics
+            total_backlog_df: Total backlog data (aggregated)
+            in_period_backlog_df: Backlog with ETD in period (aggregated)
+            backlog_detail_df: Detailed backlog with sales_id for filtering
+            period_type: Period type for target proration
+            year: Year for target lookup
+            start_date: Period start date
+            end_date: Period end date
             
         Returns:
-            Dict with YoY growth percentages
+            Dict with:
+            - period_context: Dict with period analysis
+            - revenue: Dict with invoiced, backlog, forecast, target, gap
+            - gross_profit: Dict with invoiced, backlog, forecast, target, gap
+            - gp1: Dict with invoiced, backlog, forecast, target, gap
+            - summary: Dict with totals (for backward compatibility)
         """
-        yoy = {}
+        if year is None:
+            year = datetime.now().year
         
-        compare_keys = [
-            'total_revenue', 'total_gp', 'total_gp1',
-            'total_customers', 'total_invoices', 'total_orders'
-        ]
+        # Analyze period context
+        today = date.today()
+        if start_date is None:
+            start_date = date(year, 1, 1)
+        if end_date is None:
+            end_date = today
         
-        for key in compare_keys:
-            current = current_metrics.get(key, 0) or 0
-            previous = previous_metrics.get(key, 0) or 0
+        period_context = self.analyze_period_context(start_date, end_date)
+        show_forecast = period_context['show_forecast']
+        
+        # Calculate GP1/GP ratio from current sales data for backlog estimation
+        gp1_gp_ratio = 1.0  # Default: GP1 = GP (no commission)
+        if not self.sales_df.empty:
+            total_gp = self.sales_df['gross_profit_by_split_usd'].sum()
+            total_gp1 = self.sales_df['gp1_by_split_usd'].sum()
+            if total_gp > 0:
+                gp1_gp_ratio = total_gp1 / total_gp
+        
+        # Helper to calculate in-period backlog from detail df for specific employees
+        def get_in_period_backlog_for_employees(
+            employee_ids: List[int],
+            detail_df: pd.DataFrame,
+            start: date,
+            end: date
+        ) -> Dict:
+            """Calculate in-period backlog metrics for specific employees."""
+            result = {'revenue': 0, 'gp': 0, 'gp1': 0, 'orders': 0}
             
-            if previous > 0:
-                growth = (current - previous) / previous * 100
-                yoy[f'{key}_yoy'] = round(growth, 1)
-                yoy[f'{key}_yoy_abs'] = current - previous
-            else:
-                yoy[f'{key}_yoy'] = None
-                yoy[f'{key}_yoy_abs'] = current
+            if detail_df.empty or not employee_ids:
+                return result
+            
+            df = detail_df.copy()
+            
+            # Filter by employees
+            if 'sales_id' in df.columns:
+                df = df[df['sales_id'].isin(employee_ids)]
+            
+            if df.empty:
+                return result
+            
+            # Filter by ETD in period
+            if 'etd' in df.columns:
+                df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+                df = df[
+                    (df['etd'].dt.date >= start) & 
+                    (df['etd'].dt.date <= end)
+                ]
+            
+            if df.empty:
+                return result
+            
+            # Sum values
+            if 'backlog_sales_by_split_usd' in df.columns:
+                result['revenue'] = df['backlog_sales_by_split_usd'].sum()
+            if 'backlog_gp_by_split_usd' in df.columns:
+                result['gp'] = df['backlog_gp_by_split_usd'].sum()
+                # Estimate GP1 from GP using ratio
+                result['gp1'] = result['gp'] * gp1_gp_ratio
+            
+            result['orders'] = len(df)
+            
+            return result
         
-        return yoy
-    
-    # =========================================================================
-    # MONTHLY SUMMARY
-    # =========================================================================
-    
-    def prepare_monthly_summary(self) -> pd.DataFrame:
-        """
-        Prepare monthly summary data for charts.
+        # =====================================================================
+        # REVENUE METRICS - Only from employees with Revenue KPI target
+        # =====================================================================
+        revenue_employees = self._get_employees_with_kpi('revenue')
+        revenue_target = self._get_prorated_target('revenue', period_type, year)
         
-        Returns:
-            DataFrame with monthly aggregations including cumulative values.
-        """
-        df = self.sales_df
+        # Invoiced revenue from employees with Revenue KPI
+        revenue_invoiced = self._get_actual_for_kpi('revenue', 'sales_by_split_usd')
         
-        if df.empty:
-            return self._get_empty_monthly_summary()
-        
-        # Ensure invoice_month is available
-        if 'invoice_month' not in df.columns:
-            df = df.copy()
-            df['invoice_month'] = pd.to_datetime(df['inv_date']).dt.strftime('%b')
-        
-        # Group by month
-        monthly = df.groupby('invoice_month').agg({
-            'sales_by_split_usd': 'sum',
-            'gross_profit_by_split_usd': 'sum',
-            'gp1_by_split_usd': 'sum',
-            'customer_id': pd.Series.nunique,
-            'inv_number': pd.Series.nunique
-        }).reset_index()
-        
-        monthly.columns = [
-            'invoice_month', 'revenue', 'gross_profit', 'gp1',
-            'customer_count', 'invoice_count'
-        ]
-        
-        # Calculate GP%
-        monthly['gp_percent'] = monthly.apply(
-            lambda row: (row['gross_profit'] / row['revenue'] * 100) 
-            if row['revenue'] > 0 else 0,
-            axis=1
+        # In-period backlog from employees with Revenue KPI
+        revenue_backlog_data = get_in_period_backlog_for_employees(
+            revenue_employees, backlog_detail_df, start_date, end_date
         )
+        revenue_in_period_backlog = revenue_backlog_data['revenue']
         
-        # Ensure all months present
-        all_months = pd.DataFrame({'invoice_month': MONTH_ORDER})
-        monthly = all_months.merge(monthly, on='invoice_month', how='left').fillna(0)
+        # Forecast and GAP
+        if show_forecast:
+            revenue_forecast = revenue_invoiced + revenue_in_period_backlog
+            revenue_gap = (revenue_forecast - revenue_target) if revenue_target else None
+            revenue_gap_percent = (revenue_gap / revenue_target * 100) if revenue_target and revenue_gap is not None else None
+            revenue_forecast_achievement = (revenue_forecast / revenue_target * 100) if revenue_target else None
+        else:
+            revenue_forecast = None
+            revenue_gap = None
+            revenue_gap_percent = None
+            revenue_forecast_achievement = None
         
-        # Calculate cumulative values
-        monthly['cumulative_revenue'] = monthly['revenue'].cumsum()
-        monthly['cumulative_gp'] = monthly['gross_profit'].cumsum()
-        monthly['cumulative_gp1'] = monthly['gp1'].cumsum()
-        
-        return monthly
-    
-    def _get_empty_monthly_summary(self) -> pd.DataFrame:
-        """Return empty monthly summary with all months."""
-        return pd.DataFrame({
-            'invoice_month': MONTH_ORDER,
-            'revenue': [0] * 12,
-            'gross_profit': [0] * 12,
-            'gp1': [0] * 12,
-            'customer_count': [0] * 12,
-            'invoice_count': [0] * 12,
-            'gp_percent': [0] * 12,
-            'cumulative_revenue': [0] * 12,
-            'cumulative_gp': [0] * 12,
-            'cumulative_gp1': [0] * 12,
-        })
-    
-    # =========================================================================
-    # AGGREGATE BY SALESPERSON
-    # =========================================================================
-    
-    def aggregate_by_salesperson(self) -> pd.DataFrame:
-        """
-        Aggregate metrics by salesperson for detail table.
-        
-        Returns:
-            DataFrame with one row per salesperson.
-        """
-        df = self.sales_df
-        
-        if df.empty:
-            return pd.DataFrame()
-        
-        # Group by salesperson
-        summary = df.groupby(['sales_id', 'sales_name', 'sales_email']).agg({
-            'sales_by_split_usd': 'sum',
-            'gross_profit_by_split_usd': 'sum',
-            'gp1_by_split_usd': 'sum',
-            'allocated_broker_commission_usd': 'sum',
-            'customer_id': pd.Series.nunique,
-            'inv_number': pd.Series.nunique,
-            'oc_number': pd.Series.nunique,
-        }).reset_index()
-        
-        summary.columns = [
-            'sales_id', 'sales_name', 'sales_email',
-            'revenue', 'gross_profit', 'gp1', 'commission',
-            'customers', 'invoices', 'orders'
-        ]
-        
-        # Calculate percentages
-        summary['gp_percent'] = (summary['gross_profit'] / summary['revenue'] * 100).round(2)
-        summary['gp_percent'] = summary['gp_percent'].fillna(0)
-        
-        # Add targets and achievement if available
-        if not self.targets_df.empty:
-            summary = self._add_targets_to_summary(summary)
-        
-        # Sort by revenue descending
-        summary = summary.sort_values('revenue', ascending=False)
-        
-        return summary
-    
-    def _add_targets_to_summary(self, summary: pd.DataFrame) -> pd.DataFrame:
-        """Add target and achievement columns to salesperson summary."""
-        # Get revenue targets
-        revenue_targets = self.targets_df[
-            self.targets_df['kpi_name'].str.lower() == 'revenue'
-        ][['employee_id', 'annual_target_value_numeric']].copy()
-        
-        revenue_targets.columns = ['sales_id', 'revenue_target_annual']
-        
-        # Get GP targets
-        gp_targets = self.targets_df[
-            self.targets_df['kpi_name'].str.lower() == 'gross_profit'
-        ][['employee_id', 'annual_target_value_numeric']].copy()
-        
-        gp_targets.columns = ['sales_id', 'gp_target_annual']
-        
-        # Merge
-        summary = summary.merge(revenue_targets, on='sales_id', how='left')
-        summary = summary.merge(gp_targets, on='sales_id', how='left')
-        
-        # Calculate prorated targets (YTD)
-        elapsed_months = self.get_elapsed_months(datetime.now().year)
-        prorate_factor = elapsed_months / 12
-        
-        summary['revenue_target'] = summary['revenue_target_annual'] * prorate_factor
-        summary['gp_target'] = summary['gp_target_annual'] * prorate_factor
-        
-        # Calculate achievement
-        summary['revenue_achievement'] = (
-            summary['revenue'] / summary['revenue_target'] * 100
-        ).round(1)
-        summary['gp_achievement'] = (
-            summary['gross_profit'] / summary['gp_target'] * 100
-        ).round(1)
-        
-        # Handle NaN
-        summary['revenue_achievement'] = summary['revenue_achievement'].fillna(0)
-        summary['gp_achievement'] = summary['gp_achievement'].fillna(0)
-        
-        return summary
-    
-    # =========================================================================
-    # TOP N ANALYSIS (Pareto)
-    # =========================================================================
-    
-    def prepare_top_customers_by_metric(
-        self,
-        metric: str = 'gross_profit',
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """
-        Prepare top customers contributing to specified % of a metric.
-        Uses cumulative percentage cutoff (Pareto analysis).
-        
-        Args:
-            metric: 'revenue', 'gross_profit', or 'gp1'
-            top_percent: Cumulative cutoff (e.g., 0.8 for top 80%)
-            
-        Returns:
-            DataFrame with top customers and cumulative %
-        """
-        df = self.sales_df
-        
-        if df.empty:
-            return pd.DataFrame()
-        
-        # Map metric to column
-        metric_map = {
-            'revenue': 'sales_by_split_usd',
-            'gross_profit': 'gross_profit_by_split_usd',
-            'gp1': 'gp1_by_split_usd'
+        revenue_metrics = {
+            'invoiced': revenue_invoiced,
+            'in_period_backlog': revenue_in_period_backlog,
+            'forecast': revenue_forecast,
+            'target': revenue_target,
+            'gap': revenue_gap,
+            'gap_percent': round(revenue_gap_percent, 1) if revenue_gap_percent is not None else None,
+            'forecast_achievement': round(revenue_forecast_achievement, 1) if revenue_forecast_achievement is not None else None,
+            'employee_count': len(revenue_employees),
+            'backlog_orders': revenue_backlog_data['orders'],
         }
-        metric_col = metric_map.get(metric, 'gross_profit_by_split_usd')
         
-        # Group by customer
-        customer_data = df.groupby(['customer_id', 'customer']).agg({
-            'sales_by_split_usd': 'sum',
-            'gross_profit_by_split_usd': 'sum',
-            'gp1_by_split_usd': 'sum'
-        }).reset_index()
+        # =====================================================================
+        # GROSS PROFIT METRICS - Only from employees with GP KPI target
+        # =====================================================================
+        gp_employees = self._get_employees_with_kpi('gross_profit')
+        gp_target = self._get_prorated_target('gross_profit', period_type, year)
         
-        customer_data.columns = ['customer_id', 'customer', 'revenue', 'gross_profit', 'gp1']
+        # Invoiced GP from employees with GP KPI
+        gp_invoiced = self._get_actual_for_kpi('gross_profit', 'gross_profit_by_split_usd')
         
-        # Sort by selected metric
-        customer_data = customer_data.sort_values(metric, ascending=False)
-        total_metric = customer_data[metric].sum()
+        # In-period backlog GP from employees with GP KPI
+        gp_backlog_data = get_in_period_backlog_for_employees(
+            gp_employees, backlog_detail_df, start_date, end_date
+        )
+        gp_in_period_backlog = gp_backlog_data['gp']
         
-        if total_metric == 0:
-            return pd.DataFrame()
-        
-        # Calculate cumulative
-        customer_data['cumulative_value'] = customer_data[metric].cumsum()
-        customer_data['cumulative_percent'] = customer_data['cumulative_value'] / total_metric
-        customer_data['percent_contribution'] = customer_data[metric] / total_metric * 100
-        
-        # Find cutoff index (include first row that exceeds threshold)
-        exceed_mask = customer_data['cumulative_percent'] > top_percent
-        
-        if exceed_mask.any():
-            first_exceed_idx = exceed_mask.idxmax()
-            top_customers = customer_data.loc[:first_exceed_idx].copy()
+        # Forecast and GAP
+        if show_forecast:
+            gp_forecast = gp_invoiced + gp_in_period_backlog
+            gp_gap = (gp_forecast - gp_target) if gp_target else None
+            gp_gap_percent = (gp_gap / gp_target * 100) if gp_target and gp_gap is not None else None
+            gp_forecast_achievement = (gp_forecast / gp_target * 100) if gp_target else None
         else:
-            top_customers = customer_data.copy()
+            gp_forecast = None
+            gp_gap = None
+            gp_gap_percent = None
+            gp_forecast_achievement = None
         
-        return top_customers
-    
-    def prepare_top_customers_by_gp(
-        self,
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """Backward compatible wrapper for prepare_top_customers_by_metric."""
-        return self.prepare_top_customers_by_metric('gross_profit', top_percent)
-    
-    def prepare_top_brands_by_metric(
-        self,
-        metric: str = 'gross_profit',
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """
-        Prepare top brands contributing to specified % of a metric.
+        gp_metrics = {
+            'invoiced': gp_invoiced,
+            'in_period_backlog': gp_in_period_backlog,
+            'forecast': gp_forecast,
+            'target': gp_target,
+            'gap': gp_gap,
+            'gap_percent': round(gp_gap_percent, 1) if gp_gap_percent is not None else None,
+            'forecast_achievement': round(gp_forecast_achievement, 1) if gp_forecast_achievement is not None else None,
+            'employee_count': len(gp_employees),
+            'backlog_orders': gp_backlog_data['orders'],
+        }
         
-        Args:
-            metric: 'revenue', 'gross_profit', or 'gp1'
-            top_percent: Cumulative cutoff (e.g., 0.8 for top 80%)
-        """
-        df = self.sales_df
+        # =====================================================================
+        # GP1 METRICS - Only from employees with GP1 KPI target
+        # =====================================================================
+        gp1_employees = self._get_employees_with_kpi('gross_profit_1')
+        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)
         
-        if df.empty:
-            return pd.DataFrame()
+        # Invoiced GP1 from employees with GP1 KPI
+        gp1_invoiced = self._get_actual_for_kpi('gross_profit_1', 'gp1_by_split_usd')
         
-        # Group by brand
-        brand_data = df.groupby('brand').agg({
-            'sales_by_split_usd': 'sum',
-            'gross_profit_by_split_usd': 'sum',
-            'gp1_by_split_usd': 'sum'
-        }).reset_index()
+        # In-period backlog GP1 from employees with GP1 KPI
+        gp1_backlog_data = get_in_period_backlog_for_employees(
+            gp1_employees, backlog_detail_df, start_date, end_date
+        )
+        gp1_in_period_backlog = gp1_backlog_data['gp1']
         
-        brand_data.columns = ['brand', 'revenue', 'gross_profit', 'gp1']
-        
-        # Sort by selected metric
-        brand_data = brand_data.sort_values(metric, ascending=False)
-        total_metric = brand_data[metric].sum()
-        
-        if total_metric == 0:
-            return pd.DataFrame()
-        
-        # Calculate cumulative
-        brand_data['cumulative_value'] = brand_data[metric].cumsum()
-        brand_data['cumulative_percent'] = brand_data['cumulative_value'] / total_metric
-        brand_data['percent_contribution'] = brand_data[metric] / total_metric * 100
-        
-        # Find cutoff
-        exceed_mask = brand_data['cumulative_percent'] > top_percent
-        
-        if exceed_mask.any():
-            first_exceed_idx = exceed_mask.idxmax()
-            top_brands = brand_data.loc[:first_exceed_idx].copy()
+        # Forecast and GAP
+        if show_forecast:
+            gp1_forecast = gp1_invoiced + gp1_in_period_backlog
+            gp1_gap = (gp1_forecast - gp1_target) if gp1_target else None
+            gp1_gap_percent = (gp1_gap / gp1_target * 100) if gp1_target and gp1_gap is not None else None
+            gp1_forecast_achievement = (gp1_forecast / gp1_target * 100) if gp1_target else None
         else:
-            top_brands = brand_data.copy()
+            gp1_forecast = None
+            gp1_gap = None
+            gp1_gap_percent = None
+            gp1_forecast_achievement = None
         
-        return top_brands
-    
-    def prepare_top_brands_by_gp(
-        self,
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """Backward compatible wrapper for prepare_top_brands_by_metric."""
-        return self.prepare_top_brands_by_metric('gross_profit', top_percent)
+        gp1_metrics = {
+            'invoiced': gp1_invoiced,
+            'in_period_backlog': gp1_in_period_backlog,
+            'forecast': gp1_forecast,
+            'target': gp1_target,
+            'gap': gp1_gap,
+            'gap_percent': round(gp1_gap_percent, 1) if gp1_gap_percent is not None else None,
+            'forecast_achievement': round(gp1_forecast_achievement, 1) if gp1_forecast_achievement is not None else None,
+            'employee_count': len(gp1_employees),
+            'backlog_orders': gp1_backlog_data['orders'],
+        }
+        
+        # =====================================================================
+        # SUMMARY - Total backlog (all employees, for reference)
+        # =====================================================================
+        total_backlog_revenue = 0
+        total_backlog_gp = 0
+        backlog_orders = 0
+        
+        if not total_backlog_df.empty:
+            total_backlog_revenue = total_backlog_df['total_backlog_revenue'].sum()
+            total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
+            backlog_orders = total_backlog_df['backlog_orders'].sum() if 'backlog_orders' in total_backlog_df.columns else 0
+        
+        summary = {
+            'total_backlog_revenue': total_backlog_revenue,
+            'total_backlog_gp': total_backlog_gp,
+            'total_backlog_gp1': total_backlog_gp * gp1_gp_ratio,
+            'backlog_orders': backlog_orders,
+            'gp1_gp_ratio': round(gp1_gp_ratio, 4),
+        }
+        
+        return {
+            'period_context': period_context,
+            'revenue': revenue_metrics,
+            'gross_profit': gp_metrics,
+            'gp1': gp1_metrics,
+            'summary': summary,
+        }
     
     # =========================================================================
-    # BACKLOG & FORECAST CALCULATIONS
+    # BACKLOG & FORECAST CALCULATIONS (LEGACY - kept for backward compatibility)
     # =========================================================================
     
     def calculate_backlog_metrics(
@@ -1103,6 +1147,9 @@ class SalespersonMetrics:
     ) -> Dict:
         """
         Calculate backlog and forecast metrics for Revenue, GP, and GP1.
+        
+        Note: This is the LEGACY method. For the updated logic that filters by 
+        employees with KPI targets, use calculate_pipeline_forecast_metrics().
         
         Note: Backlog view doesn't have GP1 directly (no commission data for pending orders).
         We estimate GP1 backlog = GP backlog (conservative assumption - no commission deduction).
@@ -1326,3 +1373,307 @@ class SalespersonMetrics:
             'backlog_gp': [0] * 12,
             'order_count': [0] * 12,
         })
+    
+    # =========================================================================
+    # YOY COMPARISON
+    # =========================================================================
+    
+    def calculate_yoy_comparison(
+        self,
+        current_metrics: Dict,
+        previous_metrics: Dict
+    ) -> Dict:
+        """
+        Calculate YoY growth percentages.
+        
+        Args:
+            current_metrics: Metrics from current period
+            previous_metrics: Metrics from same period last year
+            
+        Returns:
+            Dict with YoY growth percentages
+        """
+        def calc_yoy(current, previous):
+            if previous and previous > 0:
+                return ((current - previous) / previous) * 100
+            return None
+        
+        return {
+            'total_revenue_yoy': calc_yoy(
+                current_metrics.get('total_revenue', 0),
+                previous_metrics.get('total_revenue', 0)
+            ),
+            'total_gp_yoy': calc_yoy(
+                current_metrics.get('total_gp', 0),
+                previous_metrics.get('total_gp', 0)
+            ),
+            'total_gp1_yoy': calc_yoy(
+                current_metrics.get('total_gp1', 0),
+                previous_metrics.get('total_gp1', 0)
+            ),
+            'total_customers_yoy': calc_yoy(
+                current_metrics.get('total_customers', 0),
+                previous_metrics.get('total_customers', 0)
+            ),
+        }
+    
+    # =========================================================================
+    # MONTHLY SUMMARY
+    # =========================================================================
+    
+    def prepare_monthly_summary(self) -> pd.DataFrame:
+        """
+        Prepare monthly summary data for charts and tables.
+        
+        Returns:
+            DataFrame with monthly aggregated data including cumulative values
+        """
+        if self.sales_df.empty:
+            return self._get_empty_monthly_summary()
+        
+        df = self.sales_df.copy()
+        
+        # Ensure invoice_month exists
+        if 'invoice_month' not in df.columns:
+            if 'inv_date' in df.columns:
+                df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+                df['invoice_month'] = df['inv_date'].dt.strftime('%b')
+            else:
+                return self._get_empty_monthly_summary()
+        
+        # Aggregate by month
+        monthly = df.groupby('invoice_month').agg({
+            'sales_by_split_usd': 'sum',
+            'gross_profit_by_split_usd': 'sum',
+            'gp1_by_split_usd': 'sum',
+            'customer_id': pd.Series.nunique
+        }).reset_index()
+        
+        monthly.columns = ['invoice_month', 'revenue', 'gross_profit', 'gp1', 'customer_count']
+        
+        # Calculate GP%
+        monthly['gp_percent'] = (monthly['gross_profit'] / monthly['revenue'] * 100).round(2)
+        monthly['gp1_percent'] = (monthly['gp1'] / monthly['revenue'] * 100).round(2)
+        
+        # Ensure all months present
+        all_months = pd.DataFrame({'invoice_month': MONTH_ORDER})
+        monthly = all_months.merge(monthly, on='invoice_month', how='left').fillna(0)
+        
+        # Add month order for sorting
+        monthly['month_order'] = monthly['invoice_month'].apply(
+            lambda x: MONTH_ORDER.index(x) if x in MONTH_ORDER else 12
+        )
+        monthly = monthly.sort_values('month_order')
+        
+        # Calculate cumulative
+        monthly['cumulative_revenue'] = monthly['revenue'].cumsum()
+        monthly['cumulative_gp'] = monthly['gross_profit'].cumsum()
+        monthly['cumulative_gp1'] = monthly['gp1'].cumsum()
+        
+        return monthly
+    
+    def _get_empty_monthly_summary(self) -> pd.DataFrame:
+        """Return empty monthly summary."""
+        return pd.DataFrame({
+            'invoice_month': MONTH_ORDER,
+            'revenue': [0] * 12,
+            'gross_profit': [0] * 12,
+            'gp1': [0] * 12,
+            'customer_count': [0] * 12,
+            'gp_percent': [0] * 12,
+            'gp1_percent': [0] * 12,
+            'cumulative_revenue': [0] * 12,
+            'cumulative_gp': [0] * 12,
+            'cumulative_gp1': [0] * 12,
+            'month_order': list(range(12)),
+        })
+    
+    # =========================================================================
+    # SALESPERSON AGGREGATION
+    # =========================================================================
+    
+    def aggregate_by_salesperson(self) -> pd.DataFrame:
+        """
+        Aggregate metrics by salesperson for ranking and comparison.
+        
+        Returns:
+            DataFrame with per-salesperson metrics
+        """
+        if self.sales_df.empty:
+            return pd.DataFrame()
+        
+        df = self.sales_df.copy()
+        
+        # Group by salesperson
+        by_sales = df.groupby(['sales_id', 'sales_name']).agg({
+            'sales_by_split_usd': 'sum',
+            'gross_profit_by_split_usd': 'sum',
+            'gp1_by_split_usd': 'sum',
+            'customer_id': pd.Series.nunique,
+            'inv_number': pd.Series.nunique
+        }).reset_index()
+        
+        by_sales.columns = ['sales_id', 'sales_name', 'revenue', 'gross_profit', 'gp1', 'customers', 'invoices']
+        
+        # Calculate percentages
+        by_sales['gp_percent'] = (by_sales['gross_profit'] / by_sales['revenue'] * 100).round(2)
+        by_sales['gp1_percent'] = (by_sales['gp1'] / by_sales['revenue'] * 100).round(2)
+        
+        # Add targets if available
+        if not self.targets_df.empty:
+            # Get revenue targets
+            revenue_targets = self.targets_df[
+                self.targets_df['kpi_name'].str.lower() == 'revenue'
+            ][['employee_id', 'annual_target_value_numeric']].copy()
+            revenue_targets.columns = ['sales_id', 'revenue_target']
+            
+            by_sales = by_sales.merge(revenue_targets, on='sales_id', how='left')
+            
+            # Calculate achievement
+            by_sales['revenue_achievement'] = (
+                by_sales['revenue'] / by_sales['revenue_target'] * 100
+            ).round(1)
+            
+            # GP targets
+            gp_targets = self.targets_df[
+                self.targets_df['kpi_name'].str.lower() == 'gross_profit'
+            ][['employee_id', 'annual_target_value_numeric']].copy()
+            gp_targets.columns = ['sales_id', 'gp_target']
+            
+            by_sales = by_sales.merge(gp_targets, on='sales_id', how='left')
+            by_sales['gp_achievement'] = (
+                by_sales['gross_profit'] / by_sales['gp_target'] * 100
+            ).round(1)
+        
+        return by_sales.sort_values('revenue', ascending=False)
+    
+    # =========================================================================
+    # TOP CUSTOMERS/BRANDS ANALYSIS
+    # =========================================================================
+    
+    def prepare_top_customers_by_metric(
+        self,
+        metric: str = 'revenue',
+        top_percent: float = 0.8
+    ) -> pd.DataFrame:
+        """
+        Get top customers that make up specified percentage of metric.
+        
+        Args:
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            top_percent: Percentage threshold (default 0.8 = 80%)
+            
+        Returns:
+            DataFrame with top customers and their contribution
+        """
+        if self.sales_df.empty:
+            return pd.DataFrame()
+        
+        df = self.sales_df.copy()
+        
+        # Map metric to column
+        metric_map = {
+            'revenue': 'sales_by_split_usd',
+            'gross_profit': 'gross_profit_by_split_usd',
+            'gp1': 'gp1_by_split_usd'
+        }
+        col = metric_map.get(metric, 'sales_by_split_usd')
+        
+        # Group by customer
+        customer_data = df.groupby(['customer_id', 'customer']).agg({
+            'sales_by_split_usd': 'sum',
+            'gross_profit_by_split_usd': 'sum',
+            'gp1_by_split_usd': 'sum'
+        }).reset_index()
+        
+        customer_data.columns = ['customer_id', 'customer', 'revenue', 'gross_profit', 'gp1']
+        
+        # Sort by selected metric
+        customer_data = customer_data.sort_values(metric, ascending=False)
+        total_metric = customer_data[metric].sum()
+        
+        if total_metric == 0:
+            return pd.DataFrame()
+        
+        # Calculate cumulative
+        customer_data['cumulative_value'] = customer_data[metric].cumsum()
+        customer_data['cumulative_percent'] = customer_data['cumulative_value'] / total_metric
+        customer_data['percent_contribution'] = customer_data[metric] / total_metric * 100
+        
+        # Find cutoff
+        exceed_mask = customer_data['cumulative_percent'] > top_percent
+        
+        if exceed_mask.any():
+            first_exceed_idx = exceed_mask.idxmax()
+            top_customers = customer_data.loc[:first_exceed_idx].copy()
+        else:
+            top_customers = customer_data.copy()
+        
+        return top_customers
+    
+    def prepare_top_customers_by_gp(
+        self,
+        top_percent: float = 0.8
+    ) -> pd.DataFrame:
+        """Backward compatible wrapper for prepare_top_customers_by_metric."""
+        return self.prepare_top_customers_by_metric('gross_profit', top_percent)
+    
+    def prepare_top_brands_by_metric(
+        self,
+        metric: str = 'revenue',
+        top_percent: float = 0.8
+    ) -> pd.DataFrame:
+        """
+        Get top brands that make up specified percentage of metric.
+        """
+        if self.sales_df.empty:
+            return pd.DataFrame()
+        
+        df = self.sales_df.copy()
+        
+        # Map metric to column
+        metric_map = {
+            'revenue': 'sales_by_split_usd',
+            'gross_profit': 'gross_profit_by_split_usd',
+            'gp1': 'gp1_by_split_usd'
+        }
+        col = metric_map.get(metric, 'sales_by_split_usd')
+        
+        # Group by brand
+        brand_data = df.groupby('brand').agg({
+            'sales_by_split_usd': 'sum',
+            'gross_profit_by_split_usd': 'sum',
+            'gp1_by_split_usd': 'sum'
+        }).reset_index()
+        
+        brand_data.columns = ['brand', 'revenue', 'gross_profit', 'gp1']
+        
+        # Sort by selected metric
+        brand_data = brand_data.sort_values(metric, ascending=False)
+        total_metric = brand_data[metric].sum()
+        
+        if total_metric == 0:
+            return pd.DataFrame()
+        
+        # Calculate cumulative
+        brand_data['cumulative_value'] = brand_data[metric].cumsum()
+        brand_data['cumulative_percent'] = brand_data['cumulative_value'] / total_metric
+        brand_data['percent_contribution'] = brand_data[metric] / total_metric * 100
+        
+        # Find cutoff
+        exceed_mask = brand_data['cumulative_percent'] > top_percent
+        
+        if exceed_mask.any():
+            first_exceed_idx = exceed_mask.idxmax()
+            top_brands = brand_data.loc[:first_exceed_idx].copy()
+        else:
+            top_brands = brand_data.copy()
+        
+        return top_brands
+    
+    def prepare_top_brands_by_gp(
+        self,
+        top_percent: float = 0.8
+    ) -> pd.DataFrame:
+        """Backward compatible wrapper for prepare_top_brands_by_metric."""
+        return self.prepare_top_brands_by_metric('gross_profit', top_percent)

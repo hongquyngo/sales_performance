@@ -12,6 +12,10 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v1.6.0: ADDED calculate_complex_kpi_value() helper method
+          - Calculates single complex KPI for specific employees
+          - Used by KPI Progress to filter by employees with target
+          - Supports: num_new_customers, num_new_products, new_business_revenue
 - v1.5.0: FIXED backlog queries to filter uninvoiced only
           - Added condition: invoice_completion_percent < 100 OR IS NULL
           - Affects: get_backlog_data, get_backlog_in_period, 
@@ -703,6 +707,88 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_business_detail")
+    
+    # =========================================================================
+    # COMPLEX KPI HELPER - CALCULATE FOR SPECIFIC EMPLOYEES (NEW v1.6.0)
+    # =========================================================================
+    
+    def calculate_complex_kpi_value(
+        self,
+        kpi_name: str,
+        start_date: date,
+        end_date: date,
+        employee_ids: List[int]
+    ) -> float:
+        """
+        Calculate a single complex KPI value for specific employees.
+        
+        NEW v1.6.0: Helper method to calculate complex KPI values filtered
+        by employees who have that specific KPI target assigned.
+        
+        This ensures KPI Progress shows accurate achievement by only counting
+        actuals from employees who are responsible for that KPI.
+        
+        Args:
+            kpi_name: KPI name - one of:
+                - 'num_new_customers': Count of new customers (weighted by split)
+                - 'num_new_products': Count of new products (weighted by split)
+                - 'new_business_revenue': Revenue from new customer-product combos
+            start_date: Period start date
+            end_date: Period end date
+            employee_ids: List of employee IDs to include (NOT validated against access)
+                         This should be the list of employees with the KPI target
+            
+        Returns:
+            Calculated KPI value (float)
+            - For count KPIs: sum of split_rate_percent / 100
+            - For revenue KPIs: sum of revenue
+            
+        Example:
+            # Get employees with 'num_new_customers' target
+            employees_with_target = targets_df[
+                targets_df['kpi_name'] == 'num_new_customers'
+            ]['employee_id'].unique().tolist()
+            
+            # Calculate actual for those employees only
+            actual = queries.calculate_complex_kpi_value(
+                'num_new_customers',
+                start_date,
+                end_date,
+                employees_with_target
+            )
+        """
+        if not employee_ids:
+            return 0.0
+        
+        kpi_name_lower = kpi_name.lower()
+        
+        if kpi_name_lower == 'num_new_customers':
+            # Get new customers for specific employees
+            df = self.get_new_customers(start_date, end_date, employee_ids)
+            if df.empty:
+                return 0.0
+            # Count = sum of split_rate_percent / 100
+            return df['split_rate_percent'].sum() / 100
+        
+        elif kpi_name_lower == 'num_new_products':
+            # Get new products for specific employees
+            df = self.get_new_products(start_date, end_date, employee_ids)
+            if df.empty:
+                return 0.0
+            # Count = sum of split_rate_percent / 100
+            return df['split_rate_percent'].sum() / 100
+        
+        elif kpi_name_lower == 'new_business_revenue':
+            # Get new business revenue for specific employees
+            df = self.get_new_business_revenue(start_date, end_date, employee_ids)
+            if df.empty:
+                return 0.0
+            # Revenue = sum of new_business_revenue
+            return df['new_business_revenue'].sum()
+        
+        else:
+            logger.warning(f"Unknown complex KPI: {kpi_name}")
+            return 0.0
     
     # =========================================================================
     # LOOKUP DATA
