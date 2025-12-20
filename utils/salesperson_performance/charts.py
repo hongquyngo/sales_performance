@@ -2192,3 +2192,74 @@ If no invoiced data: GP1 = GP
                     delta=reason,
                     delta_color="off"
                 )
+
+    @staticmethod
+    def convert_pipeline_to_backlog_metrics(pipeline_metrics: dict) -> dict:
+        """
+        Convert pipeline_forecast_metrics format to legacy backlog_metrics format.
+        
+        This allows using the new KPI-filtered pipeline_forecast_metrics 
+        with existing chart methods (build_forecast_waterfall_chart, build_gap_analysis_chart).
+        
+        Args:
+            pipeline_metrics: Dict from calculate_pipeline_forecast_metrics() with structure:
+                - revenue: {invoiced, in_period_backlog, target, forecast, gap, ...}
+                - gross_profit: {invoiced, in_period_backlog, target, forecast, gap, ...}
+                - gp1: {invoiced, in_period_backlog, target, forecast, gap, ...}
+                - summary: {total_backlog_revenue, total_backlog_gp, gp1_gp_ratio, ...}
+                - period_context: {show_forecast, ...}
+                
+        Returns:
+            Dict in legacy backlog_metrics format:
+                - current_invoiced_revenue, in_period_backlog_revenue, revenue_target, forecast_revenue
+                - current_invoiced_gp, in_period_backlog_gp, gp_target, forecast_gp
+                - current_invoiced_gp1, in_period_backlog_gp1, gp1_target, forecast_gp1
+                - period_context, etc.
+        """
+        if not pipeline_metrics:
+            return {}
+        
+        revenue = pipeline_metrics.get('revenue', {})
+        gp = pipeline_metrics.get('gross_profit', {})
+        gp1 = pipeline_metrics.get('gp1', {})
+        summary = pipeline_metrics.get('summary', {})
+        period_context = pipeline_metrics.get('period_context', {})
+        
+        return {
+            # Period context
+            'period_context': period_context,
+            
+            # Revenue metrics
+            'current_invoiced_revenue': revenue.get('invoiced', 0),
+            'in_period_backlog_revenue': revenue.get('in_period_backlog', 0),
+            'revenue_target': revenue.get('target'),
+            'forecast_revenue': revenue.get('forecast'),
+            'gap_revenue': revenue.get('gap'),
+            'gap_revenue_percent': revenue.get('gap_percent'),
+            'forecast_achievement_revenue': revenue.get('forecast_achievement'),
+            
+            # GP metrics
+            'current_invoiced_gp': gp.get('invoiced', 0),
+            'in_period_backlog_gp': gp.get('in_period_backlog', 0),
+            'gp_target': gp.get('target'),
+            'forecast_gp': gp.get('forecast'),
+            'gap_gp': gp.get('gap'),
+            'gap_gp_percent': gp.get('gap_percent'),
+            'forecast_achievement_gp': gp.get('forecast_achievement'),
+            
+            # GP1 metrics
+            'current_invoiced_gp1': gp1.get('invoiced', 0),
+            'in_period_backlog_gp1': gp1.get('in_period_backlog', 0),
+            'gp1_target': gp1.get('target'),
+            'forecast_gp1': gp1.get('forecast'),
+            'gap_gp1': gp1.get('gap'),
+            'gap_gp1_percent': gp1.get('gap_percent'),
+            'forecast_achievement_gp1': gp1.get('forecast_achievement'),
+            
+            # Summary/Total backlog
+            'total_backlog_revenue': summary.get('total_backlog_revenue', 0),
+            'total_backlog_gp': summary.get('total_backlog_gp', 0),
+            'total_backlog_gp1': summary.get('total_backlog_gp1', 0),
+            'backlog_orders': summary.get('backlog_orders', 0),
+            'gp1_gp_ratio': summary.get('gp1_gp_ratio', 1.0),
+        }

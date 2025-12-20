@@ -1164,6 +1164,10 @@ with tab1:
                 | Cyan bar | Forecast |
                 | Blue bar | Already invoiced |
                 
+                **⚠️ Data Filtered by KPI Assignment:**
+                Each tab only shows data from employees who have that specific KPI target assigned.
+                This ensures accurate achievement calculations.
+                
                 **GP1 Estimation:**
                 When backlog doesn't have GP1, it's estimated using:
                 ```
@@ -1178,6 +1182,12 @@ with tab1:
         if in_period_backlog_analysis.get('overdue_warning'):
             st.warning(in_period_backlog_analysis['overdue_warning'])
         
+        # NEW v2.5.0: Convert pipeline_forecast_metrics to legacy format for chart methods
+        # This uses KPI-filtered data (only employees with specific KPI targets)
+        chart_backlog_metrics = SalespersonCharts.convert_pipeline_to_backlog_metrics(
+            pipeline_forecast_metrics
+        )
+        
         # Tabs for different metrics
         bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
         
@@ -1185,14 +1195,14 @@ with tab1:
             col_bf1, col_bf2 = st.columns(2)
             with col_bf1:
                 forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metric='revenue',
                     title="Revenue Forecast vs Target"
                 )
                 st.altair_chart(forecast_chart, use_container_width=True)
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['revenue'],
                     title="Revenue: Target vs Forecast"
                 )
@@ -1202,14 +1212,14 @@ with tab1:
             col_bf1, col_bf2 = st.columns(2)
             with col_bf1:
                 forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metric='gp',
                     title="GP Forecast vs Target"
                 )
                 st.altair_chart(forecast_chart, use_container_width=True)
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['gp'],
                     title="GP: Target vs Forecast"
                 )
@@ -1219,14 +1229,14 @@ with tab1:
             col_bf1, col_bf2 = st.columns(2)
             with col_bf1:
                 forecast_chart = SalespersonCharts.build_forecast_waterfall_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metric='gp1',
                     title="GP1 Forecast vs Target"
                 )
                 st.altair_chart(forecast_chart, use_container_width=True)
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
-                    backlog_metrics=backlog_metrics,
+                    backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['gp1'],
                     title="GP1: Target vs Forecast"
                 )
