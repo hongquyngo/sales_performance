@@ -5,13 +5,17 @@ Sidebar Filter Components for Salesperson Performance
 Renders filter UI elements:
 - Period selector (YTD/QTD/MTD/Custom) with radio buttons
 - Year selector
-- Salesperson selector (role-based)
+- Salesperson selector (role-based) with KPI filter option
 - Entity selector
 - Internal revenue filter
 - YoY comparison toggle
 - Metric view selector
 
 CHANGELOG:
+- v1.4.0: Added "Only with KPI assignment" checkbox
+          - Filters salesperson dropdown to only show those with KPI targets
+          - Default: checked (hide managers without KPI)
+          - Supports cross-year periods (checks both years)
 - v1.3.0: Added Period Type radio buttons (YTD/QTD/MTD/Custom)
           - Only Custom shows date pickers
           - YTD/QTD/MTD auto-calculate dates for current year
@@ -29,11 +33,51 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 from .constants import PERIOD_TYPES, MONTH_ORDER
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# KPI ASSIGNMENT HELPER
+# =============================================================================
+
+def _get_employees_with_kpi_assignments(years: List[int]) -> List[int]:
+    """
+    Get list of employee IDs that have KPI assignments in given years.
+    
+    Standalone helper function to avoid circular imports with queries.py.
+    
+    Args:
+        years: List of years to check (e.g., [2025] or [2024, 2025])
+        
+    Returns:
+        List of employee_ids with KPI assignments
+    """
+    if not years:
+        return []
+    
+    try:
+        from utils.db import get_db_engine
+        engine = get_db_engine()
+        
+        query = """
+            SELECT DISTINCT employee_id 
+            FROM sales_employee_kpi_assignments_view 
+            WHERE year IN :years
+            ORDER BY employee_id
+        """
+        
+        with engine.connect() as conn:
+            result = conn.execute(text(query), {'years': tuple(years)})
+            return [row[0] for row in result]
+            
+    except Exception as e:
+        logger.error(f"Error fetching employees with KPI: {e}")
+        return []
 
 
 # =============================================================================
@@ -706,6 +750,37 @@ class SalespersonFilters:
             st.divider()
             
             # =====================================================
+            # KPI FILTER CHECKBOX (Outside form - affects options)
+            # =====================================================
+            # Determine years to check for KPI (handle cross-year periods)
+            kpi_check_years = list(set([start_date.year, end_date.year]))
+            
+            only_with_kpi = st.checkbox(
+                "Only with KPI assignment",
+                value=True,  # Default: checked
+                key="filter_only_with_kpi",
+                help="Show only salespeople who have KPI targets assigned for the selected period. "
+                     "Uncheck to include all salespeople (including managers without individual KPI)."
+            )
+            
+            # Filter salesperson_df if checkbox is checked
+            filtered_salesperson_df = salesperson_df.copy()
+            kpi_employee_ids = []
+            
+            if only_with_kpi and not salesperson_df.empty:
+                kpi_employee_ids = _get_employees_with_kpi_assignments(kpi_check_years)
+                if kpi_employee_ids:
+                    filtered_salesperson_df = salesperson_df[
+                        salesperson_df['employee_id'].isin(kpi_employee_ids)
+                    ]
+                    # Show info about filtering
+                    excluded_count = len(salesperson_df) - len(filtered_salesperson_df)
+                    if excluded_count > 0:
+                        st.caption(f"📋 {len(filtered_salesperson_df)} with KPI ({excluded_count} hidden)")
+                else:
+                    st.warning("⚠️ No KPI assignments found for selected period")
+            
+            # =====================================================
             # FORM FOR OTHER FILTERS
             # =====================================================
             with st.form("filter_form", border=False):
@@ -713,26 +788,29 @@ class SalespersonFilters:
                 # SALESPERSON FILTER
                 # =====================================================
                 st.markdown("**👤 Salesperson**")
-                if salesperson_df.empty:
+                if filtered_salesperson_df.empty:
                     employee_ids = []
                     st.warning("No salespeople available")
                 else:
-                    all_salespeople = salesperson_df['sales_name'].tolist()
-                    id_map = dict(zip(salesperson_df['sales_name'], salesperson_df['employee_id']))
+                    all_salespeople = filtered_salesperson_df['sales_name'].tolist()
+                    id_map = dict(zip(filtered_salesperson_df['sales_name'], filtered_salesperson_df['employee_id']))
                     
                     if self.access.get_access_level() == 'full':
                         options = ['All'] + all_salespeople
                         default = ['All']
                     elif self.access.get_access_level() == 'team':
                         team_ids = self.access.get_accessible_employee_ids()
-                        team_names = salesperson_df[
-                            salesperson_df['employee_id'].isin(team_ids)
+                        # Also filter by KPI if checkbox is checked
+                        if only_with_kpi and kpi_employee_ids:
+                            team_ids = [tid for tid in team_ids if tid in kpi_employee_ids]
+                        team_names = filtered_salesperson_df[
+                            filtered_salesperson_df['employee_id'].isin(team_ids)
                         ]['sales_name'].tolist()
                         options = ['All Team'] + team_names
                         default = ['All Team']
                     else:
                         my_id = self.access.employee_id
-                        my_row = salesperson_df[salesperson_df['employee_id'] == my_id]
+                        my_row = filtered_salesperson_df[filtered_salesperson_df['employee_id'] == my_id]
                         if not my_row.empty:
                             options = [my_row.iloc[0]['sales_name']]
                             default = options
@@ -752,7 +830,12 @@ class SalespersonFilters:
                     if 'All' in selected_names:
                         employee_ids = list(id_map.values())
                     elif 'All Team' in selected_names:
-                        employee_ids = self.access.get_accessible_employee_ids()
+                        # Apply KPI filter to team IDs if checkbox is checked
+                        team_ids = self.access.get_accessible_employee_ids()
+                        if only_with_kpi and kpi_employee_ids:
+                            employee_ids = [tid for tid in team_ids if tid in kpi_employee_ids]
+                        else:
+                            employee_ids = team_ids
                     else:
                         employee_ids = [id_map[name] for name in selected_names if name in id_map]
                 
@@ -805,6 +888,7 @@ class SalespersonFilters:
             'entity_ids': entity_ids,
             'compare_yoy': True,
             'exclude_internal_revenue': True,
+            'only_with_kpi': only_with_kpi,  # NEW: KPI filter flag
         }
         
         return filter_values, submitted

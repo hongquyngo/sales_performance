@@ -614,13 +614,80 @@ with tab1:
     
     st.divider()
     
-    # Monthly charts
-    monthly_summary = metrics_calc.prepare_monthly_summary()
+    # ==========================================================================
+    # MONTHLY TREND + CUMULATIVE - WITH DRILL-DOWN FILTERS
+    # ==========================================================================
+    col_trend_header, col_trend_help = st.columns([6, 1])
+    with col_trend_header:
+        st.subheader("📊 Monthly Trend & Cumulative")
+    with col_trend_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+            **Filter by Customer/Brand/Product** to drill-down into specific segments.
+            
+            Use **Excl** checkbox to exclude selected items instead of filtering to them.
+            """)
     
+    # --- Drill-down filters ---
+    col_tf1, col_tf2, col_tf3 = st.columns(3)
+    
+    with col_tf1:
+        trend_customer_options = sorted(data['sales']['customer'].dropna().unique().tolist()) if not data['sales'].empty else []
+        trend_customer_filter = render_multiselect_filter(
+            label="Customer",
+            options=trend_customer_options,
+            key="trend_customer",
+            placeholder="All customers..."
+        )
+    
+    with col_tf2:
+        trend_brand_options = sorted(data['sales']['brand'].dropna().unique().tolist()) if not data['sales'].empty else []
+        trend_brand_filter = render_multiselect_filter(
+            label="Brand",
+            options=trend_brand_options,
+            key="trend_brand",
+            placeholder="All brands..."
+        )
+    
+    with col_tf3:
+        trend_product_options = sorted(data['sales']['product_pn'].dropna().unique().tolist())[:100] if not data['sales'].empty else []
+        trend_product_filter = render_multiselect_filter(
+            label="Product",
+            options=trend_product_options,
+            key="trend_product",
+            placeholder="All products..."
+        )
+    
+    # Apply filters to sales data for this section
+    trend_sales_df = data['sales'].copy() if not data['sales'].empty else pd.DataFrame()
+    trend_sales_df = apply_multiselect_filter(trend_sales_df, 'customer', trend_customer_filter)
+    trend_sales_df = apply_multiselect_filter(trend_sales_df, 'brand', trend_brand_filter)
+    trend_sales_df = apply_multiselect_filter(trend_sales_df, 'product_pn', trend_product_filter)
+    
+    # Show filter summary
+    trend_active_filters = []
+    if trend_customer_filter.is_active:
+        mode = "excl" if trend_customer_filter.excluded else "incl"
+        trend_active_filters.append(f"Customer: {len(trend_customer_filter.selected)} ({mode})")
+    if trend_brand_filter.is_active:
+        mode = "excl" if trend_brand_filter.excluded else "incl"
+        trend_active_filters.append(f"Brand: {len(trend_brand_filter.selected)} ({mode})")
+    if trend_product_filter.is_active:
+        mode = "excl" if trend_product_filter.excluded else "incl"
+        trend_active_filters.append(f"Product: {len(trend_product_filter.selected)} ({mode})")
+    
+    if trend_active_filters:
+        st.caption(f"🔍 Filters: {' | '.join(trend_active_filters)}")
+    
+    # Calculate monthly summary with filtered data
+    trend_metrics_calc = SalespersonMetrics(trend_sales_df, data['targets'])
+    monthly_summary = trend_metrics_calc.prepare_monthly_summary()
+    
+    # Monthly charts
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📊 Monthly Trend")
+        st.markdown("##### 📊 Monthly Trend")
         monthly_chart = SalespersonCharts.build_monthly_trend_chart(
             monthly_df=monthly_summary,
             show_gp1=False,
@@ -629,7 +696,7 @@ with tab1:
         st.altair_chart(monthly_chart, use_container_width=True)
     
     with col2:
-        st.subheader("📈 Cumulative Performance")
+        st.markdown("##### 📈 Cumulative Performance")
         cumulative_chart = SalespersonCharts.build_cumulative_chart(
             monthly_df=monthly_summary,
             title=""
@@ -644,9 +711,72 @@ with tab1:
     
     st.divider()
     
+    # --- Header with help ---
+    col_yc_header, col_yc_help = st.columns([6, 1])
+    with col_yc_header:
+        st.subheader("📊 Year-over-Year Comparison")
+    with col_yc_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+            **Filter by Customer/Brand/Product** to compare YoY performance for specific segments.
+            
+            Use **Excl** checkbox to exclude selected items instead of filtering to them.
+            """)
+    
+    # --- Drill-down filters for YoY section ---
+    col_yf1, col_yf2, col_yf3 = st.columns(3)
+    
+    with col_yf1:
+        yoy_customer_options = sorted(data['sales']['customer'].dropna().unique().tolist()) if not data['sales'].empty else []
+        yoy_customer_filter = render_multiselect_filter(
+            label="Customer",
+            options=yoy_customer_options,
+            key="yoy_customer",
+            placeholder="All customers..."
+        )
+    
+    with col_yf2:
+        yoy_brand_options = sorted(data['sales']['brand'].dropna().unique().tolist()) if not data['sales'].empty else []
+        yoy_brand_filter = render_multiselect_filter(
+            label="Brand",
+            options=yoy_brand_options,
+            key="yoy_brand",
+            placeholder="All brands..."
+        )
+    
+    with col_yf3:
+        yoy_product_options = sorted(data['sales']['product_pn'].dropna().unique().tolist())[:100] if not data['sales'].empty else []
+        yoy_product_filter = render_multiselect_filter(
+            label="Product",
+            options=yoy_product_options,
+            key="yoy_product",
+            placeholder="All products..."
+        )
+    
+    # Apply filters to sales data for YoY section
+    yoy_sales_df = data['sales'].copy() if not data['sales'].empty else pd.DataFrame()
+    yoy_sales_df = apply_multiselect_filter(yoy_sales_df, 'customer', yoy_customer_filter)
+    yoy_sales_df = apply_multiselect_filter(yoy_sales_df, 'brand', yoy_brand_filter)
+    yoy_sales_df = apply_multiselect_filter(yoy_sales_df, 'product_pn', yoy_product_filter)
+    
+    # Show filter summary
+    yoy_active_filters = []
+    if yoy_customer_filter.is_active:
+        mode = "excl" if yoy_customer_filter.excluded else "incl"
+        yoy_active_filters.append(f"Customer: {len(yoy_customer_filter.selected)} ({mode})")
+    if yoy_brand_filter.is_active:
+        mode = "excl" if yoy_brand_filter.excluded else "incl"
+        yoy_active_filters.append(f"Brand: {len(yoy_brand_filter.selected)} ({mode})")
+    if yoy_product_filter.is_active:
+        mode = "excl" if yoy_product_filter.excluded else "incl"
+        yoy_active_filters.append(f"Product: {len(yoy_product_filter.selected)} ({mode})")
+    
+    if yoy_active_filters:
+        st.caption(f"🔍 Filters: {' | '.join(yoy_active_filters)}")
+    
     # Get years that actually have sales data (not just from date range)
-    if not data['sales'].empty and 'invoice_year' in data['sales'].columns:
-        actual_years = sorted(data['sales']['invoice_year'].dropna().unique().astype(int).tolist())
+    if not yoy_sales_df.empty and 'invoice_year' in yoy_sales_df.columns:
+        actual_years = sorted(yoy_sales_df['invoice_year'].dropna().unique().astype(int).tolist())
     else:
         actual_years = []
     
@@ -666,7 +796,7 @@ with tab1:
         with my_tab1:
             # Summary table
             summary_df = SalespersonCharts.build_multi_year_summary_table(
-                sales_df=data['sales'],
+                sales_df=yoy_sales_df,
                 years=actual_years,
                 metric='revenue'
             )
@@ -690,7 +820,7 @@ with tab1:
             with col_c1:
                 st.markdown("##### 📊 Monthly Revenue by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='revenue',
                     title=""
@@ -700,7 +830,7 @@ with tab1:
             with col_c2:
                 st.markdown("##### 📈 Cumulative Revenue by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='revenue',
                     title=""
@@ -710,7 +840,7 @@ with tab1:
         # Tab 2: Gross Profit
         with my_tab2:
             summary_df = SalespersonCharts.build_multi_year_summary_table(
-                sales_df=data['sales'],
+                sales_df=yoy_sales_df,
                 years=actual_years,
                 metric='gross_profit'
             )
@@ -732,7 +862,7 @@ with tab1:
             with col_c1:
                 st.markdown("##### 📊 Monthly Gross Profit by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='gross_profit',
                     title=""
@@ -742,7 +872,7 @@ with tab1:
             with col_c2:
                 st.markdown("##### 📈 Cumulative Gross Profit by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='gross_profit',
                     title=""
@@ -752,7 +882,7 @@ with tab1:
         # Tab 3: GP1
         with my_tab3:
             summary_df = SalespersonCharts.build_multi_year_summary_table(
-                sales_df=data['sales'],
+                sales_df=yoy_sales_df,
                 years=actual_years,
                 metric='gp1'
             )
@@ -774,7 +904,7 @@ with tab1:
             with col_c1:
                 st.markdown("##### 📊 Monthly GP1 by Year")
                 monthly_chart = SalespersonCharts.build_multi_year_monthly_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='gp1',
                     title=""
@@ -784,7 +914,7 @@ with tab1:
             with col_c2:
                 st.markdown("##### 📈 Cumulative GP1 by Year")
                 cum_chart = SalespersonCharts.build_multi_year_cumulative_chart(
-                    sales_df=data['sales'],
+                    sales_df=yoy_sales_df,
                     years=actual_years,
                     metric='gp1',
                     title=""
@@ -802,16 +932,7 @@ with tab1:
         else:
             primary_year = filter_values['end_date'].year
         
-        col_yoy_header, col_yoy_help = st.columns([6, 1])
-        with col_yoy_header:
-            st.subheader(f"📊 Year-over-Year Comparison ({primary_year} vs {primary_year - 1})")
-        with col_yoy_help:
-            with st.popover("ℹ️"):
-                st.markdown("""
-                **Period Matching:**
-                - Compares same date range: e.g., YTD 2025 vs YTD 2024
-                - Leap year handled: Feb 29 → Feb 28
-                """)
+        st.markdown(f"##### 📅 {primary_year} vs {primary_year - 1}")
         
         # Load previous year data
         previous_sales_df = queries.get_previous_year_data(
@@ -821,13 +942,19 @@ with tab1:
             entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
         )
         
+        # Apply same filters to previous year data
+        if not previous_sales_df.empty:
+            previous_sales_df = apply_multiselect_filter(previous_sales_df, 'customer', yoy_customer_filter)
+            previous_sales_df = apply_multiselect_filter(previous_sales_df, 'brand', yoy_brand_filter)
+            previous_sales_df = apply_multiselect_filter(previous_sales_df, 'product_pn', yoy_product_filter)
+        
         if not previous_sales_df.empty:
             # Create 3 tabs for each metric
             yoy_tab1, yoy_tab2, yoy_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
             
             # Tab 1: Revenue
             with yoy_tab1:
-                current_total = data['sales']['sales_by_split_usd'].sum() if not data['sales'].empty else 0
+                current_total = yoy_sales_df['sales_by_split_usd'].sum() if not yoy_sales_df.empty else 0
                 previous_total = previous_sales_df['sales_by_split_usd'].sum() if not previous_sales_df.empty else 0
                 yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
                 yoy_abs = current_total - previous_total
@@ -854,7 +981,7 @@ with tab1:
                 with col_c1:
                     st.markdown("##### 📊 Monthly Revenue Comparison")
                     yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='revenue',
                         title=""
@@ -864,7 +991,7 @@ with tab1:
                 with col_c2:
                     st.markdown("##### 📈 Cumulative Revenue")
                     cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='revenue',
                         title=""
@@ -873,7 +1000,7 @@ with tab1:
             
             # Tab 2: Gross Profit
             with yoy_tab2:
-                current_total = data['sales']['gross_profit_by_split_usd'].sum() if not data['sales'].empty else 0
+                current_total = yoy_sales_df['gross_profit_by_split_usd'].sum() if not yoy_sales_df.empty else 0
                 previous_total = previous_sales_df['gross_profit_by_split_usd'].sum() if not previous_sales_df.empty else 0
                 yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
                 yoy_abs = current_total - previous_total
@@ -900,7 +1027,7 @@ with tab1:
                 with col_c1:
                     st.markdown("##### 📊 Monthly Gross Profit Comparison")
                     yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='gross_profit',
                         title=""
@@ -910,7 +1037,7 @@ with tab1:
                 with col_c2:
                     st.markdown("##### 📈 Cumulative Gross Profit")
                     cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='gross_profit',
                         title=""
@@ -919,7 +1046,7 @@ with tab1:
             
             # Tab 3: GP1
             with yoy_tab3:
-                current_total = data['sales']['gp1_by_split_usd'].sum() if not data['sales'].empty else 0
+                current_total = yoy_sales_df['gp1_by_split_usd'].sum() if not yoy_sales_df.empty else 0
                 previous_total = previous_sales_df['gp1_by_split_usd'].sum() if not previous_sales_df.empty else 0
                 yoy_change = ((current_total - previous_total) / previous_total * 100) if previous_total > 0 else 0
                 yoy_abs = current_total - previous_total
@@ -946,7 +1073,7 @@ with tab1:
                 with col_c1:
                     st.markdown("##### 📊 Monthly GP1 Comparison")
                     yoy_chart = SalespersonCharts.build_yoy_comparison_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='gp1',
                         title=""
@@ -956,7 +1083,7 @@ with tab1:
                 with col_c2:
                     st.markdown("##### 📈 Cumulative GP1")
                     cum_chart = SalespersonCharts.build_cumulative_yoy_chart(
-                        current_df=data['sales'],
+                        current_df=yoy_sales_df,
                         previous_df=previous_sales_df,
                         metric='gp1',
                         title=""

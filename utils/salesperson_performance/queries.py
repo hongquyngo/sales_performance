@@ -840,6 +840,45 @@ class SalespersonQueries:
         
         return start_date, end_date
     
+    def get_employees_with_kpi(self, years: List[int]) -> List[int]:
+        """
+        Get list of employee IDs that have KPI assignments in given years.
+        
+        Used to filter salesperson dropdown to only show those with KPI targets.
+        
+        Args:
+            years: List of years to check for KPI assignments
+                   (e.g., [2025] for single year, [2024, 2025] for cross-year)
+        
+        Returns:
+            List of employee_id that have at least one KPI assignment in any of the years
+        
+        Example:
+            # Single year
+            ids = queries.get_employees_with_kpi([2025])
+            
+            # Cross-year (Custom period from Dec 2024 to Mar 2025)
+            ids = queries.get_employees_with_kpi([2024, 2025])
+        """
+        if not years:
+            return []
+        
+        query = """
+            SELECT DISTINCT employee_id 
+            FROM sales_employee_kpi_assignments_view 
+            WHERE year IN :years
+            ORDER BY employee_id
+        """
+        
+        params = {'years': tuple(years)}
+        
+        df = self._execute_query(query, params, "employees_with_kpi")
+        
+        if df.empty:
+            return []
+        
+        return df['employee_id'].tolist()
+    
     # =========================================================================
     # YoY COMPARISON DATA
     # =========================================================================
