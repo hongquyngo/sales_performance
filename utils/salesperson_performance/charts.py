@@ -9,8 +9,16 @@ All visualization components using Altair:
 - Achievement comparison charts
 - YoY comparison charts
 - Top customers/brands Pareto charts
+- Pipeline & Forecast section with tabs
 
 CHANGELOG:
+- v1.2.0: ADDED Pipeline & Forecast section with tabs
+          - render_pipeline_forecast_section(): New method with 3 tabs (Revenue/GP/GP1)
+          - 5 columns: Total Backlog, In-Period Backlog, Target, Forecast, GAP
+          - Target column shows prorated target with employee count
+          - Help tooltip explaining calculation for multiple salespeople
+          - GP1 backlog estimated using GP1/GP ratio from invoiced data
+          - _render_pipeline_metric_row(): Helper method for single metric row
 - v1.1.0: Updated NEW BUSINESS section tooltips to reflect correct business logic
           - New Customers: "new to COMPANY" (not "new to salesperson")
           - New Products: "first sale ever to ANY customer"
@@ -1901,3 +1909,286 @@ class SalespersonCharts:
         )
         
         return yearly
+    
+    # =========================================================================
+    # PIPELINE & FORECAST SECTION (NEW v2.5.0)
+    # =========================================================================
+    
+    @staticmethod
+    def render_pipeline_forecast_section(
+        pipeline_metrics: dict,
+        show_forecast: bool = True
+    ):
+        """
+        Render Pipeline & Forecast section with 3 metrics (Revenue, GP, GP1).
+        
+        NEW v2.5.0: Complete redesign with:
+        - 3 tabs: Revenue, Gross Profit, GP1
+        - 5 columns per tab: Total Backlog, In-Period Backlog, Target, Forecast, GAP
+        - Tooltip explaining calculation for multiple salespeople
+        - Data filtered by employees with corresponding KPI target
+        
+        Args:
+            pipeline_metrics: Dict from calculate_pipeline_forecast_metrics() containing:
+                - revenue: Dict with invoiced, in_period_backlog, target, forecast, gap, employee_count
+                - gross_profit: Dict with same structure
+                - gp1: Dict with same structure  
+                - summary: Dict with total backlog (all employees)
+                - period_context: Dict with show_forecast, is_historical, etc.
+            show_forecast: Whether to show forecast section (False for historical periods)
+        """
+        if not pipeline_metrics:
+            return
+        
+        # Extract data
+        revenue = pipeline_metrics.get('revenue', {})
+        gp = pipeline_metrics.get('gross_profit', {})
+        gp1 = pipeline_metrics.get('gp1', {})
+        summary = pipeline_metrics.get('summary', {})
+        period_context = pipeline_metrics.get('period_context', {})
+        
+        # Override show_forecast based on period context
+        if not period_context.get('show_forecast', True):
+            show_forecast = False
+        
+        with st.container(border=True):
+            # Header with Help popover
+            col_header, col_help = st.columns([6, 1])
+            with col_header:
+                st.markdown("**📦 PIPELINE & FORECAST**")
+            with col_help:
+                with st.popover("ℹ️ Help"):
+                    st.markdown("""
+**📦 Pipeline & Forecast Definitions**
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| **Total Backlog** | `Σ backlog_sales_by_split_usd` | All outstanding orders not yet invoiced |
+| **In-Period Backlog** | `Σ backlog WHERE ETD in period` | Backlog expected to ship within selected period |
+| **Target** | `Σ prorated_target` | Sum of prorated targets for employees with KPI |
+| **Forecast** | `Invoiced + In-Period Backlog` | Projected total for the period |
+| **GAP/Surplus** | `Forecast - Target` | Difference from prorated target |
+
+---
+
+**⚠️ Important: Filtered by KPI Assignment**
+
+Each metric tab (Revenue/GP/GP1) only includes data from employees who have that specific KPI target assigned:
+
+- **Revenue tab**: Only salespeople with Revenue KPI target
+- **GP tab**: Only salespeople with Gross Profit KPI target  
+- **GP1 tab**: Only salespeople with GP1 KPI target
+
+This ensures accurate achievement calculation.
+
+---
+
+**📐 Target Calculation for Multiple Salespeople:**
+
+```
+Target = Σ (Employee_Annual_Target × Proration_Factor)
+```
+
+Proration Factor by Period Type:
+- **YTD**: `elapsed_months / 12`
+- **QTD**: `1/4`
+- **MTD**: `1/12`
+- **Custom**: `days_in_period / 365`
+
+---
+
+**📊 GP1 Backlog Estimation:**
+
+GP1 = GP × (GP1/GP ratio from invoiced data)
+If no invoiced data: GP1 = GP
+                    """)
+            
+            # Show GP1/GP ratio if available
+            gp1_gp_ratio = summary.get('gp1_gp_ratio', 1.0)
+            if gp1_gp_ratio != 1.0:
+                st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
+            
+            # Create tabs for Revenue, GP, GP1
+            tab_rev, tab_gp, tab_gp1 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+            
+            # TAB: REVENUE
+            with tab_rev:
+                SalespersonCharts._render_pipeline_metric_row(
+                    metric_name="Revenue",
+                    total_backlog=summary.get('total_backlog_revenue', 0),
+                    in_period_backlog=revenue.get('in_period_backlog', 0),
+                    target=revenue.get('target'),
+                    forecast=revenue.get('forecast'),
+                    gap=revenue.get('gap'),
+                    gap_percent=revenue.get('gap_percent'),
+                    forecast_achievement=revenue.get('forecast_achievement'),
+                    employee_count=revenue.get('employee_count', 0),
+                    backlog_orders=revenue.get('backlog_orders', 0),
+                    show_forecast=show_forecast,
+                )
+            
+            # TAB: GROSS PROFIT
+            with tab_gp:
+                SalespersonCharts._render_pipeline_metric_row(
+                    metric_name="Gross Profit",
+                    total_backlog=summary.get('total_backlog_gp', 0),
+                    in_period_backlog=gp.get('in_period_backlog', 0),
+                    target=gp.get('target'),
+                    forecast=gp.get('forecast'),
+                    gap=gp.get('gap'),
+                    gap_percent=gp.get('gap_percent'),
+                    forecast_achievement=gp.get('forecast_achievement'),
+                    employee_count=gp.get('employee_count', 0),
+                    backlog_orders=gp.get('backlog_orders', 0),
+                    show_forecast=show_forecast,
+                )
+            
+            # TAB: GP1
+            with tab_gp1:
+                SalespersonCharts._render_pipeline_metric_row(
+                    metric_name="GP1",
+                    total_backlog=summary.get('total_backlog_gp1', 0),
+                    in_period_backlog=gp1.get('in_period_backlog', 0),
+                    target=gp1.get('target'),
+                    forecast=gp1.get('forecast'),
+                    gap=gp1.get('gap'),
+                    gap_percent=gp1.get('gap_percent'),
+                    forecast_achievement=gp1.get('forecast_achievement'),
+                    employee_count=gp1.get('employee_count', 0),
+                    backlog_orders=gp1.get('backlog_orders', 0),
+                    show_forecast=show_forecast,
+                    is_estimated=True,
+                    gp1_gp_ratio=gp1_gp_ratio
+                )
+
+    @staticmethod
+    def _render_pipeline_metric_row(
+        metric_name: str,
+        total_backlog: float,
+        in_period_backlog: float,
+        target: float,
+        forecast: float,
+        gap: float,
+        gap_percent: float,
+        forecast_achievement: float,
+        employee_count: int,
+        backlog_orders: int,
+        show_forecast: bool,
+        is_estimated: bool = False,
+        gp1_gp_ratio: float = 1.0
+    ):
+        """
+        Render a single metric row with 5 columns for Pipeline & Forecast.
+        
+        Columns: Total Backlog | In-Period Backlog | Target | Forecast | GAP
+        """
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        # Column 1: Total Backlog
+        with col1:
+            help_text = f"All outstanding {metric_name.lower()} from pending orders (split-adjusted)."
+            if is_estimated:
+                help_text += f" Estimated using GP1/GP ratio ({gp1_gp_ratio:.2%})."
+            
+            st.metric(
+                label="Total Backlog",
+                value=f"${total_backlog:,.0f}",
+                delta=f"{backlog_orders:,} orders" if backlog_orders else None,
+                delta_color="off",
+                help=help_text
+            )
+        
+        # Column 2: In-Period Backlog
+        with col2:
+            backlog_vs_target = None
+            if target and target > 0:
+                backlog_vs_target = (in_period_backlog / target * 100)
+            
+            delta_str = f"{backlog_vs_target:.0f}% of target" if backlog_vs_target else None
+            
+            help_text = f"Backlog with ETD in period. Only from {employee_count} employees with {metric_name} KPI."
+            if is_estimated:
+                help_text += " Estimated using GP1/GP ratio."
+            
+            st.metric(
+                label="In-Period Backlog",
+                value=f"${in_period_backlog:,.0f}",
+                delta=delta_str,
+                delta_color="off",
+                help=help_text
+            )
+        
+        # Column 3: Target (NEW!)
+        with col3:
+            if target is not None and target > 0:
+                help_text = (
+                    f"Sum of prorated {metric_name} targets from {employee_count} employees "
+                    f"who have {metric_name} KPI assigned.\n\n"
+                    f"Formula: Σ(Annual_Target × Proration_Factor)"
+                )
+                
+                st.metric(
+                    label="Target (Prorated)",
+                    value=f"${target:,.0f}",
+                    delta=f"{employee_count} people",
+                    delta_color="off",
+                    help=help_text
+                )
+            else:
+                st.metric(
+                    label="Target (Prorated)",
+                    value="N/A",
+                    delta="No KPI assigned",
+                    delta_color="off",
+                    help=f"No employees have {metric_name} KPI target assigned."
+                )
+        
+        # Column 4: Forecast
+        with col4:
+            if show_forecast and forecast is not None:
+                delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
+                delta_str = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
+                
+                st.metric(
+                    label="Forecast",
+                    value=f"${forecast:,.0f}",
+                    delta=delta_str,
+                    delta_color=delta_color if delta_str else "off",
+                    help=f"Invoiced + In-Period Backlog. Only from employees with {metric_name} KPI."
+                )
+            else:
+                st.metric(
+                    label="Forecast",
+                    value="N/A",
+                    delta="Historical period",
+                    delta_color="off",
+                    help="Forecast not available for historical periods."
+                )
+        
+        # Column 5: GAP
+        with col5:
+            if show_forecast and gap is not None:
+                if gap >= 0:
+                    label = "Surplus ✅"
+                    delta_color = "normal"
+                else:
+                    label = "GAP ⚠️"
+                    delta_color = "inverse"
+                
+                delta_str = f"{gap_percent:+.1f}%" if gap_percent is not None else None
+                
+                st.metric(
+                    label=label,
+                    value=f"${gap:+,.0f}",
+                    delta=delta_str,
+                    delta_color=delta_color,
+                    help="Forecast - Target. Positive = ahead, Negative = behind."
+                )
+            else:
+                reason = "No target" if target is None else "Historical period"
+                st.metric(
+                    label="GAP",
+                    value="N/A",
+                    delta=reason,
+                    delta_color="off"
+                )

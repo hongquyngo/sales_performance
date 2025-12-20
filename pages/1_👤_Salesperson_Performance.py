@@ -9,9 +9,16 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.4.0
+Version: 2.5.0
 
 CHANGELOG:
+- v2.5.0: ENHANCED Pipeline & Forecast section
+          - Added 3 tabs: Revenue, Gross Profit, GP1
+          - Added Target column (prorated) with employee count
+          - Each metric filters by employees with that specific KPI target
+          - GP1 backlog estimated using GP1/GP ratio from invoiced data
+          - Added detailed Help tooltip explaining calculation for multiple salespeople
+          - Uses calculate_pipeline_forecast_metrics() for accurate KPI-filtered logic
 - v2.4.0: FIXED KPI Progress calculation inconsistency
           - Bug: Achievement % used annual target while Overall used prorated target
           - Fix: KPI Progress now uses prorated target (consistent with Overall Achievement)
@@ -535,6 +542,19 @@ backlog_metrics = metrics_calc.calculate_backlog_metrics(
     end_date=filter_values['end_date']
 )
 
+# NEW v2.5.0: Calculate Pipeline & Forecast with KPI-filtered logic
+# This ensures each metric (Revenue/GP/GP1) only includes data from
+# employees who have that specific KPI target assigned
+pipeline_forecast_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
+    total_backlog_df=data['total_backlog'],
+    in_period_backlog_df=data['in_period_backlog'],
+    backlog_detail_df=data['backlog_detail'],  # Needed for employee filtering
+    period_type=filter_values['period_type'],
+    year=filter_values['year'],
+    start_date=filter_values['start_date'],
+    end_date=filter_values['end_date']
+)
+
 # Analyze in-period backlog for overdue detection
 in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
     backlog_detail_df=data['backlog_detail'],
@@ -602,15 +622,16 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # =============================================================================
 
 with tab1:
-    # KPI Cards
+    # KPI Cards - Performance & New Business sections
+    # NOTE: show_backlog=False because we render Pipeline & Forecast separately below
     SalespersonCharts.render_kpi_cards(
         metrics=overview_metrics,
         yoy_metrics=yoy_metrics,
         complex_kpis=complex_kpis,
-        backlog_metrics=backlog_metrics if period_info['show_backlog'] else None,
+        backlog_metrics=None,  # v2.5.0: Don't show old backlog section
         overall_achievement=overall_achievement,
         show_complex=True,
-        show_backlog=period_info['show_backlog'],
+        show_backlog=False,  # v2.5.0: Disable old backlog in KPI cards
         # NEW v1.2.0: Pass detail dataframes for popup buttons
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
@@ -618,6 +639,15 @@ with tab1:
         # NEW v1.5.0: Pass combo detail for New Business popup
         new_business_detail_df=fresh_new_business_detail_df
     )
+    
+    # NEW v2.5.0: Render Pipeline & Forecast section with tabs (Revenue/GP/GP1)
+    # This uses calculate_pipeline_forecast_metrics() which filters data
+    # by employees with corresponding KPI target
+    if period_info['show_backlog'] and pipeline_forecast_metrics:
+        SalespersonCharts.render_pipeline_forecast_section(
+            pipeline_metrics=pipeline_forecast_metrics,
+            show_forecast=period_context.get('show_forecast', True)
+        )
     
     st.divider()
     
