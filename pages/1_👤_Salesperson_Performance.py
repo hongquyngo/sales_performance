@@ -10,13 +10,26 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v2.3.0: IMPROVED naming convention and Help text
+          - Renamed "In-Period Backlog" → "In-Period (KPI)" in Overview
+          - Renamed "Forecast" → "Forecast (KPI)" in Overview
+          - Renamed "Target (Prorated)" → "Target" in Overview
+          - Updated all Help popovers with consistent English text
+          - Added clear distinction between Overview (KPI-filtered) vs Backlog Tab (all employees)
+          - Improved help text explaining KPI filtering logic
+- v2.2.0: FIXED Backlog data mismatch between Overview and Backlog Tab
+          - Removed LIMIT from get_backlog_detail() call (was limit=2000)
+          - Fixed Overview Total Backlog orders count source
+            (was using in-period orders, now uses summary backlog_orders)
+          - Pass total_backlog_df to backlog_list_fragment for accurate totals
+          - Backlog Tab now uses aggregated totals instead of sum from detail
 - v2.1.0: REFACTORED - Smart data caching and deferred filter execution
           - All sidebar filters inside st.form (no rerun until "Apply Filters" clicked)
           - Smart year range caching: only reload when date range expands
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 2.1.0
+Version: 2.3.0
 """
 
 import streamlit as st
@@ -299,11 +312,12 @@ def load_data_for_year_range(start_year: int, end_year: int) -> dict:
         )
         
         # Step 5: Backlog detail - FILTERED by access control
+        # UPDATED v2.2.0: Removed limit to get ALL backlog records for accurate totals
         progress_bar.progress(80, text="📋 Loading backlog details...")
         data['backlog_detail'] = q.get_backlog_detail(
             employee_ids=filter_employee_ids,
-            entity_ids=None,
-            limit=2000
+            entity_ids=None
+            # limit removed - now returns all records (default: None)
         )
         
         # Step 6: Sales split data - FILTERED by access control
@@ -756,31 +770,42 @@ with tab1:
                 st.markdown("""
 **📦 Backlog & Forecast**
 
-**Metrics Cards (Top):**
-
 | Metric | Formula | Description |
 |--------|---------|-------------|
-| **Total Backlog** | `Σ backlog_sales_by_split_usd` | All outstanding orders |
-| **In-Period Backlog** | `Σ backlog WHERE ETD in period` | Expected to ship in period |
-| **Target** | `Σ prorated_target` | Sum of targets for employees with KPI |
-| **Forecast** | `Invoiced + In-Period Backlog` | Projected total |
-| **GAP/Surplus** | `Forecast - Target` | Difference from target |
+| **Total Backlog** | `Σ backlog_by_split_usd` | All outstanding orders (all employees) |
+| **In-Period (KPI)** | `Σ backlog WHERE ETD in period` | Backlog expected to ship in period. **Only from employees with this KPI assigned.** |
+| **Target** | `Σ prorated_target` | Sum of prorated annual targets |
+| **Forecast (KPI)** | `Invoiced + In-Period` | Projected total. **Only from employees with this KPI assigned.** |
+| **GAP/Surplus** | `Forecast - Target` | Positive = ahead of target, Negative = behind |
 
-**Charts (Bottom):**
-- **Waterfall**: Shows Invoiced + Backlog = Forecast vs Target
-- **Bullet**: Visual comparison of Forecast vs Target
+---
 
-**⚠️ Data Filtered by KPI Assignment:**
-Each tab only shows data from employees who have that specific KPI target assigned.
+**⚠️ Important: Data Filtered by KPI Assignment**
+
+Each tab shows data ONLY from employees who have that specific KPI target:
+- **Revenue tab**: Employees with Revenue KPI
+- **GP tab**: Employees with Gross Profit KPI  
+- **GP1 tab**: Employees with GP1 KPI
+
+This ensures accurate achievement calculation.
+
+---
 
 **📐 Target Calculation:**
 ```
-Target = Σ (Employee_Annual_Target × Proration_Factor)
+Target = Σ (Annual_Target × Proration_Factor)
 ```
 
-**📊 GP1 Estimation:**
+Proration by Period Type:
+- **YTD**: elapsed_months / 12
+- **QTD**: 1/4
+- **MTD**: 1/12
+
+---
+
+**📊 GP1 Backlog Estimation:**
 ```
-Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
+Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
 ```
                 """)
         
@@ -815,24 +840,26 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             
             with col_m1:
+                # FIXED v2.2.0: Use summary_metrics for orders count to match total_backlog_revenue
                 st.metric(
                     label="Total Backlog",
                     value=f"${summary_metrics.get('total_backlog_revenue', 0):,.0f}",
-                    delta=f"{revenue_metrics.get('backlog_orders', 0):,} orders" if revenue_metrics.get('backlog_orders') else None,
+                    delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
                     delta_color="off",
-                    help="All outstanding revenue from pending orders"
+                    help="All outstanding revenue from pending orders (all employees)"
                 )
             
             with col_m2:
                 in_period = revenue_metrics.get('in_period_backlog', 0)
                 target = revenue_metrics.get('target')
                 pct = (in_period / target * 100) if target and target > 0 else None
+                emp_count = revenue_metrics.get('employee_count', 0)
                 st.metric(
-                    label="In-Period Backlog",
+                    label="In-Period (KPI)",
                     value=f"${in_period:,.0f}",
                     delta=f"{pct:.0f}% of target" if pct else None,
                     delta_color="off",
-                    help=f"Backlog with ETD in period. From {revenue_metrics.get('employee_count', 0)} employees with Revenue KPI."
+                    help=f"Backlog with ETD in period. Only from {emp_count} employees with Revenue KPI assigned."
                 )
             
             with col_m3:
@@ -840,11 +867,11 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                 emp_count = revenue_metrics.get('employee_count', 0)
                 if target and target > 0:
                     st.metric(
-                        label="Target (Prorated)",
+                        label="Target",
                         value=f"${target:,.0f}",
                         delta=f"{emp_count} people",
                         delta_color="off",
-                        help=f"Sum of prorated Revenue targets from {emp_count} employees"
+                        help=f"Sum of prorated Revenue targets from {emp_count} employees with Revenue KPI"
                     )
                 else:
                     st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
@@ -852,17 +879,18 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             with col_m4:
                 forecast = revenue_metrics.get('forecast')
                 achievement = revenue_metrics.get('forecast_achievement')
+                emp_count = revenue_metrics.get('employee_count', 0)
                 if forecast is not None:
                     delta_color = "normal" if achievement and achievement >= 100 else "inverse"
                     st.metric(
-                        label="Forecast",
+                        label="Forecast (KPI)",
                         value=f"${forecast:,.0f}",
                         delta=f"{achievement:.0f}% of target" if achievement else None,
                         delta_color=delta_color if achievement else "off",
-                        help="Invoiced + In-Period Backlog"
+                        help=f"Invoiced + In-Period Backlog. Only from {emp_count} employees with Revenue KPI."
                     )
                 else:
-                    st.metric(label="Forecast", value="N/A", delta_color="off")
+                    st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
             
             with col_m5:
                 gap = revenue_metrics.get('gap')
@@ -874,7 +902,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                         label=label,
                         value=f"${gap:+,.0f}",
                         delta=f"{gap_pct:+.1f}%" if gap_pct else None,
-                        delta_color=delta_color
+                        delta_color=delta_color,
+                        help="Forecast - Target. Positive = ahead, Negative = behind."
                     )
                 else:
                     st.metric(label="GAP", value="N/A", delta_color="off")
@@ -904,24 +933,26 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             
             with col_m1:
+                # FIXED v2.2.0: Use summary_metrics for orders count to match total_backlog_gp
                 st.metric(
                     label="Total Backlog",
                     value=f"${summary_metrics.get('total_backlog_gp', 0):,.0f}",
-                    delta=f"{gp_metrics.get('backlog_orders', 0):,} orders" if gp_metrics.get('backlog_orders') else None,
+                    delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
                     delta_color="off",
-                    help="All outstanding GP from pending orders"
+                    help="All outstanding GP from pending orders (all employees)"
                 )
             
             with col_m2:
                 in_period = gp_metrics.get('in_period_backlog', 0)
                 target = gp_metrics.get('target')
                 pct = (in_period / target * 100) if target and target > 0 else None
+                emp_count = gp_metrics.get('employee_count', 0)
                 st.metric(
-                    label="In-Period Backlog",
+                    label="In-Period (KPI)",
                     value=f"${in_period:,.0f}",
                     delta=f"{pct:.0f}% of target" if pct else None,
                     delta_color="off",
-                    help=f"Backlog with ETD in period. From {gp_metrics.get('employee_count', 0)} employees with GP KPI."
+                    help=f"Backlog with ETD in period. Only from {emp_count} employees with GP KPI assigned."
                 )
             
             with col_m3:
@@ -929,11 +960,11 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                 emp_count = gp_metrics.get('employee_count', 0)
                 if target and target > 0:
                     st.metric(
-                        label="Target (Prorated)",
+                        label="Target",
                         value=f"${target:,.0f}",
                         delta=f"{emp_count} people",
                         delta_color="off",
-                        help=f"Sum of prorated GP targets from {emp_count} employees"
+                        help=f"Sum of prorated GP targets from {emp_count} employees with GP KPI"
                     )
                 else:
                     st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
@@ -941,17 +972,18 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             with col_m4:
                 forecast = gp_metrics.get('forecast')
                 achievement = gp_metrics.get('forecast_achievement')
+                emp_count = gp_metrics.get('employee_count', 0)
                 if forecast is not None:
                     delta_color = "normal" if achievement and achievement >= 100 else "inverse"
                     st.metric(
-                        label="Forecast",
+                        label="Forecast (KPI)",
                         value=f"${forecast:,.0f}",
                         delta=f"{achievement:.0f}% of target" if achievement else None,
                         delta_color=delta_color if achievement else "off",
-                        help="Invoiced + In-Period Backlog"
+                        help=f"Invoiced + In-Period Backlog. Only from {emp_count} employees with GP KPI."
                     )
                 else:
-                    st.metric(label="Forecast", value="N/A", delta_color="off")
+                    st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
             
             with col_m5:
                 gap = gp_metrics.get('gap')
@@ -963,7 +995,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                         label=label,
                         value=f"${gap:+,.0f}",
                         delta=f"{gap_pct:+.1f}%" if gap_pct else None,
-                        delta_color=delta_color
+                        delta_color=delta_color,
+                        help="Forecast - Target. Positive = ahead, Negative = behind."
                     )
                 else:
                     st.metric(label="GAP", value="N/A", delta_color="off")
@@ -993,24 +1026,26 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             
             with col_m1:
+                # FIXED v2.2.0: Use summary_metrics for orders count to match total_backlog_gp1
                 st.metric(
                     label="Total Backlog",
                     value=f"${summary_metrics.get('total_backlog_gp1', 0):,.0f}",
-                    delta=f"{gp1_metrics.get('backlog_orders', 0):,} orders" if gp1_metrics.get('backlog_orders') else None,
+                    delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
                     delta_color="off",
-                    help=f"Estimated GP1 backlog (GP × {gp1_gp_ratio:.2%})"
+                    help=f"Estimated GP1 backlog (GP × {gp1_gp_ratio:.2%}). All employees."
                 )
             
             with col_m2:
                 in_period = gp1_metrics.get('in_period_backlog', 0)
                 target = gp1_metrics.get('target')
                 pct = (in_period / target * 100) if target and target > 0 else None
+                emp_count = gp1_metrics.get('employee_count', 0)
                 st.metric(
-                    label="In-Period Backlog",
+                    label="In-Period (KPI)",
                     value=f"${in_period:,.0f}",
                     delta=f"{pct:.0f}% of target" if pct else None,
                     delta_color="off",
-                    help=f"Estimated. From {gp1_metrics.get('employee_count', 0)} employees with GP1 KPI."
+                    help=f"Estimated GP1 backlog with ETD in period. Only from {emp_count} employees with GP1 KPI assigned."
                 )
             
             with col_m3:
@@ -1018,11 +1053,11 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                 emp_count = gp1_metrics.get('employee_count', 0)
                 if target and target > 0:
                     st.metric(
-                        label="Target (Prorated)",
+                        label="Target",
                         value=f"${target:,.0f}",
                         delta=f"{emp_count} people",
                         delta_color="off",
-                        help=f"Sum of prorated GP1 targets from {emp_count} employees"
+                        help=f"Sum of prorated GP1 targets from {emp_count} employees with GP1 KPI"
                     )
                 else:
                     st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
@@ -1030,17 +1065,18 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
             with col_m4:
                 forecast = gp1_metrics.get('forecast')
                 achievement = gp1_metrics.get('forecast_achievement')
+                emp_count = gp1_metrics.get('employee_count', 0)
                 if forecast is not None:
                     delta_color = "normal" if achievement and achievement >= 100 else "inverse"
                     st.metric(
-                        label="Forecast",
+                        label="Forecast (KPI)",
                         value=f"${forecast:,.0f}",
                         delta=f"{achievement:.0f}% of target" if achievement else None,
                         delta_color=delta_color if achievement else "off",
-                        help="Invoiced + In-Period Backlog (estimated)"
+                        help=f"Invoiced + In-Period Backlog (estimated). Only from {emp_count} employees with GP1 KPI."
                     )
                 else:
-                    st.metric(label="Forecast", value="N/A", delta_color="off")
+                    st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
             
             with col_m5:
                 gap = gp1_metrics.get('gap')
@@ -1052,7 +1088,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
                         label=label,
                         value=f"${gap:+,.0f}",
                         delta=f"{gap_pct:+.1f}%" if gap_pct else None,
-                        delta_color=delta_color
+                        delta_color=delta_color,
+                        help="Forecast - Target. Positive = ahead, Negative = behind."
                     )
                 else:
                     st.metric(label="GAP", value="N/A", delta_color="off")
@@ -1266,20 +1303,35 @@ with tab3:
     with col_bl_help:
         with st.popover("ℹ️ Help"):
             st.markdown("""
-            **📦 Backlog Analysis**
-            
-            Backlog là snapshot của tất cả orders đang pending **tại thời điểm hiện tại**.
-            
-            | Metric | Description |
-            |--------|-------------|
-            | Total Backlog | All pending orders |
-            | In-Period | Orders with ETD in date range |
-            | Overdue | Orders with ETD already passed |
-            
-            **⚠️ Note:**
-            - Backlog is not historical data
-            - Always shows current status
-            - Date range only filters In-Period Backlog
+**📦 Backlog Analysis**
+
+Backlog is a snapshot of ALL pending orders **at current time**.
+
+| Metric | Description |
+|--------|-------------|
+| **Total Backlog** | All pending orders (not yet invoiced) |
+| **Total GP** | Total gross profit from pending orders |
+| **In-Period** | Orders with ETD within selected date range |
+| **In-Period GP** | Gross profit from in-period orders |
+| **On Track** | In-period orders with ETD ≥ today |
+| **Overdue** | In-period orders with ETD < today (past due) |
+
+---
+
+**⚠️ Important Notes:**
+- Backlog is NOT historical data - always shows current status
+- Date range only filters In-Period calculation
+- This section shows ALL selected employees (not KPI-filtered)
+- Different from Overview's In-Period (KPI) which only includes employees with KPI assigned
+
+---
+
+**📊 Comparison with Overview:**
+
+| Section | In-Period Scope |
+|---------|-----------------|
+| **Overview** → In-Period (KPI) | Only employees with KPI assigned |
+| **Backlog Tab** → In-Period | All selected employees |
             """)
     
     backlog_df = data['backlog_detail']
@@ -1298,10 +1350,12 @@ with tab3:
             # =================================================================
             # BACKLOG LIST - FRAGMENT
             # Only reruns when filters in this section change
+            # UPDATED v2.2.0: Pass total_backlog_df for accurate summary totals
             # =================================================================
             backlog_list_fragment(
                 backlog_df=backlog_df,
                 in_period_backlog_analysis=in_period_backlog_analysis,
+                total_backlog_df=data['total_backlog'],  # NEW: for accurate totals
                 fragment_key="backlog"
             )
         

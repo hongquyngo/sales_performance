@@ -6,9 +6,16 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.0.0 - 100% feature parity with original code
+VERSION: 2.2.0 - Improved help text consistency
 
 CHANGELOG:
+- v2.2.0: IMPROVED help text in backlog_list_fragment
+          - Consistent English help text for all metrics
+          - Clarified scope: "all selected employees" vs KPI-filtered
+- v2.1.0: FIXED backlog_list_fragment summary card accuracy
+          - Added total_backlog_df parameter for accurate aggregated totals
+          - Summary cards now use aggregated data instead of sum from detail
+          - Fixes mismatch between Backlog Tab and Overview totals
 - v2.0.0: Complete rewrite with 100% code from original file
           - Monthly Trend: Full filters + charts (lines 645-732)
           - YoY Comparison: Full multi-year + single-year logic (lines 742-1122)
@@ -912,6 +919,7 @@ def pivot_analysis_fragment(
 def backlog_list_fragment(
     backlog_df: pd.DataFrame,
     in_period_backlog_analysis: Dict,
+    total_backlog_df: pd.DataFrame = None,  # NEW v2.1.0: for accurate totals
     fragment_key: str = "backlog"
 ):
     """
@@ -919,6 +927,10 @@ def backlog_list_fragment(
     
     100% code from original file lines 1969-2237.
     Includes: summary cards, filters, formatting, display.
+    
+    UPDATED v2.1.0: Added total_backlog_df parameter
+    - When provided, uses aggregated values for summary cards
+    - When not provided (backward compat), calculates from backlog_df
     """
     if backlog_df.empty:
         st.info("📦 No backlog data available")
@@ -927,10 +939,19 @@ def backlog_list_fragment(
     # Summary cards - Combined Total + In-Period + Overdue info
     col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
-    total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
-    total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
-    total_orders = backlog_df['oc_number'].nunique()
-    total_customers = backlog_df['customer_id'].nunique()
+    # UPDATED v2.1.0: Use aggregated totals if available, else calculate from detail
+    if total_backlog_df is not None and not total_backlog_df.empty:
+        # Use aggregated data for accurate totals
+        total_backlog_value = total_backlog_df['total_backlog_revenue'].sum()
+        total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
+        total_orders = int(total_backlog_df['backlog_orders'].sum()) if 'backlog_orders' in total_backlog_df.columns else backlog_df['oc_number'].nunique()
+        total_customers = int(total_backlog_df['backlog_customers'].sum()) if 'backlog_customers' in total_backlog_df.columns else backlog_df['customer_id'].nunique()
+    else:
+        # Fallback: calculate from detail (may be truncated if LIMIT was used)
+        total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
+        total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
+        total_orders = backlog_df['oc_number'].nunique()
+        total_customers = backlog_df['customer_id'].nunique()
     
     with col_s1:
         st.metric(
@@ -938,14 +959,15 @@ def backlog_list_fragment(
             f"${total_backlog_value:,.0f}", 
             f"{total_orders:,} orders",
             delta_color="off",
-            help="All pending orders, not filtered by date"
+            help="All pending orders from selected employees (not filtered by date)"
         )
     with col_s2:
         st.metric(
             "📈 Total GP", 
             f"${total_backlog_gp:,.0f}",
             f"{total_customers:,} customers",
-            delta_color="off"
+            delta_color="off",
+            help="Total gross profit from all pending orders"
         )
     with col_s3:
         in_period_value = in_period_backlog_analysis.get('total_value', 0)
@@ -955,7 +977,7 @@ def backlog_list_fragment(
             f"${in_period_value:,.0f}",
             f"{in_period_count:,} orders",
             delta_color="off",
-            help="Backlog with ETD within selected date range"
+            help="Backlog with ETD within selected date range (all selected employees)"
         )
     with col_s4:
         in_period_gp = in_period_backlog_analysis.get('total_gp', 0)
@@ -973,7 +995,7 @@ def backlog_list_fragment(
             f"${on_track_value:,.0f}",
             f"{on_track_count:,} orders",
             delta_color="off",
-            help="In-period backlog with ETD >= today"
+            help="In-period orders with ETD ≥ today (still on schedule)"
         )
     with col_s6:
         overdue_value = in_period_backlog_analysis.get('overdue_value', 0)
@@ -983,7 +1005,7 @@ def backlog_list_fragment(
             f"${overdue_value:,.0f}",
             f"{overdue_count:,} orders",
             delta_color="inverse" if overdue_count > 0 else "off",
-            help="In-period backlog with ETD < today (past due)"
+            help="In-period orders with ETD < today (past due, needs attention)"
         )
     with col_s7:
         status = in_period_backlog_analysis.get('status', 'unknown')
@@ -991,7 +1013,7 @@ def backlog_list_fragment(
         st.metric(
             "📊 Status",
             status_display,
-            help="healthy: no overdue orders, has_overdue: some orders past ETD"
+            help="HEALTHY = no overdue orders, HAS OVERDUE = some orders past ETD"
         )
     
     st.divider()

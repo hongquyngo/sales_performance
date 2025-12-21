@@ -12,6 +12,11 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v1.7.0: FIXED get_backlog_detail() LIMIT issue
+          - Changed limit parameter: int = 100 -> Optional[int] = None
+          - Default is now None (no limit) to avoid data truncation
+          - LIMIT clause only added when limit is explicitly provided
+          - Fixes mismatch between Backlog Tab totals and Overview totals
 - v1.6.0: ADDED calculate_complex_kpi_value() helper method
           - Calculates single complex KPI for specific employees
           - Used by KPI Progress to filter by employees with target
@@ -1154,12 +1159,21 @@ class SalespersonQueries:
         self,
         employee_ids: List[int] = None,
         entity_ids: List[int] = None,
-        limit: int = 100
+        limit: Optional[int] = None
     ) -> pd.DataFrame:
         """
         Get detailed backlog records for drill-down.
         
+        Args:
+            employee_ids: Optional list of employee IDs to filter
+            entity_ids: Optional list of entity IDs to filter
+            limit: Optional row limit. Default is None (no limit).
+                   Set to a number (e.g., 1000) to limit results for performance.
+        
         Returns DataFrame with individual backlog line items.
+        
+        UPDATED v1.7.0: Changed limit default from 100 to None (no limit)
+        to avoid data truncation and ensure accurate totals.
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -1204,10 +1218,11 @@ class SalespersonQueries:
             query += " AND entity_id IN :entity_ids"
             params['entity_ids'] = tuple(entity_ids)
         
-        query += f"""
-            ORDER BY backlog_sales_by_split_usd DESC
-            LIMIT {limit}
-        """
+        query += " ORDER BY backlog_sales_by_split_usd DESC"
+        
+        # Only add LIMIT if explicitly provided (v1.7.0)
+        if limit is not None:
+            query += f" LIMIT {limit}"
         
         return self._execute_query(query, params, "backlog_detail")
     
