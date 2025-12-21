@@ -1968,7 +1968,7 @@ with tab3:
         
         with backlog_tab1:
             # Summary cards - Combined Total + In-Period + Overdue info
-            col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
+            col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
             
             total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
             total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
@@ -2001,6 +2001,14 @@ with tab3:
                     help="Backlog with ETD within selected date range"
                 )
             with col_s4:
+                in_period_gp = in_period_backlog_analysis.get('total_gp', 0)
+                st.metric(
+                    "📊 In-Period GP",
+                    f"${in_period_gp:,.0f}",
+                    delta_color="off",
+                    help="Gross profit from in-period backlog"
+                )
+            with col_s5:
                 on_track_value = in_period_backlog_analysis.get('on_track_value', 0)
                 on_track_count = in_period_backlog_analysis.get('on_track_count', 0)
                 st.metric(
@@ -2010,7 +2018,7 @@ with tab3:
                     delta_color="off",
                     help="In-period backlog with ETD >= today"
                 )
-            with col_s5:
+            with col_s6:
                 overdue_value = in_period_backlog_analysis.get('overdue_value', 0)
                 overdue_count = in_period_backlog_analysis.get('overdue_count', 0)
                 st.metric(
@@ -2020,7 +2028,7 @@ with tab3:
                     delta_color="inverse" if overdue_count > 0 else "off",
                     help="In-period backlog with ETD < today (past due)"
                 )
-            with col_s6:
+            with col_s7:
                 status = in_period_backlog_analysis.get('status', 'unknown')
                 status_display = "HEALTHY ✅" if status == 'healthy' else "HAS OVERDUE ⚠️"
                 st.metric(
