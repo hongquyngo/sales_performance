@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.2.0 - Improved help text consistency
+VERSION: 2.3.0 - Added summary metrics to Sales Detail
 
 CHANGELOG:
+- v2.3.0: ADDED summary metrics cards to sales_detail_fragment
+          - Revenue, GP, GP1, Orders, Customers, Avg Order, Avg GP/Cust
+          - Consistent pattern with Backlog List fragment
+          - Professional dashboard appearance
 - v2.2.0: IMPROVED help text in backlog_list_fragment
           - Consistent English help text for all metrics
           - Clarified scope: "all selected employees" vs KPI-filtered
@@ -553,6 +557,7 @@ def yoy_comparison_fragment(
 # =============================================================================
 # FRAGMENT: SALES DETAIL TRANSACTION LIST (Tab 2)
 # Lines 1611-1881 from original file - 100% code preserved
+# UPDATED v2.3.0: Added summary metrics cards for consistency with Backlog List
 # =============================================================================
 
 @st.fragment
@@ -567,10 +572,84 @@ def sales_detail_fragment(
     
     100% code from original file lines 1611-1881.
     Includes: filters, original value calculation, formatting, export.
+    
+    UPDATED v2.3.0: Added summary metrics cards at top for consistency.
     """
     if sales_df.empty:
         st.info("No sales data for selected period")
         return
+    
+    # =================================================================
+    # SUMMARY METRICS CARDS (NEW v2.3.0)
+    # Consistent with Backlog List pattern
+    # =================================================================
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
+    
+    total_revenue = sales_df['sales_by_split_usd'].sum()
+    total_gp = sales_df['gross_profit_by_split_usd'].sum()
+    total_gp1 = sales_df['gp1_by_split_usd'].sum()
+    gp_percent = (total_gp / total_revenue * 100) if total_revenue > 0 else 0
+    total_invoices = sales_df['inv_number'].nunique()
+    total_orders = sales_df['oc_number'].nunique()
+    total_customers = sales_df['customer_id'].nunique()
+    
+    with col_s1:
+        st.metric(
+            "💰 Revenue",
+            f"${total_revenue:,.0f}",
+            delta=f"{total_invoices:,} invoices",
+            delta_color="off",
+            help="Total revenue from all transactions (split-adjusted)"
+        )
+    with col_s2:
+        st.metric(
+            "📈 Gross Profit",
+            f"${total_gp:,.0f}",
+            delta=f"{gp_percent:.1f}% margin",
+            delta_color="off",
+            help="Total gross profit (split-adjusted)"
+        )
+    with col_s3:
+        st.metric(
+            "📊 GP1",
+            f"${total_gp1:,.0f}",
+            delta_color="off",
+            help="GP1 = GP - (Broker Commission × 1.2)"
+        )
+    with col_s4:
+        st.metric(
+            "📋 Orders",
+            f"{total_orders:,}",
+            delta_color="off",
+            help="Number of unique order confirmations"
+        )
+    with col_s5:
+        st.metric(
+            "👥 Customers",
+            f"{total_customers:,}",
+            delta_color="off",
+            help="Number of unique customers"
+        )
+    with col_s6:
+        # Average order value
+        avg_order = total_revenue / total_orders if total_orders > 0 else 0
+        st.metric(
+            "📦 Avg Order",
+            f"${avg_order:,.0f}",
+            delta_color="off",
+            help="Average revenue per order"
+        )
+    with col_s7:
+        # Average GP per customer
+        avg_gp_customer = total_gp / total_customers if total_customers > 0 else 0
+        st.metric(
+            "💵 Avg GP/Cust",
+            f"${avg_gp_customer:,.0f}",
+            delta_color="off",
+            help="Average gross profit per customer"
+        )
+    
+    st.divider()
     
     # =================================================================
     # IMPROVED FILTERS - MultiSelect with Excluded option
