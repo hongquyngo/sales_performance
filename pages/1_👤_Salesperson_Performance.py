@@ -9,7 +9,14 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.0
+CHANGELOG:
+- v2.1.0: REFACTORED - Smart data caching and deferred filter execution
+          - All sidebar filters inside st.form (no rerun until "Apply Filters" clicked)
+          - Smart year range caching: only reload when date range expands
+          - Session state management for applied filters vs form values
+          - Significant performance improvement for filter changes
+
+Version: 2.1.0
 """
 
 import streamlit as st
@@ -201,9 +208,13 @@ if not is_valid:
 # LOAD ALL DATA WITH SMART CACHING (Client-Side Filtering)
 # =============================================================================
 
-def load_all_data_once() -> dict:
+def load_data_for_year_range(start_year: int, end_year: int) -> dict:
     """
-    Load data based on user's access control.
+    Load data for specified year range based on user's access control.
+    
+    REFACTORED v2.1.0:
+    - Accepts start_year and end_year parameters instead of hardcoded 3 years
+    - Supports smart caching: only reload when year range expands
     
     OPTIMIZED v2.0:
     - Full access (admin/GM/MD): Load all data
@@ -236,13 +247,12 @@ def load_all_data_once() -> dict:
     
     q = SalespersonQueries(access_control)
     
-    # Load data for reasonable date range (last 3 years + current year)
-    current_year = date.today().year
-    start_date = date(current_year - 2, 1, 1)  # 3 years of data
-    end_date = date(current_year, 12, 31)
+    # Use provided year range
+    start_date = date(start_year, 1, 1)
+    end_date = date(end_year, 12, 31)
     
     # Progress bar with status
-    progress_bar = st.progress(0, text=f"🔄 Loading {load_msg}...")
+    progress_bar = st.progress(0, text=f"🔄 Loading {load_msg} ({start_year}-{end_year})...")
     
     data = {}
     
@@ -259,7 +269,7 @@ def load_all_data_once() -> dict:
         # Step 2: KPI targets - FILTERED by access control
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
         targets_list = []
-        for yr in range(current_year - 2, current_year + 1):
+        for yr in range(start_year, end_year + 1):
             t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
             if not t.empty:
                 targets_list.append(t)
@@ -309,6 +319,7 @@ def load_all_data_once() -> dict:
         data['_loaded_at'] = datetime.now()
         data['_access_level'] = access_level
         data['_accessible_ids'] = accessible_ids
+        data['_year_range'] = (start_year, end_year)
         
         # Complete
         progress_bar.progress(100, text="✅ Data loaded successfully!")
@@ -316,11 +327,13 @@ def load_all_data_once() -> dict:
     except Exception as e:
         progress_bar.empty()
         st.error(f"❌ Error loading data: {str(e)}")
+        logger.exception("Error loading data")
         st.stop()
     
-    # Clear progress bar after short delay
-    time.sleep(0.5)
-    progress_bar.empty()
+    finally:
+        # Clear progress bar after short delay
+        time.sleep(0.3)
+        progress_bar.empty()
     
     return data
 
@@ -422,32 +435,130 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     return filtered
 
 # =============================================================================
-# CACHING LOGIC - Load once, filter client-side
+# SMART CACHING LOGIC - Only reload when year range expands
 # =============================================================================
 
-# Initialize session state
-if 'raw_cached_data' not in st.session_state:
-    st.session_state.raw_cached_data = None
+def _get_applied_filters():
+    """Get currently applied filters from session state."""
+    return st.session_state.get('_applied_filters')
+
+
+def _set_applied_filters(filters: dict):
+    """Store applied filters in session state."""
+    st.session_state['_applied_filters'] = filters.copy()
+
+
+def _get_cached_year_range():
+    """Get the year range of currently cached data."""
+    return (
+        st.session_state.get('_cached_start_year'),
+        st.session_state.get('_cached_end_year')
+    )
+
+
+def _set_cached_year_range(start_year: int, end_year: int):
+    """Store the year range of cached data."""
+    st.session_state['_cached_start_year'] = start_year
+    st.session_state['_cached_end_year'] = end_year
+
+
+def _needs_data_reload(filter_values: dict) -> bool:
+    """
+    Check if we need to reload data from database.
+    
+    Returns True if:
+    - No cached data exists
+    - Requested year range expands beyond cached range
+    """
+    if 'raw_cached_data' not in st.session_state or st.session_state.raw_cached_data is None:
+        return True
+    
+    cached_start, cached_end = _get_cached_year_range()
+    if cached_start is None or cached_end is None:
+        return True
+    
+    required_start = filter_values['start_date'].year
+    required_end = filter_values['end_date'].year
+    
+    # Need reload if requested range expands beyond cached range
+    return required_start < cached_start or required_end > cached_end
+
+
+def get_or_load_data(filter_values: dict) -> dict:
+    """
+    Smart data loading with session-based caching.
+    Only reloads if requested year range expands beyond cached range.
+    
+    Args:
+        filter_values: Current filter values
+        
+    Returns:
+        Raw data dict (not yet filtered by current filters)
+    """
+    required_start = filter_values['start_date'].year
+    required_end = filter_values['end_date'].year
+    
+    cached_start, cached_end = _get_cached_year_range()
+    
+    # Check if we need to expand the cached range
+    if _needs_data_reload(filter_values):
+        # Calculate expanded range
+        if cached_start is not None and cached_end is not None:
+            # Expand existing range
+            new_start = min(required_start, cached_start)
+            new_end = max(required_end, cached_end)
+        else:
+            # First load - use default 3 years from current year
+            current_year = date.today().year
+            new_start = min(required_start, current_year - 2)
+            new_end = max(required_end, current_year)
+        
+        # Load data for expanded range
+        data = load_data_for_year_range(new_start, new_end)
+        
+        # Cache data and year range
+        st.session_state.raw_cached_data = data
+        _set_cached_year_range(new_start, new_end)
+        
+        return data
+    
+    return st.session_state.raw_cached_data
+
+
+# Initialize applied filters on first load
+if _get_applied_filters() is None:
+    _set_applied_filters(filter_values)
+    filters_submitted = True  # Force initial load
+
+# Update applied filters when form is submitted
+if filters_submitted:
+    _set_applied_filters(filter_values)
+    logger.info(f"Filters applied: {filter_values['period_type']} {filter_values['year']}")
+
+# Always use applied filters (not current form values)
+# This ensures data stays consistent even if form values change without submit
+active_filters = _get_applied_filters()
 
 # Add Refresh button in sidebar
 with st.sidebar:
     st.divider()
     col_r1, col_r2 = st.columns([1, 1])
     with col_r1:
-        if st.button("🔄 Refresh Data", use_container_width=True, help="Reload data from database"):
+        if st.button("🔄 Refresh", use_container_width=True, help="Reload data from database"):
+            # Clear all cached data
             st.session_state.raw_cached_data = None
+            if '_cached_start_year' in st.session_state:
+                del st.session_state['_cached_start_year']
+            if '_cached_end_year' in st.session_state:
+                del st.session_state['_cached_end_year']
             st.rerun()
     with col_r2:
-        if st.session_state.raw_cached_data and '_loaded_at' in st.session_state.raw_cached_data:
-            loaded_at = st.session_state.raw_cached_data['_loaded_at']
-            st.caption(f"📅 {loaded_at.strftime('%H:%M')}")
+        cached_start, cached_end = _get_cached_year_range()
+        if cached_start and cached_end:
+            st.caption(f"📦 {cached_start}-{cached_end}")
 
-# Load data if not cached
-if st.session_state.raw_cached_data is None:
-    raw_data = load_all_data_once()
-    st.session_state.raw_cached_data = raw_data
-else:
-    raw_data = st.session_state.raw_cached_data
+# Load data with smart caching
+raw_data = get_or_load_data(active_filters)
 
 # =============================================================================
 # APPLY CLIENT-SIDE FILTERING (Instant - no DB query)
@@ -455,7 +566,7 @@ else:
 
 data = filter_data_client_side(
     raw_data=raw_data,
-    filter_values=filter_values
+    filter_values=active_filters
 )
 
 # Check if we have any data
@@ -471,23 +582,23 @@ if data['sales'].empty and data['total_backlog'].empty:
 metrics_calc = SalespersonMetrics(data['sales'], data['targets'])
 
 overview_metrics = metrics_calc.calculate_overview_metrics(
-    period_type=filter_values['period_type'],
-    year=filter_values['year']
+    period_type=active_filters['period_type'],
+    year=active_filters['year']
 )
 
 # FIXED v1.3.0: Query new_business fresh with correct date range
 # new_business is aggregated data without date column, cannot filter client-side
 fresh_new_business_df = queries.get_new_business_revenue(
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date'],
-    employee_ids=filter_values['employee_ids']
+    start_date=active_filters['start_date'],
+    end_date=active_filters['end_date'],
+    employee_ids=active_filters['employee_ids']
 )
 
 # NEW v1.5.0: Query new_business detail for combo-level display in popover
 fresh_new_business_detail_df = queries.get_new_business_detail(
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date'],
-    employee_ids=filter_values['employee_ids']
+    start_date=active_filters['start_date'],
+    end_date=active_filters['end_date'],
+    employee_ids=active_filters['employee_ids']
 )
 
 complex_kpis = metrics_calc.calculate_complex_kpis(
@@ -499,10 +610,10 @@ complex_kpis = metrics_calc.calculate_complex_kpis(
 backlog_metrics = metrics_calc.calculate_backlog_metrics(
     total_backlog_df=data['total_backlog'],
     in_period_backlog_df=data['in_period_backlog'],
-    period_type=filter_values['period_type'],
-    year=filter_values['year'],
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date']
+    period_type=active_filters['period_type'],
+    year=active_filters['year'],
+    start_date=active_filters['start_date'],
+    end_date=active_filters['end_date']
 )
 
 # NEW v2.5.0: Calculate Pipeline & Forecast with KPI-filtered logic
@@ -512,17 +623,17 @@ pipeline_forecast_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
     total_backlog_df=data['total_backlog'],
     in_period_backlog_df=data['in_period_backlog'],
     backlog_detail_df=data['backlog_detail'],  # Needed for employee filtering
-    period_type=filter_values['period_type'],
-    year=filter_values['year'],
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date']
+    period_type=active_filters['period_type'],
+    year=active_filters['year'],
+    start_date=active_filters['start_date'],
+    end_date=active_filters['end_date']
 )
 
 # Analyze in-period backlog for overdue detection
 in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
     backlog_detail_df=data['backlog_detail'],
-    start_date=filter_values['start_date'],
-    end_date=filter_values['end_date']
+    start_date=active_filters['start_date'],
+    end_date=active_filters['end_date']
 )
 
 # Get period context for display logic
@@ -532,23 +643,23 @@ period_context = backlog_metrics.get('period_context', {})
 # ANALYZE PERIOD TYPE
 # =============================================================================
 
-period_info = analyze_period(filter_values)
+period_info = analyze_period(active_filters)
 
 # YoY comparison (only for single-year periods)
 yoy_metrics = None
-if filter_values['compare_yoy'] and not period_info['is_multi_year']:
+if active_filters['compare_yoy'] and not period_info['is_multi_year']:
     previous_sales_df = queries.get_previous_year_data(
-        start_date=filter_values['start_date'],
-        end_date=filter_values['end_date'],
-        employee_ids=filter_values['employee_ids'],
-        entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        employee_ids=active_filters['employee_ids'],
+        entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
     )
     
     if not previous_sales_df.empty:
         prev_metrics_calc = SalespersonMetrics(previous_sales_df, None)
         prev_overview = prev_metrics_calc.calculate_overview_metrics(
-            period_type=filter_values['period_type'],
-            year=filter_values['year'] - 1
+            period_type=active_filters['period_type'],
+            year=active_filters['year'] - 1
         )
         yoy_metrics = metrics_calc.calculate_yoy_comparison(overview_metrics, prev_overview)
 
@@ -556,8 +667,8 @@ if filter_values['compare_yoy'] and not period_info['is_multi_year']:
 overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
     overview_metrics=overview_metrics,
     complex_kpis=complex_kpis,
-    period_type=filter_values['period_type'],
-    year=filter_values['year']
+    period_type=active_filters['period_type'],
+    year=active_filters['year']
 )
 
 # =============================================================================
@@ -565,7 +676,7 @@ overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
 # =============================================================================
 
 st.title("👤 Salesperson Performance")
-filter_summary = filters_ui.get_filter_summary(filter_values)
+filter_summary = filters_ui.get_filter_summary(active_filters)
 st.caption(f"📊 {filter_summary}")
 
 # =============================================================================
@@ -629,7 +740,7 @@ with tab1:
     yoy_comparison_fragment(
         sales_df=data['sales'],
         queries=queries,
-        filter_values=filter_values,
+        filter_values=active_filters,
         fragment_key="yoy"
     )
     
@@ -969,7 +1080,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced)
         st.info(f"""
         📅 **Forecast not available for historical periods**
         
-        End date ({filter_values['end_date'].strftime('%Y-%m-%d')}) is in the past.
+        End date ({active_filters['end_date'].strftime('%Y-%m-%d')}) is in the past.
         Forecast is only meaningful when end date >= today.
         
         💡 **Tip:** To view Forecast, adjust End Date to today or a future date.
@@ -1130,7 +1241,7 @@ with tab2:
             sales_detail_fragment(
                 sales_df=sales_df,
                 overview_metrics=overview_metrics,
-                filter_values=filter_values,
+                filter_values=active_filters,
                 fragment_key="detail"
             )
         
@@ -1200,7 +1311,7 @@ with tab3:
             # Prepare monthly backlog
             backlog_monthly = metrics_calc.prepare_backlog_by_month(
                 backlog_by_month_df=data['backlog_by_month'],
-                year=filter_values['year']
+                year=active_filters['year']
             )
             
             if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
@@ -1430,7 +1541,7 @@ with tab4:
                 | **MTD** | Annual Target / 12 |
                 | **Custom** | Annual Target (full year) |
                 
-                **Current Settings:** {filter_values['period_type']} for {filter_values['year']}
+                **Current Settings:** {active_filters['period_type']} for {active_filters['year']}
                 
                 **📊 Why Prorated?**
                 
@@ -1510,8 +1621,8 @@ with tab4:
                     # =============================================================
                     actual = queries.calculate_complex_kpi_value(
                         kpi_name=kpi_name,
-                        start_date=filter_values['start_date'],
-                        end_date=filter_values['end_date'],
+                        start_date=active_filters['start_date'],
+                        end_date=active_filters['end_date'],
                         employee_ids=employees_with_target
                     )
                 else:
@@ -1521,7 +1632,7 @@ with tab4:
                 display_name = kpi_display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
                 
                 # Get prorated target
-                prorated_target = metrics_calc._get_prorated_target(kpi_name, filter_values['period_type'], filter_values['year'])
+                prorated_target = metrics_calc._get_prorated_target(kpi_name, active_filters['period_type'], active_filters['year'])
                 if prorated_target is None:
                     prorated_target = kpi_target  # Fallback to annual
                 

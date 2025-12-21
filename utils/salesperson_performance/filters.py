@@ -12,6 +12,13 @@ Renders filter UI elements:
 - Metric view selector
 
 CHANGELOG:
+- v2.0.0: REFACTORED - All filters inside st.form to prevent rerun on every change
+          - ALL widgets (period type, dates, KPI checkbox, etc.) inside form
+          - Date inputs ALWAYS enabled, but only used when "Custom" is selected
+          - YTD/QTD/MTD: Dates auto-calculated, inputs ignored (tooltip explains this)
+          - Detailed tooltips showing exact date ranges for each period type
+          - Consistent English language throughout
+          - Page only reruns when "Apply Filters" is clicked
 - v1.4.0: Added "Only with KPI assignment" checkbox
           - Filters salesperson dropdown to only show those with KPI targets
           - Default: checked (hide managers without KPI)
@@ -573,8 +580,14 @@ class SalespersonFilters:
         default_end_date: date = None
     ) -> Tuple[Dict, bool]:
         """
-        Render filters inside a form - only applies when user clicks Apply.
+        Render ALL filters inside a form - only applies when user clicks Apply.
         This prevents page reruns on every filter change.
+        
+        REFACTORED v2.0.0:
+        - ALL filters inside st.form (no widgets outside that cause rerun)
+        - YTD/QTD/MTD: Auto-calculate for current year, date inputs disabled
+        - Custom: Date inputs enabled for any date range selection
+        - Consistent English language throughout
         
         Args:
             salesperson_df: Salesperson options
@@ -585,158 +598,132 @@ class SalespersonFilters:
         Returns:
             Tuple of (filter_values dict, submitted boolean)
         """
-        # Initialize session state for filter values if not exists
-        if 'applied_filters' not in st.session_state:
-            st.session_state.applied_filters = None
-        
         # Default dates if not provided
         today = date.today()
+        current_year = today.year
+        
         if default_start_date is None:
-            default_start_date = date(today.year, 1, 1)
+            default_start_date = date(current_year, 1, 1)
         if default_end_date is None:
             default_end_date = today
+        
+        # Pre-calculate date ranges for current year
+        current_quarter = (today.month - 1) // 3 + 1
+        quarter_start_month = (current_quarter - 1) * 3 + 1
+        
+        ytd_start = date(current_year, 1, 1)
+        ytd_end = today
+        
+        qtd_start = date(current_year, quarter_start_month, 1)
+        qtd_end = today
+        
+        mtd_start = date(current_year, today.month, 1)
+        mtd_end = today
         
         with st.sidebar:
             st.header("🎛️ Filters")
             
-            # =====================================================
-            # PERIOD TYPE SELECTION (Outside form for reactivity)
-            # =====================================================
-            st.markdown("**📅 Date Range**")
-            st.caption("📊 Applies to Sales data. Backlog shows full pipeline.")
-            
-            # Radio buttons for period type - OUTSIDE form for immediate reactivity
-            period_type = st.radio(
-                "Period",
-                options=['YTD', 'QTD', 'MTD', 'Custom'],
-                index=0,  # Default to YTD
-                horizontal=True,
-                key="sidebar_period_type",
-                help="**YTD**: Year to Date (Jan 1 → Today)\n\n**QTD**: Quarter to Date (Quarter start → Today)\n\n**MTD**: Month to Date (Month start → Today)\n\n**Custom**: Select your own date range"
-            )
-            
-            # Calculate dates based on period type
-            year = today.year
-            
-            # Always show date inputs, but behavior depends on period_type
-            col_d1, col_d2 = st.columns(2)
-            
-            if period_type == 'Custom':
-                # Custom: User can edit dates
-                with col_d1:
-                    start_date = st.date_input(
+            # =================================================================
+            # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
+            # =================================================================
+            with st.form("sidebar_filter_form", border=False):
+                
+                # =============================================================
+                # DATE RANGE SECTION
+                # =============================================================
+                st.markdown("**📅 Date Range**")
+                st.caption("Applies to Sales data. Backlog shows full pipeline.")
+                
+                # Build detailed tooltip with exact date ranges
+                period_help = (
+                    f"**YTD** (Year to Date): {ytd_start.strftime('%b %d')} → {ytd_end.strftime('%b %d, %Y')}\n\n"
+                    f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
+                    f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                    f"**Custom**: Select any date range using Start/End inputs"
+                )
+                
+                # Period type radio
+                period_type = st.radio(
+                    "Period",
+                    options=['YTD', 'QTD', 'MTD', 'Custom'],
+                    index=0,  # Default to YTD
+                    horizontal=True,
+                    key="form_period_type",
+                    help=period_help
+                )
+                
+                # Date inputs - ALWAYS ENABLED
+                # Values only used when period_type is "Custom"
+                col_start, col_end = st.columns(2)
+                
+                with col_start:
+                    start_date_input = st.date_input(
                         "Start",
                         value=default_start_date,
-                        key="sidebar_start_date",
-                        help="📅 **Custom mode**: Select your start date"
+                        key="form_start_date",
+                        help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
                     )
-                with col_d2:
-                    end_date = st.date_input(
+                
+                with col_end:
+                    end_date_input = st.date_input(
                         "End",
                         value=default_end_date,
-                        key="sidebar_end_date",
-                        help="📅 **Custom mode**: Select your end date"
+                        key="form_end_date",
+                        help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
                     )
                 
-                # Validation
-                if start_date > end_date:
-                    st.error("⚠️ Start date must be before end date")
-                    end_date = start_date
+                st.divider()
                 
-                # Use start_date's year for KPI matching
-                year = start_date.year
-                
-            else:
-                # YTD/QTD/MTD: Auto-calculate dates, show as disabled
-                if period_type == 'YTD':
-                    start_date = date(year, 1, 1)
-                    end_date = today
-                    period_label = "Year to Date"
-                elif period_type == 'QTD':
-                    current_quarter = (today.month - 1) // 3 + 1
-                    quarter_start_month = (current_quarter - 1) * 3 + 1
-                    start_date = date(year, quarter_start_month, 1)
-                    end_date = today
-                    period_label = f"Q{current_quarter} to Date"
-                else:  # MTD
-                    start_date = date(year, today.month, 1)
-                    end_date = today
-                    period_label = f"{today.strftime('%B')} to Date"
-                
-                # Show dates as disabled (read-only visual)
-                with col_d1:
-                    st.date_input(
-                        "Start",
-                        value=start_date,
-                        key="sidebar_start_date_auto",
-                        disabled=True,
-                        help=f"🔒 **{period_type} mode**: Auto-calculated ({period_label})"
+                # =============================================================
+                # KPI FILTER CHECKBOX
+                # =============================================================
+                only_with_kpi = st.checkbox(
+                    "Only with KPI assignment",
+                    value=True,
+                    key="form_only_with_kpi",
+                    help=(
+                        "Show only salespeople who have KPI targets assigned for the selected period. "
+                        "Uncheck to include all salespeople (including managers without individual KPI)."
                     )
-                with col_d2:
-                    st.date_input(
-                        "End",
-                        value=end_date,
-                        key="sidebar_end_date_auto",
-                        disabled=True,
-                        help=f"🔒 **{period_type} mode**: Auto-calculated ({period_label})"
-                    )
+                )
                 
-                st.caption(f"📆 {period_label}: {start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}")
-            
-            st.divider()
-            
-            # =====================================================
-            # KPI FILTER CHECKBOX (Outside form - affects options)
-            # =====================================================
-            # Determine years to check for KPI (handle cross-year periods)
-            kpi_check_years = list(set([start_date.year, end_date.year]))
-            
-            only_with_kpi = st.checkbox(
-                "Only with KPI assignment",
-                value=True,  # Default: checked
-                key="filter_only_with_kpi",
-                help="Show only salespeople who have KPI targets assigned for the selected period. "
-                     "Uncheck to include all salespeople (including managers without individual KPI)."
-            )
-            
-            # Filter salesperson_df if checkbox is checked
-            filtered_salesperson_df = salesperson_df.copy()
-            kpi_employee_ids = []
-            
-            if only_with_kpi and not salesperson_df.empty:
-                kpi_employee_ids = _get_employees_with_kpi_assignments(kpi_check_years)
-                if kpi_employee_ids:
-                    filtered_salesperson_df = salesperson_df[
-                        salesperson_df['employee_id'].isin(kpi_employee_ids)
-                    ]
-                    # Show info about filtering
-                    excluded_count = len(salesperson_df) - len(filtered_salesperson_df)
-                    if excluded_count > 0:
-                        st.caption(f"📋 {len(filtered_salesperson_df)} with KPI ({excluded_count} hidden)")
-                else:
-                    st.warning("⚠️ No KPI assignments found for selected period")
-            
-            # =====================================================
-            # FORM FOR OTHER FILTERS
-            # =====================================================
-            with st.form("filter_form", border=False):
-                # =====================================================
+                # Pre-fetch KPI employee IDs for filtering
+                kpi_check_years = [current_year]
+                kpi_employee_ids = []
+                filtered_salesperson_df = salesperson_df.copy()
+                
+                if only_with_kpi and not salesperson_df.empty:
+                    kpi_employee_ids = _get_employees_with_kpi_assignments(kpi_check_years)
+                    if kpi_employee_ids:
+                        filtered_salesperson_df = salesperson_df[
+                            salesperson_df['employee_id'].isin(kpi_employee_ids)
+                        ]
+                        excluded_count = len(salesperson_df) - len(filtered_salesperson_df)
+                        if excluded_count > 0:
+                            st.caption(f"📋 {len(filtered_salesperson_df)} with KPI ({excluded_count} hidden)")
+                
+                # =============================================================
                 # SALESPERSON FILTER
-                # =====================================================
+                # =============================================================
                 st.markdown("**👤 Salesperson**")
+                
                 if filtered_salesperson_df.empty:
                     employee_ids = []
                     st.warning("No salespeople available")
                 else:
                     all_salespeople = filtered_salesperson_df['sales_name'].tolist()
-                    id_map = dict(zip(filtered_salesperson_df['sales_name'], filtered_salesperson_df['employee_id']))
+                    id_map = dict(zip(
+                        filtered_salesperson_df['sales_name'],
+                        filtered_salesperson_df['employee_id']
+                    ))
                     
-                    if self.access.get_access_level() == 'full':
+                    access_level = self.access.get_access_level()
+                    
+                    if access_level == 'full':
                         options = ['All'] + all_salespeople
                         default = ['All']
-                    elif self.access.get_access_level() == 'team':
+                    elif access_level == 'team':
                         team_ids = self.access.get_accessible_employee_ids()
-                        # Also filter by KPI if checkbox is checked
                         if only_with_kpi and kpi_employee_ids:
                             team_ids = [tid for tid in team_ids if tid in kpi_employee_ids]
                         team_names = filtered_salesperson_df[
@@ -744,9 +731,11 @@ class SalespersonFilters:
                         ]['sales_name'].tolist()
                         options = ['All Team'] + team_names
                         default = ['All Team']
-                    else:
+                    else:  # self access
                         my_id = self.access.employee_id
-                        my_row = filtered_salesperson_df[filtered_salesperson_df['employee_id'] == my_id]
+                        my_row = filtered_salesperson_df[
+                            filtered_salesperson_df['employee_id'] == my_id
+                        ]
                         if not my_row.empty:
                             options = [my_row.iloc[0]['sales_name']]
                             default = options
@@ -755,7 +744,7 @@ class SalespersonFilters:
                             default = options
                     
                     selected_names = st.multiselect(
-                        "Select",
+                        "Select salespeople",
                         options=options,
                         default=default,
                         key="form_salesperson",
@@ -766,7 +755,6 @@ class SalespersonFilters:
                     if 'All' in selected_names:
                         employee_ids = list(id_map.values())
                     elif 'All Team' in selected_names:
-                        # Apply KPI filter to team IDs if checkbox is checked
                         team_ids = self.access.get_accessible_employee_ids()
                         if only_with_kpi and kpi_employee_ids:
                             employee_ids = [tid for tid in team_ids if tid in kpi_employee_ids]
@@ -777,18 +765,22 @@ class SalespersonFilters:
                 
                 st.divider()
                 
-                # =====================================================
+                # =============================================================
                 # ENTITY FILTER
-                # =====================================================
+                # =============================================================
                 st.markdown("**🏢 Legal Entity**")
+                
                 if entity_df.empty:
                     entity_ids = []
                 else:
                     entity_options = ['All'] + entity_df['entity_name'].tolist()
-                    entity_id_map = dict(zip(entity_df['entity_name'], entity_df['entity_id']))
+                    entity_id_map = dict(zip(
+                        entity_df['entity_name'],
+                        entity_df['entity_id']
+                    ))
                     
                     selected_entities = st.multiselect(
-                        "Select",
+                        "Select entities",
                         options=entity_options,
                         default=['All'],
                         key="form_entity",
@@ -798,23 +790,66 @@ class SalespersonFilters:
                     if 'All' in selected_entities or not selected_entities:
                         entity_ids = []  # No filter
                     else:
-                        entity_ids = [entity_id_map[name] for name in selected_entities if name in entity_id_map]
+                        entity_ids = [
+                            entity_id_map[name]
+                            for name in selected_entities
+                            if name in entity_id_map
+                        ]
                 
                 st.divider()
                 
-                # =====================================================
+                # =============================================================
+                # EXCLUDE INTERNAL REVENUE
+                # =============================================================
+                exclude_internal = st.checkbox(
+                    "Exclude internal revenue",
+                    value=True,
+                    key="form_exclude_internal",
+                    help=(
+                        "Exclude revenue from internal company transactions. "
+                        "Gross Profit is kept intact for accurate GP% calculation."
+                    )
+                )
+                
+                st.divider()
+                
+                # =============================================================
                 # SUBMIT BUTTON
-                # =====================================================
+                # =============================================================
                 submitted = st.form_submit_button(
                     "🔍 Apply Filters",
                     use_container_width=True,
                     type="primary"
                 )
             
-            # Show access info outside form
+            # Show access info outside form (static, no interaction needed)
             self._render_access_info()
         
-        # period_type is already set from radio button selection
+        # =================================================================
+        # DETERMINE ACTUAL DATES BASED ON PERIOD TYPE
+        # =================================================================
+        if period_type == 'YTD':
+            start_date = ytd_start
+            end_date = ytd_end
+            year = current_year
+        elif period_type == 'QTD':
+            start_date = qtd_start
+            end_date = qtd_end
+            year = current_year
+        elif period_type == 'MTD':
+            start_date = mtd_start
+            end_date = mtd_end
+            year = current_year
+        else:  # Custom
+            start_date = start_date_input
+            end_date = end_date_input
+            # Validation
+            if start_date > end_date:
+                end_date = start_date
+            # Use start_date's year for KPI matching
+            year = start_date.year
+        
+        # Build filter values dict
         filter_values = {
             'period_type': period_type,
             'year': year,
@@ -823,8 +858,8 @@ class SalespersonFilters:
             'employee_ids': employee_ids,
             'entity_ids': entity_ids,
             'compare_yoy': True,
-            'exclude_internal_revenue': True,
-            'only_with_kpi': only_with_kpi,  # NEW: KPI filter flag
+            'exclude_internal_revenue': exclude_internal,
+            'only_with_kpi': only_with_kpi,
         }
         
         return filter_values, submitted
