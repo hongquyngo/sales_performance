@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.3.0 - Added summary metrics to Sales Detail
+VERSION: 2.4.0 - Comprehensive export moved to main page
 
 CHANGELOG:
+- v2.4.0: UPDATED export in sales_detail_fragment
+          - Export button now labeled "Export Filtered View"
+          - Added hint to use sidebar for full report
+          - Comprehensive export moved to main page sidebar
 - v2.3.0: ADDED summary metrics cards to sales_detail_fragment
           - Revenue, GP, GP1, Orders, Customers, Avg Order, Avg GP/Cust
           - Consistent pattern with Backlog List fragment
@@ -905,8 +909,9 @@ def sales_detail_fragment(
         > 💡 **Tip:** Hover over column headers to see detailed tooltips.
         """)
     
-    # Export button
-    if st.button("📥 Export to Excel", key=f"{fragment_key}_export"):
+    # Export filtered view button (quick export of current filtered data)
+    st.caption("💡 For full report with all data, use **Export Report** in sidebar")
+    if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help="Export only the filtered transactions shown above"):
         exporter = SalespersonExport()
         excel_bytes = exporter.create_report(
             summary_df=pd.DataFrame(),
@@ -916,9 +921,9 @@ def sales_detail_fragment(
             detail_df=filtered_df
         )
         st.download_button(
-            label="⬇️ Download",
+            label="⬇️ Download Filtered Data",
             data=excel_bytes,
-            file_name=f"sales_detail_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            file_name=f"sales_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
