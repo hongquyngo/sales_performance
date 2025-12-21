@@ -220,70 +220,6 @@ def apply_multiselect_filter(
         return df[df[column].isin(filter_result.selected)]
 
 
-def render_filter_row(
-    df: pd.DataFrame,
-    filter_configs: List[Dict],
-    num_columns: int = 5
-) -> Dict[str, FilterResult]:
-    """
-    Render a row of multiselect filters with consistent layout.
-    
-    Args:
-        df: DataFrame to get options from
-        filter_configs: List of filter configurations, each containing:
-            - column: DataFrame column name
-            - label: Display label
-            - key: Unique widget key
-            - max_options: Optional limit on options shown (default 100)
-            - sort: Whether to sort options (default True)
-        num_columns: Number of columns in the row (default 5)
-        
-    Returns:
-        Dict mapping column names to FilterResult objects
-        
-    Example:
-        >>> filters = render_filter_row(sales_df, [
-        ...     {'column': 'customer', 'label': 'Customer', 'key': 'cust'},
-        ...     {'column': 'brand', 'label': 'Brand', 'key': 'brand'},
-        ...     {'column': 'product_pn', 'label': 'Product', 'key': 'prod'},
-        ... ])
-        >>> for col, result in filters.items():
-        ...     df = apply_multiselect_filter(df, col, result)
-    """
-    results = {}
-    
-    # Create columns
-    cols = st.columns(num_columns)
-    
-    for idx, config in enumerate(filter_configs):
-        col_idx = idx % num_columns
-        
-        column = config['column']
-        label = config.get('label', column.replace('_', ' ').title())
-        key = config.get('key', f"filter_{column}")
-        max_options = config.get('max_options', 100)
-        sort_options = config.get('sort', True)
-        
-        # Get options from DataFrame
-        if column in df.columns:
-            options = df[column].dropna().unique().tolist()
-            if sort_options:
-                options = sorted(options)
-            if max_options and len(options) > max_options:
-                options = options[:max_options]
-        else:
-            options = []
-        
-        with cols[col_idx]:
-            results[column] = render_multiselect_filter(
-                label=label,
-                options=options,
-                key=key
-            )
-    
-    return results
-
-
 def apply_all_filters(
     df: pd.DataFrame,
     filter_results: Dict[str, FilterResult]
@@ -1119,37 +1055,7 @@ class SalespersonFilters:
         
         st.sidebar.caption(f"{icon} {label}")
     
-    # =========================================================================
-    # QUICK FILTERS (Alternative Rendering)
-    # =========================================================================
-    
-    def render_quick_period_buttons(self) -> str:
-        """
-        Render quick period selection as buttons (alternative to dropdown).
-        Can be used in main content area.
-        """
-        col1, col2, col3, col4 = st.columns(4)
-        
-        period = 'YTD'  # Default
-        
-        with col1:
-            if st.button("YTD", use_container_width=True):
-                period = 'YTD'
-        
-        with col2:
-            if st.button("QTD", use_container_width=True):
-                period = 'QTD'
-        
-        with col3:
-            if st.button("MTD", use_container_width=True):
-                period = 'MTD'
-        
-        with col4:
-            if st.button("Custom", use_container_width=True):
-                period = 'Custom'
-        
-        return period
-    
+
     # =========================================================================
     # FILTER STATE HELPERS
     # =========================================================================
@@ -1207,33 +1113,6 @@ class SalespersonFilters:
 # =============================================================================
 # STANDALONE FILTER FUNCTIONS
 # =============================================================================
-
-def render_period_selector_simple() -> Tuple[str, int, date, date]:
-    """
-    Simple period selector without access control.
-    Returns: (period_type, year, start_date, end_date)
-    """
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        period_type = st.selectbox(
-            "Period",
-            options=PERIOD_TYPES,
-            index=0
-        )
-    
-    with col2:
-        current_year = datetime.now().year
-        year = st.selectbox(
-            "Year",
-            options=[current_year, current_year - 1, current_year - 2],
-            index=0
-        )
-    
-    start_date, end_date = SalespersonFilters._calculate_period_dates(period_type, year)
-    
-    return period_type, year, start_date, end_date
-
 
 def analyze_period(filter_values: Dict) -> Dict:
     """

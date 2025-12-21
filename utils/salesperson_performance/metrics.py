@@ -1611,13 +1611,7 @@ class SalespersonMetrics:
         
         return top_customers
     
-    def prepare_top_customers_by_gp(
-        self,
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """Backward compatible wrapper for prepare_top_customers_by_metric."""
-        return self.prepare_top_customers_by_metric('gross_profit', top_percent)
-    
+
     def prepare_top_brands_by_metric(
         self,
         metric: str = 'revenue',
@@ -1671,9 +1665,3 @@ class SalespersonMetrics:
         
         return top_brands
     
-    def prepare_top_brands_by_gp(
-        self,
-        top_percent: float = 0.8
-    ) -> pd.DataFrame:
-        """Backward compatible wrapper for prepare_top_brands_by_metric."""
-        return self.prepare_top_brands_by_metric('gross_profit', top_percent)

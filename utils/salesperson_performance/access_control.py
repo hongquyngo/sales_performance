@@ -11,7 +11,7 @@ Uses recursive CTE to traverse manager_id hierarchy in employees table.
 """
 
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import pandas as pd
 from sqlalchemy import text
 
@@ -83,10 +83,6 @@ class AccessControl:
     def can_select_salesperson(self) -> bool:
         """Check if user can select different salespeople (not self-only)."""
         return self.get_access_level() != 'self'
-    
-    def is_team_manager(self) -> bool:
-        """Check if user is a team manager with team access."""
-        return self.get_access_level() == 'team'
     
     # =========================================================================
     # ACCESSIBLE EMPLOYEE IDS
@@ -209,20 +205,6 @@ class AccessControl:
     # TEAM INFORMATION
     # =========================================================================
     
-    def get_team_info(self) -> pd.DataFrame:
-        """
-        Get team hierarchy information.
-        Only available after calling get_accessible_employee_ids().
-        
-        Returns:
-            DataFrame with columns: id, name, level
-        """
-        if self._team_info is None:
-            # Trigger team ID fetch which populates _team_info
-            self.get_accessible_employee_ids()
-        
-        return self._team_info if self._team_info is not None else pd.DataFrame()
-    
     def get_team_size(self) -> int:
         """Get number of team members (including self)."""
         return len(self.get_accessible_employee_ids())
@@ -264,56 +246,11 @@ class AccessControl:
         
         return filtered
     
-    def get_employee_id_filter_clause(
-        self, 
-        column_name: str = 'sales_id'
-    ) -> Tuple[str, dict]:
-        """
-        Get SQL WHERE clause for filtering by accessible employee IDs.
-        
-        Args:
-            column_name: SQL column name to filter
-            
-        Returns:
-            Tuple of (clause_string, params_dict)
-            
-        Example:
-            clause, params = access.get_employee_id_filter_clause('e.id')
-            query = f"SELECT * FROM employees e WHERE {clause}"
-            result = conn.execute(text(query), params)
-        """
-        accessible_ids = self.get_accessible_employee_ids()
-        
-        if not accessible_ids:
-            # Return impossible condition if no access
-            return "1 = 0", {}
-        
-        if self.can_view_all():
-            # No filter needed for full access
-            return "1 = 1", {}
-        
-        # Use IN clause with tuple
-        return f"{column_name} IN :accessible_ids", {
-            'accessible_ids': tuple(accessible_ids)
-        }
-    
     # =========================================================================
     # PERMISSION CHECKS
     # =========================================================================
     
-    def can_view_employee(self, target_employee_id: int) -> bool:
-        """
-        Check if current user can view a specific employee's data.
-        
-        Args:
-            target_employee_id: Employee ID to check access for
-            
-        Returns:
-            True if user can view this employee's data
-        """
-        accessible_ids = self.get_accessible_employee_ids()
-        return target_employee_id in accessible_ids
-    
+
     def validate_selected_employees(
         self, 
         selected_ids: List[int]
@@ -342,22 +279,7 @@ class AccessControl:
     # DEBUG / INFO
     # =========================================================================
     
-    def get_access_summary(self) -> dict:
-        """
-        Get summary of access control settings for debugging/display.
-        
-        Returns:
-            Dict with access information
-        """
-        return {
-            'user_role': self.user_role,
-            'employee_id': self.employee_id,
-            'access_level': self.get_access_level(),
-            'can_view_all': self.can_view_all(),
-            'can_select_salesperson': self.can_select_salesperson(),
-            'accessible_count': len(self.get_accessible_employee_ids()),
-        }
-    
+
     def __repr__(self) -> str:
         return (
             f"AccessControl(role='{self.user_role}', "

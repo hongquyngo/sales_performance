@@ -9,43 +9,7 @@
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Setup - Sales split, customer/product portfolio
 
-Version: 2.5.0
-
-CHANGELOG:
-- v2.5.0: ENHANCED Backlog & Forecast section
-          - Removed separate PIPELINE & FORECAST metrics cards (was duplicated info)
-          - Combined metrics cards + charts into unified Backlog & Forecast section
-          - Each tab (Revenue/GP/GP1) now shows: 5 metrics cards + 2 charts
-          - Metrics: Total Backlog, In-Period Backlog, Target, Forecast, GAP
-          - Each metric filters by employees with that specific KPI target
-          - GP1 backlog estimated using GP1/GP ratio from invoiced data
-          - Added detailed Help tooltip explaining all calculations
-- v2.4.0: FIXED KPI Progress calculation inconsistency
-          - Bug: Achievement % used annual target while Overall used prorated target
-          - Fix: KPI Progress now uses prorated target (consistent with Overall Achievement)
-          - Fix: Complex KPIs (New Customers, New Products, New Business Revenue) now
-                 correctly filter actuals by employees who have that specific KPI target
-          - Added explanatory note about KPI Progress calculation method
-          - Caption now shows prorated target instead of annual target
-- v2.3.0: FIXED KPI Progress logic when multiple salespeople selected
-          - Each KPI now only counts actual from employees who have that specific KPI target
-          - Example: GP Achievement only includes GP from employees with GP target assigned
-          - Added employee count display in KPI progress caption
-          - Team Ranking now supports multiple sort criteria:
-            Revenue / GP / GP1 / GP% / KPI Achievement %
-          - Default ranking changed to KPI Achievement %
-          - Added GP1 and GP1% columns to ranking table
-          - Highlight sort column with yellow background
-- v2.2.0: Added Period Type radio buttons in sidebar
-          - YTD/QTD/MTD: Auto-calculate dates for current year
-          - Custom: Manual date selection
-          - KPI targets prorate based on period type
-- v2.1.0: Improved filters with MultiSelect + Excluded option
-          - All filters now support multi-selection
-          - Added "Excl" checkbox to exclude selected values instead of include
-          - Added filter summary display showing active filters
-          - Consistent filter UI across Sales Detail and Backlog tabs
-- v2.0.0: Initial tabbed version
+Version: 2.0
 """
 
 import streamlit as st
@@ -65,11 +29,8 @@ from utils.salesperson_performance import (
     SalespersonMetrics,
     SalespersonFilters,
     SalespersonCharts,
-    SalespersonExport,
-    PERIOD_TYPES,
-    MONTH_ORDER,
 )
-# NEW v2.6.0: Fragments for performance optimization
+
 from utils.salesperson_performance.fragments import (
     monthly_trend_fragment,
     yoy_comparison_fragment,
@@ -79,13 +40,6 @@ from utils.salesperson_performance.fragments import (
 )
 from utils.salesperson_performance.filters import (
     analyze_period,
-    render_multiselect_filter,
-    apply_multiselect_filter,
-    render_text_search_filter,
-    apply_text_search_filter,
-    render_number_filter,
-    apply_number_filter,
-    FilterResult,
 )
 
 # Configure logging

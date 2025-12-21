@@ -1358,39 +1358,3 @@ def _get_sales_data_cached(
     except Exception as e:
         logger.error(f"Error in cached sales query: {e}")
         return pd.DataFrame()
-
-
-@st.cache_data(ttl=CACHE_TTL_SECONDS)
-def get_kpi_targets_cached(year: int, employee_ids: tuple) -> pd.DataFrame:
-    """Cached KPI targets query."""
-    engine = get_db_engine()
-    
-    query = """
-        SELECT 
-            employee_id,
-            employee_name,
-            email,
-            status,
-            year,
-            kpi_type_id,
-            kpi_name,
-            annual_target_value,
-            annual_target_value_numeric,
-            unit_of_measure,
-            weight_numeric,
-            monthly_target_value,
-            quarterly_target_value,
-            is_current_year
-        FROM sales_employee_kpi_assignments_view
-        WHERE year = :year
-          AND employee_id IN :employee_ids
-    """
-    
-    try:
-        return pd.read_sql(text(query), engine, params={
-            'year': year,
-            'employee_ids': employee_ids
-        })
-    except Exception as e:
-        logger.error(f"Error in cached KPI query: {e}")
-        return pd.DataFrame()

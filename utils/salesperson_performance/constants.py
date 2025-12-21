@@ -72,12 +72,6 @@ MONTH_ORDER = [
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 ]
 
-MONTH_MAPPING = {
-    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr",
-    5: "May", 6: "Jun", 7: "Jul", 8: "Aug",
-    9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
-}
-
 # =====================================================================
 # PERIOD DEFINITIONS
 # =====================================================================
@@ -150,18 +144,12 @@ KPI_TYPES = {
 # A customer is "new" if their first invoice is within lookback period
 LOOKBACK_YEARS = 5
 
-# Commission multiplier for GP1 calculation (from existing views)
-COMMISSION_MULTIPLIER = 1.2
-
 # =====================================================================
 # CHART DIMENSIONS
 # =====================================================================
 
 CHART_WIDTH = 800
 CHART_HEIGHT = 400
-
-PIE_CHART_WIDTH = 400
-PIE_CHART_HEIGHT = 300
 
 # =====================================================================
 # CACHE SETTINGS

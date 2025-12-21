@@ -451,27 +451,3 @@ class SalespersonExport:
         ws.freeze_panes = 'A2'
 
 
-# =============================================================================
-# STANDALONE EXPORT FUNCTION
-# =============================================================================
-
-def export_to_excel(
-    summary_df: pd.DataFrame,
-    monthly_df: pd.DataFrame,
-    metrics: Dict,
-    filters: Dict,
-    **kwargs
-) -> BytesIO:
-    """
-    Convenience function for Excel export.
-    
-    Returns BytesIO with Excel file.
-    """
-    exporter = SalespersonExport()
-    return exporter.create_report(
-        summary_df=summary_df,
-        monthly_df=monthly_df,
-        metrics=metrics,
-        filters=filters,
-        **kwargs
-    )
