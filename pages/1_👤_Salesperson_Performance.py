@@ -10,8 +10,9 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
-- v2.4.0: ADDED Comprehensive Excel Export
-          - Export button in sidebar with full report
+- v2.4.0: ADDED Comprehensive Excel Export (Fragment-based)
+          - Export button in Overview tab (no page reload!)
+          - Uses @st.fragment to run independently
           - Includes: Summary, Pipeline & Forecast, By Salesperson, Monthly, 
             Sales Detail, Backlog Summary, Backlog Detail, Backlog by ETD
           - Professional formatting with conditional colors
@@ -56,14 +57,13 @@ from utils.salesperson_performance import (
     SalespersonCharts,
 )
 
-from utils.salesperson_performance.export import SalespersonExport
-
 from utils.salesperson_performance.fragments import (
     monthly_trend_fragment,
     yoy_comparison_fragment,
     sales_detail_fragment,
     pivot_analysis_fragment,
     backlog_list_fragment,
+    export_report_fragment,
 )
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -578,37 +578,6 @@ with st.sidebar:
         if cached_start and cached_end:
             st.caption(f"📦 {cached_start}-{cached_end}")
     
-    # =========================================================================
-    # EXPORT SECTION (NEW v2.4.0)
-    # =========================================================================
-    st.divider()
-    with st.expander("📥 Export Report", expanded=False):
-        st.markdown("""
-        **Export includes:**
-        - Summary & KPIs
-        - Pipeline & Forecast
-        - By Salesperson
-        - Monthly Trend
-        - Sales Detail
-        - Backlog Summary
-        - Backlog Detail
-        - Backlog by ETD
-        """)
-        
-        # Store export flag in session state
-        if st.button("📊 Generate Excel Report", use_container_width=True, key="generate_export"):
-            st.session_state['_generate_export'] = True
-        
-        # Show download button if report was generated
-        if st.session_state.get('_export_ready'):
-            st.download_button(
-                label="⬇️ Download Report",
-                data=st.session_state['_export_bytes'],
-                file_name=f"salesperson_performance_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
 # Load data with smart caching
 raw_data = get_or_load_data(active_filters)
 
@@ -722,63 +691,6 @@ overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
     period_type=active_filters['period_type'],
     year=active_filters['year']
 )
-
-# =============================================================================
-# EXPORT GENERATION (NEW v2.4.0)
-# Generate Excel report when user clicks export button
-# =============================================================================
-
-if st.session_state.get('_generate_export'):
-    with st.spinner("Generating Excel report..."):
-        try:
-            # Calculate additional data needed for export
-            salesperson_summary_df = metrics_calc.aggregate_by_salesperson()
-            monthly_df = metrics_calc.prepare_monthly_summary()
-            
-            # Prepare backlog by month (pass year, not dates)
-            backlog_by_month_df = None
-            if not data['backlog_by_month'].empty:
-                backlog_by_month_df = metrics_calc.prepare_backlog_by_month(
-                    backlog_by_month_df=data['backlog_by_month'],
-                    year=active_filters['year']
-                )
-            
-            # Generate comprehensive report
-            exporter = SalespersonExport()
-            excel_bytes = exporter.create_comprehensive_report(
-                # Summary metrics
-                metrics=overview_metrics,
-                complex_kpis=complex_kpis,
-                pipeline_metrics=pipeline_forecast_metrics,
-                filters=active_filters,
-                yoy_metrics=yoy_metrics,
-                
-                # Salesperson & Monthly
-                salesperson_summary_df=salesperson_summary_df,
-                monthly_df=monthly_df,
-                
-                # Sales Detail
-                sales_detail_df=data['sales'],
-                
-                # Backlog data
-                backlog_summary_df=data['total_backlog'],
-                backlog_detail_df=data['backlog_detail'],
-                backlog_by_month_df=backlog_by_month_df,
-                in_period_backlog_analysis=in_period_backlog_analysis,
-            )
-            
-            # Store in session state for download
-            st.session_state['_export_bytes'] = excel_bytes
-            st.session_state['_export_ready'] = True
-            st.session_state['_generate_export'] = False
-            
-            st.toast("✅ Report generated! Click Download in sidebar.", icon="📊")
-            st.rerun()
-            
-        except Exception as e:
-            st.error(f"Error generating report: {str(e)}")
-            logger.error(f"Export error: {e}")
-            st.session_state['_generate_export'] = False
 
 # =============================================================================
 # PAGE HEADER
@@ -1349,6 +1261,28 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
             use_container_width=True,
             hide_index=True
         )
+    
+    # ==========================================================================
+    # EXPORT REPORT - FRAGMENT (NEW v2.4.0)
+    # Runs independently - no page reload when generating
+    # ==========================================================================
+    st.divider()
+    export_report_fragment(
+        overview_metrics=overview_metrics,
+        complex_kpis=complex_kpis,
+        pipeline_forecast_metrics=pipeline_forecast_metrics,
+        yoy_metrics=yoy_metrics,
+        in_period_backlog_analysis=in_period_backlog_analysis,
+        filter_values=active_filters,
+        sales_df=data['sales'],
+        total_backlog_df=data['total_backlog'],
+        backlog_detail_df=data['backlog_detail'],
+        backlog_by_month_df=data['backlog_by_month'],
+        targets_df=data['targets'],
+        metrics_calc=metrics_calc,
+        fragment_key="export"
+    )
+
 # =============================================================================
 # TAB 2: SALES DETAIL
 # =============================================================================

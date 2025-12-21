@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.4.0 - Comprehensive export moved to main page
+VERSION: 2.5.0 - Export fragment for no-reload export
 
 CHANGELOG:
+- v2.5.0: ADDED export_report_fragment
+          - Generates Excel report without reloading entire page
+          - Two-step: Generate → Download
+          - All data passed as parameters for isolation
 - v2.4.0: UPDATED export in sales_detail_fragment
           - Export button now labeled "Export Filtered View"
           - Added hint to use sidebar for full report
@@ -910,7 +914,7 @@ def sales_detail_fragment(
         """)
     
     # Export filtered view button (quick export of current filtered data)
-    st.caption("💡 For full report with all data, use **Export Report** in sidebar")
+    st.caption("💡 For full report with all data, use **Export Report** in Overview tab")
     if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help="Export only the filtered transactions shown above"):
         exporter = SalespersonExport()
         excel_bytes = exporter.create_report(
@@ -1301,6 +1305,131 @@ def backlog_list_fragment(
 
 
 # =============================================================================
+# FRAGMENT: EXPORT REPORT (NEW v2.4.0)
+# Generates Excel report without reloading entire page
+# =============================================================================
+
+@st.fragment
+def export_report_fragment(
+    # Metrics data
+    overview_metrics: Dict,
+    complex_kpis: Dict,
+    pipeline_forecast_metrics: Dict,
+    yoy_metrics: Dict,
+    in_period_backlog_analysis: Dict,
+    # Filter settings
+    filter_values: Dict,
+    # Raw data for export
+    sales_df: pd.DataFrame,
+    total_backlog_df: pd.DataFrame,
+    backlog_detail_df: pd.DataFrame,
+    backlog_by_month_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    # Metrics calculator
+    metrics_calc,  # SalespersonMetrics instance
+    fragment_key: str = "export"
+):
+    """
+    Fragment for Excel export - runs independently without page reload.
+    
+    NEW v2.4.0: Moved export to fragment to avoid full page reload.
+    """
+    from .export import SalespersonExport
+    
+    with st.expander("📥 Export Report", expanded=False):
+        st.markdown("""
+**Export includes 8 sheets:**
+- Summary & KPIs
+- Pipeline & Forecast  
+- By Salesperson
+- Monthly Trend
+- Sales Detail
+- Backlog Summary
+- Backlog Detail
+- Backlog by ETD
+        """)
+        
+        col_exp1, col_exp2 = st.columns([1, 1])
+        
+        with col_exp1:
+            generate_clicked = st.button(
+                "📊 Generate Report", 
+                use_container_width=True, 
+                key=f"{fragment_key}_generate"
+            )
+        
+        # Generate report when button clicked
+        if generate_clicked:
+            with st.spinner("Generating Excel report..."):
+                try:
+                    # Calculate additional data needed for export
+                    salesperson_summary_df = metrics_calc.aggregate_by_salesperson()
+                    monthly_df = metrics_calc.prepare_monthly_summary()
+                    
+                    # Prepare backlog by month
+                    prepared_backlog_by_month = None
+                    if not backlog_by_month_df.empty:
+                        prepared_backlog_by_month = metrics_calc.prepare_backlog_by_month(
+                            backlog_by_month_df=backlog_by_month_df,
+                            year=filter_values.get('year', datetime.now().year)
+                        )
+                    
+                    # Generate comprehensive report
+                    exporter = SalespersonExport()
+                    excel_bytes = exporter.create_comprehensive_report(
+                        # Summary metrics
+                        metrics=overview_metrics,
+                        complex_kpis=complex_kpis,
+                        pipeline_metrics=pipeline_forecast_metrics,
+                        filters=filter_values,
+                        yoy_metrics=yoy_metrics,
+                        
+                        # Salesperson & Monthly
+                        salesperson_summary_df=salesperson_summary_df,
+                        monthly_df=monthly_df,
+                        
+                        # Sales Detail
+                        sales_detail_df=sales_df,
+                        
+                        # Backlog data
+                        backlog_summary_df=total_backlog_df,
+                        backlog_detail_df=backlog_detail_df,
+                        backlog_by_month_df=prepared_backlog_by_month,
+                        in_period_backlog_analysis=in_period_backlog_analysis,
+                    )
+                    
+                    # Store in session state for download button
+                    st.session_state[f'{fragment_key}_excel_bytes'] = excel_bytes
+                    st.session_state[f'{fragment_key}_ready'] = True
+                    st.success("✅ Report generated!")
+                    
+                except Exception as e:
+                    st.error(f"Error generating report: {str(e)}")
+                    import logging
+                    logging.getLogger(__name__).error(f"Export error: {e}")
+        
+        # Show download button if report is ready
+        with col_exp2:
+            if st.session_state.get(f'{fragment_key}_ready'):
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=st.session_state[f'{fragment_key}_excel_bytes'],
+                    file_name=f"salesperson_performance_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"{fragment_key}_download"
+                )
+            else:
+                st.button(
+                    "⬇️ Download Excel",
+                    disabled=True,
+                    use_container_width=True,
+                    key=f"{fragment_key}_download_disabled",
+                    help="Click 'Generate Report' first"
+                )
+
+
+# =============================================================================
 # EXPORT ALL FRAGMENTS
 # =============================================================================
 
@@ -1310,4 +1439,5 @@ __all__ = [
     'sales_detail_fragment',
     'pivot_analysis_fragment',
     'backlog_list_fragment',
+    'export_report_fragment',
 ]
