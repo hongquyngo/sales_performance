@@ -10,8 +10,11 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.0.0
+VERSION: 2.2.0
 CHANGELOG:
+- v2.2.0: Added helper methods for Phase 2:
+          - calculate_complex_kpi_value(): Single complex KPI calculator
+          - get_kpi_center_achievement_summary(): Achievement comparison data
 - v2.0.0: Added detail queries for complex KPIs (popup support)
           - get_new_customers_detail()
           - get_new_products_detail()
@@ -1262,6 +1265,190 @@ class KPICenterQueries:
         
         return self._execute_query(query, params, "kpi_split_data")
     
+    # =========================================================================
+    # COMPLEX KPI VALUE CALCULATOR - NEW v2.2.0
+    # =========================================================================
+    
+    def calculate_complex_kpi_value(
+        self,
+        kpi_type: str,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> Dict:
+        """
+        Calculate a single complex KPI value for specific KPI Centers.
+        
+        This is a convenience method that calls the appropriate detail query
+        and returns a summary value.
+        
+        Args:
+            kpi_type: One of 'new_customers', 'new_products', 'new_business'
+            start_date: Period start date
+            end_date: Period end date
+            kpi_center_ids: Optional list of KPI Center IDs to filter
+            entity_ids: Optional list of entity IDs to filter
+            
+        Returns:
+            Dict with:
+                - value: The calculated KPI value
+                - count: Number of items (customers/products/combos)
+                - detail_available: Whether detail data exists
+        """
+        if not self.access.can_access_page():
+            return {'value': 0, 'count': 0, 'detail_available': False}
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return {'value': 0, 'count': 0, 'detail_available': False}
+        
+        try:
+            if kpi_type == 'new_customers':
+                df = self.get_new_customers(
+                    start_date=start_date,
+                    end_date=end_date,
+                    kpi_center_ids=kpi_center_ids,
+                    entity_ids=entity_ids
+                )
+                if df.empty:
+                    return {'value': 0, 'count': 0, 'detail_available': False}
+                
+                count = int(df['num_new_customers'].sum())
+                return {
+                    'value': count,
+                    'count': count,
+                    'detail_available': True,
+                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_customers']].to_dict('records')
+                }
+            
+            elif kpi_type == 'new_products':
+                df = self.get_new_products(
+                    start_date=start_date,
+                    end_date=end_date,
+                    kpi_center_ids=kpi_center_ids,
+                    entity_ids=entity_ids
+                )
+                if df.empty:
+                    return {'value': 0, 'count': 0, 'detail_available': False}
+                
+                count = int(df['num_new_products'].sum())
+                return {
+                    'value': count,
+                    'count': count,
+                    'detail_available': True,
+                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_products']].to_dict('records')
+                }
+            
+            elif kpi_type == 'new_business':
+                df = self.get_new_business_revenue(
+                    start_date=start_date,
+                    end_date=end_date,
+                    kpi_center_ids=kpi_center_ids,
+                    entity_ids=entity_ids
+                )
+                if df.empty:
+                    return {'value': 0, 'count': 0, 'detail_available': False}
+                
+                total_revenue = df['new_business_revenue'].sum()
+                total_combos = int(df['num_new_combos'].sum())
+                return {
+                    'value': total_revenue,
+                    'count': total_combos,
+                    'detail_available': True,
+                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_combos', 'new_business_revenue']].to_dict('records')
+                }
+            
+            else:
+                logger.warning(f"Unknown KPI type: {kpi_type}")
+                return {'value': 0, 'count': 0, 'detail_available': False}
+        
+        except Exception as e:
+            logger.error(f"Error calculating complex KPI {kpi_type}: {e}")
+            return {'value': 0, 'count': 0, 'detail_available': False}
+    
+    def get_kpi_center_achievement_summary(
+        self,
+        year: int,
+        kpi_center_ids: List[int] = None,
+        proration: float = 1.0
+    ) -> pd.DataFrame:
+        """
+        Get KPI Center achievement summary for comparison chart.
+        
+        Returns DataFrame with kpi_center, revenue, target, achievement
+        suitable for build_achievement_bar_chart().
+        
+        Args:
+            year: Target year
+            kpi_center_ids: Optional list of KPI Center IDs
+            proration: Target proration factor (0-1)
+            
+        Returns:
+            DataFrame with columns: kpi_center_id, kpi_center, revenue, 
+                                   target, achievement
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        query = """
+            WITH sales_summary AS (
+                SELECT 
+                    kpi_center_id,
+                    kpi_center,
+                    SUM(sales_by_kpi_center_usd) as revenue,
+                    SUM(gross_profit_by_kpi_center_usd) as gross_profit
+                FROM unified_sales_by_kpi_center_view
+                WHERE invoice_year = :year
+                  AND kpi_center_id IN :kpi_center_ids
+                GROUP BY kpi_center_id, kpi_center
+            ),
+            targets AS (
+                SELECT 
+                    kpi_center_id,
+                    MAX(CASE WHEN LOWER(kpi_name) = 'revenue' THEN annual_target_value_numeric END) as revenue_target
+                FROM sales_kpi_center_assignments_view
+                WHERE year = :year
+                  AND kpi_center_id IN :kpi_center_ids
+                GROUP BY kpi_center_id
+            )
+            SELECT 
+                s.kpi_center_id,
+                s.kpi_center,
+                s.revenue,
+                s.gross_profit,
+                COALESCE(t.revenue_target, 0) as annual_target,
+                COALESCE(t.revenue_target, 0) * :proration as prorated_target,
+                CASE 
+                    WHEN COALESCE(t.revenue_target, 0) * :proration > 0 
+                    THEN (s.revenue / (t.revenue_target * :proration)) * 100
+                    ELSE NULL 
+                END as achievement
+            FROM sales_summary s
+            LEFT JOIN targets t ON s.kpi_center_id = t.kpi_center_id
+            ORDER BY achievement DESC NULLS LAST
+        """
+        
+        params = {
+            'year': year,
+            'kpi_center_ids': tuple(kpi_center_ids),
+            'proration': proration
+        }
+        
+        return self._execute_query(query, params, "kpi_center_achievement_summary")
+
     # =========================================================================
     # HELPER METHODS
     # =========================================================================

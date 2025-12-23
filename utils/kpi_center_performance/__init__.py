@@ -4,11 +4,17 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 2.1.0
+VERSION: 2.2.0
 CHANGELOG:
+- v2.2.0: Phase 2 enhancements:
+          - fragments.py: Added summary cards to sales_detail_fragment
+          - fragments.py: Added total_backlog_df param to backlog_list_fragment  
+          - fragments.py: Added targets overlay to monthly_trend_fragment
+          - charts.py: Added build_achievement_bar_chart()
+          - queries.py: Added calculate_complex_kpi_value() helper
+          - queries.py: Added get_kpi_center_achievement_summary()
 - v2.1.0: Fixed employee_count -> kpi_center_count consistency
           Fixed convert_pipeline_to_backlog_metrics key names
-          All Phase 1 components verified complete
 
 Components:
 - AccessControl: Role-based access control
@@ -118,4 +124,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '2.1.0'
+__version__ = '2.2.0'

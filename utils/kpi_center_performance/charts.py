@@ -12,8 +12,9 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 - Backlog risk analysis display
 
-VERSION: 2.1.0
+VERSION: 2.2.0
 CHANGELOG:
+- v2.2.0: Added build_achievement_bar_chart() for KPI achievement comparison
 - v2.1.0: Fixed kpi_center_count key in _render_pipeline_metric_row
           Fixed convert_pipeline_to_backlog_metrics keys
 - v2.0.0: Added popup buttons for Complex KPIs (New Customers/Products/Business)
@@ -905,6 +906,89 @@ This ensures accurate achievement calculation.
             hide_index=True,
             column_config=column_config,
             use_container_width=True
+        )
+    
+    # =========================================================================
+    # ACHIEVEMENT BAR CHART - NEW v2.2.0
+    # =========================================================================
+    
+    @staticmethod
+    def build_achievement_bar_chart(
+        achievement_df: pd.DataFrame,
+        show_target_line: bool = True
+    ) -> alt.Chart:
+        """
+        Build horizontal bar chart for KPI achievement comparison.
+        
+        Args:
+            achievement_df: DataFrame with columns:
+                - kpi_center: KPI Center name
+                - achievement: Achievement percentage
+                - kpi_type: Optional KPI type for color coding
+            show_target_line: Whether to show 100% target reference line
+            
+        Returns:
+            Altair chart
+        """
+        if achievement_df.empty:
+            return alt.Chart().mark_text().encode(text=alt.value("No achievement data"))
+        
+        if 'achievement' not in achievement_df.columns:
+            return alt.Chart().mark_text().encode(text=alt.value("Achievement column not found"))
+        
+        chart_df = achievement_df.copy()
+        
+        # Add color based on achievement
+        def get_color(ach):
+            if pd.isna(ach):
+                return 'gray'
+            if ach >= 100:
+                return '#22c55e'  # Green
+            elif ach >= 80:
+                return '#f59e0b'  # Amber
+            else:
+                return '#ef4444'  # Red
+        
+        chart_df['color'] = chart_df['achievement'].apply(get_color)
+        
+        # Sort by achievement
+        chart_df = chart_df.sort_values('achievement', ascending=True)
+        
+        # Base bar chart
+        bars = alt.Chart(chart_df).mark_bar(
+            cornerRadiusTopRight=3,
+            cornerRadiusBottomRight=3
+        ).encode(
+            x=alt.X('achievement:Q', 
+                   title='Achievement %',
+                   scale=alt.Scale(domain=[0, max(150, chart_df['achievement'].max() * 1.1)])),
+            y=alt.Y('kpi_center:N', sort='-x', title='KPI Center'),
+            color=alt.Color('color:N', scale=None, legend=None),
+            tooltip=[
+                alt.Tooltip('kpi_center:N', title='KPI Center'),
+                alt.Tooltip('achievement:Q', title='Achievement', format='.1f'),
+            ]
+        )
+        
+        chart = bars
+        
+        # Add 100% target line
+        if show_target_line:
+            target_line = alt.Chart(pd.DataFrame({'target': [100]})).mark_rule(
+                color='red',
+                strokeDash=[5, 5],
+                strokeWidth=2
+            ).encode(
+                x='target:Q'
+            )
+            chart = chart + target_line
+        
+        return chart.properties(
+            width=CHART_WIDTH,
+            height=min(400, len(chart_df) * 25)
+        ).configure_axis(
+            labelFontSize=11,
+            titleFontSize=12
         )
     
     # =========================================================================

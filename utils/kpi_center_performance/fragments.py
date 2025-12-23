@@ -1,35 +1,35 @@
 # utils/kpi_center_performance/fragments.py
 """
-Fragment Components for KPI Center Performance
+Streamlit Fragments for KPI Center Performance
 
-Uses @st.fragment decorator for partial reruns without full page refresh.
-Each fragment manages its own state and interactions.
+Reusable UI components using @st.fragment for partial reruns.
 
-Fragments:
-- monthly_trend_fragment: Monthly trend charts with drill-down
-- yoy_comparison_fragment: Year-over-Year comparison
-- sales_detail_fragment: Transaction list with filters
-- pivot_analysis_fragment: Pivot table configuration
-- backlog_list_fragment: Backlog detail with filters and risk indicators
-- export_report_fragment: Two-step export (Generate → Download)
-- kpi_center_ranking_fragment: KPI Center ranking table
-
-VERSION: 2.0.0
+VERSION: 2.2.0
 CHANGELOG:
-- v2.0.0: Added risk indicators to backlog list (overdue highlighting)
-          Enhanced column configurations
-          Added ETD filter to backlog
-          Improved search functionality
+- v2.2.0: Phase 2 enhancements:
+          - sales_detail_fragment: Added summary metrics cards at top
+          - backlog_list_fragment: Added total_backlog_df for overall totals
+          - monthly_trend_fragment: Added targets overlay option
+- v2.0.0: Added risk indicators to backlog list
+          Added enhanced filtering options
+
+Components:
+- monthly_trend_fragment: Monthly performance charts with targets
+- yoy_comparison_fragment: Year-over-Year comparison
+- sales_detail_fragment: Transaction list with filters and summary cards
+- pivot_analysis_fragment: Configurable pivot tables
+- backlog_list_fragment: Backlog detail with risk indicators
+- kpi_center_ranking_fragment: Performance ranking
+- export_report_fragment: Excel report generation
 """
 
 import logging
-from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, Optional, List
 import pandas as pd
 import streamlit as st
 
-from .constants import COLORS, MONTH_ORDER
 from .charts import KPICenterCharts
+from .constants import MONTH_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -39,39 +39,27 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Clean DataFrame for Streamlit display to avoid Arrow serialization errors.
-    """
+    """Clean dataframe for display - handle NaN, dates, etc."""
     if df.empty:
         return df
     
     df = df.copy()
     
-    year_columns = ['etd_year', 'oc_year', 'invoice_year', 'year']
-    numeric_columns = ['days_until_etd', 'days_since_order', 'split_rate_percent']
-    
-    for col in year_columns:
+    # Convert date columns
+    date_cols = ['inv_date', 'oc_date', 'etd', 'first_sale_date']
+    for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+            df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    for col in df.columns:
-        if col in year_columns or col in numeric_columns:
-            continue
-        try:
-            types = df[col].apply(type).unique()
-            if len(types) > 1:
-                df[col] = df[col].astype(str)
-        except:
-            df[col] = df[col].astype(str)
+    # Fill NaN for string columns
+    str_cols = df.select_dtypes(include=['object']).columns
+    df[str_cols] = df[str_cols].fillna('')
     
     return df
 
 
 def _format_currency(value) -> str:
+    """Format number as currency."""
     try:
         return f"${value:,.0f}"
     except:
@@ -103,20 +91,30 @@ def _add_risk_indicator(days_until_etd) -> str:
 
 
 # =============================================================================
-# MONTHLY TREND FRAGMENT
+# MONTHLY TREND FRAGMENT - ENHANCED v2.2.0 with Targets
 # =============================================================================
 
 @st.fragment
 def monthly_trend_fragment(
     sales_df: pd.DataFrame,
     filter_values: Dict,
+    targets_df: pd.DataFrame = None,
     show_cumulative: bool = True
 ):
+    """
+    Monthly trend chart with optional targets overlay.
+    
+    Args:
+        sales_df: Sales data DataFrame
+        filter_values: Current filter settings
+        targets_df: Optional targets DataFrame for overlay
+        show_cumulative: Whether to show cumulative toggle
+    """
     if sales_df.empty:
         st.info("No sales data for trend analysis")
         return
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
     
     with col1:
         customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
@@ -128,6 +126,11 @@ def monthly_trend_fragment(
     
     with col3:
         metric = st.selectbox("Metric", ["Revenue", "Gross Profit", "GP1"], key="trend_metric_selector")
+    
+    with col4:
+        # NEW v2.2.0: Target overlay toggle
+        show_target = st.checkbox("Show Target", value=True, key="trend_show_target",
+                                  help="Overlay monthly target line on chart")
     
     filtered_df = sales_df.copy()
     
@@ -160,17 +163,45 @@ def monthly_trend_fragment(
     monthly['month_order'] = monthly['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
     monthly = monthly.sort_values('month_order')
     
-    chart = KPICenterCharts.build_monthly_trend_chart(monthly_df=monthly, metric=metric)
+    # NEW v2.2.0: Calculate monthly target from targets_df
+    monthly_target = None
+    if show_target and targets_df is not None and not targets_df.empty:
+        # Map metric to KPI name
+        kpi_name_map = {'Revenue': 'revenue', 'Gross Profit': 'gross_profit', 'GP1': 'gross_profit_1'}
+        kpi_name = kpi_name_map.get(metric, 'revenue')
+        
+        # Sum annual targets for this KPI type
+        mask = targets_df['kpi_name'].str.lower() == kpi_name.lower()
+        annual_target = targets_df[mask]['annual_target_value_numeric'].sum()
+        
+        if annual_target > 0:
+            monthly_target = annual_target / 12
+    
+    chart = KPICenterCharts.build_monthly_trend_chart(
+        monthly_df=monthly, 
+        metric=metric,
+        show_target=show_target and monthly_target is not None,
+        target_value=monthly_target
+    )
     st.altair_chart(chart, use_container_width=True)
     
+    # Summary table
     st.markdown("**Monthly Summary**")
     display_df = monthly[['month', monthly.columns[1]]].copy()
     display_df.columns = ['Month', metric]
+    
+    # Add target column if available
+    if monthly_target is not None and show_target:
+        display_df['Target'] = monthly_target
+        display_df['Achievement %'] = (display_df[metric] / monthly_target * 100).round(1)
+    
     st.dataframe(display_df, hide_index=True, column_config={
         'Revenue': st.column_config.NumberColumn(format="$%,.0f"),
         'Gross Profit': st.column_config.NumberColumn(format="$%,.0f"),
         'GP1': st.column_config.NumberColumn(format="$%,.0f"),
-    })
+        'Target': st.column_config.NumberColumn(format="$%,.0f"),
+        'Achievement %': st.column_config.NumberColumn(format="%.1f%%"),
+    }, use_container_width=True)
 
 
 # =============================================================================
@@ -179,22 +210,30 @@ def monthly_trend_fragment(
 
 @st.fragment
 def yoy_comparison_fragment(queries, filter_values: Dict, current_year: int):
+    from datetime import date
+    
     col1, col2 = st.columns([1, 3])
     
     with col1:
-        compare_year = st.number_input("Compare with Year", min_value=2014, max_value=current_year - 1,
-                                       value=current_year - 1, key="yoy_compare_year")
+        compare_year = st.selectbox("Compare with", 
+                                    [current_year - 1, current_year - 2, current_year - 3],
+                                    key="yoy_compare_year")
     
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     kpi_center_ids = filter_values.get('kpi_center_ids', [])
     entity_ids = filter_values.get('entity_ids', [])
     
-    current_sales = queries.get_sales_data(start_date=start_date, end_date=end_date,
+    current_sales = queries.get_sales_data(start_date=start_date, end_date=end_date, 
                                            kpi_center_ids=kpi_center_ids, entity_ids=entity_ids if entity_ids else None)
     
-    compare_start = date(compare_year, start_date.month, start_date.day)
-    compare_end = date(compare_year, end_date.month, min(end_date.day, 28))
+    try:
+        compare_start = date(compare_year, start_date.month, start_date.day)
+        compare_end = date(compare_year, end_date.month, end_date.day)
+    except ValueError:
+        compare_start = date(compare_year, start_date.month, 28)
+        compare_end = date(compare_year, end_date.month, 28)
+    
     compare_sales = queries.get_sales_data(start_date=compare_start, end_date=compare_end,
                                            kpi_center_ids=kpi_center_ids, entity_ids=entity_ids if entity_ids else None)
     
@@ -248,17 +287,41 @@ def yoy_comparison_fragment(queries, filter_values: Dict, current_year: int):
 
 
 # =============================================================================
-# SALES DETAIL FRAGMENT - ENHANCED v2.0.0
+# SALES DETAIL FRAGMENT - ENHANCED v2.2.0 with Summary Cards
 # =============================================================================
 
 @st.fragment
 def sales_detail_fragment(sales_df: pd.DataFrame, filter_values: Dict):
+    """
+    Sales transaction detail with summary metrics cards and filters.
+    
+    NEW v2.2.0: Added summary metrics cards at top showing totals.
+    """
     if sales_df.empty:
         st.info("No sales data available")
         return
     
     st.subheader("📋 Sales Transactions")
     
+    # NEW v2.2.0: Summary Metrics Cards at top
+    with st.container(border=True):
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        
+        total_revenue = sales_df['sales_by_kpi_center_usd'].sum() if 'sales_by_kpi_center_usd' in sales_df.columns else 0
+        total_gp = sales_df['gross_profit_by_kpi_center_usd'].sum() if 'gross_profit_by_kpi_center_usd' in sales_df.columns else 0
+        total_gp1 = sales_df['gp1_by_kpi_center_usd'].sum() if 'gp1_by_kpi_center_usd' in sales_df.columns else 0
+        total_orders = sales_df['inv_number'].nunique() if 'inv_number' in sales_df.columns else len(sales_df)
+        
+        with col_m1:
+            st.metric("💰 Total Revenue", f"${total_revenue:,.0f}")
+        with col_m2:
+            st.metric("📈 Gross Profit", f"${total_gp:,.0f}")
+        with col_m3:
+            st.metric("📊 GP1", f"${total_gp1:,.0f}")
+        with col_m4:
+            st.metric("📋 Orders", f"{total_orders:,}")
+    
+    # Filters
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         search = st.text_input("🔍 Search", placeholder="Customer, Product, Invoice...", key="detail_search")
@@ -288,9 +351,11 @@ def sales_detail_fragment(sales_df: pd.DataFrame, filter_values: Dict):
     if min_revenue > 0:
         filtered_df = filtered_df[filtered_df['sales_by_kpi_center_usd'] >= min_revenue]
     
-    total_revenue = filtered_df['sales_by_kpi_center_usd'].sum() if 'sales_by_kpi_center_usd' in filtered_df.columns else 0
-    total_gp = filtered_df['gross_profit_by_kpi_center_usd'].sum() if 'gross_profit_by_kpi_center_usd' in filtered_df.columns else 0
-    st.caption(f"📊 {len(filtered_df):,} of {len(sales_df):,} transactions • Revenue: ${total_revenue:,.0f} • GP: ${total_gp:,.0f}")
+    # Filtered totals
+    filtered_revenue = filtered_df['sales_by_kpi_center_usd'].sum() if 'sales_by_kpi_center_usd' in filtered_df.columns else 0
+    filtered_gp = filtered_df['gross_profit_by_kpi_center_usd'].sum() if 'gross_profit_by_kpi_center_usd' in filtered_df.columns else 0
+    
+    st.caption(f"📊 {len(filtered_df):,} of {len(sales_df):,} transactions • Revenue: ${filtered_revenue:,.0f} • GP: ${filtered_gp:,.0f}")
     
     if filtered_df.empty:
         st.warning("No transactions match the filters")
@@ -321,7 +386,7 @@ def sales_detail_fragment(sales_df: pd.DataFrame, filter_values: Dict):
     
     st.dataframe(display_df, hide_index=True, column_config=column_config, use_container_width=True)
     if len(filtered_df) > 500:
-        st.caption("⚠️ Showing first 500 rows. Export for complete data.")
+        st.caption("⚠️ Showing first 500 rows. Use Export for complete data.")
 
 
 # =============================================================================
@@ -365,16 +430,59 @@ def pivot_analysis_fragment(sales_df: pd.DataFrame):
 
 
 # =============================================================================
-# BACKLOG LIST FRAGMENT - ENHANCED v2.0.0 with Risk Indicators
+# BACKLOG LIST FRAGMENT - ENHANCED v2.2.0 with Overall Totals
 # =============================================================================
 
 @st.fragment
-def backlog_list_fragment(backlog_df: pd.DataFrame, filter_values: Dict):
+def backlog_list_fragment(
+    backlog_df: pd.DataFrame, 
+    filter_values: Dict,
+    total_backlog_df: pd.DataFrame = None
+):
+    """
+    Backlog detail with risk indicators and filters.
+    
+    Args:
+        backlog_df: Filtered backlog detail DataFrame
+        filter_values: Current filter settings
+        total_backlog_df: Optional overall backlog summary for comparison
+                         NEW v2.2.0: Shows filtered vs total comparison
+    """
     if backlog_df.empty:
         st.info("No backlog data available")
         return
     
     st.subheader("📦 Backlog Detail")
+    
+    # NEW v2.2.0: Summary cards showing filtered vs total
+    if total_backlog_df is not None and not total_backlog_df.empty:
+        with st.container(border=True):
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            
+            # Overall totals
+            overall_revenue = total_backlog_df['total_backlog_usd'].sum() if 'total_backlog_usd' in total_backlog_df.columns else 0
+            overall_gp = total_backlog_df['total_backlog_gp_usd'].sum() if 'total_backlog_gp_usd' in total_backlog_df.columns else 0
+            overall_orders = int(total_backlog_df['backlog_orders'].sum()) if 'backlog_orders' in total_backlog_df.columns else 0
+            
+            # Detail totals
+            detail_revenue = backlog_df['backlog_by_kpi_center_usd'].sum() if 'backlog_by_kpi_center_usd' in backlog_df.columns else 0
+            detail_gp = backlog_df['backlog_gp_by_kpi_center_usd'].sum() if 'backlog_gp_by_kpi_center_usd' in backlog_df.columns else 0
+            detail_orders = len(backlog_df)
+            
+            with col_s1:
+                st.metric("💰 Total Backlog", f"${overall_revenue:,.0f}",
+                         help="Total backlog across all KPI Centers")
+            with col_s2:
+                st.metric("📈 Total GP", f"${overall_gp:,.0f}")
+            with col_s3:
+                st.metric("📋 Total Orders", f"{overall_orders:,}")
+            with col_s4:
+                # Show overdue count from detail
+                overdue_count = len(backlog_df[backlog_df.get('days_until_etd', pd.Series()) < 0]) if 'days_until_etd' in backlog_df.columns else 0
+                st.metric("🔴 Overdue", f"{overdue_count:,}",
+                         help="Orders with ETD in the past")
+    
+    # Filters
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -418,7 +526,7 @@ def backlog_list_fragment(backlog_df: pd.DataFrame, filter_values: Dict):
     
     total_backlog = filtered_df['backlog_by_kpi_center_usd'].sum() if 'backlog_by_kpi_center_usd' in filtered_df.columns else 0
     overdue_count = len(filtered_df[filtered_df.get('days_until_etd', pd.Series()) < 0]) if 'days_until_etd' in filtered_df.columns else 0
-    st.caption(f"📦 {len(filtered_df):,} items • Total: ${total_backlog:,.0f}{f' • 🔴 {overdue_count} overdue' if overdue_count > 0 else ''}")
+    st.caption(f"📦 {len(filtered_df):,} items • Filtered Total: ${total_backlog:,.0f}{f' • 🔴 {overdue_count} overdue' if overdue_count > 0 else ''}")
     
     if filtered_df.empty:
         st.warning("No backlog matches the filters")

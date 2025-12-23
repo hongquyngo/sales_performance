@@ -14,8 +14,12 @@ Features:
 
 Access: admin, GM, MD, sales_manager only
 
-VERSION: 2.0.0
+VERSION: 2.2.0
 CHANGELOG:
+- v2.2.0: Phase 2 enhancements:
+          - monthly_trend_fragment now shows target overlay
+          - backlog_list_fragment now shows overall vs filtered totals
+          - sales_detail_fragment now shows summary cards at top
 - v2.0.0: Added complex KPIs popup drill-down (New Customers/Products/Business detail)
           Added backlog risk analysis section
           Added smart data caching (year range expansion)
@@ -621,11 +625,12 @@ def main():
         
         st.divider()
         
-        # Monthly Trend (Fragment)
+        # Monthly Trend (Fragment) - UPDATED v2.2.0: Added targets_df
         st.subheader("📈 Monthly Trend")
         monthly_trend_fragment(
             sales_df=sales_df,
-            filter_values=active_filters
+            filter_values=active_filters,
+            targets_df=targets_df  # NEW v2.2.0: For target overlay
         )
         
         # YoY Comparison (if enabled)
@@ -740,10 +745,11 @@ def main():
         
         st.divider()
         
-        # Backlog detail list
+        # Backlog detail list - UPDATED v2.2.0: Added total_backlog_df
         backlog_list_fragment(
             backlog_df=data.get('backlog_detail_df', pd.DataFrame()),
-            filter_values=active_filters
+            filter_values=active_filters,
+            total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())  # NEW v2.2.0
         )
         
         # Backlog by ETD month
