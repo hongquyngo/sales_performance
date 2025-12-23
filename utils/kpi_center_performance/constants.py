@@ -24,6 +24,10 @@ ALLOWED_ROLES = ['admin', 'GM', 'MD', 'sales_manager']
 # =====================================================================
 
 COLORS = {
+    # Primary/Secondary (general use)
+    "primary": "#1f77b4",              # Blue
+    "secondary": "#ff7f0e",            # Orange
+    
     # Primary metrics
     "revenue": "#FFA500",              # Orange
     "gross_profit": "#1f77b4",         # Blue
