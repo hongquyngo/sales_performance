@@ -15,8 +15,13 @@ Features:
 
 Access: admin, GM, MD, sales_manager only
 
-VERSION: 2.3.0
+VERSION: 2.3.1
 CHANGELOG:
+- v2.3.1: BUGFIX - KPI Center filter not working
+          - filter_data_client_side now filters by kpi_center_ids
+          - filter_data_client_side now filters by entity_ids
+          - Added _calculate_backlog_risk_from_df for client-side recalculation
+          - Targets now filtered by both year AND kpi_center_ids
 - v2.3.0: Phase 3 - Added Analysis tab with Pareto analysis
           - top_performers_fragment for Customer/Brand/Product analysis
           - 80/20 concentration insights
@@ -381,10 +386,18 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     """
     Filter cached data client-side based on filters.
     Instant - no DB query needed.
+    
+    FIXED v2.3.1: Added KPI Center and Entity filtering
     """
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     exclude_internal = filter_values.get('exclude_internal_revenue', True)
+    
+    # ═══════════════════════════════════════════════════════════════
+    # FIX: Get KPI Center and Entity IDs for filtering
+    # ═══════════════════════════════════════════════════════════════
+    selected_kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    selected_entity_ids = filter_values.get('entity_ids', [])
     
     filtered = {}
     
@@ -404,8 +417,27 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         df = value.copy()
         
+        # ═══════════════════════════════════════════════════════════════
+        # FIX: Filter by KPI Center IDs (CRITICAL)
+        # ═══════════════════════════════════════════════════════════════
+        if selected_kpi_center_ids and 'kpi_center_id' in df.columns:
+            df = df[df['kpi_center_id'].isin(selected_kpi_center_ids)]
+        
+        # ═══════════════════════════════════════════════════════════════
+        # FIX: Filter by Entity IDs
+        # ═══════════════════════════════════════════════════════════════
+        if selected_entity_ids:
+            entity_col = None
+            if 'legal_entity_id' in df.columns:
+                entity_col = 'legal_entity_id'
+            elif 'entity_id' in df.columns:
+                entity_col = 'entity_id'
+            
+            if entity_col:
+                df = df[df[entity_col].isin(selected_entity_ids)]
+        
         # Filter by date range
-        date_cols = ['inv_date', 'oc_date', 'first_sale_date', 'first_sale_date']
+        date_cols = ['inv_date', 'oc_date', 'first_sale_date']
         for date_col in date_cols:
             if date_col in df.columns:
                 df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
@@ -420,18 +452,86 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
             if 'customer_type' in df.columns:
                 df = df[df['customer_type'] != 'Internal']
         
-        # Filter targets by year
-        if key == 'targets_df' and 'year' in df.columns:
-            df = df[df['year'] == filter_values['year']]
+        # Filter targets by year AND kpi_center_ids
+        if key == 'targets_df':
+            if 'year' in df.columns:
+                df = df[df['year'] == filter_values['year']]
+            # Also filter targets by selected KPI Centers
+            if selected_kpi_center_ids and 'kpi_center_id' in df.columns:
+                df = df[df['kpi_center_id'].isin(selected_kpi_center_ids)]
         
         filtered[key] = df
     
-    # Copy non-DataFrame items
-    for key in ['backlog_risk']:
-        if key in raw_data and key not in filtered:
-            filtered[key] = raw_data[key]
+    # ═══════════════════════════════════════════════════════════════
+    # FIX: Recalculate backlog_risk from filtered backlog data
+    # ═══════════════════════════════════════════════════════════════
+    backlog_detail_df = filtered.get('backlog_detail_df', pd.DataFrame())
+    if not backlog_detail_df.empty:
+        filtered['backlog_risk'] = _calculate_backlog_risk_from_df(backlog_detail_df)
+    elif 'backlog_risk' in raw_data:
+        filtered['backlog_risk'] = raw_data['backlog_risk']
     
     return filtered
+
+
+def _calculate_backlog_risk_from_df(backlog_df: pd.DataFrame) -> dict:
+    """
+    Calculate backlog risk metrics from filtered backlog DataFrame.
+    NEW v2.3.1: Helper for client-side backlog risk calculation.
+    """
+    if backlog_df.empty:
+        return {
+            'overdue_orders': 0, 'overdue_revenue': 0, 'overdue_gp': 0,
+            'at_risk_orders': 0, 'at_risk_revenue': 0,
+            'total_orders': 0, 'total_backlog': 0,
+            'in_period_overdue': 0, 'in_period_overdue_revenue': 0,
+            'overdue_percent': 0
+        }
+    
+    df = backlog_df.copy()
+    
+    # Ensure days_until_etd is numeric
+    if 'days_until_etd' in df.columns:
+        df['days_until_etd'] = pd.to_numeric(df['days_until_etd'], errors='coerce').fillna(0)
+    else:
+        df['days_until_etd'] = 0
+    
+    # Identify revenue column
+    rev_col = 'backlog_by_kpi_center_usd' if 'backlog_by_kpi_center_usd' in df.columns else 'total_backlog_usd'
+    gp_col = 'backlog_gp_by_kpi_center_usd' if 'backlog_gp_by_kpi_center_usd' in df.columns else 'total_backlog_gp_usd'
+    
+    if rev_col not in df.columns:
+        return {'overdue_orders': 0, 'overdue_revenue': 0, 'total_backlog': 0, 'overdue_percent': 0}
+    
+    total_backlog = df[rev_col].sum()
+    
+    # Overdue (days_until_etd < 0)
+    overdue_mask = df['days_until_etd'] < 0
+    overdue_orders = df[overdue_mask]['oc_number'].nunique() if 'oc_number' in df.columns else overdue_mask.sum()
+    overdue_revenue = df.loc[overdue_mask, rev_col].sum()
+    overdue_gp = df.loc[overdue_mask, gp_col].sum() if gp_col in df.columns else 0
+    
+    # At risk (0-7 days)
+    at_risk_mask = (df['days_until_etd'] >= 0) & (df['days_until_etd'] <= 7)
+    at_risk_orders = df[at_risk_mask]['oc_number'].nunique() if 'oc_number' in df.columns else at_risk_mask.sum()
+    at_risk_revenue = df.loc[at_risk_mask, rev_col].sum()
+    
+    # Totals
+    total_orders = df['oc_number'].nunique() if 'oc_number' in df.columns else len(df)
+    overdue_percent = (overdue_revenue / total_backlog * 100) if total_backlog > 0 else 0
+    
+    return {
+        'overdue_orders': int(overdue_orders),
+        'overdue_revenue': float(overdue_revenue),
+        'overdue_gp': float(overdue_gp),
+        'at_risk_orders': int(at_risk_orders),
+        'at_risk_revenue': float(at_risk_revenue),
+        'total_orders': int(total_orders),
+        'total_backlog': float(total_backlog),
+        'in_period_overdue': int(overdue_orders),
+        'in_period_overdue_revenue': float(overdue_revenue),
+        'overdue_percent': float(overdue_percent)
+    }
 
 
 def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
