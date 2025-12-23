@@ -13,11 +13,11 @@ Renders filter UI elements:
 
 VERSION: 2.2.0
 CHANGELOG:
-- v2.2.0: SYNCED UI with Salesperson page (Issue #xxx)
-          - Period definitions now shown as visible text block (not just tooltip)
+- v2.2.0: SYNCED UI with Salesperson page
+          - Period definitions shown in tooltip (?) icon next to Period label
           - Identical tooltip format for Start/End date inputs
           - Same caption "Applies to Sales data. Backlog shows full pipeline."
-          - Consistent visual hierarchy
+          - Clean UI without visible text block clutter
 - v2.1.0: SYNCED Date Range UI with Salesperson page
           - Same layout: Date Range header → Period radio → Start/End inputs
           - Same logic: YTD/QTD/MTD use current_year (today.year)
@@ -397,7 +397,7 @@ class KPICenterFilters:
     Filter UI components for KPI Center Performance page.
     
     SYNCED with Salesperson filters v2.2.0:
-    - Period definitions shown as visible text block above radio buttons
+    - Period definitions shown in tooltip (?) next to Period label
     - Same date range logic and UI layout
     - Same period type behavior (YTD/QTD/MTD for current_year)
     - Identical tooltip text for Start/End inputs
@@ -426,7 +426,7 @@ class KPICenterFilters:
         This prevents page reruns on every filter change.
         
         SYNCED v2.2.0 with Salesperson logic:
-        - Period definitions displayed as visible text block (not hidden in tooltip)
+        - Period definitions shown in tooltip (?) icon next to Period label
         - YTD/QTD/MTD: Auto-calculate for CURRENT YEAR (today.year)
         - Custom: Date inputs enabled for any date range selection
         - Date inputs show default values from database
@@ -477,31 +477,25 @@ class KPICenterFilters:
             with st.form("kpi_center_filter_form", border=False):
                 
                 # =============================================================
-                # DATE RANGE SECTION (SYNCED with Salesperson v2.1.0)
+                # DATE RANGE SECTION (SYNCED with Salesperson v2.2.0)
                 # =============================================================
                 st.markdown("**📅 Date Range**")
                 st.caption("Applies to Sales data. Backlog shows full pipeline.")
                 
-                # Display period definitions as visible text block (same as Salesperson)
-                # This shows users exactly what each period means BEFORE they select
-                st.markdown(
-                    f"<div style='font-size: 12px; color: #666; line-height: 1.6; margin-bottom: 8px;'>"
-                    f"<b>YTD</b> (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}<br>"
-                    f"<b>QTD</b> (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}<br>"
-                    f"<b>MTD</b> ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}<br>"
-                    f"<b>Custom</b>: Select any date range using Start/End inputs"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-                
-                # Period type radio (same layout as Salesperson)
+                # Period type radio with detailed tooltip (same as Salesperson)
+                # Period definitions shown in tooltip (?), not as visible text
                 period_type = st.radio(
                     "Period",
                     options=['YTD', 'QTD', 'MTD', 'Custom'],
                     index=0,  # Default to YTD
                     horizontal=True,
                     key="form_period_type",
-                    help="Select time period for analysis"
+                    help=(
+                        f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
+                        f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
+                        f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                        f"**Custom**: Select any date range using Start/End inputs"
+                    )
                 )
                 
                 # Date inputs - ALWAYS VISIBLE but only used for Custom mode
