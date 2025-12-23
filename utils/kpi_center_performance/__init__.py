@@ -4,8 +4,13 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 2.2.0
+VERSION: 2.3.0
 CHANGELOG:
+- v2.3.0: Phase 3 - Pareto Analysis:
+          - charts.py: Added build_pareto_chart(), build_top_performers_chart(),
+                       build_concentration_donut()
+          - fragments.py: Added top_performers_fragment() with 80/20 insights
+          - Main page: New Analysis tab with Pareto analysis
 - v2.2.0: Phase 2 enhancements:
           - fragments.py: Added summary cards to sales_detail_fragment
           - fragments.py: Added total_backlog_df param to backlog_list_fragment  
@@ -71,6 +76,7 @@ from .fragments import (
     pivot_analysis_fragment,
     backlog_list_fragment,
     kpi_center_ranking_fragment,
+    top_performers_fragment,  # NEW v2.3.0
     export_report_fragment,
 )
 
@@ -110,6 +116,7 @@ __all__ = [
     'pivot_analysis_fragment',
     'backlog_list_fragment',
     'kpi_center_ranking_fragment',
+    'top_performers_fragment',  # NEW v2.3.0
     'export_report_fragment',
     
     # Constants
@@ -124,4 +131,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '2.2.0'
+__version__ = '2.3.0'

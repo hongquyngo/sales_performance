@@ -4,8 +4,12 @@ Streamlit Fragments for KPI Center Performance
 
 Reusable UI components using @st.fragment for partial reruns.
 
-VERSION: 2.2.0
+VERSION: 2.3.0
 CHANGELOG:
+- v2.3.0: Phase 3 - Pareto Analysis:
+          - top_performers_fragment(): Customer/Brand/Product analysis
+          - 80/20 concentration insights
+          - Interactive charts and recommendations
 - v2.2.0: Phase 2 enhancements:
           - sales_detail_fragment: Added summary metrics cards at top
           - backlog_list_fragment: Added total_backlog_df for overall totals
@@ -20,6 +24,7 @@ Components:
 - pivot_analysis_fragment: Configurable pivot tables
 - backlog_list_fragment: Backlog detail with risk indicators
 - kpi_center_ranking_fragment: Performance ranking
+- top_performers_fragment: Pareto / Top performers analysis (NEW)
 - export_report_fragment: Excel report generation
 """
 
@@ -607,6 +612,260 @@ def kpi_center_ranking_fragment(ranking_df: pd.DataFrame, show_targets: bool = T
             'revenue_achievement': st.column_config.ProgressColumn('Achievement', min_value=0, max_value=150, format='%.0f%%'),
         }
         st.dataframe(display_df, hide_index=True, column_config=column_config, use_container_width=True)
+
+
+# =============================================================================
+# TOP PERFORMERS / PARETO ANALYSIS FRAGMENT - NEW v2.3.0
+# =============================================================================
+
+@st.fragment
+def top_performers_fragment(
+    sales_df: pd.DataFrame,
+    filter_values: Dict,
+    metrics_calculator = None
+):
+    """
+    Top Performers / Pareto Analysis fragment.
+    
+    Shows:
+    - Top Customers by Revenue/GP/GP1
+    - Top Brands by Revenue/GP/GP1
+    - Concentration analysis (80/20 rule)
+    
+    Args:
+        sales_df: Sales data DataFrame
+        filter_values: Current filter settings
+        metrics_calculator: Optional KPICenterMetrics instance
+    """
+    if sales_df.empty:
+        st.info("No sales data for analysis")
+        return
+    
+    st.subheader("📊 Top Performers Analysis")
+    
+    # Controls
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        analysis_type = st.radio(
+            "Analyze by",
+            ["Customers", "Brands", "Products"],
+            horizontal=True,
+            key="pareto_analysis_type"
+        )
+    
+    with col2:
+        metric = st.selectbox(
+            "Metric",
+            ["Revenue", "Gross Profit", "GP1"],
+            key="pareto_metric"
+        )
+    
+    with col3:
+        top_percent = st.slider(
+            "Show top %",
+            min_value=50,
+            max_value=100,
+            value=80,
+            step=5,
+            key="pareto_top_percent",
+            help="Show items that make up this % of total"
+        )
+    
+    # Map metric to column
+    metric_col_map = {
+        'Revenue': 'sales_by_kpi_center_usd',
+        'Gross Profit': 'gross_profit_by_kpi_center_usd',
+        'GP1': 'gp1_by_kpi_center_usd'
+    }
+    value_col = metric_col_map.get(metric, 'sales_by_kpi_center_usd')
+    
+    if value_col not in sales_df.columns:
+        st.warning(f"Column {value_col} not available")
+        return
+    
+    # Prepare data based on analysis type
+    if analysis_type == "Customers":
+        group_col = 'customer'
+        id_col = 'customer_id'
+        label = "Customer"
+    elif analysis_type == "Brands":
+        group_col = 'brand'
+        id_col = 'brand'
+        label = "Brand"
+    else:  # Products
+        group_col = 'product_pn'
+        id_col = 'product_id' if 'product_id' in sales_df.columns else 'product_pn'
+        label = "Product"
+    
+    if group_col not in sales_df.columns:
+        st.warning(f"Column {group_col} not available")
+        return
+    
+    # Aggregate data
+    agg_data = sales_df.groupby(group_col).agg({
+        'sales_by_kpi_center_usd': 'sum',
+        'gross_profit_by_kpi_center_usd': 'sum',
+        'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in sales_df.columns else 'count',
+        'inv_number': 'nunique' if 'inv_number' in sales_df.columns else 'count'
+    }).reset_index()
+    
+    agg_data.columns = [group_col, 'revenue', 'gross_profit', 'gp1', 'orders']
+    
+    if 'gp1_by_kpi_center_usd' not in sales_df.columns:
+        agg_data['gp1'] = 0
+    
+    # Sort and calculate cumulative
+    metric_lower = metric.lower().replace(' ', '_')
+    agg_data = agg_data.sort_values(metric_lower, ascending=False)
+    
+    total = agg_data[metric_lower].sum()
+    if total == 0:
+        st.warning("No data to analyze")
+        return
+    
+    agg_data['cumulative'] = agg_data[metric_lower].cumsum()
+    agg_data['cumulative_percent'] = (agg_data['cumulative'] / total * 100).round(1)
+    agg_data['percent'] = (agg_data[metric_lower] / total * 100).round(1)
+    agg_data['rank'] = range(1, len(agg_data) + 1)
+    
+    # Filter to top percent
+    cutoff_mask = agg_data['cumulative_percent'] <= top_percent
+    if not cutoff_mask.any():
+        # Include at least the first row
+        top_data = agg_data.head(1).copy()
+    else:
+        # Include the first item that exceeds the threshold
+        first_exceed = (~cutoff_mask).idxmax() if (~cutoff_mask).any() else len(agg_data) - 1
+        top_data = agg_data.loc[:first_exceed].copy()
+    
+    # Summary metrics
+    st.markdown("---")
+    
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    
+    top_count = len(top_data)
+    total_count = len(agg_data)
+    top_value = top_data[metric_lower].sum()
+    concentration = (top_count / total_count * 100) if total_count > 0 else 0
+    
+    with col_s1:
+        st.metric(
+            f"Top {label}s",
+            f"{top_count:,}",
+            f"of {total_count:,} total",
+            help=f"Number of {label.lower()}s making up {top_percent}% of {metric}"
+        )
+    
+    with col_s2:
+        st.metric(
+            f"Top {top_percent}% {metric}",
+            f"${top_value:,.0f}",
+            f"{(top_value/total*100):.1f}% of total"
+        )
+    
+    with col_s3:
+        st.metric(
+            "Concentration",
+            f"{concentration:.1f}%",
+            help=f"{concentration:.1f}% of {label.lower()}s generate {top_percent}% of {metric}"
+        )
+    
+    with col_s4:
+        avg_per_item = top_value / top_count if top_count > 0 else 0
+        st.metric(
+            f"Avg per {label}",
+            f"${avg_per_item:,.0f}"
+        )
+    
+    # Display charts and table
+    chart_col, table_col = st.columns([1.2, 1])
+    
+    with chart_col:
+        # Top performers chart
+        try:
+            chart = KPICenterCharts.build_top_performers_chart(
+                data_df=top_data,
+                value_col=metric_lower,
+                label_col=group_col,
+                top_n=min(15, len(top_data)),
+                title=f"Top {label}s by {metric}",
+                show_percent=True
+            )
+            st.altair_chart(chart, use_container_width=True)
+        except Exception as e:
+            logger.warning(f"Could not render chart: {e}")
+            st.warning("Could not render chart")
+    
+    with table_col:
+        # Display table
+        display_df = top_data[[group_col, 'revenue', 'gross_profit', 'gp1', 'orders', 'percent', 'cumulative_percent']].copy()
+        display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
+        
+        st.dataframe(
+            display_df.head(20),
+            hide_index=True,
+            column_config={
+                'Rank': st.column_config.NumberColumn('🏆', width='small'),
+                group_col: st.column_config.TextColumn(label),
+                'revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
+                'gross_profit': st.column_config.NumberColumn('GP', format='$%,.0f'),
+                'gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
+                'orders': st.column_config.NumberColumn('Orders'),
+                'percent': st.column_config.NumberColumn('% Share', format='%.1f%%'),
+                'cumulative_percent': st.column_config.NumberColumn('Cum %', format='%.1f%%'),
+            },
+            use_container_width=True
+        )
+        
+        if len(top_data) > 20:
+            st.caption(f"Showing top 20 of {len(top_data)} {label.lower()}s")
+    
+    # 80/20 Analysis insight
+    st.markdown("---")
+    
+    # Find how many items make up 80%
+    mask_80 = agg_data['cumulative_percent'] <= 80
+    if mask_80.any():
+        first_exceed_80 = (~mask_80).idxmax() if (~mask_80).any() else len(agg_data) - 1
+        count_80 = len(agg_data.loc[:first_exceed_80])
+        percent_of_total = (count_80 / total_count * 100) if total_count > 0 else 0
+        
+        with st.expander("💡 80/20 Analysis Insight", expanded=True):
+            st.markdown(f"""
+**Pareto Principle Analysis:**
+
+- **{count_80:,} {label.lower()}s** ({percent_of_total:.1f}% of total) generate **80%** of {metric}
+- This indicates {'high' if percent_of_total < 30 else 'moderate' if percent_of_total < 50 else 'distributed'} revenue concentration
+
+**Recommendations:**
+{_get_concentration_recommendations(percent_of_total, label)}
+            """)
+
+
+def _get_concentration_recommendations(concentration_percent: float, entity: str) -> str:
+    """Generate recommendations based on concentration level."""
+    if concentration_percent < 20:
+        return f"""
+- ⚠️ Very high concentration risk - top {entity.lower()}s are critical
+- Focus on relationship management for key accounts
+- Develop contingency plans for top {entity.lower()} churn
+- Consider diversification strategies
+"""
+    elif concentration_percent < 35:
+        return f"""
+- 📊 Healthy concentration with some key accounts
+- Continue nurturing top {entity.lower()} relationships
+- Identify growth potential in mid-tier {entity.lower()}s
+- Monitor dependency on largest {entity.lower()}s
+"""
+    else:
+        return f"""
+- ✅ Well-distributed across {entity.lower()}s
+- Good diversification reduces single-point-of-failure risk
+- Focus on improving average order value
+- Identify opportunities to consolidate wallet share
+"""
 
 
 # =============================================================================

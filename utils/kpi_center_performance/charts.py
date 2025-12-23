@@ -12,8 +12,12 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 - Backlog risk analysis display
 
-VERSION: 2.2.0
+VERSION: 2.3.0
 CHANGELOG:
+- v2.3.0: Phase 3 - Pareto Analysis charts:
+          - build_pareto_chart(): Bar + cumulative line
+          - build_top_performers_chart(): Horizontal bar ranking
+          - build_concentration_donut(): Concentration visualization
 - v2.2.0: Added build_achievement_bar_chart() for KPI achievement comparison
 - v2.1.0: Fixed kpi_center_count key in _render_pipeline_metric_row
           Fixed convert_pipeline_to_backlog_metrics keys
@@ -1039,3 +1043,251 @@ This ensures accurate achievement calculation.
         )
         
         return chart
+    
+    # =========================================================================
+    # PARETO CHARTS - NEW v2.3.0
+    # =========================================================================
+    
+    @staticmethod
+    def build_pareto_chart(
+        data_df: pd.DataFrame,
+        value_col: str,
+        label_col: str,
+        title: str = "Pareto Analysis",
+        show_cumulative_line: bool = True,
+        highlight_80_percent: bool = True
+    ) -> alt.Chart:
+        """
+        Build Pareto chart (bar + cumulative line).
+        
+        Args:
+            data_df: DataFrame with value and label columns
+            value_col: Column name for values (e.g., 'revenue')
+            label_col: Column name for labels (e.g., 'customer')
+            title: Chart title
+            show_cumulative_line: Whether to show cumulative % line
+            highlight_80_percent: Whether to highlight 80% threshold
+            
+        Returns:
+            Altair layered chart
+        """
+        if data_df.empty:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
+        
+        if value_col not in data_df.columns or label_col not in data_df.columns:
+            return alt.Chart().mark_text().encode(text=alt.value("Required columns not found"))
+        
+        # Prepare data
+        chart_df = data_df.copy()
+        chart_df = chart_df.sort_values(value_col, ascending=False).head(20)  # Limit to top 20
+        
+        # Calculate cumulative percentage
+        total = chart_df[value_col].sum()
+        if total == 0:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
+        
+        chart_df['cumulative'] = chart_df[value_col].cumsum()
+        chart_df['cumulative_percent'] = (chart_df['cumulative'] / total * 100).round(1)
+        chart_df['percent'] = (chart_df[value_col] / total * 100).round(1)
+        
+        # Create order for x-axis
+        chart_df['order'] = range(len(chart_df))
+        
+        # Base bar chart
+        bars = alt.Chart(chart_df).mark_bar(
+            color=COLORS['primary'],
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X(f'{label_col}:N', 
+                   sort=alt.EncodingSortField(field='order', order='ascending'),
+                   title=None,
+                   axis=alt.Axis(labelAngle=-45, labelLimit=100)),
+            y=alt.Y(f'{value_col}:Q', title='Value'),
+            tooltip=[
+                alt.Tooltip(f'{label_col}:N', title='Name'),
+                alt.Tooltip(f'{value_col}:Q', title='Value', format='$,.0f'),
+                alt.Tooltip('percent:Q', title='% of Total', format='.1f'),
+                alt.Tooltip('cumulative_percent:Q', title='Cumulative %', format='.1f'),
+            ]
+        )
+        
+        chart = bars
+        
+        # Add cumulative line
+        if show_cumulative_line:
+            # Need a secondary y-axis for percentage
+            line = alt.Chart(chart_df).mark_line(
+                color=COLORS['secondary'],
+                strokeWidth=2,
+                point=alt.OverlayMarkDef(color=COLORS['secondary'], size=50)
+            ).encode(
+                x=alt.X(f'{label_col}:N', 
+                       sort=alt.EncodingSortField(field='order', order='ascending')),
+                y=alt.Y('cumulative_percent:Q', 
+                       title='Cumulative %',
+                       scale=alt.Scale(domain=[0, 105])),
+                tooltip=[
+                    alt.Tooltip(f'{label_col}:N', title='Name'),
+                    alt.Tooltip('cumulative_percent:Q', title='Cumulative %', format='.1f'),
+                ]
+            )
+            
+            # Layer with independent y-axes
+            chart = alt.layer(
+                bars,
+                line
+            ).resolve_scale(
+                y='independent'
+            )
+        
+        # Add 80% threshold line
+        if highlight_80_percent and show_cumulative_line:
+            threshold = alt.Chart(pd.DataFrame({'y': [80]})).mark_rule(
+                color='red',
+                strokeDash=[5, 5],
+                strokeWidth=1.5
+            ).encode(
+                y='y:Q'
+            )
+            # Note: This would need proper layering with independent scales
+        
+        return chart.properties(
+            width=CHART_WIDTH,
+            height=CHART_HEIGHT,
+            title=title
+        ).configure_axis(
+            labelFontSize=10,
+            titleFontSize=12
+        )
+    
+    @staticmethod
+    def build_top_performers_chart(
+        data_df: pd.DataFrame,
+        value_col: str,
+        label_col: str,
+        top_n: int = 10,
+        title: str = "Top Performers",
+        show_percent: bool = True
+    ) -> alt.Chart:
+        """
+        Build horizontal bar chart for top performers.
+        
+        Args:
+            data_df: DataFrame with performance data
+            value_col: Column for values
+            label_col: Column for labels
+            top_n: Number of top items to show
+            title: Chart title
+            show_percent: Whether to show percentage labels
+            
+        Returns:
+            Altair chart
+        """
+        if data_df.empty:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
+        
+        # Get top N
+        chart_df = data_df.nlargest(top_n, value_col).copy()
+        
+        # Calculate percentage
+        total = data_df[value_col].sum()
+        if total > 0:
+            chart_df['percent'] = (chart_df[value_col] / total * 100).round(1)
+        else:
+            chart_df['percent'] = 0
+        
+        # Create chart
+        bars = alt.Chart(chart_df).mark_bar(
+            color=COLORS['primary'],
+            cornerRadiusTopRight=4,
+            cornerRadiusBottomRight=4
+        ).encode(
+            x=alt.X(f'{value_col}:Q', title='Value'),
+            y=alt.Y(f'{label_col}:N', sort='-x', title=None),
+            tooltip=[
+                alt.Tooltip(f'{label_col}:N', title='Name'),
+                alt.Tooltip(f'{value_col}:Q', title='Value', format='$,.0f'),
+                alt.Tooltip('percent:Q', title='% of Total', format='.1f'),
+            ]
+        )
+        
+        chart = bars
+        
+        # Add text labels if showing percent
+        if show_percent:
+            text = alt.Chart(chart_df).mark_text(
+                align='left',
+                baseline='middle',
+                dx=5,
+                fontSize=11
+            ).encode(
+                x=alt.X(f'{value_col}:Q'),
+                y=alt.Y(f'{label_col}:N', sort='-x'),
+                text=alt.Text('percent:Q', format='.1f'),
+            )
+            chart = bars + text
+        
+        return chart.properties(
+            width=CHART_WIDTH,
+            height=min(400, top_n * 35),
+            title=title
+        )
+    
+    @staticmethod
+    def build_concentration_donut(
+        top_value: float,
+        total_value: float,
+        label: str = "Top 20%",
+        title: str = "Revenue Concentration"
+    ) -> alt.Chart:
+        """
+        Build donut chart showing concentration (e.g., top 20% customers = 80% revenue).
+        
+        Args:
+            top_value: Value from top segment
+            total_value: Total value
+            label: Label for top segment
+            title: Chart title
+            
+        Returns:
+            Altair donut chart
+        """
+        if total_value == 0:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
+        
+        top_percent = (top_value / total_value * 100)
+        other_percent = 100 - top_percent
+        
+        data = pd.DataFrame({
+            'category': [label, 'Others'],
+            'value': [top_percent, other_percent],
+            'color': [COLORS['primary'], COLORS['neutral']]
+        })
+        
+        chart = alt.Chart(data).mark_arc(
+            innerRadius=50,
+            outerRadius=90
+        ).encode(
+            theta=alt.Theta('value:Q'),
+            color=alt.Color('color:N', scale=None, legend=None),
+            tooltip=[
+                alt.Tooltip('category:N', title='Segment'),
+                alt.Tooltip('value:Q', title='%', format='.1f'),
+            ]
+        ).properties(
+            width=200,
+            height=200,
+            title=title
+        )
+        
+        # Add center text
+        text = alt.Chart(pd.DataFrame({'text': [f'{top_percent:.0f}%']})).mark_text(
+            size=24,
+            fontWeight='bold',
+            color=COLORS['primary']
+        ).encode(
+            text='text:N'
+        )
+        
+        return chart + text

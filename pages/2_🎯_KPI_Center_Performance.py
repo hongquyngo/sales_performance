@@ -10,12 +10,17 @@ Features:
 - YoY comparison
 - Parent-Child KPI Center rollup
 - Backlog risk analysis
+- Top Performers / Pareto Analysis
 - Excel export
 
 Access: admin, GM, MD, sales_manager only
 
-VERSION: 2.2.0
+VERSION: 2.3.0
 CHANGELOG:
+- v2.3.0: Phase 3 - Added Analysis tab with Pareto analysis
+          - top_performers_fragment for Customer/Brand/Product analysis
+          - 80/20 concentration insights
+          - Interactive charts with recommendations
 - v2.2.0: Phase 2 enhancements:
           - monthly_trend_fragment now shows target overlay
           - backlog_list_fragment now shows overall vs filtered totals
@@ -59,6 +64,7 @@ from utils.kpi_center_performance import (
     pivot_analysis_fragment,
     backlog_list_fragment,
     kpi_center_ranking_fragment,
+    top_performers_fragment,  # NEW v2.3.0
     export_report_fragment,
 )
 
@@ -583,12 +589,13 @@ def main():
     st.caption(f"📊 {filter_summary}")
     
     # ==========================================================================
-    # TABS
+    # TABS - UPDATED v2.3.0: Added Analysis tab
     # ==========================================================================
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Overview",
         "📋 Sales Detail",
+        "📈 Analysis",  # NEW v2.3.0
         "📦 Backlog",
         "🎯 KPI & Targets",
         "⚙️ Setup"
@@ -674,10 +681,22 @@ def main():
         pivot_analysis_fragment(sales_df=sales_df)
     
     # ==========================================================================
-    # TAB 3: BACKLOG
+    # TAB 3: ANALYSIS (NEW v2.3.0)
     # ==========================================================================
     
     with tab3:
+        # Top Performers / Pareto Analysis
+        top_performers_fragment(
+            sales_df=sales_df,
+            filter_values=active_filters,
+            metrics_calculator=metrics_calc  # Use metrics_calc defined earlier
+        )
+    
+    # ==========================================================================
+    # TAB 4: BACKLOG (was TAB 3)
+    # ==========================================================================
+    
+    with tab4:
         # Backlog summary cards
         backlog_metrics = KPICenterCharts.convert_pipeline_to_backlog_metrics(pipeline_metrics)
         
@@ -773,10 +792,10 @@ def main():
             )
     
     # ==========================================================================
-    # TAB 4: KPI & TARGETS
+    # TAB 5: KPI & TARGETS (was TAB 4)
     # ==========================================================================
     
-    with tab4:
+    with tab5:
         st.subheader("🎯 KPI Assignments")
         
         if targets_df.empty:
@@ -812,10 +831,10 @@ def main():
         )
     
     # ==========================================================================
-    # TAB 5: SETUP
+    # TAB 6: SETUP (was TAB 5)
     # ==========================================================================
     
-    with tab5:
+    with tab6:
         st.subheader("⚙️ KPI Center Configuration")
         
         # KPI Split assignments
