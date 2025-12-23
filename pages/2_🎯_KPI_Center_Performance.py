@@ -22,6 +22,9 @@ CHANGELOG:
           - filter_data_client_side now filters by entity_ids
           - Added _calculate_backlog_risk_from_df for client-side recalculation
           - Targets now filtered by both year AND kpi_center_ids
+          - SYNCED exclude_internal logic with Salesperson page:
+            Zero out revenue for internal customers (keep GP intact)
+            instead of removing rows entirely
 - v2.3.0: Phase 3 - Added Analysis tab with Pareto analysis
           - top_performers_fragment for Customer/Brand/Product analysis
           - 80/20 concentration insights
@@ -447,10 +450,23 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 ]
                 break
         
-        # Exclude internal revenue for sales data
+        # ═══════════════════════════════════════════════════════════════
+        # Exclude Internal Revenue (SYNCED with Salesperson page v2.4.0)
+        # Logic: Zero out revenue for internal customers, keep GP intact
+        # This allows:
+        #   - GP% calculation remains accurate
+        #   - Row count (customers, orders) stays the same
+        #   - Sales performance evaluated with real (external) customers only
+        # ═══════════════════════════════════════════════════════════════
         if exclude_internal and key == 'sales_df':
-            if 'customer_type' in df.columns:
-                df = df[df['customer_type'] != 'Internal']
+            if 'customer_type' in df.columns and 'sales_by_kpi_center_usd' in df.columns:
+                # Create mask for internal customers
+                is_internal = df['customer_type'].str.lower() == 'internal'
+                
+                # Zero out ONLY revenue for internal customers
+                # GP columns (gross_profit_by_kpi_center_usd, gp1_by_kpi_center_usd) are kept intact
+                if is_internal.any():
+                    df.loc[is_internal, 'sales_by_kpi_center_usd'] = 0
         
         # Filter targets by year AND kpi_center_ids
         if key == 'targets_df':
