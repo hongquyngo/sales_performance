@@ -10,7 +10,14 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 1.0.0
+VERSION: 2.0.0
+CHANGELOG:
+- v2.0.0: Added detail queries for complex KPIs (popup support)
+          - get_new_customers_detail()
+          - get_new_products_detail()
+          - get_new_business_detail()
+          Added backlog risk analysis query
+          - get_backlog_risk_analysis()
 """
 
 import logging
@@ -150,27 +157,24 @@ class KPICenterQueries:
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Load sales data from unified_sales_by_kpi_center_view.
+        Get sales data aggregated by KPI Center.
         
         Args:
-            start_date: Start date for filtering
-            end_date: End date for filtering
-            kpi_center_ids: Optional list of specific KPI Center IDs
-            entity_ids: Optional list of legal entity IDs
-            include_children: If True, include data from child KPI Centers
+            start_date: Start of period
+            end_date: End of period
+            kpi_center_ids: Optional list of KPI Centers to filter
+            entity_ids: Optional list of entity IDs to filter
+            include_children: Include child KPI Centers in totals
             
         Returns:
-            DataFrame with sales data
+            DataFrame with sales transactions
         """
         if not self.access.can_access_page():
-            logger.warning("Access denied, returning empty DataFrame")
             return pd.DataFrame()
         
-        # Validate and expand KPI Center IDs
+        # Expand to include children if requested
         if kpi_center_ids:
             kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-            
-            # Include children if requested
             if include_children:
                 expanded_ids = set(kpi_center_ids)
                 for parent_id in kpi_center_ids:
@@ -181,7 +185,6 @@ class KPICenterQueries:
             kpi_center_ids = self.access.get_accessible_kpi_center_ids()
         
         if not kpi_center_ids:
-            logger.warning("No KPI Center IDs, returning empty DataFrame")
             return pd.DataFrame()
         
         query = """
@@ -225,7 +228,6 @@ class KPICenterQueries:
             'kpi_center_ids': tuple(kpi_center_ids)
         }
         
-        # Add entity filter if provided
         if entity_ids:
             query += " AND legal_entity_id IN :entity_ids"
             params['entity_ids'] = tuple(entity_ids)
@@ -234,6 +236,40 @@ class KPICenterQueries:
         
         return self._execute_query(query, params, "sales_data")
     
+    def get_previous_year_data(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get previous year's sales data for the same period.
+        
+        Args:
+            start_date: Current period start
+            end_date: Current period end
+            kpi_center_ids: Optional filter
+            entity_ids: Optional filter
+            
+        Returns:
+            DataFrame with previous year's sales
+        """
+        # Calculate previous year dates
+        prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+        try:
+            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+        except ValueError:
+            # Handle Feb 29 -> Feb 28
+            prev_end = date(end_date.year - 1, end_date.month, 28)
+        
+        return self.get_sales_data(
+            start_date=prev_start,
+            end_date=prev_end,
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
+        )
+    
     # =========================================================================
     # KPI TARGETS
     # =========================================================================
@@ -241,23 +277,31 @@ class KPICenterQueries:
     def get_kpi_targets(
         self,
         year: int,
-        kpi_center_ids: List[int] = None
+        kpi_center_ids: List[int] = None,
+        include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Load KPI targets from sales_kpi_center_assignments_view.
+        Get KPI targets for specified year and KPI Centers.
         
         Args:
-            year: Year to get targets for
-            kpi_center_ids: Optional list of KPI Center IDs
+            year: Target year
+            kpi_center_ids: Optional list of KPI Centers
+            include_children: Include child KPI Centers
             
         Returns:
-            DataFrame with KPI targets
+            DataFrame with KPI assignments
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
         
         if kpi_center_ids:
             kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+            if include_children:
+                expanded_ids = set(kpi_center_ids)
+                for parent_id in kpi_center_ids:
+                    child_ids = self.get_child_kpi_center_ids(parent_id)
+                    expanded_ids.update(child_ids)
+                kpi_center_ids = list(expanded_ids)
         else:
             kpi_center_ids = self.access.get_accessible_kpi_center_ids()
         
@@ -273,13 +317,15 @@ class KPICenterQueries:
                 year,
                 kpi_type_id,
                 kpi_name,
+                unit_of_measure,
                 annual_target_value,
                 annual_target_value_numeric,
-                unit_of_measure,
+                weight,
                 weight_numeric,
                 monthly_target_value,
                 quarterly_target_value,
-                notes
+                notes,
+                is_current_year
             FROM sales_kpi_center_assignments_view
             WHERE year = :year
               AND kpi_center_id IN :kpi_center_ids
@@ -304,11 +350,8 @@ class KPICenterQueries:
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Load aggregated backlog data by KPI Center.
+        Get backlog summary by KPI Center.
         Only includes uninvoiced orders (invoice_completion_percent < 100).
-        
-        Returns:
-            DataFrame with backlog summary by KPI Center
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -334,8 +377,7 @@ class KPICenterQueries:
                 kpi_type,
                 COUNT(DISTINCT oc_number) AS backlog_orders,
                 SUM(backlog_by_kpi_center_usd) AS total_backlog_usd,
-                SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd,
-                COUNT(DISTINCT customer_id) AS backlog_customers
+                SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
             FROM backlog_by_kpi_center_flat_looker_view
             WHERE kpi_center_id IN :kpi_center_ids
               AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
@@ -348,7 +390,6 @@ class KPICenterQueries:
             params['entity_ids'] = tuple(entity_ids)
         
         query += " GROUP BY kpi_center_id, kpi_center, kpi_type"
-        query += " ORDER BY total_backlog_usd DESC"
         
         return self._execute_query(query, params, "backlog_data")
     
@@ -361,11 +402,8 @@ class KPICenterQueries:
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Get backlog with ETD within the specified period.
+        Get backlog with ETD within specified period.
         Only includes uninvoiced orders.
-        
-        Returns:
-            DataFrame with in-period backlog summary
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -394,8 +432,8 @@ class KPICenterQueries:
                 SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
             FROM backlog_by_kpi_center_flat_looker_view
             WHERE kpi_center_id IN :kpi_center_ids
-              AND etd BETWEEN :start_date AND :end_date
               AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+              AND etd BETWEEN :start_date AND :end_date
         """
         
         params = {
@@ -519,11 +557,13 @@ class KPICenterQueries:
                 kpi_center_id,
                 kpi_type,
                 legal_entity,
+                entity_id,
                 backlog_by_kpi_center_usd,
                 backlog_gp_by_kpi_center_usd,
                 split_rate_percent,
                 pending_type,
                 days_until_etd,
+                days_since_order,
                 status,
                 invoice_completion_percent
             FROM backlog_by_kpi_center_flat_looker_view
@@ -543,6 +583,100 @@ class KPICenterQueries:
             query += f" LIMIT {limit}"
         
         return self._execute_query(query, params, "backlog_detail")
+    
+    # =========================================================================
+    # BACKLOG RISK ANALYSIS (NEW v2.0.0)
+    # =========================================================================
+    
+    def get_backlog_risk_analysis(
+        self,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        start_date: date = None,
+        end_date: date = None
+    ) -> Dict:
+        """
+        Analyze backlog for overdue and risk factors.
+        
+        Returns:
+            Dictionary with:
+            - overdue_orders: Orders with ETD in the past
+            - overdue_revenue: Total revenue at risk
+            - at_risk_orders: Orders with ETD within 7 days
+            - in_period_overdue: Overdue orders within selected period
+        """
+        if not self.access.can_access_page():
+            return {}
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return {}
+        
+        query = """
+            SELECT 
+                COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue,
+                SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
+                COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
+                SUM(CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN backlog_by_kpi_center_usd ELSE 0 END) AS at_risk_revenue,
+                COUNT(DISTINCT oc_number) AS total_orders,
+                SUM(backlog_by_kpi_center_usd) AS total_backlog
+            FROM backlog_by_kpi_center_flat_looker_view
+            WHERE kpi_center_id IN :kpi_center_ids
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+        """
+        
+        params = {'kpi_center_ids': tuple(kpi_center_ids)}
+        
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        df = self._execute_query(query, params, "backlog_risk_analysis")
+        
+        if df.empty:
+            return {}
+        
+        row = df.iloc[0]
+        
+        # Get in-period overdue if dates provided
+        in_period_overdue = 0
+        in_period_overdue_revenue = 0
+        
+        if start_date and end_date:
+            period_query = """
+                SELECT 
+                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+                  AND etd BETWEEN :start_date AND :end_date
+            """
+            params['start_date'] = start_date
+            params['end_date'] = end_date
+            
+            period_df = self._execute_query(period_query, params, "in_period_overdue")
+            if not period_df.empty:
+                in_period_overdue = period_df.iloc[0]['overdue_orders'] or 0
+                in_period_overdue_revenue = period_df.iloc[0]['overdue_revenue'] or 0
+        
+        return {
+            'overdue_orders': int(row.get('overdue_orders') or 0),
+            'overdue_revenue': float(row.get('overdue_revenue') or 0),
+            'overdue_gp': float(row.get('overdue_gp') or 0),
+            'at_risk_orders': int(row.get('at_risk_orders') or 0),
+            'at_risk_revenue': float(row.get('at_risk_revenue') or 0),
+            'total_orders': int(row.get('total_orders') or 0),
+            'total_backlog': float(row.get('total_backlog') or 0),
+            'in_period_overdue': int(in_period_overdue),
+            'in_period_overdue_revenue': float(in_period_overdue_revenue),
+            'overdue_percent': (float(row.get('overdue_revenue') or 0) / float(row.get('total_backlog') or 1)) * 100
+        }
     
     # =========================================================================
     # COMPLEX KPIs (New Customers, Products, Business Revenue)
@@ -632,6 +766,78 @@ class KPICenterQueries:
         
         return self._execute_query(query, params, "new_customers")
     
+    def get_new_customers_detail(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get detailed list of NEW CUSTOMERS with first sale info.
+        Used for popup drill-down.
+        
+        Returns:
+            DataFrame with: customer, customer_id, kpi_center, first_sale_date, 
+                           first_sale_revenue, first_sale_gp
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        query = """
+            WITH customer_first_sale AS (
+                SELECT 
+                    customer_id,
+                    MIN(inv_date) AS first_sale_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                  AND customer_id IS NOT NULL
+                GROUP BY customer_id
+            ),
+            new_customers_in_period AS (
+                SELECT customer_id, first_sale_date
+                FROM customer_first_sale
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            )
+            SELECT 
+                s.customer,
+                s.customer_id,
+                s.customer_code,
+                s.kpi_center,
+                s.kpi_center_id,
+                nc.first_sale_date,
+                SUM(s.sales_by_kpi_center_usd) AS first_day_revenue,
+                SUM(s.gross_profit_by_kpi_center_usd) AS first_day_gp,
+                SUM(s.gp1_by_kpi_center_usd) AS first_day_gp1
+            FROM unified_sales_by_kpi_center_view s
+            INNER JOIN new_customers_in_period nc 
+                ON s.customer_id = nc.customer_id 
+                AND s.inv_date = nc.first_sale_date
+            WHERE s.kpi_center_id IN :kpi_center_ids
+            GROUP BY s.customer, s.customer_id, s.customer_code, 
+                     s.kpi_center, s.kpi_center_id, nc.first_sale_date
+            ORDER BY first_day_revenue DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        return self._execute_query(query, params, "new_customers_detail")
+    
     def get_new_products(
         self,
         start_date: date,
@@ -710,6 +916,78 @@ class KPICenterQueries:
         }
         
         return self._execute_query(query, params, "new_products")
+    
+    def get_new_products_detail(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get detailed list of NEW PRODUCTS with first sale info.
+        Used for popup drill-down.
+        
+        Returns:
+            DataFrame with: product_pn, brand, kpi_center, first_sale_date,
+                           first_sale_revenue, first_sale_gp, first_customer
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        query = """
+            WITH product_first_sale AS (
+                SELECT 
+                    COALESCE(product_id, pt_code) AS product_key,
+                    MIN(inv_date) AS first_sale_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
+                GROUP BY COALESCE(product_id, pt_code)
+            ),
+            new_products_in_period AS (
+                SELECT product_key, first_sale_date
+                FROM product_first_sale
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            )
+            SELECT 
+                s.product_pn,
+                s.pt_code,
+                s.brand,
+                s.kpi_center,
+                s.kpi_center_id,
+                np.first_sale_date,
+                GROUP_CONCAT(DISTINCT s.customer SEPARATOR ', ') AS first_customers,
+                SUM(s.sales_by_kpi_center_usd) AS first_day_revenue,
+                SUM(s.gross_profit_by_kpi_center_usd) AS first_day_gp
+            FROM unified_sales_by_kpi_center_view s
+            INNER JOIN new_products_in_period np 
+                ON COALESCE(s.product_id, s.pt_code) = np.product_key
+                AND s.inv_date = np.first_sale_date
+            WHERE s.kpi_center_id IN :kpi_center_ids
+            GROUP BY s.product_pn, s.pt_code, s.brand, 
+                     s.kpi_center, s.kpi_center_id, np.first_sale_date
+            ORDER BY first_day_revenue DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        return self._execute_query(query, params, "new_products_detail")
     
     def get_new_business_revenue(
         self,
@@ -804,6 +1082,86 @@ class KPICenterQueries:
         
         return self._execute_query(query, params, "new_business_revenue")
     
+    def get_new_business_detail(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None
+    ) -> pd.DataFrame:
+        """
+        Get detailed NEW BUSINESS combos with revenue breakdown.
+        Used for popup drill-down.
+        
+        Returns:
+            DataFrame with: customer, product_pn, brand, kpi_center,
+                           first_sale_date, period_revenue, period_gp
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        query = """
+            WITH combo_first_sale AS (
+                SELECT 
+                    customer_id,
+                    COALESCE(product_id, pt_code) AS product_key,
+                    kpi_center_id,
+                    MIN(inv_date) AS first_sale_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                  AND customer_id IS NOT NULL
+                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(product_id, pt_code), kpi_center_id
+            ),
+            new_combos AS (
+                SELECT customer_id, product_key, kpi_center_id, first_sale_date
+                FROM combo_first_sale
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            )
+            SELECT 
+                s.customer,
+                s.customer_id,
+                s.product_pn,
+                s.pt_code,
+                s.brand,
+                s.kpi_center,
+                s.kpi_center_id,
+                nc.first_sale_date,
+                SUM(s.sales_by_kpi_center_usd) AS period_revenue,
+                SUM(s.gross_profit_by_kpi_center_usd) AS period_gp,
+                SUM(s.gp1_by_kpi_center_usd) AS period_gp1,
+                COUNT(DISTINCT s.inv_number) AS invoice_count
+            FROM unified_sales_by_kpi_center_view s
+            INNER JOIN new_combos nc 
+                ON s.customer_id = nc.customer_id
+                AND COALESCE(s.product_id, s.pt_code) = nc.product_key
+                AND s.kpi_center_id = nc.kpi_center_id
+            WHERE s.inv_date BETWEEN :start_date AND :end_date
+              AND s.kpi_center_id IN :kpi_center_ids
+            GROUP BY s.customer, s.customer_id, s.product_pn, s.pt_code, s.brand,
+                     s.kpi_center, s.kpi_center_id, nc.first_sale_date
+            ORDER BY period_revenue DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        return self._execute_query(query, params, "new_business_detail")
+    
     # =========================================================================
     # LOOKUP DATA
     # =========================================================================
@@ -887,6 +1245,7 @@ class KPICenterQueries:
                 customer_id,
                 product_pn,
                 product_id,
+                pt_code,
                 brand,
                 split_percentage,
                 effective_period,

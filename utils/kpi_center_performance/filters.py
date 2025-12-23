@@ -10,8 +10,14 @@ Renders filter UI elements:
 - Internal revenue filter
 - YoY comparison toggle
 - KPI Type filter
+- Refresh button with cache info
 
-VERSION: 1.0.0
+VERSION: 2.0.0
+CHANGELOG:
+- v2.0.0: Added Refresh button with cache info display
+          Filter summary shows immediately (not just on submit)
+          Improved help text and tooltips
+          Added smart caching session state management
 """
 
 import logging
@@ -198,59 +204,68 @@ def render_number_filter(
     key: str,
     min_val: float = None,
     max_val: float = None,
-    default_min: float = None,
-    default_max: float = None,
+    default_val: float = None,
     step: float = 1.0,
-    format_str: str = "%.0f",
+    help_text: str = None,
     container = None
-) -> Tuple[Optional[float], Optional[float]]:
-    """Render a number range filter."""
+) -> Optional[float]:
+    """Render a number input filter."""
     ctx = container if container else st
     
-    col1, col2 = ctx.columns(2)
-    
-    with col1:
-        min_input = ctx.number_input(
-            f"{label} Min",
-            min_value=min_val,
-            max_value=max_val,
-            value=default_min,
-            step=step,
-            format=format_str,
-            key=f"{key}_min"
-        )
-    
-    with col2:
-        max_input = ctx.number_input(
-            f"{label} Max",
-            min_value=min_val,
-            max_value=max_val,
-            value=default_max,
-            step=step,
-            format=format_str,
-            key=f"{key}_max"
-        )
-    
-    return min_input, max_input
+    return ctx.number_input(
+        label,
+        min_value=min_val,
+        max_value=max_val,
+        value=default_val,
+        step=step,
+        key=key,
+        help=help_text
+    )
 
 
-def apply_number_filter(
-    df: pd.DataFrame,
-    column: str,
-    min_val: float = None,
-    max_val: float = None
-) -> pd.DataFrame:
-    """Apply number range filter."""
-    if df.empty or column not in df.columns:
-        return df
+# =============================================================================
+# SESSION STATE MANAGEMENT FOR SMART CACHING (NEW v2.0.0)
+# =============================================================================
+
+def _get_cached_year_range() -> Tuple[Optional[int], Optional[int]]:
+    """Get current cached year range from session state."""
+    return (
+        st.session_state.get('_kpc_cached_start_year'),
+        st.session_state.get('_kpc_cached_end_year')
+    )
+
+
+def _set_cached_year_range(start_year: int, end_year: int):
+    """Set cached year range in session state."""
+    st.session_state['_kpc_cached_start_year'] = start_year
+    st.session_state['_kpc_cached_end_year'] = end_year
+
+
+def _get_applied_filters() -> Optional[Dict]:
+    """Get last applied filters from session state."""
+    return st.session_state.get('_kpc_applied_filters')
+
+
+def _set_applied_filters(filters: Dict):
+    """Store applied filters in session state."""
+    st.session_state['_kpc_applied_filters'] = filters.copy()
+
+
+def clear_data_cache():
+    """Clear all cached data - called by Refresh button."""
+    keys_to_clear = [
+        '_kpc_cached_start_year',
+        '_kpc_cached_end_year',
+        '_kpc_raw_cached_data',
+        '_kpc_applied_filters'
+    ]
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
     
-    if min_val is not None:
-        df = df[df[column] >= min_val]
-    
-    if max_val is not None:
-        df = df[df[column] <= max_val]
-    
-    return df
+    # Also clear st.cache_data
+    st.cache_data.clear()
+    logger.info("Data cache cleared")
 
 
 # =============================================================================
@@ -259,28 +274,18 @@ def apply_number_filter(
 
 class KPICenterFilters:
     """
-    Sidebar filters for KPI Center Performance.
+    Filter UI components for KPI Center Performance page.
+    
+    Renders all sidebar filters and handles validation.
     
     Usage:
-        access = AccessControl(user_role)
         filters = KPICenterFilters(access)
-        
-        filter_values = filters.render_sidebar_filters(
-            kpi_center_df=kpi_center_df,
-            entity_df=entity_df,
-            available_years=[2025, 2024, 2023]
-        )
+        filter_values = filters.render_sidebar_filters(kpi_center_df, entity_df)
     """
     
-    def __init__(self, access_control: AccessControl):
-        """
-        Initialize with access control.
-        """
-        self.access = access_control
-    
-    # =========================================================================
-    # MAIN SIDEBAR RENDER
-    # =========================================================================
+    def __init__(self, access: AccessControl):
+        """Initialize with access control."""
+        self.access = access
     
     def render_sidebar_filters(
         self,
@@ -292,11 +297,11 @@ class KPICenterFilters:
         Render all sidebar filters inside a form.
         
         Returns:
-            Dict with filter values
+            Dictionary of filter values
         """
-        st.sidebar.header("🎯 KPI Center Performance")
+        st.sidebar.title("🎯 KPI Center Filters")
         
-        # Access info
+        # Show access info
         self._render_access_info()
         
         st.sidebar.divider()
@@ -389,6 +394,27 @@ class KPICenterFilters:
                 type="primary"
             )
         
+        # =====================================================================
+        # REFRESH BUTTON (NEW v2.0.0) - Outside form
+        # =====================================================================
+        st.sidebar.divider()
+        
+        col_r1, col_r2 = st.sidebar.columns([1, 1])
+        
+        with col_r1:
+            if st.button("🔄 Refresh", use_container_width=True, 
+                        help="Reload data from database"):
+                clear_data_cache()
+                st.rerun()
+        
+        with col_r2:
+            # Show cache info
+            cached_start, cached_end = _get_cached_year_range()
+            if cached_start and cached_end:
+                st.caption(f"📦 {cached_start}-{cached_end}")
+            else:
+                st.caption("📦 No cache")
+        
         # Calculate dates based on period type
         start_date, end_date = self._get_period_dates(
             period_type, year, custom_start, custom_end
@@ -409,9 +435,8 @@ class KPICenterFilters:
             'submitted': submitted,
         }
         
-        # Show current filter summary
-        if submitted:
-            self._show_filter_summary(filter_values)
+        # Always show filter summary (not just on submit) - v2.0.0
+        self._show_filter_summary(filter_values)
         
         return filter_values
     
@@ -530,14 +555,14 @@ class KPICenterFilters:
         if not types:
             return None
         
-        options = ['All Types'] + types
+        options = ['All Types'] + sorted(types)
         
         selected = st.selectbox(
             "KPI Type",
             options=options,
             index=0,
             key="filter_kpi_type",
-            help="Filter by KPI Center type"
+            help="Filter by KPI Center type (e.g., TERRITORY, INTERNAL)"
         )
         
         if selected == 'All Types':
@@ -591,7 +616,7 @@ class KPICenterFilters:
     # =========================================================================
     
     def _show_filter_summary(self, filters: Dict):
-        """Show summary of applied filters."""
+        """Show summary of current filters in sidebar."""
         parts = []
         
         # Period
@@ -614,7 +639,7 @@ class KPICenterFilters:
         if filters.get('exclude_internal_revenue', True):
             parts.append("excl. internal")
         
-        st.sidebar.caption(" • ".join(parts))
+        st.sidebar.caption("📊 " + " • ".join(parts))
     
     # =========================================================================
     # STATIC HELPERS
@@ -672,6 +697,16 @@ class KPICenterFilters:
 def analyze_period(filter_values: Dict) -> Dict:
     """
     Analyze period to determine comparison type and which sections to show.
+    
+    Returns:
+        Dictionary with:
+        - is_historical: End date is in the past
+        - is_multi_year: Period spans multiple years
+        - years_in_period: List of years in period
+        - show_backlog: Whether to show backlog/forecast section
+        - show_forecast: Whether to show forecast (same as show_backlog)
+        - comparison_type: 'multi_year' or 'yoy'
+        - forecast_message: Message when forecast not shown
     """
     today = date.today()
     start = filter_values['start_date']
@@ -687,10 +722,17 @@ def analyze_period(filter_values: Dict) -> Dict:
     # Only show backlog for current/future periods
     show_backlog = end >= date(today.year, today.month, 1)
     
+    # Forecast message
+    forecast_message = ""
+    if not show_backlog:
+        forecast_message = f"📅 Historical period ({end.strftime('%Y-%m-%d')}) - forecast not applicable"
+    
     return {
         'is_historical': is_historical,
         'is_multi_year': is_multi_year,
         'years_in_period': years_in_period,
         'show_backlog': show_backlog,
+        'show_forecast': show_backlog,
         'comparison_type': 'multi_year' if is_multi_year else 'yoy',
+        'forecast_message': forecast_message,
     }

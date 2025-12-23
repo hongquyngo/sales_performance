@@ -2,54 +2,58 @@
 """
 KPI Center Performance Module
 
-A comprehensive dashboard module for tracking KPI Center performance.
-Similar to salesperson_performance module but with:
-- Simplified access control (page-level only)
-- Parent-Child KPI Center rollup
-- KPI Type filtering (TERRITORY, INTERNAL)
+A comprehensive module for tracking KPI Center performance metrics.
+
+VERSION: 2.0.0
 
 Components:
-- AccessControl: Role-based page access (admin, GM, MD, sales_manager)
-- KPICenterQueries: SQL queries and data loading
-- KPICenterMetrics: KPI calculations and aggregations
+- AccessControl: Role-based access control
+- KPICenterQueries: Database queries
+- KPICenterMetrics: Metric calculations
 - KPICenterFilters: Sidebar filter components
-- KPICenterCharts: Altair visualizations
-- KPICenterExport: Excel report generation
+- KPICenterCharts: Visualization components
+- KPICenterExport: Excel export functionality
+- Fragments: Interactive UI components
 
-VERSION: 1.0.0
+Usage:
+    from utils.kpi_center_performance import (
+        AccessControl,
+        KPICenterQueries,
+        KPICenterMetrics,
+        KPICenterFilters,
+        KPICenterCharts,
+        KPICenterExport,
+        analyze_period,
+        ALLOWED_ROLES,
+    )
 """
 
-from .constants import (
-    ALLOWED_ROLES,
-    COLORS,
-    MONTH_ORDER,
-    PERIOD_TYPES,
-    KPI_TYPES,
-    KPI_CENTER_TYPES,
-    LOOKBACK_YEARS,
-    CACHE_TTL_SECONDS,
-    CHART_WIDTH,
-    CHART_HEIGHT,
-)
+# Access Control
+from .access_control import AccessControl, ALLOWED_ROLES
 
-from .access_control import AccessControl
-
+# Queries
 from .queries import KPICenterQueries
 
+# Metrics Calculator
 from .metrics import KPICenterMetrics
 
+# Filters
 from .filters import (
     KPICenterFilters,
     analyze_period,
-    FilterResult,
     render_multiselect_filter,
     apply_multiselect_filter,
+    FilterResult,
+    clear_data_cache,
 )
 
+# Charts
 from .charts import KPICenterCharts
 
+# Export
 from .export import KPICenterExport
 
+# Fragments
 from .fragments import (
     monthly_trend_fragment,
     yoy_comparison_fragment,
@@ -60,18 +64,20 @@ from .fragments import (
     export_report_fragment,
 )
 
+# Constants
+from .constants import (
+    ALLOWED_ROLES,
+    LOOKBACK_YEARS,
+    CACHE_TTL_SECONDS,
+    PERIOD_TYPES,
+    MONTH_ORDER,
+    KPI_CENTER_TYPES,
+    COLORS,
+    CHART_WIDTH,
+    CHART_HEIGHT,
+)
 
 __all__ = [
-    # Constants
-    'ALLOWED_ROLES',
-    'COLORS',
-    'MONTH_ORDER',
-    'PERIOD_TYPES',
-    'KPI_TYPES',
-    'KPI_CENTER_TYPES',
-    'LOOKBACK_YEARS',
-    'CACHE_TTL_SECONDS',
-    
     # Classes
     'AccessControl',
     'KPICenterQueries',
@@ -79,12 +85,13 @@ __all__ = [
     'KPICenterFilters',
     'KPICenterCharts',
     'KPICenterExport',
-    
-    # Filter helpers
-    'analyze_period',
     'FilterResult',
+    
+    # Functions
+    'analyze_period',
     'render_multiselect_filter',
     'apply_multiselect_filter',
+    'clear_data_cache',
     
     # Fragments
     'monthly_trend_fragment',
@@ -94,6 +101,17 @@ __all__ = [
     'backlog_list_fragment',
     'kpi_center_ranking_fragment',
     'export_report_fragment',
+    
+    # Constants
+    'ALLOWED_ROLES',
+    'LOOKBACK_YEARS',
+    'CACHE_TTL_SECONDS',
+    'PERIOD_TYPES',
+    'MONTH_ORDER',
+    'KPI_CENTER_TYPES',
+    'COLORS',
+    'CHART_WIDTH',
+    'CHART_HEIGHT',
 ]
 
-__version__ = '1.0.0'
+__version__ = '2.0.0'
