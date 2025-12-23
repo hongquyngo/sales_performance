@@ -12,8 +12,10 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 - Backlog risk analysis display
 
-VERSION: 2.0.0
+VERSION: 2.1.0
 CHANGELOG:
+- v2.1.0: Fixed kpi_center_count key in _render_pipeline_metric_row
+          Fixed convert_pipeline_to_backlog_metrics keys
 - v2.0.0: Added popup buttons for Complex KPIs (New Customers/Products/Business)
           Added backlog risk analysis display
           Improved help popovers with detailed explanations
@@ -470,14 +472,21 @@ This ensures accurate achievement calculation.
         gp1_gp_ratio: float = 1.0
     ):
         """Render a single row of pipeline metrics."""
-        total_backlog = summary.get(f'total_backlog_{metric_name.lower().replace(" ", "_")}', 
-                                   summary.get('total_backlog_revenue', 0))
+        # FIXED: Get total_backlog based on metric name
+        if metric_name == "Revenue":
+            total_backlog = summary.get('total_backlog_revenue', 0)
+        elif metric_name == "Gross Profit":
+            total_backlog = summary.get('total_backlog_gp', 0)
+        else:  # GP1
+            total_backlog = summary.get('total_backlog_gp1', 0)
+        
         in_period_backlog = metric_data.get('in_period_backlog', 0)
         target = metric_data.get('target')
         forecast = metric_data.get('forecast')
         gap = metric_data.get('gap')
         gap_percent = metric_data.get('gap_percent')
         forecast_achievement = metric_data.get('forecast_achievement')
+        # FIXED: Changed from employee_count to kpi_center_count
         kpi_center_count = metric_data.get('kpi_center_count', 0)
         invoiced = metric_data.get('invoiced', 0)
         backlog_orders = summary.get('backlog_orders', 0)
@@ -601,9 +610,10 @@ This ensures accurate achievement calculation.
         revenue_data = pipeline_metrics.get('revenue', {})
         gp_data = pipeline_metrics.get('gross_profit', {})
         
+        # FIXED: Correct key names
         return {
             'total_backlog_revenue': summary.get('total_backlog_revenue', 0),
-            'total_backlog_gp': summary.get('total_backlog_gross_profit', 0),
+            'total_backlog_gp': summary.get('total_backlog_gp', 0),  # FIXED: was 'total_backlog_gross_profit'
             'in_period_backlog_revenue': revenue_data.get('in_period_backlog', 0),
             'in_period_backlog_gp': gp_data.get('in_period_backlog', 0),
             'backlog_orders': summary.get('backlog_orders', 0),

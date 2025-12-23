@@ -10,7 +10,10 @@ Handles all metric calculations:
 - Parent KPI Center rollup
 - Data aggregations by KPI Center/period
 
-VERSION: 1.0.0
+VERSION: 2.1.0
+CHANGELOG:
+- v2.1.0: Fixed employee_count -> kpi_center_count for consistency
+          Added better error handling in pipeline calculations
 
 KEY DIFFERENCE FROM SALESPERSON MODULE:
 - Parent KPI Center performance = Direct sales + Sum of all children
@@ -506,7 +509,7 @@ class KPICenterMetrics:
                 'total_backlog_revenue': total_backlog_df['total_backlog_usd'].sum() if not total_backlog_df.empty else 0,
                 'total_backlog_gp': total_backlog_df['total_backlog_gp_usd'].sum() if not total_backlog_df.empty else 0,
                 'total_backlog_gp1': (total_backlog_df['total_backlog_gp_usd'].sum() * gp1_gp_ratio) if not total_backlog_df.empty else 0,
-                'backlog_orders': total_backlog_df['backlog_orders'].sum() if not total_backlog_df.empty else 0,
+                'backlog_orders': int(total_backlog_df['backlog_orders'].sum()) if not total_backlog_df.empty else 0,
                 'gp1_gp_ratio': gp1_gp_ratio,
             },
             'period_context': self.analyze_period_context(start_date, end_date) if start_date and end_date else {},
@@ -571,6 +574,7 @@ class KPICenterMetrics:
         gap_percent = (gap / prorated_target * 100) if prorated_target and prorated_target > 0 else None
         forecast_achievement = (forecast / prorated_target * 100) if prorated_target and prorated_target > 0 else None
         
+        # FIXED: Changed employee_count to kpi_center_count for consistency
         return {
             'invoiced': invoiced,
             'in_period_backlog': in_period_backlog,
@@ -579,7 +583,7 @@ class KPICenterMetrics:
             'gap': gap,
             'gap_percent': gap_percent,
             'forecast_achievement': forecast_achievement,
-            'employee_count': len(kpi_centers),
+            'kpi_center_count': len(kpi_centers),  # FIXED: was employee_count
         }
     
     # =========================================================================
