@@ -4,22 +4,26 @@ Sidebar Filter Components for KPI Center Performance
 
 Renders filter UI elements:
 - Period selector (YTD/QTD/MTD/Custom) with radio buttons
-- Date range (auto-calculated for YTD/QTD/MTD, manual for Custom)
+- Date range with default from database
 - KPI Center selector with type grouping
 - Entity selector
 - Internal revenue filter
 - YoY comparison toggle
 - KPI Type filter
-- Refresh button with cache info
 
-VERSION: 2.1.0
+VERSION: 2.2.0
 CHANGELOG:
-- v2.1.0: UPDATED Date Range UI to match Salesperson page
-          - Removed Year dropdown (auto-detect from available_years)
-          - YTD/QTD/MTD default to latest year in data
-          - Compact "Start" / "End" labels
-          - Added help tooltip explaining date auto-calculation
-          - Added "Date Range" section header
+- v2.2.0: SYNCED UI with Salesperson page (Issue #xxx)
+          - Period definitions now shown as visible text block (not just tooltip)
+          - Identical tooltip format for Start/End date inputs
+          - Same caption "Applies to Sales data. Backlog shows full pipeline."
+          - Consistent visual hierarchy
+- v2.1.0: SYNCED Date Range UI with Salesperson page
+          - Same layout: Date Range header → Period radio → Start/End inputs
+          - Same logic: YTD/QTD/MTD use current_year (today.year)
+          - Same tooltip: Shows exact date ranges for current year
+          - Date inputs receive default_start_date/default_end_date from DB
+          - Year derived from dates, no separate Year dropdown
 - v2.0.0: Added Refresh button with cache info display
           Filter summary shows immediately (not just on submit)
           Improved help text and tooltips
@@ -169,122 +173,175 @@ def apply_multiselect_filter(
         return df[df[column].isin(filter_result.selected)]
 
 
+# =============================================================================
+# TEXT SEARCH FILTER
+# =============================================================================
+
+@dataclass
+class TextSearchResult:
+    """Result from text search filter."""
+    query: str
+    excluded: bool
+    is_active: bool
+
+
 def render_text_search_filter(
     label: str,
     key: str,
     placeholder: str = "Search...",
     help_text: str = None,
     container = None
-) -> str:
+) -> TextSearchResult:
     """
-    Render a text search filter.
-    
-    Args:
-        label: Filter label
-        key: Unique key for widget
-        placeholder: Placeholder text
-        help_text: Optional help tooltip
-        container: Optional Streamlit container
-        
-    Returns:
-        Search string (empty if nothing entered)
+    Render a text search filter with Excl option.
     """
     ctx = container if container else st
     
-    return ctx.text_input(
-        label,
+    # Header row
+    col_label, col_excl = ctx.columns([4, 1])
+    
+    with col_label:
+        ctx.markdown(f"**{label}**")
+    
+    with col_excl:
+        excluded = ctx.checkbox(
+            "Excl",
+            value=False,
+            key=f"{key}_excl",
+            help="Tick to EXCLUDE items matching search"
+        )
+    
+    # Text input
+    query = ctx.text_input(
+        label=label,
         placeholder=placeholder,
-        key=key,
+        key=f"{key}_input",
         help=help_text,
-        label_visibility="collapsed" if not label else "visible"
+        label_visibility="collapsed"
+    )
+    
+    return TextSearchResult(
+        query=query.strip(),
+        excluded=excluded,
+        is_active=bool(query.strip())
     )
 
 
 def apply_text_search_filter(
     df: pd.DataFrame,
     columns: List[str],
-    search_text: str,
+    search_result: TextSearchResult,
     case_sensitive: bool = False
 ) -> pd.DataFrame:
     """
-    Apply text search filter across multiple columns.
-    
-    Args:
-        df: DataFrame to filter
-        columns: List of columns to search in
-        search_text: Text to search for
-        case_sensitive: Whether search is case-sensitive
-        
-    Returns:
-        Filtered DataFrame
+    Apply text search filter to DataFrame (searches across multiple columns).
     """
-    if df.empty or not search_text:
+    if df.empty or not search_result.is_active:
         return df
     
-    # Build mask for OR across columns
-    mask = pd.Series([False] * len(df), index=df.index)
+    query = search_result.query
+    if not case_sensitive:
+        query = query.lower()
     
-    for col in columns:
-        if col in df.columns:
-            col_str = df[col].fillna('').astype(str)
-            if case_sensitive:
-                mask = mask | col_str.str.contains(search_text, regex=False)
-            else:
-                mask = mask | col_str.str.lower().str.contains(search_text.lower(), regex=False)
+    # Build combined mask across all columns
+    combined_mask = pd.Series([False] * len(df), index=df.index)
     
-    return df[mask]
+    for column in columns:
+        if column in df.columns:
+            col_values = df[column].astype(str)
+            if not case_sensitive:
+                col_values = col_values.str.lower()
+            
+            mask = col_values.str.contains(query, na=False, regex=False)
+            combined_mask = combined_mask | mask
+    
+    if search_result.excluded:
+        return df[~combined_mask]
+    else:
+        return df[combined_mask]
+
+
+# =============================================================================
+# NUMBER RANGE FILTER
+# =============================================================================
+
+@dataclass
+class NumberRangeResult:
+    """Result from number range filter."""
+    min_value: Optional[float]
+    max_value: Optional[float]
+    excluded: bool
+    is_active: bool
 
 
 def render_number_filter(
     label: str,
     key: str,
-    min_value: float = None,
-    max_value: float = None,
-    default_value: float = None,
-    step: float = None,
+    default_min: float = 0,
+    step: float = 1000,
     help_text: str = None,
     container = None
-) -> Optional[float]:
+) -> NumberRangeResult:
     """
-    Render a number input filter.
+    Render a minimum number filter with Excl option.
     """
     ctx = container if container else st
     
-    return ctx.number_input(
-        label,
-        min_value=min_value,
-        max_value=max_value,
-        value=default_value,
+    # Header row
+    col_label, col_excl = ctx.columns([4, 1])
+    
+    with col_label:
+        ctx.markdown(f"**{label}**")
+    
+    with col_excl:
+        excluded = ctx.checkbox(
+            "Excl",
+            value=False,
+            key=f"{key}_excl",
+            help="Tick to EXCLUDE items matching this condition"
+        )
+    
+    # Number input
+    min_value = ctx.number_input(
+        label=label,
+        value=default_min,
         step=step,
-        key=key,
-        help=help_text
+        key=f"{key}_input",
+        help=help_text,
+        label_visibility="collapsed"
+    )
+    
+    return NumberRangeResult(
+        min_value=min_value if min_value > 0 else None,
+        max_value=None,
+        excluded=excluded,
+        is_active=min_value > 0
     )
 
 
 def apply_number_filter(
     df: pd.DataFrame,
     column: str,
-    min_val: float = None,
-    max_val: float = None
+    filter_result: NumberRangeResult
 ) -> pd.DataFrame:
     """
-    Apply number range filter to DataFrame.
+    Apply number filter to DataFrame.
     """
-    if df.empty:
+    if df.empty or not filter_result.is_active:
         return df
     
     if column not in df.columns:
         return df
     
-    result = df.copy()
+    if filter_result.min_value is not None:
+        if filter_result.excluded:
+            # Exclude: keep rows BELOW min
+            return df[df[column] < filter_result.min_value]
+        else:
+            # Include: keep rows AT OR ABOVE min
+            return df[df[column] >= filter_result.min_value]
     
-    if min_val is not None:
-        result = result[result[column] >= min_val]
-    
-    if max_val is not None:
-        result = result[result[column] <= max_val]
-    
-    return result
+    return df
 
 
 # =============================================================================
@@ -339,16 +396,314 @@ class KPICenterFilters:
     """
     Filter UI components for KPI Center Performance page.
     
-    Renders all sidebar filters and handles validation.
+    SYNCED with Salesperson filters v2.2.0:
+    - Period definitions shown as visible text block above radio buttons
+    - Same date range logic and UI layout
+    - Same period type behavior (YTD/QTD/MTD for current_year)
+    - Identical tooltip text for Start/End inputs
+    - Same caption note about Sales data vs Backlog
     
     Usage:
         filters = KPICenterFilters(access)
-        filter_values = filters.render_sidebar_filters(kpi_center_df, entity_df, available_years)
+        filter_values, submitted = filters.render_filter_form(
+            kpi_center_df, entity_df, default_start, default_end
+        )
     """
     
     def __init__(self, access: AccessControl):
         """Initialize with access control."""
         self.access = access
+    
+    def render_filter_form(
+        self,
+        kpi_center_df: pd.DataFrame,
+        entity_df: pd.DataFrame = None,
+        default_start_date: date = None,
+        default_end_date: date = None
+    ) -> Tuple[Dict, bool]:
+        """
+        Render ALL filters inside a form - only applies when user clicks Apply.
+        This prevents page reruns on every filter change.
+        
+        SYNCED v2.2.0 with Salesperson logic:
+        - Period definitions displayed as visible text block (not hidden in tooltip)
+        - YTD/QTD/MTD: Auto-calculate for CURRENT YEAR (today.year)
+        - Custom: Date inputs enabled for any date range selection
+        - Date inputs show default values from database
+        - Identical tooltip: "Start/End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+        
+        Args:
+            kpi_center_df: KPI Center options
+            entity_df: Entity options  
+            default_start_date: Default start date (from DB - Jan 1 of latest sales year)
+            default_end_date: Default end date (from DB - max backlog ETD or today)
+        
+        Returns:
+            Tuple of (filter_values dict, submitted boolean)
+        """
+        # Default dates if not provided
+        today = date.today()
+        current_year = today.year
+        
+        if default_start_date is None:
+            default_start_date = date(current_year, 1, 1)
+        if default_end_date is None:
+            default_end_date = today
+        
+        # Pre-calculate date ranges for CURRENT YEAR (same as Salesperson)
+        current_quarter = (today.month - 1) // 3 + 1
+        quarter_start_month = (current_quarter - 1) * 3 + 1
+        
+        ytd_start = date(current_year, 1, 1)
+        ytd_end = today
+        
+        qtd_start = date(current_year, quarter_start_month, 1)
+        qtd_end = today
+        
+        mtd_start = date(current_year, today.month, 1)
+        mtd_end = today
+        
+        with st.sidebar:
+            st.header("🎯 KPI Center Filters")
+            
+            # Show access info at top
+            self._render_access_info()
+            
+            st.divider()
+            
+            # =================================================================
+            # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
+            # =================================================================
+            with st.form("kpi_center_filter_form", border=False):
+                
+                # =============================================================
+                # DATE RANGE SECTION (SYNCED with Salesperson v2.1.0)
+                # =============================================================
+                st.markdown("**📅 Date Range**")
+                st.caption("Applies to Sales data. Backlog shows full pipeline.")
+                
+                # Display period definitions as visible text block (same as Salesperson)
+                # This shows users exactly what each period means BEFORE they select
+                st.markdown(
+                    f"<div style='font-size: 12px; color: #666; line-height: 1.6; margin-bottom: 8px;'>"
+                    f"<b>YTD</b> (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}<br>"
+                    f"<b>QTD</b> (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}<br>"
+                    f"<b>MTD</b> ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}<br>"
+                    f"<b>Custom</b>: Select any date range using Start/End inputs"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                
+                # Period type radio (same layout as Salesperson)
+                period_type = st.radio(
+                    "Period",
+                    options=['YTD', 'QTD', 'MTD', 'Custom'],
+                    index=0,  # Default to YTD
+                    horizontal=True,
+                    key="form_period_type",
+                    help="Select time period for analysis"
+                )
+                
+                # Date inputs - ALWAYS VISIBLE but only used for Custom mode
+                # Tooltip clearly indicates behavior (same as Salesperson)
+                col_start, col_end = st.columns(2)
+                
+                with col_start:
+                    start_date_input = st.date_input(
+                        "Start",
+                        value=default_start_date,
+                        key="form_start_date",
+                        help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+                    )
+                
+                with col_end:
+                    end_date_input = st.date_input(
+                        "End",
+                        value=default_end_date,
+                        key="form_end_date",
+                        help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+                    )
+                
+                st.divider()
+                
+                # =============================================================
+                # KPI FILTER CHECKBOX
+                # =============================================================
+                only_with_kpi = st.checkbox(
+                    "Only with KPI assignment",
+                    value=True,
+                    key="form_only_with_kpi",
+                    help=(
+                        "Show only KPI Centers that have KPI targets assigned for the selected period. "
+                        "Uncheck to include all KPI Centers."
+                    )
+                )
+                
+                # Pre-fetch KPI Center IDs for filtering
+                kpi_check_years = [current_year]
+                kpi_center_ids_with_kpi = []
+                filtered_kpi_center_df = kpi_center_df.copy()
+                
+                if only_with_kpi and not kpi_center_df.empty:
+                    kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years)
+                    if kpi_center_ids_with_kpi:
+                        filtered_kpi_center_df = kpi_center_df[
+                            kpi_center_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
+                        ]
+                        excluded_count = len(kpi_center_df) - len(filtered_kpi_center_df)
+                        if excluded_count > 0:
+                            st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI ({excluded_count} hidden)")
+                
+                # =============================================================
+                # KPI CENTER FILTER
+                # =============================================================
+                st.markdown("**🎯 KPI Center**")
+                
+                if filtered_kpi_center_df.empty:
+                    kpi_center_ids = []
+                    st.warning("No KPI Centers available")
+                else:
+                    all_kpi_centers = filtered_kpi_center_df['kpi_center_name'].tolist()
+                    id_map = dict(zip(
+                        filtered_kpi_center_df['kpi_center_name'],
+                        filtered_kpi_center_df['kpi_center_id']
+                    ))
+                    
+                    options = ['All'] + all_kpi_centers
+                    
+                    selected_names = st.multiselect(
+                        "Select KPI Centers",
+                        options=options,
+                        default=['All'],
+                        key="form_kpi_center",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Convert to IDs
+                    if 'All' in selected_names or not selected_names:
+                        kpi_center_ids = list(id_map.values())
+                    else:
+                        kpi_center_ids = [id_map[name] for name in selected_names if name in id_map]
+                
+                # =============================================================
+                # KPI TYPE FILTER
+                # =============================================================
+                kpi_type_filter = None
+                if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
+                    types = kpi_center_df['kpi_type'].dropna().unique().tolist()
+                    if types:
+                        kpi_type_options = ['All Types'] + sorted(types)
+                        selected_type = st.selectbox(
+                            "KPI Type",
+                            options=kpi_type_options,
+                            index=0,
+                            key="form_kpi_type",
+                            help="Filter by KPI Center type (e.g., TERRITORY, INTERNAL)"
+                        )
+                        if selected_type != 'All Types':
+                            kpi_type_filter = selected_type
+                
+                st.divider()
+                
+                # =============================================================
+                # ENTITY FILTER
+                # =============================================================
+                st.markdown("**🏢 Legal Entity**")
+                
+                entity_ids = []
+                if entity_df is not None and not entity_df.empty:
+                    entity_options = ['All'] + entity_df['entity_name'].tolist()
+                    entity_id_map = dict(zip(
+                        entity_df['entity_name'],
+                        entity_df['entity_id']
+                    ))
+                    
+                    selected_entities = st.multiselect(
+                        "Select entities",
+                        options=entity_options,
+                        default=['All'],
+                        key="form_entity",
+                        label_visibility="collapsed"
+                    )
+                    
+                    if 'All' in selected_entities or not selected_entities:
+                        entity_ids = []  # No filter
+                    else:
+                        entity_ids = [
+                            entity_id_map[name]
+                            for name in selected_entities
+                            if name in entity_id_map
+                        ]
+                
+                st.divider()
+                
+                # =============================================================
+                # EXCLUDE INTERNAL REVENUE
+                # =============================================================
+                exclude_internal = st.checkbox(
+                    "Exclude internal revenue",
+                    value=True,
+                    key="form_exclude_internal",
+                    help=(
+                        "Exclude revenue from internal company transactions. "
+                        "Gross Profit is kept intact for accurate GP% calculation."
+                    )
+                )
+                
+                st.divider()
+                
+                # =============================================================
+                # SUBMIT BUTTON
+                # =============================================================
+                submitted = st.form_submit_button(
+                    "🔍 Apply Filters",
+                    use_container_width=True,
+                    type="primary"
+                )
+        
+        # =================================================================
+        # DETERMINE ACTUAL DATES BASED ON PERIOD TYPE (same as Salesperson)
+        # =================================================================
+        if period_type == 'YTD':
+            start_date = ytd_start
+            end_date = ytd_end
+            year = current_year
+        elif period_type == 'QTD':
+            start_date = qtd_start
+            end_date = qtd_end
+            year = current_year
+        elif period_type == 'MTD':
+            start_date = mtd_start
+            end_date = mtd_end
+            year = current_year
+        else:  # Custom
+            start_date = start_date_input
+            end_date = end_date_input
+            # Validation
+            if start_date > end_date:
+                end_date = start_date
+            # Use start_date's year for KPI matching
+            year = start_date.year
+        
+        # Build filter values dict
+        filter_values = {
+            'period_type': period_type,
+            'year': year,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': kpi_center_ids,
+            'kpi_type_filter': kpi_type_filter,
+            'entity_ids': entity_ids,
+            'exclude_internal_revenue': exclude_internal,
+            'show_yoy': True,  # Always enabled
+            'only_with_kpi': only_with_kpi,
+        }
+        
+        return filter_values, submitted
+    
+    # =========================================================================
+    # LEGACY METHOD - For backward compatibility
+    # =========================================================================
     
     def render_sidebar_filters(
         self,
@@ -357,401 +712,14 @@ class KPICenterFilters:
         available_years: List[int] = None
     ) -> Dict:
         """
-        Render all sidebar filters inside a form.
-        
-        UPDATED v2.1.0: Date range logic now matches Salesperson page.
-        - No Year dropdown - auto-detect from available_years
-        - YTD/QTD/MTD default to latest year in data
-        
-        Returns:
-            Dictionary of filter values
+        Legacy method - redirects to render_filter_form for backward compatibility.
         """
-        st.sidebar.title("🎯 KPI Center Filters")
-        
-        # Show access info
-        self._render_access_info()
-        
-        st.sidebar.divider()
-        
-        # Determine latest year from available data
-        current_year = datetime.now().year
-        years = available_years or [current_year, current_year - 1, current_year - 2]
-        latest_year = max(years) if years else current_year
-        
-        # Use form to batch updates
-        with st.sidebar.form("kpi_center_filters"):
-            # =================================================================
-            # DATE RANGE SECTION (UPDATED v2.1.0 - Match Salesperson)
-            # =================================================================
-            st.markdown("**📅 Date Range**")
-            st.caption("Applies to Sales data. Backlog shows full pipeline.")
-            
-            # Period Type
-            period_type = st.radio(
-                "Period",
-                options=PERIOD_TYPES,
-                horizontal=True,
-                key="filter_period_type",
-                help=self._get_period_help_text(latest_year),
-                label_visibility="collapsed"
-            )
-            
-            # Calculate default dates based on period type
-            default_start, default_end = self._calculate_period_dates(period_type, latest_year)
-            
-            # Date inputs - compact layout matching Salesperson
-            col_start, col_end = st.columns(2)
-            
-            with col_start:
-                custom_start = st.date_input(
-                    "Start",
-                    value=default_start,
-                    key="filter_start_date",
-                    help=self._get_start_date_help(period_type, latest_year)
-                )
-            
-            with col_end:
-                custom_end = st.date_input(
-                    "End",
-                    value=default_end,
-                    key="filter_end_date",
-                    help=self._get_end_date_help(period_type, latest_year)
-                )
-            
-            st.divider()
-            
-            # =================================================================
-            # KPI CENTER FILTERS
-            # =================================================================
-            
-            # Only with KPI assignment checkbox
-            only_with_kpi = st.checkbox(
-                "Only with KPI assignment",
-                value=True,
-                key="filter_only_with_kpi",
-                help="Show only KPI Centers that have KPI targets assigned for the selected year"
-            )
-            
-            # Determine year for KPI filter based on date range
-            filter_year = custom_start.year if custom_start else latest_year
-            
-            # KPI Center selector
-            kpi_center_ids = self._render_kpi_center_filter(
-                kpi_center_df, filter_year, only_with_kpi
-            )
-            
-            # KPI Type filter (TERRITORY, INTERNAL, etc.)
-            kpi_type_filter = self._render_kpi_type_filter(kpi_center_df)
-            
-            # Entity filter
-            entity_ids = []
-            if entity_df is not None and not entity_df.empty:
-                entity_ids = self._render_entity_filter(entity_df)
-            
-            st.divider()
-            
-            # =================================================================
-            # ADDITIONAL OPTIONS
-            # =================================================================
-            
-            # Exclude internal revenue
-            exclude_internal = st.checkbox(
-                "Exclude internal revenue",
-                value=True,
-                key="filter_exclude_internal",
-                help="Filter out sales to internal companies"
-            )
-            
-            # YoY comparison toggle
-            show_yoy = st.checkbox(
-                "Show YoY comparison",
-                value=True,
-                key="filter_show_yoy",
-                help="Show Year-over-Year comparison metrics"
-            )
-            
-            # Submit button
-            submitted = st.form_submit_button(
-                "Apply Filters",
-                use_container_width=True,
-                type="primary"
-            )
-        
-        # =====================================================================
-        # REFRESH BUTTON (Outside form)
-        # =====================================================================
-        st.sidebar.divider()
-        
-        col_r1, col_r2 = st.sidebar.columns([1, 1])
-        
-        with col_r1:
-            if st.button("🔄 Refresh", use_container_width=True, 
-                        help="Reload data from database"):
-                clear_data_cache()
-                st.rerun()
-        
-        with col_r2:
-            # Show cache info
-            cached_start, cached_end = _get_cached_year_range()
-            if cached_start and cached_end:
-                st.caption(f"📦 {cached_start}-{cached_end}")
-            else:
-                st.caption("📦 No cache")
-        
-        # Calculate final dates based on period type
-        start_date, end_date = self._get_period_dates(
-            period_type, filter_year, custom_start, custom_end
+        filter_values, _ = self.render_filter_form(
+            kpi_center_df=kpi_center_df,
+            entity_df=entity_df
         )
-        
-        # Store in session state
-        filter_values = {
-            'period_type': period_type,
-            'year': start_date.year,  # Year derived from dates
-            'start_date': start_date,
-            'end_date': end_date,
-            'kpi_center_ids': kpi_center_ids,
-            'kpi_type_filter': kpi_type_filter,
-            'entity_ids': entity_ids,
-            'exclude_internal_revenue': exclude_internal,
-            'show_yoy': show_yoy,
-            'only_with_kpi': only_with_kpi,
-            'submitted': submitted,
-        }
-        
-        # Always show filter summary
-        self._show_filter_summary(filter_values)
-        
+        filter_values['submitted'] = True  # Always consider as submitted for legacy
         return filter_values
-    
-    # =========================================================================
-    # PERIOD HANDLING (UPDATED v2.1.0)
-    # =========================================================================
-    
-    def _get_period_help_text(self, year: int) -> str:
-        """Get detailed help text for period selector."""
-        today = date.today()
-        
-        # YTD dates
-        ytd_start = date(year, 1, 1)
-        ytd_end = today if year == today.year else date(year, 12, 31)
-        
-        # QTD dates
-        current_quarter = (today.month - 1) // 3 + 1
-        quarter_start_month = (current_quarter - 1) * 3 + 1
-        qtd_start = date(year, quarter_start_month, 1)
-        qtd_end = today if year == today.year else date(year, 12, 31)
-        
-        # MTD dates
-        if year == today.year:
-            mtd_start = date(year, today.month, 1)
-            mtd_end = today
-        else:
-            mtd_start = date(year, 12, 1)
-            mtd_end = date(year, 12, 31)
-        
-        return f"""
-**Period Types for {year}:**
-
-• **YTD** (Year to Date): {ytd_start.strftime('%b %d')} → {ytd_end.strftime('%b %d, %Y')}
-• **QTD** (Quarter to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}
-• **MTD** (Month to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}
-• **Custom**: Select your own date range
-
-Dates are auto-calculated. For Custom, edit the Start/End fields.
-        """.strip()
-    
-    def _get_start_date_help(self, period_type: str, year: int) -> str:
-        """Get help text for start date input."""
-        if period_type == 'Custom':
-            return "Select start date for custom period"
-        else:
-            return f"Auto-calculated for {period_type}. Switch to 'Custom' to change."
-    
-    def _get_end_date_help(self, period_type: str, year: int) -> str:
-        """Get help text for end date input."""
-        if period_type == 'Custom':
-            return "Select end date for custom period"
-        else:
-            return f"Auto-calculated for {period_type}. Switch to 'Custom' to change."
-    
-    @staticmethod
-    def _calculate_period_dates(period_type: str, year: int) -> Tuple[date, date]:
-        """
-        Calculate default start and end dates for a period type.
-        Used for setting initial values in date inputs.
-        
-        Args:
-            period_type: YTD, QTD, MTD, or Custom
-            year: Target year (latest year from data)
-            
-        Returns:
-            Tuple of (start_date, end_date)
-        """
-        today = date.today()
-        year = int(year)
-        
-        if period_type == 'YTD':
-            start = date(year, 1, 1)
-            end = today if year == today.year else date(year, 12, 31)
-        
-        elif period_type == 'QTD':
-            current_quarter = (today.month - 1) // 3 + 1
-            quarter_start_month = (current_quarter - 1) * 3 + 1
-            start = date(year, quarter_start_month, 1)
-            end = today if year == today.year else date(year, 12, 31)
-        
-        elif period_type == 'MTD':
-            if year == today.year:
-                start = date(year, today.month, 1)
-                end = today
-            else:
-                # For past years, show December
-                start = date(year, 12, 1)
-                end = date(year, 12, 31)
-        
-        else:  # Custom
-            start = date(year, 1, 1)
-            end = min(today, date(year, 12, 31))
-        
-        return start, end
-    
-    def _get_period_dates(
-        self,
-        period_type: str,
-        year: int,
-        custom_start: date,
-        custom_end: date
-    ) -> Tuple[date, date]:
-        """
-        Calculate final start and end dates based on period type.
-        
-        For Custom, uses the provided dates.
-        For YTD/QTD/MTD, calculates automatically.
-        """
-        if period_type == 'Custom':
-            return custom_start, custom_end
-        
-        return self._calculate_period_dates(period_type, year)
-    
-    # =========================================================================
-    # KPI CENTER FILTER
-    # =========================================================================
-    
-    def _render_kpi_center_filter(
-        self,
-        kpi_center_df: pd.DataFrame,
-        year: int,
-        only_with_kpi: bool
-    ) -> List[int]:
-        """Render KPI Center filter."""
-        if kpi_center_df.empty:
-            st.warning("No KPI Centers available")
-            return []
-        
-        # Filter to those with KPI assignment if requested
-        filtered_df = kpi_center_df.copy()
-        hidden_count = 0
-        
-        if only_with_kpi:
-            kpi_centers_with_assignment = _get_kpi_centers_with_assignments([year])
-            if kpi_centers_with_assignment:
-                original_count = len(filtered_df)
-                filtered_df = filtered_df[
-                    filtered_df['kpi_center_id'].isin(kpi_centers_with_assignment)
-                ]
-                hidden_count = original_count - len(filtered_df)
-        
-        if filtered_df.empty:
-            st.warning("No KPI Centers with assignments for this year")
-            return []
-        
-        # Show count of KPI Centers with/without KPI
-        if only_with_kpi and hidden_count > 0:
-            st.caption(f"📋 {len(filtered_df)} with KPI ({hidden_count} hidden)")
-        
-        # Build options grouped by type
-        all_kpi_centers = filtered_df['kpi_center_name'].tolist()
-        id_map = dict(zip(
-            filtered_df['kpi_center_name'],
-            filtered_df['kpi_center_id']
-        ))
-        
-        options = ['All'] + all_kpi_centers
-        
-        selected = st.multiselect(
-            "🎯 KPI Center",
-            options=options,
-            default=['All'],
-            key="filter_kpi_center"
-        )
-        
-        # Convert to IDs
-        if 'All' in selected or not selected:
-            return list(id_map.values())
-        
-        return [id_map[name] for name in selected if name in id_map]
-    
-    # =========================================================================
-    # KPI TYPE FILTER
-    # =========================================================================
-    
-    def _render_kpi_type_filter(
-        self,
-        kpi_center_df: pd.DataFrame
-    ) -> Optional[str]:
-        """Render KPI Type filter (TERRITORY, INTERNAL, etc.)."""
-        if kpi_center_df.empty or 'kpi_type' not in kpi_center_df.columns:
-            return None
-        
-        types = kpi_center_df['kpi_type'].dropna().unique().tolist()
-        
-        if not types:
-            return None
-        
-        options = ['All Types'] + sorted(types)
-        
-        selected = st.selectbox(
-            "KPI Type",
-            options=options,
-            index=0,
-            key="filter_kpi_type",
-            help="Filter by KPI Center type (e.g., TERRITORY, INTERNAL)"
-        )
-        
-        if selected == 'All Types':
-            return None
-        
-        return selected
-    
-    # =========================================================================
-    # ENTITY FILTER
-    # =========================================================================
-    
-    def _render_entity_filter(
-        self,
-        entity_df: pd.DataFrame
-    ) -> List[int]:
-        """Render entity (legal entity) filter."""
-        if entity_df.empty:
-            return []
-        
-        options = ['All Entities'] + entity_df['entity_name'].tolist()
-        id_map = dict(zip(
-            entity_df['entity_name'],
-            entity_df['entity_id']
-        ))
-        
-        selected = st.multiselect(
-            "🏢 Legal Entity",
-            options=options,
-            default=['All Entities'],
-            key="filter_entity"
-        )
-        
-        if 'All Entities' in selected or not selected:
-            return []  # No filter - return empty list to indicate "all"
-        
-        return [id_map[name] for name in selected if name in id_map]
     
     # =========================================================================
     # ACCESS INFO
@@ -760,16 +728,17 @@ Dates are auto-calculated. For Custom, edit the Start/End fields.
     def _render_access_info(self):
         """Display access level info in sidebar."""
         if self.access.can_access_page():
-            st.sidebar.caption("🔓 Full Access - All KPI Centers")
+            st.caption("🔓 Full Access - All KPI Centers")
         else:
-            st.sidebar.error("🚫 Access Denied")
+            st.error("🚫 Access Denied")
     
     # =========================================================================
     # FILTER SUMMARY
     # =========================================================================
     
-    def _show_filter_summary(self, filters: Dict):
-        """Show summary of current filters in sidebar."""
+    @staticmethod
+    def get_filter_summary(filters: Dict) -> str:
+        """Get human-readable summary of current filters."""
         parts = []
         
         # Period
@@ -789,32 +758,6 @@ Dates are auto-calculated. For Custom, edit the Start/End fields.
             parts.append(f"{kc_count} KPI Centers")
         
         # Internal revenue status
-        if filters.get('exclude_internal_revenue', True):
-            parts.append("excl. internal")
-        
-        st.sidebar.caption("📊 " + " • ".join(parts))
-    
-    # =========================================================================
-    # STATIC HELPERS
-    # =========================================================================
-    
-    @staticmethod
-    def get_filter_summary(filters: Dict) -> str:
-        """Get human-readable summary of current filters."""
-        parts = []
-        
-        parts.append(f"{filters['period_type']} {filters['year']}")
-        parts.append(
-            f"({filters['start_date'].strftime('%b %d')} - "
-            f"{filters['end_date'].strftime('%b %d')})"
-        )
-        
-        kc_count = len(filters.get('kpi_center_ids', []))
-        if kc_count == 1:
-            parts.append("1 KPI Center")
-        elif kc_count > 1:
-            parts.append(f"{kc_count} KPI Centers")
-        
         if filters.get('exclude_internal_revenue', True):
             parts.append("excl. internal")
         
