@@ -11,8 +11,14 @@ Renders filter UI elements:
 - YoY comparison toggle
 - KPI Type filter
 
-VERSION: 2.2.0
+VERSION: 2.3.0
 CHANGELOG:
+- v2.3.0: BUGFIX - Parent-Child Hierarchy & Dynamic Year Check
+          - Added _expand_kpi_center_ids_with_children() to expand parent → all children
+          - Fixed "Only with KPI" checkbox to check years based on selected period
+            (YTD/QTD/MTD → current_year, Custom → years in date range)
+          - Added kpi_center_ids_expanded to filter_values for client-side filtering
+          - Added kpi_center_ids_selected for display purposes (original user selection)
 - v2.2.0: SYNCED UI with Salesperson page
           - Period definitions shown in tooltip (?) icon next to Period label
           - Identical tooltip format for Start/End date inputs
@@ -79,6 +85,74 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
     except Exception as e:
         logger.error(f"Error fetching KPI Centers with assignments: {e}")
         return []
+
+
+# =============================================================================
+# PARENT-CHILD HIERARCHY HELPER - NEW v2.3.0
+# =============================================================================
+
+def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]:
+    """
+    Expand KPI Center IDs to include all children (recursive).
+    
+    When user selects a parent KPI Center, this function finds all 
+    descendant KPI Centers and returns the complete list.
+    
+    Args:
+        kpi_center_ids: List of selected KPI Center IDs (may include parents)
+        
+    Returns:
+        List of KPI Center IDs including all descendants
+        
+    Example:
+        Input: [1]  (where 1 is parent of 101, 102, 103)
+        Output: [1, 101, 102, 103]
+    """
+    if not kpi_center_ids:
+        return kpi_center_ids
+    
+    try:
+        from utils.db import get_db_engine
+        engine = get_db_engine()
+        
+        # Use recursive CTE to get all descendants
+        query = """
+            WITH RECURSIVE all_centers AS (
+                -- Base case: selected centers
+                SELECT id AS kpi_center_id
+                FROM kpi_centers 
+                WHERE id IN :selected_ids
+                  AND (delete_flag = 0 OR delete_flag IS NULL)
+                
+                UNION ALL
+                
+                -- Recursive case: all descendants
+                SELECT kc.id
+                FROM kpi_centers kc
+                INNER JOIN all_centers ac ON kc.parent_center_id = ac.kpi_center_id
+                WHERE kc.delete_flag = 0 OR kc.delete_flag IS NULL
+            )
+            SELECT DISTINCT kpi_center_id FROM all_centers
+            ORDER BY kpi_center_id
+        """
+        
+        with engine.connect() as conn:
+            result = conn.execute(text(query), {'selected_ids': tuple(kpi_center_ids)})
+            expanded_ids = [row[0] for row in result]
+            
+            # Log expansion for debugging
+            if len(expanded_ids) > len(kpi_center_ids):
+                logger.info(
+                    f"KPI Center IDs expanded: {len(kpi_center_ids)} → {len(expanded_ids)} "
+                    f"(added {len(expanded_ids) - len(kpi_center_ids)} children)"
+                )
+            
+            return expanded_ids
+            
+    except Exception as e:
+        logger.error(f"Error expanding KPI Center IDs with children: {e}")
+        # Fallback: return original IDs
+        return kpi_center_ids
 
 
 # =============================================================================
@@ -403,6 +477,10 @@ class KPICenterFilters:
     - Identical tooltip text for Start/End inputs
     - Same caption note about Sales data vs Backlog
     
+    UPDATED v2.3.0:
+    - Dynamic year check for "Only with KPI" based on period type
+    - Parent-child hierarchy expansion for KPI Centers
+    
     Usage:
         filters = KPICenterFilters(access)
         filter_values, submitted = filters.render_filter_form(
@@ -431,6 +509,10 @@ class KPICenterFilters:
         - Custom: Date inputs enabled for any date range selection
         - Date inputs show default values from database
         - Identical tooltip: "Start/End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+        
+        UPDATED v2.3.0:
+        - Dynamic year check for "Only with KPI" checkbox
+        - Parent-child expansion for kpi_center_ids
         
         Args:
             kpi_center_df: KPI Center options
@@ -521,7 +603,7 @@ class KPICenterFilters:
                 st.divider()
                 
                 # =============================================================
-                # KPI FILTER CHECKBOX
+                # KPI FILTER CHECKBOX - UPDATED v2.3.0: Dynamic year check
                 # =============================================================
                 only_with_kpi = st.checkbox(
                     "Only with KPI assignment",
@@ -533,8 +615,20 @@ class KPICenterFilters:
                     )
                 )
                 
+                # =====================================================
+                # DYNAMIC YEAR CHECK - NEW v2.3.0
+                # Determine which years to check based on period type
+                # =====================================================
+                if period_type in ['YTD', 'QTD', 'MTD']:
+                    # Standard periods use current year
+                    kpi_check_years = [current_year]
+                else:
+                    # Custom mode: check all years in the selected date range
+                    start_year = start_date_input.year
+                    end_year = end_date_input.year
+                    kpi_check_years = list(range(start_year, end_year + 1))
+                
                 # Pre-fetch KPI Center IDs for filtering
-                kpi_check_years = [current_year]
                 kpi_center_ids_with_kpi = []
                 filtered_kpi_center_df = kpi_center_df.copy()
                 
@@ -546,7 +640,9 @@ class KPICenterFilters:
                         ]
                         excluded_count = len(kpi_center_df) - len(filtered_kpi_center_df)
                         if excluded_count > 0:
-                            st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI ({excluded_count} hidden)")
+                            # Show which years are being checked
+                            years_str = ", ".join(map(str, kpi_check_years))
+                            st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI in {years_str} ({excluded_count} hidden)")
                 
                 # =============================================================
                 # KPI CENTER FILTER
@@ -679,18 +775,36 @@ class KPICenterFilters:
             # Use start_date's year for KPI matching
             year = start_date.year
         
+        # =================================================================
+        # EXPAND KPI CENTER IDs WITH CHILDREN - NEW v2.3.0
+        # =================================================================
+        # Store original selection for display/reference
+        kpi_center_ids_selected = kpi_center_ids.copy()
+        
+        # Expand to include all children
+        kpi_center_ids_expanded = _expand_kpi_center_ids_with_children(kpi_center_ids)
+        
+        # Show expansion info if children were added
+        if len(kpi_center_ids_expanded) > len(kpi_center_ids_selected):
+            children_added = len(kpi_center_ids_expanded) - len(kpi_center_ids_selected)
+            logger.debug(f"KPI Centers: {len(kpi_center_ids_selected)} selected + {children_added} children = {len(kpi_center_ids_expanded)} total")
+        
         # Build filter values dict
         filter_values = {
             'period_type': period_type,
             'year': year,
             'start_date': start_date,
             'end_date': end_date,
-            'kpi_center_ids': kpi_center_ids,
+            # NEW v2.3.0: Both selected and expanded IDs
+            'kpi_center_ids': kpi_center_ids_expanded,           # Use this for data filtering
+            'kpi_center_ids_selected': kpi_center_ids_selected,  # Original user selection
+            'kpi_center_ids_expanded': kpi_center_ids_expanded,  # Explicit expanded list
             'kpi_type_filter': kpi_type_filter,
             'entity_ids': entity_ids,
             'exclude_internal_revenue': exclude_internal,
             'show_yoy': True,  # Always enabled
             'only_with_kpi': only_with_kpi,
+            'kpi_check_years': kpi_check_years,  # NEW: Years used for KPI check
         }
         
         return filter_values, submitted
@@ -744,12 +858,16 @@ class KPICenterFilters:
             f"{filters['end_date'].strftime('%b %d')})"
         )
         
-        # KPI Centers count
-        kc_count = len(filters.get('kpi_center_ids', []))
-        if kc_count == 1:
+        # KPI Centers count - UPDATED v2.3.0: Show selected vs expanded
+        kc_selected = len(filters.get('kpi_center_ids_selected', []))
+        kc_expanded = len(filters.get('kpi_center_ids_expanded', filters.get('kpi_center_ids', [])))
+        
+        if kc_expanded > kc_selected:
+            parts.append(f"{kc_selected} KPI Centers (+{kc_expanded - kc_selected} children)")
+        elif kc_selected == 1:
             parts.append("1 KPI Center")
-        elif kc_count > 1:
-            parts.append(f"{kc_count} KPI Centers")
+        elif kc_selected > 1:
+            parts.append(f"{kc_selected} KPI Centers")
         
         # Internal revenue status
         if filters.get('exclude_internal_revenue', True):

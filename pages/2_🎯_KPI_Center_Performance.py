@@ -325,10 +325,22 @@ def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
 
 
 def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
-    """Filter cached data client-side based on ALL filters."""
+    """
+    Filter cached data client-side based on ALL filters.
+    
+    UPDATED v2.5.0: Uses kpi_center_ids_expanded to include children data
+    when a parent KPI Center is selected.
+    """
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
-    kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    
+    # =========================================================================
+    # UPDATED v2.5.0: Use expanded IDs (includes children)
+    # =========================================================================
+    # Fallback to 'kpi_center_ids' for backward compatibility
+    kpi_center_ids = filter_values.get('kpi_center_ids_expanded', 
+                                        filter_values.get('kpi_center_ids', []))
+    
     entity_ids = filter_values.get('entity_ids', [])
     year = filter_values['year']
     exclude_internal_revenue = filter_values.get('exclude_internal_revenue', True)
@@ -356,7 +368,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 ]
                 break
         
-        # Filter by kpi_center_ids
+        # Filter by kpi_center_ids (now uses expanded IDs with children)
         if kpi_center_ids:
             kpc_ids_set = set(kpi_center_ids)
             if 'kpi_center_id' in df_filtered.columns:
@@ -376,7 +388,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         filtered[key] = df_filtered
     
-    # Filter targets by year AND kpi_center_ids
+    # Filter targets by year AND kpi_center_ids (using expanded IDs)
     if 'targets_df' in filtered and not filtered['targets_df'].empty:
         targets = filtered['targets_df']
         if 'year' in targets.columns:
