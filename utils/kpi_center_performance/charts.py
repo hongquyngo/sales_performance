@@ -2,8 +2,13 @@
 """
 Altair Chart Builders for KPI Center Performance
 
-VERSION: 2.4.0
+VERSION: 2.5.0
 CHANGELOG:
+- v2.5.0: ADDED Multi-Year Comparison charts (synced with Salesperson page):
+          - build_multi_year_monthly_chart(): Grouped bar chart by year
+          - build_multi_year_cumulative_chart(): Cumulative lines by year  
+          - build_multi_year_summary_table(): Summary table with YoY growth
+          - _empty_chart(): Helper for empty state
 - v2.4.0: SYNCED UI with Salesperson Performance page:
           - Added build_forecast_waterfall_chart() for Backlog & Forecast
           - Added build_gap_analysis_chart() for Target vs Forecast comparison
@@ -1194,3 +1199,300 @@ Click 📋 button next to each metric to view details.
             chart = bars + text
         
         return chart.properties(width='container', height=min(400, top_n * 35), title=title)
+    
+    # =========================================================================
+    # MULTI-YEAR COMPARISON CHARTS (NEW v2.5.0 - synced with Salesperson page)
+    # =========================================================================
+    
+    @staticmethod
+    def build_multi_year_monthly_chart(
+        sales_df: pd.DataFrame,
+        years: List[int],
+        metric: str = 'revenue',
+        title: str = ""
+    ) -> alt.Chart:
+        """
+        Build grouped bar chart comparing multiple years by month.
+        
+        Args:
+            sales_df: Sales data containing multiple years
+            years: List of years to compare [2023, 2024, 2025]
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            title: Chart title
+            
+        Returns:
+            Altair grouped bar chart
+        """
+        # KPI Center column mapping (different from Salesperson)
+        metric_map = {
+            'revenue': 'sales_by_kpi_center_usd',
+            'gross_profit': 'gross_profit_by_kpi_center_usd',
+            'gp1': 'gp1_by_kpi_center_usd'
+        }
+        
+        col = metric_map.get(metric, 'sales_by_kpi_center_usd')
+        
+        if sales_df.empty:
+            return KPICenterCharts._empty_chart("No data available")
+        
+        # Aggregate by year and month
+        df = sales_df.copy()
+        
+        # Ensure inv_date is datetime
+        if 'inv_date' in df.columns:
+            df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+            df['year'] = df['inv_date'].dt.year
+        elif 'invoice_year' in df.columns:
+            df['year'] = df['invoice_year'].astype(int)
+        else:
+            return KPICenterCharts._empty_chart("No date column found")
+        
+        # Ensure invoice_month exists
+        if 'invoice_month' not in df.columns:
+            df['invoice_month'] = df['inv_date'].dt.strftime('%b')
+        
+        monthly = df.groupby(['year', 'invoice_month'])[col].sum().reset_index()
+        monthly.columns = ['year', 'month', 'amount']
+        
+        # Filter to selected years
+        monthly = monthly[monthly['year'].isin(years)]
+        
+        if monthly.empty:
+            return KPICenterCharts._empty_chart("No data for selected years")
+        
+        # Convert year to string for proper categorical handling
+        monthly['year'] = monthly['year'].astype(str)
+        
+        # Generate color scale for years
+        year_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        color_scale = alt.Scale(
+            domain=[str(y) for y in sorted(years)],
+            range=year_colors[:len(years)]
+        )
+        
+        # Grouped bar chart
+        bars = alt.Chart(monthly).mark_bar().encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
+            y=alt.Y('amount:Q', title=f'{metric.replace("_", " ").title()} (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color('year:N', scale=color_scale, title='Year', legend=alt.Legend(orient='bottom')),
+            xOffset=alt.XOffset('year:N', sort=[str(y) for y in sorted(years)]),
+            tooltip=[
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip('year:N', title='Year'),
+                alt.Tooltip('amount:Q', title='Amount', format=',.0f')
+            ]
+        )
+        
+        chart = bars.properties(
+            width=CHART_WIDTH,
+            height=350,
+            title=title if title else f"Monthly {metric.replace('_', ' ').title()} by Year"
+        )
+        
+        return chart
+    
+    @staticmethod
+    def build_multi_year_cumulative_chart(
+        sales_df: pd.DataFrame,
+        years: List[int],
+        metric: str = 'revenue',
+        title: str = ""
+    ) -> alt.Chart:
+        """
+        Build cumulative line chart comparing multiple years.
+        
+        Args:
+            sales_df: Sales data containing multiple years
+            years: List of years to compare [2023, 2024, 2025]
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            title: Chart title
+            
+        Returns:
+            Altair line chart with multiple lines (one per year)
+        """
+        # KPI Center column mapping
+        metric_map = {
+            'revenue': 'sales_by_kpi_center_usd',
+            'gross_profit': 'gross_profit_by_kpi_center_usd',
+            'gp1': 'gp1_by_kpi_center_usd'
+        }
+        
+        col = metric_map.get(metric, 'sales_by_kpi_center_usd')
+        
+        if sales_df.empty:
+            return KPICenterCharts._empty_chart("No data available")
+        
+        df = sales_df.copy()
+        
+        # Ensure inv_date is datetime
+        if 'inv_date' in df.columns:
+            df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+            df['year'] = df['inv_date'].dt.year
+        elif 'invoice_year' in df.columns:
+            df['year'] = df['invoice_year'].astype(int)
+        else:
+            return KPICenterCharts._empty_chart("No date column found")
+        
+        # Ensure invoice_month exists
+        if 'invoice_month' not in df.columns:
+            df['invoice_month'] = df['inv_date'].dt.strftime('%b')
+        
+        # Calculate cumulative for each year
+        cumulative_data = []
+        
+        for year in sorted(years):
+            year_df = df[df['year'] == year]
+            if year_df.empty:
+                continue
+            
+            # Aggregate by month
+            monthly = year_df.groupby('invoice_month')[col].sum().reset_index()
+            monthly.columns = ['month', 'amount']
+            
+            # Ensure all months present
+            all_months = pd.DataFrame({'month': MONTH_ORDER})
+            monthly = all_months.merge(monthly, on='month', how='left').fillna(0)
+            
+            # Add month order for sorting
+            monthly['month_order'] = monthly['month'].apply(lambda x: MONTH_ORDER.index(x))
+            monthly = monthly.sort_values('month_order')
+            
+            # Calculate cumulative
+            monthly['cumulative'] = monthly['amount'].cumsum()
+            monthly['year'] = str(year)
+            
+            # For current/incomplete years, only show months with data
+            if monthly['amount'].sum() > 0:
+                last_valid_month = monthly[monthly['amount'] > 0]['month_order'].max()
+                monthly = monthly[monthly['month_order'] <= last_valid_month]
+            
+            cumulative_data.append(monthly)
+        
+        if not cumulative_data:
+            return KPICenterCharts._empty_chart("No data for selected years")
+        
+        combined = pd.concat(cumulative_data, ignore_index=True)
+        
+        # Generate color scale for years
+        year_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        color_scale = alt.Scale(
+            domain=[str(y) for y in sorted(years)],
+            range=year_colors[:len(years)]
+        )
+        
+        # Line chart
+        lines = alt.Chart(combined).mark_line(
+            point=alt.OverlayMarkDef(size=50),
+            strokeWidth=2.5
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
+            y=alt.Y('cumulative:Q', title=f'Cumulative {metric.replace("_", " ").title()} (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color('year:N', scale=color_scale, title='Year', legend=alt.Legend(orient='bottom')),
+            tooltip=[
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip('year:N', title='Year'),
+                alt.Tooltip('amount:Q', title='Monthly', format=',.0f'),
+                alt.Tooltip('cumulative:Q', title='Cumulative', format=',.0f')
+            ]
+        )
+        
+        # Add end-point labels
+        last_points_list = []
+        for year in sorted(years):
+            year_data = combined[combined['year'] == str(year)]
+            if not year_data.empty and year_data['cumulative'].sum() > 0:
+                last_points_list.append(year_data.iloc[-1].to_dict())
+        
+        if last_points_list:
+            last_points_df = pd.DataFrame(last_points_list)
+            
+            text = alt.Chart(last_points_df).mark_text(
+                align='left',
+                dx=8,
+                dy=-5,
+                fontSize=11,
+                fontWeight='bold'
+            ).encode(
+                x=alt.X('month:N', sort=MONTH_ORDER),
+                y=alt.Y('cumulative:Q'),
+                text=alt.Text('cumulative:Q', format=',.0f'),
+                color=alt.Color('year:N', scale=color_scale, legend=None)
+            )
+            
+            chart = alt.layer(lines, text)
+        else:
+            chart = lines
+        
+        chart = chart.properties(
+            width=CHART_WIDTH,
+            height=350,
+            title=title if title else f"Cumulative {metric.replace('_', ' ').title()} by Year"
+        )
+        
+        return chart
+    
+    @staticmethod
+    def build_multi_year_summary_table(
+        sales_df: pd.DataFrame,
+        years: List[int],
+        metric: str = 'revenue'
+    ) -> pd.DataFrame:
+        """
+        Build summary table for multi-year comparison.
+        
+        Args:
+            sales_df: Sales data containing multiple years
+            years: List of years to compare
+            metric: 'revenue', 'gross_profit', or 'gp1'
+            
+        Returns:
+            DataFrame with yearly totals and YoY growth
+        """
+        # KPI Center column mapping
+        metric_map = {
+            'revenue': 'sales_by_kpi_center_usd',
+            'gross_profit': 'gross_profit_by_kpi_center_usd',
+            'gp1': 'gp1_by_kpi_center_usd'
+        }
+        
+        col = metric_map.get(metric, 'sales_by_kpi_center_usd')
+        
+        if sales_df.empty:
+            return pd.DataFrame()
+        
+        df = sales_df.copy()
+        
+        # Ensure year column exists
+        if 'inv_date' in df.columns:
+            df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+            df['year'] = df['inv_date'].dt.year
+        elif 'invoice_year' in df.columns:
+            df['year'] = df['invoice_year'].astype(int)
+        else:
+            return pd.DataFrame()
+        
+        # Aggregate by year
+        yearly = df.groupby('year')[col].sum().reset_index()
+        yearly.columns = ['Year', 'Total']
+        yearly = yearly[yearly['Year'].isin(years)].sort_values('Year')
+        
+        # Calculate YoY growth
+        yearly['YoY Growth'] = yearly['Total'].pct_change() * 100
+        yearly['YoY Growth'] = yearly['YoY Growth'].apply(
+            lambda x: f"{x:+.1f}%" if pd.notna(x) else "-"
+        )
+        
+        return yearly
+    
+    @staticmethod
+    def _empty_chart(message: str = "No data") -> alt.Chart:
+        """Return an empty chart with a message."""
+        return alt.Chart(pd.DataFrame({'text': [message]})).mark_text(
+            fontSize=14,
+            color='gray'
+        ).encode(
+            text='text:N'
+        ).properties(
+            width=400,
+            height=200
+        )

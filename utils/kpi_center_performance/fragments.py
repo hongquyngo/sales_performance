@@ -2,8 +2,13 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 2.4.0
+VERSION: 2.5.0
 CHANGELOG:
+- v2.5.0: ADDED Multi-Year Comparison (synced with Salesperson page):
+          - yoy_comparison_fragment: Now detects actual years in data
+          - >= 2 years → Multi-Year Comparison with grouped bars & cumulative lines
+          - 0-1 years → Traditional YoY Comparison (current vs previous)
+          - Removed debug print statements
 - v2.4.0: SYNCED UI with Salesperson Performance page:
           - monthly_trend_fragment: 2 charts side-by-side (Monthly Trend + Cumulative)
             with Customer/Brand/Product Excl filters
@@ -259,7 +264,7 @@ def monthly_trend_fragment(
 
 
 # =============================================================================
-# YOY COMPARISON FRAGMENT - UPDATED v2.4.0 to match SP page
+# YOY COMPARISON FRAGMENT - UPDATED v2.5.0 with Multi-Year support
 # =============================================================================
 
 @st.fragment
@@ -268,32 +273,30 @@ def yoy_comparison_fragment(
     filter_values: Dict,
     current_year: int = None,
     sales_df: pd.DataFrame = None,
-    raw_cached_data: dict = None,  # NEW v2.5.0: Use cached data for YoY
+    raw_cached_data: dict = None,
     fragment_key: str = "kpc_yoy"
 ):
     """
-    Year-over-Year comparison with tabs and filters.
-    SYNCED with Salesperson page (Image 3).
+    Year-over-Year / Multi-Year comparison with tabs and filters.
     
-    UPDATED v2.5.0: Now uses raw_cached_data first before querying DB.
-    This fixes the bug where YoY data was always $0 due to closure issue
-    with @st.cache_data on nested function.
+    UPDATED v2.5.0: Added Multi-Year Comparison (synced with Salesperson page)
+    - Detects actual years in data
+    - If >= 2 years → Multi-Year Comparison (grouped bars, cumulative lines)
+    - If 0-1 years → YoY Comparison (current vs previous year)
     
     Shows:
     - Tabs: Revenue / Gross Profit / GP1
-    - Summary metrics (Current Year vs Previous Year)
-    - Monthly Revenue Comparison (grouped bars)
-    - Cumulative Revenue (lines)
+    - Summary metrics (yearly totals with YoY growth)
+    - Monthly comparison charts
+    - Cumulative performance charts
     """
     from datetime import date
     
-    # Header with anchor link
-    st.subheader("📊 Year-over-Year Comparison ↔")
+    # Header
+    st.subheader("📊 Year-over-Year Comparison")
     
     if current_year is None:
         current_year = filter_values.get('year', date.today().year)
-    
-    previous_year = current_year - 1
     
     # =========================================================================
     # FILTERS ROW - SYNCED with SP page
@@ -309,7 +312,6 @@ def yoy_comparison_fragment(
             excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer",
                                        help="Exclude selected customers")
         
-        # Get customer options from current data or query
         if sales_df is not None and not sales_df.empty:
             customers = ['All customers...'] + sorted(sales_df['customer'].dropna().unique().tolist())
         else:
@@ -363,160 +365,11 @@ def yoy_comparison_fragment(
         )
     
     # =========================================================================
-    # LOAD DATA - UPDATED v2.5.0: Use cached data first, then query if needed
+    # APPLY LOCAL FILTERS TO SALES DATA
     # =========================================================================
     
-    start_date = filter_values.get('start_date', date(current_year, 1, 1))
-    end_date = filter_values.get('end_date', date.today())
-    kpi_center_ids = filter_values.get('kpi_center_ids', [])
-    entity_ids = filter_values.get('entity_ids', [])
-    exclude_internal = filter_values.get('exclude_internal_revenue', True)
-    
-    # Calculate previous year date range
-    try:
-        prev_start = date(start_date.year - 1, start_date.month, start_date.day)
-        prev_end = date(end_date.year - 1, end_date.month, end_date.day)
-    except ValueError:
-        # Handle Feb 29 edge case
-        prev_start = date(start_date.year - 1, start_date.month, 28)
-        prev_end = date(end_date.year - 1, end_date.month, 28)
-    
-    def get_yoy_data_from_cache_or_query():
-        """
-        Smart YoY data loading:
-        - Current year: Use passed sales_df (already filtered from main cache)
-        - Previous year: Check raw_cached_data first, query DB only if not found
-        """
-        # =====================================================================
-        # DEBUG: Print to terminal
-        # =====================================================================
-        print("\n" + "="*80)
-        print("🔍 DEBUG: yoy_comparison_fragment - get_yoy_data_from_cache_or_query()")
-        print("="*80)
-        print(f"📅 Current Year: {current_year}, Previous Year: {previous_year}")
-        print(f"📅 Current period: {start_date} → {end_date}")
-        print(f"📅 Previous period: {prev_start} → {prev_end}")
-        print(f"🎯 KPI Center IDs: {kpi_center_ids[:5] if kpi_center_ids else None}... (total: {len(kpi_center_ids) if kpi_center_ids else 0})")
-        print(f"🏢 Entity IDs: {entity_ids}")
-        print(f"🚫 Exclude Internal: {exclude_internal}")
-        print("-"*80)
-        
-        # Check raw_cached_data
-        print(f"📦 raw_cached_data is None: {raw_cached_data is None}")
-        if raw_cached_data:
-            print(f"📦 raw_cached_data keys: {list(raw_cached_data.keys())}")
-            if 'sales_df' in raw_cached_data:
-                cached_sales_check = raw_cached_data['sales_df']
-                print(f"📦 raw_cached_data['sales_df'] is None: {cached_sales_check is None}")
-                if cached_sales_check is not None:
-                    print(f"📦 raw_cached_data['sales_df'] shape: {cached_sales_check.shape}")
-                    print(f"📦 raw_cached_data['sales_df'] columns: {list(cached_sales_check.columns)[:10]}...")
-                    if 'inv_date' in cached_sales_check.columns:
-                        temp_dates = pd.to_datetime(cached_sales_check['inv_date'], errors='coerce')
-                        years_in_cache = sorted(temp_dates.dt.year.dropna().unique().tolist())
-                        print(f"📦 Years in raw_cached_data['sales_df']: {years_in_cache}")
-        print("-"*80)
-        
-        # Current year: Use the already-filtered sales_df passed from main page
-        current_df = sales_df.copy() if sales_df is not None and not sales_df.empty else pd.DataFrame()
-        print(f"📊 Current DF (from sales_df param): {current_df.shape if not current_df.empty else 'EMPTY'}")
-        
-        # Previous year: Try to get from cache first
-        previous_df = pd.DataFrame()
-        cache_hit = False
-        
-        if raw_cached_data and 'sales_df' in raw_cached_data:
-            cached_sales = raw_cached_data['sales_df']
-            
-            if cached_sales is not None and not cached_sales.empty and 'inv_date' in cached_sales.columns:
-                # Convert inv_date to datetime if needed
-                cached_sales = cached_sales.copy()
-                cached_sales['inv_date'] = pd.to_datetime(cached_sales['inv_date'], errors='coerce')
-                
-                # Check if previous year exists in cached data
-                cached_years = cached_sales['inv_date'].dt.year.unique().tolist()
-                print(f"📆 Cached years after conversion: {sorted(cached_years)}")
-                
-                if previous_year in cached_years:
-                    # ✅ CACHE HIT - Filter from cache, no DB query needed
-                    print(f"✅ CACHE HIT: {previous_year} found in cached years!")
-                    
-                    previous_df = cached_sales[
-                        (cached_sales['inv_date'] >= pd.Timestamp(prev_start)) &
-                        (cached_sales['inv_date'] <= pd.Timestamp(prev_end))
-                    ].copy()
-                    print(f"📊 Previous DF after date filter: {previous_df.shape}")
-                    
-                    # Apply KPI Center filter
-                    if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
-                        before_filter = len(previous_df)
-                        previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
-                        print(f"📊 Previous DF after KPI Center filter: {previous_df.shape} (removed {before_filter - len(previous_df)})")
-                    
-                    # Apply Entity filter
-                    if entity_ids and 'legal_entity_id' in previous_df.columns:
-                        before_filter = len(previous_df)
-                        previous_df = previous_df[previous_df['legal_entity_id'].isin(entity_ids)]
-                        print(f"📊 Previous DF after Entity filter: {previous_df.shape} (removed {before_filter - len(previous_df)})")
-                    
-                    cache_hit = True
-                else:
-                    print(f"❌ CACHE MISS: {previous_year} NOT in cached years {sorted(cached_years)}")
-            else:
-                print(f"⚠️ cached_sales invalid: is_none={cached_sales is None}, empty={cached_sales.empty if cached_sales is not None else 'N/A'}")
-        else:
-            print(f"⚠️ raw_cached_data not available or missing 'sales_df' key")
-        
-        # If not in cache, query DB
-        if not cache_hit:
-            print(f"🔄 Querying DB for {prev_start} to {prev_end}...")
-            try:
-                previous_df = queries.get_sales_data(
-                    start_date=prev_start,
-                    end_date=prev_end,
-                    kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
-                    entity_ids=entity_ids if entity_ids else None
-                )
-                print(f"📊 Previous DF from DB query: {previous_df.shape if not previous_df.empty else 'EMPTY'}")
-            except Exception as e:
-                print(f"❌ Error querying DB: {e}")
-                logger.error(f"Error querying previous year data: {e}")
-                previous_df = pd.DataFrame()
-        
-        # Exclude internal revenue if requested
-        if exclude_internal:
-            if not current_df.empty and 'customer_type' in current_df.columns:
-                before = len(current_df)
-                current_df = current_df[current_df['customer_type'] != 'Internal']
-                print(f"🚫 Current DF after exclude internal: {current_df.shape} (removed {before - len(current_df)})")
-            if not previous_df.empty and 'customer_type' in previous_df.columns:
-                before = len(previous_df)
-                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
-                print(f"🚫 Previous DF after exclude internal: {previous_df.shape} (removed {before - len(previous_df)})")
-        
-        # Final summary
-        print("-"*80)
-        print(f"📊 FINAL: Current DF rows={len(current_df)}, Previous DF rows={len(previous_df)}")
-        if not current_df.empty and 'sales_by_kpi_center_usd' in current_df.columns:
-            print(f"💰 Current Revenue: ${current_df['sales_by_kpi_center_usd'].sum():,.0f}")
-        if not previous_df.empty and 'sales_by_kpi_center_usd' in previous_df.columns:
-            print(f"💰 Previous Revenue: ${previous_df['sales_by_kpi_center_usd'].sum():,.0f}")
-        print("="*80 + "\n")
-        
-        return current_df, previous_df
-    
-    try:
-        current_df, previous_df = get_yoy_data_from_cache_or_query()
-    except Exception as e:
-        logger.error(f"Error loading YoY data: {e}")
-        st.error(f"Failed to load comparison data: {e}")
-        return
-    
-    # =========================================================================
-    # APPLY LOCAL FILTERS
-    # =========================================================================
-    
-    def apply_filters(df):
+    def apply_local_filters(df):
+        """Apply Customer/Brand/Product filters."""
         if df.empty:
             return df
         
@@ -542,110 +395,325 @@ def yoy_comparison_fragment(
         
         return result
     
-    current_filtered = apply_filters(current_df)
-    previous_filtered = apply_filters(previous_df)
+    # Apply filters to main sales_df
+    yoy_sales_df = apply_local_filters(sales_df) if sales_df is not None else pd.DataFrame()
     
-    # DEBUG: Check after local filters
-    print(f"🔍 After local filters:")
-    print(f"   current_filtered: {current_filtered.shape if not current_filtered.empty else 'EMPTY'}")
-    print(f"   previous_filtered: {previous_filtered.shape if not previous_filtered.empty else 'EMPTY'}")
-    if not previous_filtered.empty and 'sales_by_kpi_center_usd' in previous_filtered.columns:
-        print(f"   previous_filtered Revenue: ${previous_filtered['sales_by_kpi_center_usd'].sum():,.0f}")
+    # Show filter summary
+    active_filters = []
+    if selected_customer != 'All customers...':
+        mode = "excl" if excl_customer else "incl"
+        active_filters.append(f"Customer ({mode})")
+    if selected_brand != 'All brands...':
+        mode = "excl" if excl_brand else "incl"
+        active_filters.append(f"Brand ({mode})")
+    if selected_product != 'All products...':
+        mode = "excl" if excl_product else "incl"
+        active_filters.append(f"Product ({mode})")
+    
+    if active_filters:
+        st.caption(f"🔍 Filters: {' | '.join(active_filters)}")
     
     # =========================================================================
-    # PREPARE MONTHLY SUMMARIES
+    # DETECT ACTUAL YEARS IN DATA (key logic from Salesperson page)
     # =========================================================================
     
-    current_monthly = _prepare_monthly_summary(current_filtered, debug_label="current_filtered")
-    previous_monthly = _prepare_monthly_summary(previous_filtered, debug_label="previous_filtered")
-    
-    # DEBUG: Check monthly summaries
-    print(f"🔍 After _prepare_monthly_summary:")
-    print(f"   current_monthly: {current_monthly.shape if not current_monthly.empty else 'EMPTY'}")
-    print(f"   previous_monthly: {previous_monthly.shape if not previous_monthly.empty else 'EMPTY'}")
-    if not current_monthly.empty:
-        print(f"   current_monthly columns: {list(current_monthly.columns)}")
-        if 'revenue' in current_monthly.columns:
-            print(f"   current_monthly Revenue sum: ${current_monthly['revenue'].sum():,.0f}")
-    if not previous_monthly.empty:
-        print(f"   previous_monthly columns: {list(previous_monthly.columns)}")
-        if 'revenue' in previous_monthly.columns:
-            print(f"   previous_monthly Revenue sum: ${previous_monthly['revenue'].sum():,.0f}")
+    if not yoy_sales_df.empty and 'invoice_year' in yoy_sales_df.columns:
+        actual_years = sorted(yoy_sales_df['invoice_year'].dropna().unique().astype(int).tolist())
+    elif not yoy_sales_df.empty and 'inv_date' in yoy_sales_df.columns:
+        yoy_sales_df['_year'] = pd.to_datetime(yoy_sales_df['inv_date'], errors='coerce').dt.year
+        actual_years = sorted(yoy_sales_df['_year'].dropna().unique().astype(int).tolist())
     else:
-        print(f"   ⚠️ previous_monthly is EMPTY!")
+        actual_years = []
     
     # =========================================================================
-    # YEAR COMPARISON HEADER
+    # BRANCH BASED ON YEAR COUNT
     # =========================================================================
     
-    st.markdown(f"**📅 {current_year} vs {previous_year}**")
-    
-    # =========================================================================
-    # TABS: Revenue / Gross Profit / GP1
-    # =========================================================================
-    
-    tab_rev, tab_gp, tab_gp1 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
-    
-    for tab, metric_name, metric_col in [
-        (tab_rev, "Revenue", "revenue"),
-        (tab_gp, "Gross Profit", "gross_profit"),
-        (tab_gp1, "GP1", "gp1")
-    ]:
-        with tab:
-            # Calculate totals
-            current_total = current_monthly[metric_col].sum() if not current_monthly.empty and metric_col in current_monthly.columns else 0
-            previous_total = previous_monthly[metric_col].sum() if not previous_monthly.empty and metric_col in previous_monthly.columns else 0
+    if len(actual_years) >= 2:
+        # =================================================================
+        # MULTI-YEAR COMPARISON (2+ years of actual data)
+        # =================================================================
+        years_str = ', '.join(map(str, actual_years))
+        st.markdown(f"### 📊 Multi-Year Comparison ({years_str})")
+        st.caption(f"ℹ️ Comparing performance across years with actual data in selected date range.")
+        
+        # Create 3 tabs for each metric
+        my_tab1, my_tab2, my_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+        
+        # Tab 1: Revenue
+        with my_tab1:
+            summary_df = KPICenterCharts.build_multi_year_summary_table(
+                sales_df=yoy_sales_df,
+                years=actual_years,
+                metric='revenue'
+            )
             
-            # YoY change
-            if previous_total > 0:
-                yoy_change = ((current_total - previous_total) / previous_total * 100)
-                yoy_diff = current_total - previous_total
-            else:
-                yoy_change = 0
-                yoy_diff = current_total
+            if not summary_df.empty:
+                cols = st.columns(len(actual_years))
+                for idx, (_, row) in enumerate(summary_df.iterrows()):
+                    with cols[idx]:
+                        yoy_val = row['YoY Growth']
+                        delta_color = "normal" if yoy_val != '-' and '+' in str(yoy_val) else "inverse" if yoy_val != '-' else "off"
+                        st.metric(
+                            label=f"{int(row['Year'])} Revenue",
+                            value=f"${row['Total']:,.0f}",
+                            delta=yoy_val if yoy_val != '-' else None,
+                            delta_color=delta_color
+                        )
             
-            # Summary metrics row
-            col_curr, col_prev = st.columns(2)
+            st.divider()
             
-            with col_curr:
-                st.markdown(f"**{current_year} {metric_name}**")
-                st.markdown(f"### ${current_total:,.0f}")
-                if yoy_change != 0:
-                    color = "green" if yoy_change > 0 else "red"
-                    arrow = "↑" if yoy_change > 0 else "↓"
-                    st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% YoY]")
-            
-            with col_prev:
-                st.markdown(f"**{previous_year} {metric_name}**")
-                st.markdown(f"### ${previous_total:,.0f}")
-                st.markdown(f"↑ ${yoy_diff:+,.0f} difference" if yoy_diff != 0 else "")
-            
-            st.markdown("")
-            
-            # Charts row
-            chart_col1, chart_col2 = st.columns(2)
-            
-            with chart_col1:
-                st.markdown(f"**📊 Monthly {metric_name} Comparison**")
-                comparison_chart = KPICenterCharts.build_yoy_comparison_chart(
-                    current_df=current_monthly,
-                    previous_df=previous_monthly,
-                    metric=metric_name,
-                    current_year=current_year,
-                    previous_year=previous_year
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("##### 📊 Monthly Revenue by Year")
+                monthly_chart = KPICenterCharts.build_multi_year_monthly_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='revenue',
+                    title=""
                 )
-                st.altair_chart(comparison_chart, use_container_width=True)
+                st.altair_chart(monthly_chart, use_container_width=True)
             
-            with chart_col2:
-                st.markdown(f"**📈 Cumulative {metric_name}**")
-                cumulative_chart = KPICenterCharts.build_yoy_cumulative_chart(
-                    current_df=current_monthly,
-                    previous_df=previous_monthly,
-                    metric=metric_name,
-                    current_year=current_year,
-                    previous_year=previous_year
+            with col_c2:
+                st.markdown("##### 📈 Cumulative Revenue by Year")
+                cum_chart = KPICenterCharts.build_multi_year_cumulative_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='revenue',
+                    title=""
                 )
-                st.altair_chart(cumulative_chart, use_container_width=True)
+                st.altair_chart(cum_chart, use_container_width=True)
+        
+        # Tab 2: Gross Profit
+        with my_tab2:
+            summary_df = KPICenterCharts.build_multi_year_summary_table(
+                sales_df=yoy_sales_df,
+                years=actual_years,
+                metric='gross_profit'
+            )
+            
+            if not summary_df.empty:
+                cols = st.columns(len(actual_years))
+                for idx, (_, row) in enumerate(summary_df.iterrows()):
+                    with cols[idx]:
+                        yoy_val = row['YoY Growth']
+                        delta_color = "normal" if yoy_val != '-' and '+' in str(yoy_val) else "inverse" if yoy_val != '-' else "off"
+                        st.metric(
+                            label=f"{int(row['Year'])} GP",
+                            value=f"${row['Total']:,.0f}",
+                            delta=yoy_val if yoy_val != '-' else None,
+                            delta_color=delta_color
+                        )
+            
+            st.divider()
+            
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("##### 📊 Monthly Gross Profit by Year")
+                monthly_chart = KPICenterCharts.build_multi_year_monthly_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='gross_profit',
+                    title=""
+                )
+                st.altair_chart(monthly_chart, use_container_width=True)
+            
+            with col_c2:
+                st.markdown("##### 📈 Cumulative Gross Profit by Year")
+                cum_chart = KPICenterCharts.build_multi_year_cumulative_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='gross_profit',
+                    title=""
+                )
+                st.altair_chart(cum_chart, use_container_width=True)
+        
+        # Tab 3: GP1
+        with my_tab3:
+            summary_df = KPICenterCharts.build_multi_year_summary_table(
+                sales_df=yoy_sales_df,
+                years=actual_years,
+                metric='gp1'
+            )
+            
+            if not summary_df.empty:
+                cols = st.columns(len(actual_years))
+                for idx, (_, row) in enumerate(summary_df.iterrows()):
+                    with cols[idx]:
+                        yoy_val = row['YoY Growth']
+                        delta_color = "normal" if yoy_val != '-' and '+' in str(yoy_val) else "inverse" if yoy_val != '-' else "off"
+                        st.metric(
+                            label=f"{int(row['Year'])} GP1",
+                            value=f"${row['Total']:,.0f}",
+                            delta=yoy_val if yoy_val != '-' else None,
+                            delta_color=delta_color
+                        )
+            
+            st.divider()
+            
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("##### 📊 Monthly GP1 by Year")
+                monthly_chart = KPICenterCharts.build_multi_year_monthly_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='gp1',
+                    title=""
+                )
+                st.altair_chart(monthly_chart, use_container_width=True)
+            
+            with col_c2:
+                st.markdown("##### 📈 Cumulative GP1 by Year")
+                cum_chart = KPICenterCharts.build_multi_year_cumulative_chart(
+                    sales_df=yoy_sales_df,
+                    years=actual_years,
+                    metric='gp1',
+                    title=""
+                )
+                st.altair_chart(cum_chart, use_container_width=True)
+    
+    else:
+        # =================================================================
+        # YOY COMPARISON (0 or 1 year of actual data)
+        # =================================================================
+        
+        # Determine primary year
+        if len(actual_years) == 1:
+            primary_year = actual_years[0]
+        else:
+            primary_year = filter_values.get('end_date', date.today()).year
+        
+        previous_year = primary_year - 1
+        
+        st.markdown(f"### 📅 {primary_year} vs {previous_year}")
+        
+        # Load previous year data
+        start_date = filter_values.get('start_date', date(primary_year, 1, 1))
+        end_date = filter_values.get('end_date', date.today())
+        kpi_center_ids = filter_values.get('kpi_center_ids', [])
+        entity_ids = filter_values.get('entity_ids', [])
+        exclude_internal = filter_values.get('exclude_internal_revenue', True)
+        
+        # Calculate previous year date range
+        try:
+            prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+        except ValueError:
+            prev_start = date(start_date.year - 1, start_date.month, 28)
+            prev_end = date(end_date.year - 1, end_date.month, 28)
+        
+        # Try to get from cache first
+        previous_df = pd.DataFrame()
+        cache_hit = False
+        
+        if raw_cached_data and 'sales_df' in raw_cached_data:
+            cached_sales = raw_cached_data['sales_df']
+            
+            if cached_sales is not None and not cached_sales.empty and 'inv_date' in cached_sales.columns:
+                cached_sales = cached_sales.copy()
+                cached_sales['inv_date'] = pd.to_datetime(cached_sales['inv_date'], errors='coerce')
+                cached_years = cached_sales['inv_date'].dt.year.unique().tolist()
+                
+                if previous_year in cached_years:
+                    previous_df = cached_sales[
+                        (cached_sales['inv_date'] >= pd.Timestamp(prev_start)) &
+                        (cached_sales['inv_date'] <= pd.Timestamp(prev_end))
+                    ].copy()
+                    
+                    if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
+                        previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
+                    if entity_ids and 'legal_entity_id' in previous_df.columns:
+                        previous_df = previous_df[previous_df['legal_entity_id'].isin(entity_ids)]
+                    
+                    cache_hit = True
+        
+        # If not in cache, query DB
+        if not cache_hit:
+            try:
+                previous_df = queries.get_sales_data(
+                    start_date=prev_start,
+                    end_date=prev_end,
+                    kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
+                    entity_ids=entity_ids if entity_ids else None
+                )
+            except Exception as e:
+                logger.error(f"Error querying previous year data: {e}")
+                previous_df = pd.DataFrame()
+        
+        # Exclude internal revenue
+        if exclude_internal and not previous_df.empty and 'customer_type' in previous_df.columns:
+            previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+        
+        # Apply local filters to previous year
+        previous_filtered = apply_local_filters(previous_df)
+        
+        # Prepare monthly summaries
+        current_monthly = _prepare_monthly_summary(yoy_sales_df, debug_label="current")
+        previous_monthly = _prepare_monthly_summary(previous_filtered, debug_label="previous")
+        
+        if previous_monthly.empty:
+            st.info(f"No data available for {previous_year} comparison")
+            return
+        
+        # Tabs: Revenue / Gross Profit / GP1
+        tab_rev, tab_gp, tab_gp1 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+        
+        for tab, metric_name, metric_col in [
+            (tab_rev, "Revenue", "revenue"),
+            (tab_gp, "Gross Profit", "gross_profit"),
+            (tab_gp1, "GP1", "gp1")
+        ]:
+            with tab:
+                current_total = current_monthly[metric_col].sum() if not current_monthly.empty and metric_col in current_monthly.columns else 0
+                previous_total = previous_monthly[metric_col].sum() if not previous_monthly.empty and metric_col in previous_monthly.columns else 0
+                
+                if previous_total > 0:
+                    yoy_change = ((current_total - previous_total) / previous_total * 100)
+                    yoy_diff = current_total - previous_total
+                else:
+                    yoy_change = 0
+                    yoy_diff = current_total
+                
+                col_curr, col_prev = st.columns(2)
+                
+                with col_curr:
+                    st.markdown(f"**{primary_year} {metric_name}**")
+                    st.markdown(f"### ${current_total:,.0f}")
+                    if yoy_change != 0:
+                        color = "green" if yoy_change > 0 else "red"
+                        arrow = "↑" if yoy_change > 0 else "↓"
+                        st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% YoY]")
+                
+                with col_prev:
+                    st.markdown(f"**{previous_year} {metric_name}**")
+                    st.markdown(f"### ${previous_total:,.0f}")
+                    st.markdown(f"↑ ${yoy_diff:+,.0f} difference" if yoy_diff != 0 else "")
+                
+                st.markdown("")
+                
+                chart_col1, chart_col2 = st.columns(2)
+                
+                with chart_col1:
+                    st.markdown(f"**📊 Monthly {metric_name} Comparison**")
+                    comparison_chart = KPICenterCharts.build_yoy_comparison_chart(
+                        current_df=current_monthly,
+                        previous_df=previous_monthly,
+                        metric=metric_name,
+                        current_year=primary_year,
+                        previous_year=previous_year
+                    )
+                    st.altair_chart(comparison_chart, use_container_width=True)
+                
+                with chart_col2:
+                    st.markdown(f"**📈 Cumulative {metric_name}**")
+                    cumulative_chart = KPICenterCharts.build_yoy_cumulative_chart(
+                        current_df=current_monthly,
+                        previous_df=previous_monthly,
+                        metric=metric_name,
+                        current_year=primary_year,
+                        previous_year=previous_year
+                    )
+                    st.altair_chart(cumulative_chart, use_container_width=True)
 
 
 # =============================================================================

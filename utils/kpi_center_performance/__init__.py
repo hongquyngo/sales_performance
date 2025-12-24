@@ -6,11 +6,13 @@ A comprehensive module for tracking KPI Center performance metrics.
 
 VERSION: 2.5.0
 CHANGELOG:
-- v2.5.0: BUGFIX - YoY comparison showing $0 for previous year:
-          - fragments.py: Fixed closure bug in yoy_comparison_fragment
-          - fragments.py: Now uses raw_cached_data first before querying DB
-          - Main page: Pass raw_cached_data to yoy_comparison_fragment
-          - Main page: load_lookup_data() now queries from unified_sales_by_kpi_center_view
+- v2.5.0: ADDED Multi-Year Comparison (synced with Salesperson page):
+          - charts.py: Added build_multi_year_monthly_chart(), 
+                       build_multi_year_cumulative_chart(), 
+                       build_multi_year_summary_table()
+          - fragments.py: Updated yoy_comparison_fragment with multi-year support
+          - Detects actual years in data: >= 2 years → Multi-Year, 0-1 years → YoY
+          - Previous: BUGFIX - YoY comparison showing $0 for previous year
 - v2.3.0: Phase 3 - Pareto Analysis:
           - charts.py: Added build_pareto_chart(), build_top_performers_chart(),
                        build_concentration_donut()
