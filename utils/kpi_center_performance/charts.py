@@ -556,7 +556,21 @@ Click 📋 button next to each metric to view details.
             ]
         )
         
-        chart = bars
+        # Add data labels on bars
+        bar_labels = alt.Chart(bar_df).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-5,
+            fontSize=9
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('value:Q'),
+            xOffset='metric:N',
+            text=alt.Text('value:Q', format=',.0f'),
+            color=alt.value('#333333')
+        )
+        
+        chart = bars + bar_labels
         
         # Add GP% line if requested
         if show_gp_percent_line:
@@ -575,13 +589,26 @@ Click 📋 button next to each metric to view details.
                 ]
             )
             
+            # GP% text labels on line points
+            line_labels = alt.Chart(line_df).mark_text(
+                align='center',
+                baseline='bottom',
+                dy=-8,
+                fontSize=9,
+                color=COLORS.get('gross_profit_percent', '#800080')
+            ).encode(
+                x=alt.X('month:N', sort=MONTH_ORDER),
+                y=alt.Y('gp_percent:Q'),
+                text=alt.Text('gp_percent:Q', format='.1f')
+            )
+            
             # Layer with independent y-axes
-            chart = alt.layer(bars, line).resolve_scale(y='independent')
+            chart = alt.layer(bars + bar_labels, line + line_labels).resolve_scale(y='independent')
         
+        # Remove title to avoid duplicate with fragment markdown
         return chart.properties(
             width='container',
-            height=350,
-            title='📊 Monthly Trend'
+            height=350
         )
     
     @staticmethod
@@ -645,10 +672,23 @@ Click 📋 button next to each metric to view details.
             ]
         )
         
-        return lines.properties(
+        # Add data labels on line points
+        labels = alt.Chart(line_df).mark_text(
+            align='left',
+            baseline='middle',
+            dx=5,
+            fontSize=9
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('value:Q'),
+            text=alt.Text('value:Q', format=',.0f'),
+            color=alt.Color('metric:N', scale=color_scale, legend=None)
+        )
+        
+        # Remove title to avoid duplicate with fragment markdown
+        return (lines + labels).properties(
             width='container',
-            height=350,
-            title='📈 Cumulative Performance'
+            height=350
         )
     
     # =========================================================================
@@ -720,10 +760,24 @@ Click 📋 button next to each metric to view details.
             ]
         )
         
-        return chart.properties(
+        # Add data labels on bars
+        labels = alt.Chart(chart_df).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-5,
+            fontSize=9
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('value:Q'),
+            xOffset='year_type:N',
+            text=alt.Text('value:Q', format=',.0f'),
+            color=alt.value('#333333')
+        )
+        
+        # Remove title to avoid duplicate with fragment markdown
+        return (chart + labels).properties(
             width='container',
-            height=350,
-            title=f'📊 Monthly {metric} Comparison'
+            height=350
         )
     
     @staticmethod
@@ -809,10 +863,23 @@ Click 📋 button next to each metric to view details.
             ]
         )
         
-        return chart.properties(
+        # Add data labels on line points
+        labels = alt.Chart(chart_df).mark_text(
+            align='left',
+            baseline='middle',
+            dx=5,
+            fontSize=9
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER),
+            y=alt.Y('value:Q'),
+            text=alt.Text('value:Q', format=',.0f'),
+            color=alt.Color('year:N', scale=color_scale, legend=None)
+        )
+        
+        # Remove title to avoid duplicate with fragment markdown
+        return (chart + labels).properties(
             width='container',
-            height=350,
-            title=f'📈 Cumulative {metric}'
+            height=350
         )
     
     # =========================================================================
