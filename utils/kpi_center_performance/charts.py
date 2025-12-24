@@ -349,9 +349,8 @@ Click 📋 button next to each metric to view details.
         target = backlog_metrics.get(keys['target'], 0) or 0
         forecast = backlog_metrics.get(keys['forecast'], invoiced + backlog) or (invoiced + backlog)
         
-        # Auto-generate title if not provided (same as Salesperson)
-        if not title:
-            title = f"{keys['label']} Forecast vs Target"
+        # Only set title if explicitly provided (not empty string)
+        chart_title = title if title else None
         
         # Prepare data for stacked bar - SYNCED with Salesperson
         data = pd.DataFrame([
@@ -420,11 +419,15 @@ Click 📋 button next to each metric to view details.
             text='label:N'
         )
         
-        chart = alt.layer(bars, forecast_line, forecast_text).properties(
-            width=400,
-            height=350,
-            title=title
-        )
+        # Build final chart - only include title if provided
+        chart_props = {
+            'width': 400,
+            'height': 350
+        }
+        if chart_title:
+            chart_props['title'] = chart_title
+        
+        chart = alt.layer(bars, forecast_line, forecast_text).properties(**chart_props)
         
         return chart
     
@@ -491,13 +494,8 @@ Click 📋 button next to each metric to view details.
         
         data = pd.DataFrame(all_data)
         
-        # Auto-generate title if not provided
-        if not title:
-            if len(metrics_to_show) == 1:
-                label = metric_configs.get(metrics_to_show[0], {}).get('label', 'Revenue')
-                title = f"{label}: Target vs Forecast"
-            else:
-                title = "Target vs Forecast Analysis"
+        # Only set title if explicitly provided (not empty string)
+        chart_title = title if title else None
         
         # Base bar (target as background) - SYNCED with Salesperson
         base = alt.Chart(data[data['type'] == 'Target']).mark_bar(
@@ -566,11 +564,15 @@ Click 📋 button next to each metric to view details.
             )
         )
         
-        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(
-            width='container',
-            height=80 + len(metrics_to_show) * 50,
-            title=title
-        )
+        # Build final chart - only include title if provided
+        chart_props = {
+            'width': 'container',
+            'height': 80 + len(metrics_to_show) * 50
+        }
+        if chart_title:
+            chart_props['title'] = chart_title
+        
+        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(**chart_props)
         
         return chart
     
