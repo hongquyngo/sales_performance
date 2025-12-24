@@ -2,8 +2,11 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 2.4.0
+VERSION: 2.4.1
 CHANGELOG:
+- v2.4.1: BUGFIX - YoY comparison not showing previous year data
+          - Removed nested @st.cache_data function (closure issue with `queries` object)
+          - Now calls queries.get_sales_data() directly like Salesperson page
 - v2.4.0: SYNCED UI with Salesperson Performance page:
           - monthly_trend_fragment: 2 charts side-by-side (Monthly Trend + Cumulative)
             with Customer/Brand/Product Excl filters
@@ -342,43 +345,10 @@ def yoy_comparison_fragment(
         )
     
     # =========================================================================
-    # LOAD DATA
+    # LOAD DATA - FIXED v2.4.1: Direct call, NO nested @st.cache_data
+    # The nested cache function had a closure bug where `queries` object
+    # was not hashed into cache key, causing previous year data to not load.
     # =========================================================================
-    
-    @st.cache_data(ttl=1800, show_spinner=False)
-    def load_yoy_data_cached(start_date, end_date, kpi_center_ids, entity_ids, exclude_internal):
-        """Load current and previous year data."""
-        # Current year
-        current_df = queries.get_sales_data(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Previous year
-        try:
-            prev_start = date(start_date.year - 1, start_date.month, start_date.day)
-            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
-        except ValueError:
-            prev_start = date(start_date.year - 1, start_date.month, 28)
-            prev_end = date(end_date.year - 1, end_date.month, 28)
-        
-        previous_df = queries.get_sales_data(
-            start_date=prev_start,
-            end_date=prev_end,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Exclude internal if requested
-        if exclude_internal:
-            if 'customer_type' in current_df.columns:
-                current_df = current_df[current_df['customer_type'] != 'Internal']
-            if 'customer_type' in previous_df.columns:
-                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
-        
-        return current_df, previous_df
     
     start_date = filter_values.get('start_date', date(current_year, 1, 1))
     end_date = filter_values.get('end_date', date.today())
@@ -387,10 +357,37 @@ def yoy_comparison_fragment(
     exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
     try:
-        current_df, previous_df = load_yoy_data_cached(
-            start_date, end_date, tuple(kpi_center_ids) if kpi_center_ids else None,
-            tuple(entity_ids) if entity_ids else None, exclude_internal
+        # Current year data - direct call
+        current_df = queries.get_sales_data(
+            start_date=start_date,
+            end_date=end_date,
+            kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
+            entity_ids=entity_ids if entity_ids else None
         )
+        
+        # Previous year dates
+        try:
+            prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+        except ValueError:  # Feb 29
+            prev_start = date(start_date.year - 1, start_date.month, 28)
+            prev_end = date(end_date.year - 1, end_date.month, 28)
+        
+        # Previous year data - direct call
+        previous_df = queries.get_sales_data(
+            start_date=prev_start,
+            end_date=prev_end,
+            kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
+            entity_ids=entity_ids if entity_ids else None
+        )
+        
+        # Exclude internal if requested
+        if exclude_internal:
+            if not current_df.empty and 'customer_type' in current_df.columns:
+                current_df = current_df[current_df['customer_type'] != 'Internal']
+            if not previous_df.empty and 'customer_type' in previous_df.columns:
+                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+        
     except Exception as e:
         logger.error(f"Error loading YoY data: {e}")
         st.error(f"Failed to load comparison data: {e}")
