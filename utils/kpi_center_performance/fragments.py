@@ -47,31 +47,47 @@ def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _prepare_monthly_summary(sales_df: pd.DataFrame) -> pd.DataFrame:
+def _prepare_monthly_summary(sales_df: pd.DataFrame, debug_label: str = "") -> pd.DataFrame:
     """Prepare monthly summary from sales data."""
     if sales_df.empty:
+        print(f"⚠️ _prepare_monthly_summary({debug_label}): INPUT IS EMPTY")
         return pd.DataFrame()
     
     df = sales_df.copy()
+    print(f"🔍 _prepare_monthly_summary({debug_label}): input shape={df.shape}")
     
     # Ensure invoice_month column
     if 'invoice_month' not in df.columns:
         if 'inv_date' in df.columns:
             df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
             df['invoice_month'] = df['inv_date'].dt.strftime('%b')
+            print(f"   Created invoice_month from inv_date")
         else:
+            print(f"   ⚠️ No inv_date column, returning empty")
             return pd.DataFrame()
+    else:
+        print(f"   invoice_month column exists, unique values: {df['invoice_month'].unique().tolist()}")
+    
+    # Check for nulls
+    null_count = df['invoice_month'].isna().sum()
+    if null_count > 0:
+        print(f"   ⚠️ {null_count} null invoice_month values")
     
     # Aggregate by month
-    monthly = df.groupby('invoice_month').agg({
-        'sales_by_kpi_center_usd': 'sum',
-        'gross_profit_by_kpi_center_usd': 'sum',
-        'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in df.columns else 'first',
-        'inv_number': pd.Series.nunique,
-        'customer_id': pd.Series.nunique
-    }).reset_index()
-    
-    monthly.columns = ['month', 'revenue', 'gross_profit', 'gp1', 'orders', 'customers']
+    try:
+        monthly = df.groupby('invoice_month').agg({
+            'sales_by_kpi_center_usd': 'sum',
+            'gross_profit_by_kpi_center_usd': 'sum',
+            'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in df.columns else 'first',
+            'inv_number': pd.Series.nunique,
+            'customer_id': pd.Series.nunique
+        }).reset_index()
+        
+        monthly.columns = ['month', 'revenue', 'gross_profit', 'gp1', 'orders', 'customers']
+        print(f"   Monthly aggregation result: {monthly.shape}, revenue sum=${monthly['revenue'].sum():,.0f}")
+    except Exception as e:
+        print(f"   ❌ Error in groupby: {e}")
+        return pd.DataFrame()
     
     # Add GP%
     monthly['gp_percent'] = (monthly['gross_profit'] / monthly['revenue'] * 100).fillna(0).round(1)
@@ -371,8 +387,39 @@ def yoy_comparison_fragment(
         - Current year: Use passed sales_df (already filtered from main cache)
         - Previous year: Check raw_cached_data first, query DB only if not found
         """
+        # =====================================================================
+        # DEBUG: Print to terminal
+        # =====================================================================
+        print("\n" + "="*80)
+        print("🔍 DEBUG: yoy_comparison_fragment - get_yoy_data_from_cache_or_query()")
+        print("="*80)
+        print(f"📅 Current Year: {current_year}, Previous Year: {previous_year}")
+        print(f"📅 Current period: {start_date} → {end_date}")
+        print(f"📅 Previous period: {prev_start} → {prev_end}")
+        print(f"🎯 KPI Center IDs: {kpi_center_ids[:5] if kpi_center_ids else None}... (total: {len(kpi_center_ids) if kpi_center_ids else 0})")
+        print(f"🏢 Entity IDs: {entity_ids}")
+        print(f"🚫 Exclude Internal: {exclude_internal}")
+        print("-"*80)
+        
+        # Check raw_cached_data
+        print(f"📦 raw_cached_data is None: {raw_cached_data is None}")
+        if raw_cached_data:
+            print(f"📦 raw_cached_data keys: {list(raw_cached_data.keys())}")
+            if 'sales_df' in raw_cached_data:
+                cached_sales_check = raw_cached_data['sales_df']
+                print(f"📦 raw_cached_data['sales_df'] is None: {cached_sales_check is None}")
+                if cached_sales_check is not None:
+                    print(f"📦 raw_cached_data['sales_df'] shape: {cached_sales_check.shape}")
+                    print(f"📦 raw_cached_data['sales_df'] columns: {list(cached_sales_check.columns)[:10]}...")
+                    if 'inv_date' in cached_sales_check.columns:
+                        temp_dates = pd.to_datetime(cached_sales_check['inv_date'], errors='coerce')
+                        years_in_cache = sorted(temp_dates.dt.year.dropna().unique().tolist())
+                        print(f"📦 Years in raw_cached_data['sales_df']: {years_in_cache}")
+        print("-"*80)
+        
         # Current year: Use the already-filtered sales_df passed from main page
         current_df = sales_df.copy() if sales_df is not None and not sales_df.empty else pd.DataFrame()
+        print(f"📊 Current DF (from sales_df param): {current_df.shape if not current_df.empty else 'EMPTY'}")
         
         # Previous year: Try to get from cache first
         previous_df = pd.DataFrame()
@@ -388,31 +435,41 @@ def yoy_comparison_fragment(
                 
                 # Check if previous year exists in cached data
                 cached_years = cached_sales['inv_date'].dt.year.unique().tolist()
+                print(f"📆 Cached years after conversion: {sorted(cached_years)}")
                 
                 if previous_year in cached_years:
                     # ✅ CACHE HIT - Filter from cache, no DB query needed
-                    logger.debug(f"YoY cache HIT: {previous_year} found in cached years {cached_years}")
+                    print(f"✅ CACHE HIT: {previous_year} found in cached years!")
                     
                     previous_df = cached_sales[
                         (cached_sales['inv_date'] >= pd.Timestamp(prev_start)) &
                         (cached_sales['inv_date'] <= pd.Timestamp(prev_end))
                     ].copy()
+                    print(f"📊 Previous DF after date filter: {previous_df.shape}")
                     
                     # Apply KPI Center filter
                     if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
+                        before_filter = len(previous_df)
                         previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
+                        print(f"📊 Previous DF after KPI Center filter: {previous_df.shape} (removed {before_filter - len(previous_df)})")
                     
                     # Apply Entity filter
                     if entity_ids and 'legal_entity_id' in previous_df.columns:
+                        before_filter = len(previous_df)
                         previous_df = previous_df[previous_df['legal_entity_id'].isin(entity_ids)]
+                        print(f"📊 Previous DF after Entity filter: {previous_df.shape} (removed {before_filter - len(previous_df)})")
                     
                     cache_hit = True
                 else:
-                    logger.debug(f"YoY cache MISS: {previous_year} not in cached years {cached_years}")
+                    print(f"❌ CACHE MISS: {previous_year} NOT in cached years {sorted(cached_years)}")
+            else:
+                print(f"⚠️ cached_sales invalid: is_none={cached_sales is None}, empty={cached_sales.empty if cached_sales is not None else 'N/A'}")
+        else:
+            print(f"⚠️ raw_cached_data not available or missing 'sales_df' key")
         
         # If not in cache, query DB
         if not cache_hit:
-            logger.debug(f"YoY querying DB for {prev_start} to {prev_end}")
+            print(f"🔄 Querying DB for {prev_start} to {prev_end}...")
             try:
                 previous_df = queries.get_sales_data(
                     start_date=prev_start,
@@ -420,16 +477,31 @@ def yoy_comparison_fragment(
                     kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
                     entity_ids=entity_ids if entity_ids else None
                 )
+                print(f"📊 Previous DF from DB query: {previous_df.shape if not previous_df.empty else 'EMPTY'}")
             except Exception as e:
+                print(f"❌ Error querying DB: {e}")
                 logger.error(f"Error querying previous year data: {e}")
                 previous_df = pd.DataFrame()
         
         # Exclude internal revenue if requested
         if exclude_internal:
             if not current_df.empty and 'customer_type' in current_df.columns:
+                before = len(current_df)
                 current_df = current_df[current_df['customer_type'] != 'Internal']
+                print(f"🚫 Current DF after exclude internal: {current_df.shape} (removed {before - len(current_df)})")
             if not previous_df.empty and 'customer_type' in previous_df.columns:
+                before = len(previous_df)
                 previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+                print(f"🚫 Previous DF after exclude internal: {previous_df.shape} (removed {before - len(previous_df)})")
+        
+        # Final summary
+        print("-"*80)
+        print(f"📊 FINAL: Current DF rows={len(current_df)}, Previous DF rows={len(previous_df)}")
+        if not current_df.empty and 'sales_by_kpi_center_usd' in current_df.columns:
+            print(f"💰 Current Revenue: ${current_df['sales_by_kpi_center_usd'].sum():,.0f}")
+        if not previous_df.empty and 'sales_by_kpi_center_usd' in previous_df.columns:
+            print(f"💰 Previous Revenue: ${previous_df['sales_by_kpi_center_usd'].sum():,.0f}")
+        print("="*80 + "\n")
         
         return current_df, previous_df
     
@@ -473,12 +545,34 @@ def yoy_comparison_fragment(
     current_filtered = apply_filters(current_df)
     previous_filtered = apply_filters(previous_df)
     
+    # DEBUG: Check after local filters
+    print(f"🔍 After local filters:")
+    print(f"   current_filtered: {current_filtered.shape if not current_filtered.empty else 'EMPTY'}")
+    print(f"   previous_filtered: {previous_filtered.shape if not previous_filtered.empty else 'EMPTY'}")
+    if not previous_filtered.empty and 'sales_by_kpi_center_usd' in previous_filtered.columns:
+        print(f"   previous_filtered Revenue: ${previous_filtered['sales_by_kpi_center_usd'].sum():,.0f}")
+    
     # =========================================================================
     # PREPARE MONTHLY SUMMARIES
     # =========================================================================
     
-    current_monthly = _prepare_monthly_summary(current_filtered)
-    previous_monthly = _prepare_monthly_summary(previous_filtered)
+    current_monthly = _prepare_monthly_summary(current_filtered, debug_label="current_filtered")
+    previous_monthly = _prepare_monthly_summary(previous_filtered, debug_label="previous_filtered")
+    
+    # DEBUG: Check monthly summaries
+    print(f"🔍 After _prepare_monthly_summary:")
+    print(f"   current_monthly: {current_monthly.shape if not current_monthly.empty else 'EMPTY'}")
+    print(f"   previous_monthly: {previous_monthly.shape if not previous_monthly.empty else 'EMPTY'}")
+    if not current_monthly.empty:
+        print(f"   current_monthly columns: {list(current_monthly.columns)}")
+        if 'revenue' in current_monthly.columns:
+            print(f"   current_monthly Revenue sum: ${current_monthly['revenue'].sum():,.0f}")
+    if not previous_monthly.empty:
+        print(f"   previous_monthly columns: {list(previous_monthly.columns)}")
+        if 'revenue' in previous_monthly.columns:
+            print(f"   previous_monthly Revenue sum: ${previous_monthly['revenue'].sum():,.0f}")
+    else:
+        print(f"   ⚠️ previous_monthly is EMPTY!")
     
     # =========================================================================
     # YEAR COMPARISON HEADER
