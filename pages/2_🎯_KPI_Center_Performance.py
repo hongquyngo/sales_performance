@@ -125,25 +125,40 @@ def check_access():
 
 @st.cache_data(ttl=1800)
 def load_lookup_data():
-    """Load lookup data for filters (cached)."""
+    """
+    Load lookup data for filters (cached).
+    
+    UPDATED v2.5.0: KPI Center and KPI Type loaded dynamically from 
+    unified_sales_by_kpi_center_view instead of kpi_centers table.
+    This ensures dropdown only shows KPI Centers with actual sales data.
+    """
     from utils.db import get_db_engine
     from sqlalchemy import text
     
     engine = get_db_engine()
     
+    # =========================================================================
+    # KPI CENTER & KPI TYPE - From unified_sales_by_kpi_center_view (UPDATED)
+    # =========================================================================
     kpi_center_query = """
         SELECT DISTINCT
-            kc.id AS kpi_center_id,
-            kc.name AS kpi_center_name,
-            kc.type AS kpi_type,
-            kc.parent_center_id,
-            kc.description
-        FROM kpi_centers kc
-        WHERE kc.delete_flag = 0
-        ORDER BY kc.type, kc.name
+            kpi_center_id,
+            kpi_center AS kpi_center_name,
+            kpi_type
+        FROM unified_sales_by_kpi_center_view
+        WHERE kpi_center_id IS NOT NULL
+        ORDER BY kpi_type, kpi_center
     """
     kpi_center_df = pd.read_sql(text(kpi_center_query), engine)
     
+    # Add placeholder columns for backward compatibility
+    if not kpi_center_df.empty:
+        kpi_center_df['parent_center_id'] = None
+        kpi_center_df['description'] = None
+    
+    # =========================================================================
+    # LEGAL ENTITY - From unified_sales_by_kpi_center_view (no change)
+    # =========================================================================
     entity_query = """
         SELECT DISTINCT
             legal_entity_id AS entity_id,
@@ -154,6 +169,9 @@ def load_lookup_data():
     """
     entity_df = pd.read_sql(text(entity_query), engine)
     
+    # =========================================================================
+    # AVAILABLE YEARS - From unified_sales_by_kpi_center_view (no change)
+    # =========================================================================
     years_query = """
         SELECT DISTINCT CAST(invoice_year AS SIGNED) AS year
         FROM unified_sales_by_kpi_center_view
@@ -164,8 +182,6 @@ def load_lookup_data():
     available_years = years_df['year'].tolist() if not years_df.empty else [datetime.now().year]
     
     return kpi_center_df, entity_df, available_years
-
-
 def load_data_for_year_range(
     queries: KPICenterQueries,
     start_year: int,
