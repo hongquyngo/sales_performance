@@ -307,184 +307,272 @@ Click 📋 button next to each metric to view details.
     def build_forecast_waterfall_chart(
         backlog_metrics: Dict,
         metric: str = 'revenue',
-        title: str = "Forecast vs Target"
+        title: str = ""
     ) -> alt.Chart:
         """
-        Build stacked bar chart showing Invoiced + In-Period Backlog vs Target.
+        Build a waterfall-style chart showing Invoiced + Backlog = Forecast vs Target.
         SYNCED with Salesperson page.
         """
-        # Get metrics based on type (handle None values)
-        if metric == 'revenue':
-            invoiced = backlog_metrics.get('invoiced_revenue') or 0
-            in_period = backlog_metrics.get('in_period_backlog_revenue') or 0
-            target = backlog_metrics.get('target_revenue') or 0
-        elif metric == 'gp':
-            invoiced = backlog_metrics.get('invoiced_gp') or 0
-            in_period = backlog_metrics.get('in_period_backlog_gp') or 0
-            target = backlog_metrics.get('target_gp') or 0
-        else:  # gp1
-            invoiced = backlog_metrics.get('invoiced_gp1') or 0
-            in_period = backlog_metrics.get('in_period_backlog_gp1') or 0
-            target = backlog_metrics.get('target_gp1') or 0
+        if not backlog_metrics:
+            return alt.Chart().mark_text().encode(text=alt.value("No backlog data"))
         
-        forecast = invoiced + in_period
-        
-        # Prepare data for stacked bar
-        data = pd.DataFrame([
-            {'category': 'Performance', 'component': 'Invoiced', 'value': invoiced, 'order': 1},
-            {'category': 'Performance', 'component': 'In-Period Backlog', 'value': in_period, 'order': 2},
-            {'category': 'Target', 'component': 'Target', 'value': target, 'order': 3},
-        ])
-        
-        # Color mapping
-        color_map = {
-            'Invoiced': COLORS.get('primary', '#1f77b4'),
-            'In-Period Backlog': COLORS.get('secondary', '#aec7e8'),
-            'Target': COLORS.get('target', '#d62728'),
+        # Map metric to keys - use same structure as Salesperson
+        metric_keys = {
+            'revenue': {
+                'invoiced': 'invoiced_revenue',
+                'backlog': 'in_period_backlog_revenue',
+                'target': 'target_revenue',
+                'forecast': 'forecast_revenue',
+                'label': 'Revenue'
+            },
+            'gp': {
+                'invoiced': 'invoiced_gp',
+                'backlog': 'in_period_backlog_gp',
+                'target': 'target_gp',
+                'forecast': 'forecast_gp',
+                'label': 'Gross Profit'
+            },
+            'gp1': {
+                'invoiced': 'invoiced_gp1',
+                'backlog': 'in_period_backlog_gp1',
+                'target': 'target_gp1',
+                'forecast': 'forecast_gp1',
+                'label': 'GP1'
+            }
         }
         
-        bars = alt.Chart(data).mark_bar(
-            cornerRadiusTopLeft=3,
-            cornerRadiusTopRight=3
-        ).encode(
-            x=alt.X('category:N', title=None, axis=alt.Axis(labelAngle=0)),
-            y=alt.Y('value:Q', title='Amount (USD)'),
-            color=alt.Color('component:N', 
-                          scale=alt.Scale(domain=list(color_map.keys()), 
-                                         range=list(color_map.values())),
-                          legend=alt.Legend(title='Component', orient='bottom')),
+        keys = metric_keys.get(metric, metric_keys['revenue'])
+        
+        # Get values with fallback
+        invoiced = backlog_metrics.get(keys['invoiced'], 0) or 0
+        backlog = backlog_metrics.get(keys['backlog'], 0) or 0
+        target = backlog_metrics.get(keys['target'], 0) or 0
+        forecast = backlog_metrics.get(keys['forecast'], invoiced + backlog) or (invoiced + backlog)
+        
+        # Auto-generate title if not provided (same as Salesperson)
+        if not title:
+            title = f"{keys['label']} Forecast vs Target"
+        
+        # Prepare data for stacked bar - SYNCED with Salesperson
+        data = pd.DataFrame([
+            {
+                'category': 'Performance',
+                'component': '✅ Invoiced',
+                'value': invoiced,
+                'order': 1
+            },
+            {
+                'category': 'Performance',
+                'component': '📅 In-Period Backlog',
+                'value': backlog,
+                'order': 2
+            },
+            {
+                'category': 'Target',
+                'component': '🎯 Target',
+                'value': target,
+                'order': 1
+            }
+        ])
+        
+        # Color scale - SYNCED with Salesperson
+        color_scale = alt.Scale(
+            domain=['✅ Invoiced', '📅 In-Period Backlog', '🎯 Target'],
+            range=[COLORS.get('gross_profit', '#1f77b4'), COLORS.get('new_customer', '#17becf'), COLORS.get('target', '#d62728')]
+        )
+        
+        # Stacked bar chart - SYNCED with Salesperson
+        bars = alt.Chart(data).mark_bar(size=60).encode(
+            x=alt.X('category:N', title='', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s'), stack='zero'),
+            color=alt.Color('component:N', scale=color_scale, legend=alt.Legend(orient='bottom')),
             order=alt.Order('order:Q'),
             tooltip=[
                 alt.Tooltip('category:N', title='Category'),
                 alt.Tooltip('component:N', title='Component'),
-                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f')
             ]
         )
         
         # Add forecast line
-        if target is not None and target > 0:
-            forecast_line = alt.Chart(pd.DataFrame({'y': [forecast]})).mark_rule(
-                color=COLORS.get('achievement_good', '#28a745'),
-                strokeDash=[5, 5],
-                strokeWidth=2
-            ).encode(
-                y='y:Q'
-            )
-            
-            # Add label
-            forecast_text = alt.Chart(pd.DataFrame({
-                'y': [forecast], 
-                'text': [f'Forecast: ${forecast:,.0f}']
-            })).mark_text(
-                align='right',
-                dx=-5,
-                dy=-10,
-                fontSize=11,
-                color=COLORS.get('achievement_good', '#28a745')
-            ).encode(
-                y='y:Q',
-                text='text:N'
-            )
-            
-            chart = bars + forecast_line + forecast_text
-        else:
-            chart = bars
+        forecast_line = alt.Chart(pd.DataFrame({'y': [forecast]})).mark_rule(
+            color=COLORS.get('gross_profit_percent', '#800080'),
+            strokeWidth=2,
+            strokeDash=[5, 5]
+        ).encode(
+            y='y:Q'
+        )
         
-        return chart.properties(
-            width='container',
-            height=300,
+        # Add forecast label
+        forecast_text = alt.Chart(pd.DataFrame({
+            'x': ['Target'],
+            'y': [forecast],
+            'label': [f'Forecast: ${forecast:,.0f}']
+        })).mark_text(
+            align='left',
+            dx=35,
+            fontSize=12,
+            fontWeight='bold',
+            color=COLORS.get('gross_profit_percent', '#800080')
+        ).encode(
+            x='x:N',
+            y='y:Q',
+            text='label:N'
+        )
+        
+        chart = alt.layer(bars, forecast_line, forecast_text).properties(
+            width=400,
+            height=350,
             title=title
         )
+        
+        return chart
     
     @staticmethod
     def build_gap_analysis_chart(
         backlog_metrics: Dict,
         metrics_to_show: List[str] = ['revenue'],
-        title: str = "Target vs Forecast"
+        title: str = ""
     ) -> alt.Chart:
         """
-        Build horizontal bar chart comparing Target vs Forecast.
+        Build a bullet/progress chart showing current progress, forecast, and target.
         SYNCED with Salesperson page.
         """
-        data_rows = []
+        if not backlog_metrics:
+            return alt.Chart().mark_text().encode(text=alt.value("No data available"))
         
-        for metric in metrics_to_show:
-            if metric == 'revenue':
-                target = backlog_metrics.get('target_revenue') or 0
-                forecast = backlog_metrics.get('forecast_revenue') or 0
-                label = 'Revenue'
-            elif metric == 'gp':
-                target = backlog_metrics.get('target_gp') or 0
-                forecast = backlog_metrics.get('forecast_gp') or 0
-                label = 'Gross Profit'
-            else:  # gp1
-                target = backlog_metrics.get('target_gp1') or 0
-                forecast = backlog_metrics.get('forecast_gp1') or 0
-                label = 'GP1'
+        # Define metric configurations
+        metric_configs = {
+            'revenue': {
+                'invoiced_key': 'invoiced_revenue',
+                'target_key': 'target_revenue',
+                'forecast_key': 'forecast_revenue',
+                'label': 'Revenue'
+            },
+            'gp': {
+                'invoiced_key': 'invoiced_gp',
+                'target_key': 'target_gp',
+                'forecast_key': 'forecast_gp',
+                'label': 'Gross Profit'
+            },
+            'gp1': {
+                'invoiced_key': 'invoiced_gp1',
+                'target_key': 'target_gp1',
+                'forecast_key': 'forecast_gp1',
+                'label': 'GP1'
+            }
+        }
+        
+        # Build data for all metrics
+        all_data = []
+        for metric_name in metrics_to_show:
+            if metric_name not in metric_configs:
+                continue
             
-            if target > 0:
-                achievement = (forecast / target * 100)
-                data_rows.append({
-                    'metric': label,
-                    'forecast': forecast,
-                    'target': target,
-                    'achievement': achievement,
-                })
+            config = metric_configs[metric_name]
+            target = backlog_metrics.get(config['target_key'], 0) or 0
+            invoiced = backlog_metrics.get(config['invoiced_key'], 0) or 0
+            forecast = backlog_metrics.get(config['forecast_key'], invoiced) or invoiced
+            
+            if target == 0:
+                continue
+            
+            invoiced_pct = (invoiced / target) * 100
+            forecast_pct = (forecast / target) * 100
+            
+            all_data.extend([
+                {'metric': config['label'], 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct},
+                {'metric': config['label'], 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct},
+                {'metric': config['label'], 'type': 'Target', 'value': target, 'percent': 100},
+            ])
         
-        if not data_rows:
-            return alt.Chart().mark_text().encode(text=alt.value("No target data"))
+        if not all_data:
+            return alt.Chart().mark_text().encode(text=alt.value("No target set"))
         
-        chart_df = pd.DataFrame(data_rows)
+        data = pd.DataFrame(all_data)
         
-        # Forecast bar (actual)
-        forecast_bar = alt.Chart(chart_df).mark_bar(
-            color=COLORS.get('primary', '#1f77b4'),
-            cornerRadiusTopRight=4,
-            cornerRadiusBottomRight=4,
-            height=25
+        # Auto-generate title if not provided
+        if not title:
+            if len(metrics_to_show) == 1:
+                label = metric_configs.get(metrics_to_show[0], {}).get('label', 'Revenue')
+                title = f"{label}: Target vs Forecast"
+            else:
+                title = "Target vs Forecast Analysis"
+        
+        # Base bar (target as background) - SYNCED with Salesperson
+        base = alt.Chart(data[data['type'] == 'Target']).mark_bar(
+            color='#e0e0e0',
+            size=40
         ).encode(
-            x=alt.X('forecast:Q', title='Amount (USD)'),
-            y=alt.Y('metric:N', title=None),
+            x=alt.X('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s')),
+            y=alt.Y('metric:N', title='', sort=['Revenue', 'Gross Profit', 'GP1'])
+        )
+        
+        # Forecast bar - SYNCED with Salesperson
+        forecast_bar = alt.Chart(data[data['type'] == 'Forecast']).mark_bar(
+            color=COLORS.get('new_customer', '#17becf'),
+            size=25
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
             tooltip=[
                 alt.Tooltip('metric:N', title='Metric'),
-                alt.Tooltip('forecast:Q', title='Forecast', format='$,.0f'),
-                alt.Tooltip('target:Q', title='Target', format='$,.0f'),
-                alt.Tooltip('achievement:Q', title='Achievement %', format='.1f'),
+                alt.Tooltip('type:N', title='Type'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
+                alt.Tooltip('percent:Q', title='% of Target', format='.1f')
             ]
         )
         
-        # Target marker
-        target_tick = alt.Chart(chart_df).mark_tick(
-            color=COLORS.get('target', '#d62728'),
-            thickness=3,
-            size=30
+        # Invoiced bar (innermost) - SYNCED with Salesperson
+        invoiced_bar = alt.Chart(data[data['type'] == 'Invoiced']).mark_bar(
+            color=COLORS.get('gross_profit', '#1f77b4'),
+            size=15
         ).encode(
-            x='target:Q',
-            y='metric:N'
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
+            tooltip=[
+                alt.Tooltip('metric:N', title='Metric'),
+                alt.Tooltip('type:N', title='Type'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
+                alt.Tooltip('percent:Q', title='% of Target', format='.1f')
+            ]
         )
         
-        # Achievement text
-        text = alt.Chart(chart_df).mark_text(
+        # Target line/tick - SYNCED with Salesperson
+        target_rule = alt.Chart(data[data['type'] == 'Target']).mark_tick(
+            color=COLORS.get('target', '#d62728'),
+            thickness=3,
+            size=50
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1'])
+        )
+        
+        # Achievement % text at end - SYNCED with Salesperson
+        forecast_data = data[data['type'] == 'Forecast'].copy()
+        text = alt.Chart(forecast_data).mark_text(
             align='left',
             dx=5,
-            fontSize=12,
+            fontSize=11,
             fontWeight='bold'
         ).encode(
-            x='forecast:Q',
-            y='metric:N',
-            text=alt.Text('achievement:Q', format='.0f'),
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
+            text=alt.Text('percent:Q', format='.0f'),
             color=alt.condition(
-                alt.datum.achievement >= 100,
+                alt.datum.percent >= 100,
                 alt.value(COLORS.get('achievement_good', '#28a745')),
                 alt.value(COLORS.get('achievement_bad', '#dc3545'))
             )
         )
         
-        return (forecast_bar + target_tick + text).properties(
+        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(
             width='container',
-            height=100 + len(metrics_to_show) * 40,
+            height=80 + len(metrics_to_show) * 50,
             title=title
         )
+        
+        return chart
     
     # =========================================================================
     # MONTHLY TREND CHARTS - UPDATED v2.4.0
