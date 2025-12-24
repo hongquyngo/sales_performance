@@ -790,37 +790,37 @@ def kpi_center_ranking_fragment(
     
     sort_by = st.selectbox("Sort by", sort_options, key=f"{fragment_key}_sort")
     
-    # Map sort selection
+    # Map sort selection - use actual column names from aggregate_by_kpi_center()
     sort_col_map = {
-        'Revenue': 'total_revenue',
-        'Gross Profit': 'total_gp',
-        'GP1': 'total_gp1',
+        'Revenue': 'revenue',
+        'Gross Profit': 'gross_profit',
+        'GP1': 'gp1',
         'GP %': 'gp_percent',
-        'Achievement %': 'achievement'
+        'Achievement %': 'revenue_achievement'
     }
-    sort_col = sort_col_map.get(sort_by, 'total_revenue')
+    sort_col = sort_col_map.get(sort_by, 'revenue')
     
     if sort_col not in ranking_df.columns:
-        sort_col = 'total_revenue'
+        sort_col = 'revenue'
     
     # Sort and add rank
     sorted_df = ranking_df.sort_values(sort_col, ascending=False).copy()
     sorted_df.insert(0, 'Rank', range(1, len(sorted_df) + 1))
     
-    # Format
+    # Format - use actual column names from aggregate_by_kpi_center()
     column_config = {
         'Rank': st.column_config.NumberColumn('Rank', width='small'),
         'kpi_center': 'KPI Center',
-        'total_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-        'total_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
-        'total_gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
+        'revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
+        'gross_profit': st.column_config.NumberColumn('GP', format='$%,.0f'),
+        'gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
         'gp_percent': st.column_config.NumberColumn('GP %', format='%.1f%%'),
-        'customer_count': 'Customers',
-        'order_count': 'Orders',
+        'customers': 'Customers',
+        'invoices': 'Orders',
     }
     
-    if show_targets and 'achievement' in sorted_df.columns:
-        column_config['achievement'] = st.column_config.ProgressColumn(
+    if show_targets and 'revenue_achievement' in sorted_df.columns:
+        column_config['revenue_achievement'] = st.column_config.ProgressColumn(
             'Achievement',
             min_value=0,
             max_value=150,
