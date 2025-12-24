@@ -313,19 +313,19 @@ Click 📋 button next to each metric to view details.
         Build stacked bar chart showing Invoiced + In-Period Backlog vs Target.
         SYNCED with Salesperson page.
         """
-        # Get metrics based on type
+        # Get metrics based on type (handle None values)
         if metric == 'revenue':
-            invoiced = backlog_metrics.get('invoiced_revenue', 0)
-            in_period = backlog_metrics.get('in_period_backlog_revenue', 0)
-            target = backlog_metrics.get('target_revenue', 0)
+            invoiced = backlog_metrics.get('invoiced_revenue') or 0
+            in_period = backlog_metrics.get('in_period_backlog_revenue') or 0
+            target = backlog_metrics.get('target_revenue') or 0
         elif metric == 'gp':
-            invoiced = backlog_metrics.get('invoiced_gp', 0)
-            in_period = backlog_metrics.get('in_period_backlog_gp', 0)
-            target = backlog_metrics.get('target_gp', 0)
+            invoiced = backlog_metrics.get('invoiced_gp') or 0
+            in_period = backlog_metrics.get('in_period_backlog_gp') or 0
+            target = backlog_metrics.get('target_gp') or 0
         else:  # gp1
-            invoiced = backlog_metrics.get('invoiced_gp1', 0)
-            in_period = backlog_metrics.get('in_period_backlog_gp1', 0)
-            target = backlog_metrics.get('target_gp1', 0)
+            invoiced = backlog_metrics.get('invoiced_gp1') or 0
+            in_period = backlog_metrics.get('in_period_backlog_gp1') or 0
+            target = backlog_metrics.get('target_gp1') or 0
         
         forecast = invoiced + in_period
         
@@ -362,7 +362,7 @@ Click 📋 button next to each metric to view details.
         )
         
         # Add forecast line
-        if target > 0:
+        if target is not None and target > 0:
             forecast_line = alt.Chart(pd.DataFrame({'y': [forecast]})).mark_rule(
                 color=COLORS.get('achievement_good', '#28a745'),
                 strokeDash=[5, 5],
@@ -410,16 +410,16 @@ Click 📋 button next to each metric to view details.
         
         for metric in metrics_to_show:
             if metric == 'revenue':
-                target = backlog_metrics.get('target_revenue', 0)
-                forecast = backlog_metrics.get('forecast_revenue', 0)
+                target = backlog_metrics.get('target_revenue') or 0
+                forecast = backlog_metrics.get('forecast_revenue') or 0
                 label = 'Revenue'
             elif metric == 'gp':
-                target = backlog_metrics.get('target_gp', 0)
-                forecast = backlog_metrics.get('forecast_gp', 0)
+                target = backlog_metrics.get('target_gp') or 0
+                forecast = backlog_metrics.get('forecast_gp') or 0
                 label = 'Gross Profit'
             else:  # gp1
-                target = backlog_metrics.get('target_gp1', 0)
-                forecast = backlog_metrics.get('forecast_gp1', 0)
+                target = backlog_metrics.get('target_gp1') or 0
+                forecast = backlog_metrics.get('forecast_gp1') or 0
                 label = 'GP1'
             
             if target > 0:
