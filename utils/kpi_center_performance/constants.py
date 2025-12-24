@@ -2,33 +2,31 @@
 """
 Constants for KPI Center Performance Module
 
-Centralized configuration for:
-- Role definitions (simplified - page-level access only)
-- Color schemes
-- Chart settings
-- KPI configurations
-- Period definitions
-
-VERSION: 1.0.0
+VERSION: 2.4.0
+CHANGELOG:
+- v2.4.0: SYNCED with Salesperson constants:
+          - Added all colors for charts (primary, secondary, etc.)
+          - Added CHART_WIDTH, CHART_HEIGHT for consistent chart sizing
 """
 
 # =====================================================================
-# ROLE DEFINITIONS (Simplified - page-level access only)
+# ROLE DEFINITIONS
 # =====================================================================
 
-# Roles that can access KPI Center Performance page
+# Roles allowed to access this page
 ALLOWED_ROLES = ['admin', 'GM', 'MD', 'sales_manager']
 
 # =====================================================================
-# COLOR SCHEME
+# COLOR SCHEME - SYNCED with Salesperson page
 # =====================================================================
 
 COLORS = {
-    # Primary/Secondary (general use)
+    # Primary colors for charts
     "primary": "#1f77b4",              # Blue
-    "secondary": "#ff7f0e",            # Orange
+    "secondary": "#aec7e8",            # Light Blue
+    "neutral": "#d3d3d3",              # Light Gray
     
-    # Primary metrics
+    # Metric colors
     "revenue": "#FFA500",              # Orange
     "gross_profit": "#1f77b4",         # Blue
     "gp1": "#2ca02c",                  # Green
@@ -37,6 +35,7 @@ COLORS = {
     
     # Target & Achievement
     "target": "#d62728",               # Red
+    "achievement": "#2ca02c",          # Green
     "achievement_good": "#28a745",     # Green (≥100%)
     "achievement_bad": "#dc3545",      # Red (<100%)
     
@@ -54,10 +53,10 @@ COLORS = {
     # Customer count
     "customer_count": "#27ae60",       # Green
     
-    # KPI Center Types
-    "territory": "#3498db",            # Blue
-    "internal": "#9b59b6",             # Purple
-    "other": "#95a5a6",                # Gray
+    # Risk indicators
+    "overdue": "#dc3545",              # Red
+    "at_risk": "#ffc107",              # Yellow
+    "ok": "#28a745",                   # Green
     
     # Misc
     "text_dark": "#333333",
@@ -136,22 +135,8 @@ KPI_TYPES = {
     },
 }
 
-# =====================================================================
-# KPI CENTER TYPE DEFINITIONS
-# =====================================================================
-
-KPI_CENTER_TYPES = {
-    "TERRITORY": {
-        "name": "Territory",
-        "icon": "🌍",
-        "color": "#3498db"
-    },
-    "INTERNAL": {
-        "name": "Internal",
-        "icon": "🏢",
-        "color": "#9b59b6"
-    },
-}
+# KPI Center Types
+KPI_CENTER_TYPES = ['Sales Team', 'Product Line', 'Region', 'Channel', 'Other']
 
 # =====================================================================
 # BUSINESS LOGIC SETTINGS
@@ -164,8 +149,8 @@ LOOKBACK_YEARS = 5
 # CHART DIMENSIONS
 # =====================================================================
 
-CHART_WIDTH = 800
-CHART_HEIGHT = 400
+CHART_WIDTH = 'container'  # Use container width for responsive charts
+CHART_HEIGHT = 350
 
 # =====================================================================
 # CACHE SETTINGS

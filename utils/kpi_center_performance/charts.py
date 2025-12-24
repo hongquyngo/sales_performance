@@ -2,28 +2,19 @@
 """
 Altair Chart Builders for KPI Center Performance
 
-All visualization components using Altair:
-- KPI summary cards (using st.metric) with popup drill-down
-- Monthly trend charts (bar + line)
-- Cumulative charts
-- Achievement comparison charts
-- YoY comparison charts
-- Top customers/brands Pareto charts
-- Pipeline & Forecast section with tabs
-- Backlog risk analysis display
-
-VERSION: 2.3.0
+VERSION: 2.4.0
 CHANGELOG:
-- v2.3.0: Phase 3 - Pareto Analysis charts:
-          - build_pareto_chart(): Bar + cumulative line
-          - build_top_performers_chart(): Horizontal bar ranking
-          - build_concentration_donut(): Concentration visualization
-- v2.2.0: Added build_achievement_bar_chart() for KPI achievement comparison
-- v2.1.0: Fixed kpi_center_count key in _render_pipeline_metric_row
-          Fixed convert_pipeline_to_backlog_metrics keys
-- v2.0.0: Added popup buttons for Complex KPIs (New Customers/Products/Business)
-          Added backlog risk analysis display
-          Improved help popovers with detailed explanations
+- v2.4.0: SYNCED UI with Salesperson Performance page:
+          - Added build_forecast_waterfall_chart() for Backlog & Forecast
+          - Added build_gap_analysis_chart() for Target vs Forecast comparison
+          - Added build_monthly_trend_dual_chart() for Revenue + GP bars with GP% line
+          - Added build_cumulative_dual_chart() for cumulative performance
+          - Added build_yoy_cumulative_chart() for YoY cumulative comparison
+          - Updated render_kpi_cards() with wider popover for New Business
+          - Removed render_backlog_risk_section() (merged into Backlog & Forecast)
+          - Removed render_pipeline_forecast_section() (now inline in main page)
+- v2.3.0: Phase 3 - Pareto Analysis charts
+- v2.2.0: Added build_achievement_bar_chart()
 """
 
 import logging
@@ -38,14 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class KPICenterCharts:
-    """
-    Chart builders for KPI Center performance dashboard.
-    
-    All methods are static - can be called without instantiation.
-    """
+    """Chart builders for KPI Center performance dashboard."""
     
     # =========================================================================
-    # KPI CARDS (Using st.metric) - UPDATED with popup support
+    # KPI CARDS - UPDATED v2.4.0: Wider popover for New Business
     # =========================================================================
     
     @staticmethod
@@ -64,19 +51,7 @@ class KPICenterCharts:
     ):
         """
         Render KPI summary cards using Streamlit metrics.
-        
-        Args:
-            metrics: Overview metrics dictionary
-            yoy_metrics: Year-over-Year comparison metrics
-            complex_kpis: Complex KPI values (new customers/products/business)
-            backlog_metrics: Backlog metrics (optional)
-            overall_achievement: Overall KPI achievement dictionary
-            show_complex: Whether to show complex KPIs section
-            show_backlog: Whether to show backlog section
-            new_customers_df: Detail dataframe for new customers popup
-            new_products_df: Detail dataframe for new products popup
-            new_business_df: Summary dataframe for new business
-            new_business_detail_df: Detail dataframe for new business popup
+        SYNCED with Salesperson page layout.
         """
         # =====================================================================
         # 💰 PERFORMANCE SECTION
@@ -131,17 +106,7 @@ class KPICenterCharts:
                         value=f"{achievement:.1f}%",
                         delta=f"weighted avg of {kpi_count} KPIs",
                         delta_color=delta_color,
-                        help="Weighted average of all KPI achievements. Formula: Σ(KPI_Achievement × Weight) / Σ Weight"
-                    )
-                elif metrics.get('revenue_achievement') is not None:
-                    achievement = metrics['revenue_achievement']
-                    delta_color = "normal" if achievement >= 100 else "inverse"
-                    st.metric(
-                        label="Achievement",
-                        value=f"{achievement:.1f}%",
-                        delta=f"vs ${metrics.get('revenue_target', 0):,.0f} target",
-                        delta_color=delta_color,
-                        help="Revenue achievement vs prorated target"
+                        help="Weighted average of all KPI achievements"
                     )
                 else:
                     st.metric(
@@ -170,6 +135,8 @@ class KPICenterCharts:
                 st.metric(
                     label="GP %",
                     value=f"{metrics['gp_percent']:.1f}%",
+                    delta="↑ margin" if metrics.get('gp_percent', 0) > 30 else None,
+                    delta_color="off",
                     help="Gross Profit Margin. Formula: GP / Revenue × 100%"
                 )
             
@@ -177,6 +144,8 @@ class KPICenterCharts:
                 st.metric(
                     label="GP1 %",
                     value=f"{metrics['gp1_percent']:.1f}%",
+                    delta="↑ margin" if metrics.get('gp1_percent', 0) > 25 else None,
+                    delta_color="off",
                     help="GP1 Margin. Formula: GP1 / Revenue × 100%"
                 )
             
@@ -188,25 +157,40 @@ class KPICenterCharts:
                 )
         
         # =====================================================================
-        # 🆕 NEW BUSINESS SECTION (UPDATED with popup buttons)
+        # 🆕 NEW BUSINESS SECTION - UPDATED v2.4.0: Wider popovers
         # =====================================================================
         if show_complex and complex_kpis:
             with st.container(border=True):
-                st.markdown("**🆕 NEW BUSINESS**")
+                # Header with Help button
+                col_header, col_help = st.columns([5, 1])
+                with col_header:
+                    st.markdown("**🆕 NEW BUSINESS**")
+                with col_help:
+                    with st.popover("ℹ️ Help"):
+                        st.markdown("""
+**🆕 New Business KPIs**
+
+| Metric | Definition |
+|--------|------------|
+| **New Customers** | Customers with first-ever invoice in selected period (5-year lookback) |
+| **New Products** | Products with first-ever sale in selected period |
+| **New Business Revenue** | Revenue from customer-product combos first sold in period |
+
+Click 📋 button next to each metric to view details.
+                        """)
                 
                 col1, col2, col3 = st.columns(3)
                 
-                # New Customers with popup
+                # New Customers with popup - UPDATED: Use 4:1 ratio for wider metric
                 with col1:
                     new_customers = complex_kpis.get('num_new_customers', 0)
                     
-                    # Metric and popup button in same column
-                    metric_col, btn_col = st.columns([3, 1])
+                    metric_col, btn_col = st.columns([4, 1])
                     
                     with metric_col:
                         st.metric(
                             label="New Customers",
-                            value=f"{new_customers:.0f}",
+                            value=f"{new_customers:.1f}",
                             help="Customers new to the COMPANY (first invoice within 5-year lookback falls in selected period)"
                         )
                     
@@ -214,11 +198,10 @@ class KPICenterCharts:
                         if new_customers > 0 and new_customers_df is not None and not new_customers_df.empty:
                             with st.popover("📋", help="View details"):
                                 st.markdown("**New Customers Detail**")
+                                display_cols = ['customer', 'kpi_center', 'first_sale_date', 'first_day_revenue', 'first_day_gp']
+                                display_cols = [c for c in display_cols if c in new_customers_df.columns]
                                 st.dataframe(
-                                    new_customers_df[[
-                                        'customer', 'kpi_center', 'first_sale_date',
-                                        'first_day_revenue', 'first_day_gp'
-                                    ]].head(50) if 'first_sale_date' in new_customers_df.columns else new_customers_df.head(50),
+                                    new_customers_df[display_cols].head(50) if display_cols else new_customers_df.head(50),
                                     hide_index=True,
                                     column_config={
                                         'customer': 'Customer',
@@ -234,12 +217,12 @@ class KPICenterCharts:
                 with col2:
                     new_products = complex_kpis.get('num_new_products', 0)
                     
-                    metric_col, btn_col = st.columns([3, 1])
+                    metric_col, btn_col = st.columns([4, 1])
                     
                     with metric_col:
                         st.metric(
                             label="New Products",
-                            value=f"{new_products:.0f}",
+                            value=f"{new_products:.1f}",
                             help="Products with their first sale ever (to any customer) in selected period"
                         )
                     
@@ -262,17 +245,17 @@ class KPICenterCharts:
                                     use_container_width=True
                                 )
                 
-                # New Business Revenue with popup
+                # New Business Revenue with popup - UPDATED: Wider popover
                 with col3:
                     new_biz_rev = complex_kpis.get('new_business_revenue', 0)
                     
-                    metric_col, btn_col = st.columns([3, 1])
+                    metric_col, btn_col = st.columns([4, 1])
                     
                     with metric_col:
                         st.metric(
                             label="New Business Revenue",
                             value=f"${new_biz_rev:,.0f}",
-                            help="Revenue from customer-product combos first sold in selected period (all revenue from new combos, not just first day)"
+                            help="Revenue from customer-product combos first sold in selected period"
                         )
                     
                     with btn_col:
@@ -294,15 +277,18 @@ class KPICenterCharts:
                                         'period_revenue': st.column_config.NumberColumn('Period Revenue', format="$%,.0f"),
                                         'period_gp': st.column_config.NumberColumn('Period GP', format="$%,.0f"),
                                     },
-                                    use_container_width=True
+                                    use_container_width=True,
+                                    height=400
                                 )
                                 
                                 # Summary by KPI Center
                                 if new_business_df is not None and not new_business_df.empty:
                                     st.divider()
                                     st.markdown("**Summary by KPI Center**")
+                                    summary_cols = ['kpi_center', 'num_new_combos', 'new_business_revenue', 'new_business_gp']
+                                    summary_cols = [c for c in summary_cols if c in new_business_df.columns]
                                     st.dataframe(
-                                        new_business_df[['kpi_center', 'num_new_combos', 'new_business_revenue', 'new_business_gp']],
+                                        new_business_df[summary_cols] if summary_cols else new_business_df,
                                         hide_index=True,
                                         column_config={
                                             'kpi_center': 'KPI Center',
@@ -314,470 +300,359 @@ class KPICenterCharts:
                                     )
     
     # =========================================================================
-    # BACKLOG RISK ANALYSIS (NEW v2.0.0)
+    # BACKLOG & FORECAST CHARTS - NEW v2.4.0
     # =========================================================================
     
     @staticmethod
-    def render_backlog_risk_section(
-        risk_analysis: Dict,
-        show_detail: bool = True
-    ):
-        """
-        Render backlog risk analysis section.
-        
-        Args:
-            risk_analysis: Dictionary from get_backlog_risk_analysis()
-            show_detail: Whether to show detailed breakdown
-        """
-        if not risk_analysis:
-            return
-        
-        overdue_orders = risk_analysis.get('overdue_orders', 0)
-        overdue_revenue = risk_analysis.get('overdue_revenue', 0)
-        at_risk_orders = risk_analysis.get('at_risk_orders', 0)
-        at_risk_revenue = risk_analysis.get('at_risk_revenue', 0)
-        total_backlog = risk_analysis.get('total_backlog', 0)
-        overdue_percent = risk_analysis.get('overdue_percent', 0)
-        
-        # Only show if there's overdue or at-risk
-        if overdue_orders == 0 and at_risk_orders == 0:
-            return
-        
-        with st.container(border=True):
-            st.markdown("**⚠️ BACKLOG RISK ANALYSIS**")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                delta_color = "inverse" if overdue_orders > 0 else "off"
-                st.metric(
-                    label="🔴 Overdue Orders",
-                    value=f"{overdue_orders:,}",
-                    delta=f"ETD passed",
-                    delta_color=delta_color,
-                    help="Orders with ETD in the past that haven't been invoiced"
-                )
-            
-            with col2:
-                st.metric(
-                    label="Overdue Revenue",
-                    value=f"${overdue_revenue:,.0f}",
-                    delta=f"{overdue_percent:.1f}% of total",
-                    delta_color="inverse" if overdue_percent > 10 else "off",
-                    help="Revenue at risk from overdue orders"
-                )
-            
-            with col3:
-                st.metric(
-                    label="🟡 At-Risk Orders",
-                    value=f"{at_risk_orders:,}",
-                    delta="ETD within 7 days",
-                    delta_color="off",
-                    help="Orders with ETD in the next 7 days"
-                )
-            
-            with col4:
-                st.metric(
-                    label="At-Risk Revenue",
-                    value=f"${at_risk_revenue:,.0f}",
-                    help="Revenue from orders due within 7 days"
-                )
-    
-    # =========================================================================
-    # PIPELINE & FORECAST SECTION
-    # =========================================================================
-    
-    @staticmethod
-    def render_pipeline_forecast_section(
-        pipeline_metrics: Dict,
-        show_forecast: bool = True
-    ):
-        """
-        Render Pipeline & Forecast section with tabs for Revenue/GP/GP1.
-        """
-        if not pipeline_metrics:
-            st.info("No pipeline data available")
-            return
-        
-        with st.container(border=True):
-            # Header with help
-            col_header, col_help = st.columns([6, 1])
-            
-            with col_header:
-                st.markdown("**📦 PIPELINE & FORECAST**")
-            
-            with col_help:
-                with st.popover("ℹ️ Help"):
-                    st.markdown("""
-**📦 Pipeline & Forecast**
-
-| Metric | Formula | Description |
-|--------|---------|-------------|
-| **Total Backlog** | `Σ backlog_by_kpi_center_usd` | All outstanding orders (all KPI Centers) |
-| **In-Period** | `Σ backlog WHERE ETD in period` | Backlog expected to ship in period |
-| **Target** | `Σ prorated_target` | Sum of prorated annual targets |
-| **Forecast** | `Invoiced + In-Period` | Projected total for period |
-| **GAP/Surplus** | `Forecast - Target` | Positive = ahead, Negative = behind |
-
----
-
-**⚠️ KPI Center Filtering**
-
-Each tab shows data from KPI Centers with that specific target:
-- **Revenue tab**: KPI Centers with Revenue target
-- **GP tab**: KPI Centers with Gross Profit target  
-- **GP1 tab**: KPI Centers with GP1 target
-
-This ensures accurate achievement calculation.
-                    """)
-            
-            # Get period context
-            period_context = pipeline_metrics.get('period_context', {})
-            show_forecast = period_context.get('show_forecast', True)
-            
-            if not show_forecast:
-                st.caption(period_context.get('forecast_message', ''))
-            
-            # Create tabs for each metric
-            tab_rev, tab_gp, tab_gp1 = st.tabs(["💵 Revenue", "📈 Gross Profit", "📊 GP1"])
-            
-            with tab_rev:
-                KPICenterCharts._render_pipeline_metric_row(
-                    metric_data=pipeline_metrics.get('revenue', {}),
-                    metric_name="Revenue",
-                    summary=pipeline_metrics.get('summary', {}),
-                    show_forecast=show_forecast
-                )
-            
-            with tab_gp:
-                KPICenterCharts._render_pipeline_metric_row(
-                    metric_data=pipeline_metrics.get('gross_profit', {}),
-                    metric_name="Gross Profit",
-                    summary=pipeline_metrics.get('summary', {}),
-                    show_forecast=show_forecast
-                )
-            
-            with tab_gp1:
-                KPICenterCharts._render_pipeline_metric_row(
-                    metric_data=pipeline_metrics.get('gp1', {}),
-                    metric_name="GP1",
-                    summary=pipeline_metrics.get('summary', {}),
-                    show_forecast=show_forecast,
-                    is_estimated=True,
-                    gp1_gp_ratio=pipeline_metrics.get('summary', {}).get('gp1_gp_ratio', 1.0)
-                )
-    
-    @staticmethod
-    def _render_pipeline_metric_row(
-        metric_data: Dict,
-        metric_name: str,
-        summary: Dict,
-        show_forecast: bool = True,
-        is_estimated: bool = False,
-        gp1_gp_ratio: float = 1.0
-    ):
-        """Render a single row of pipeline metrics."""
-        # FIXED: Get total_backlog based on metric name
-        if metric_name == "Revenue":
-            total_backlog = summary.get('total_backlog_revenue', 0)
-        elif metric_name == "Gross Profit":
-            total_backlog = summary.get('total_backlog_gp', 0)
-        else:  # GP1
-            total_backlog = summary.get('total_backlog_gp1', 0)
-        
-        in_period_backlog = metric_data.get('in_period_backlog', 0)
-        target = metric_data.get('target')
-        forecast = metric_data.get('forecast')
-        gap = metric_data.get('gap')
-        gap_percent = metric_data.get('gap_percent')
-        forecast_achievement = metric_data.get('forecast_achievement')
-        # FIXED: Changed from employee_count to kpi_center_count
-        kpi_center_count = metric_data.get('kpi_center_count', 0)
-        invoiced = metric_data.get('invoiced', 0)
-        backlog_orders = summary.get('backlog_orders', 0)
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        # Column 1: Total Backlog
-        with col1:
-            help_text = f"All outstanding {metric_name.lower()} from pending orders."
-            if is_estimated:
-                help_text += f" Estimated using GP1/GP ratio ({gp1_gp_ratio:.2%})."
-            
-            st.metric(
-                label="Total Backlog",
-                value=f"${total_backlog:,.0f}",
-                delta=f"{backlog_orders:,} orders" if backlog_orders else None,
-                delta_color="off",
-                help=help_text
-            )
-        
-        # Column 2: In-Period Backlog
-        with col2:
-            backlog_vs_target = None
-            if target and target > 0:
-                backlog_vs_target = (in_period_backlog / target * 100)
-            
-            delta_str = f"{backlog_vs_target:.0f}% of target" if backlog_vs_target else None
-            
-            help_text = f"Backlog with ETD in period. From {kpi_center_count} KPI Centers with {metric_name} target."
-            if is_estimated:
-                help_text += " Estimated using GP1/GP ratio."
-            
-            st.metric(
-                label="In-Period (KPI)",
-                value=f"${in_period_backlog:,.0f}",
-                delta=delta_str,
-                delta_color="off",
-                help=help_text
-            )
-        
-        # Column 3: Target
-        with col3:
-            if target is not None:
-                st.metric(
-                    label="Target",
-                    value=f"${target:,.0f}",
-                    delta=f"{kpi_center_count} KPI Centers",
-                    delta_color="off",
-                    help=f"Prorated annual target for {metric_name}"
-                )
-            else:
-                st.metric(
-                    label="Target",
-                    value="N/A",
-                    help="No target assigned"
-                )
-        
-        # Column 4: Forecast
-        if show_forecast:
-            with col4:
-                if forecast is not None:
-                    achievement_delta = f"{forecast_achievement:.0f}% of target" if forecast_achievement else None
-                    delta_color = "normal" if forecast_achievement and forecast_achievement >= 100 else "inverse"
-                    
-                    st.metric(
-                        label="Forecast (KPI)",
-                        value=f"${forecast:,.0f}",
-                        delta=achievement_delta,
-                        delta_color=delta_color if achievement_delta else "off",
-                        help=f"Invoiced (${invoiced:,.0f}) + In-Period Backlog"
-                    )
-                else:
-                    st.metric(
-                        label="Forecast",
-                        value="N/A",
-                        help="Cannot calculate without target"
-                    )
-            
-            # Column 5: GAP/Surplus
-            with col5:
-                if gap is not None:
-                    gap_label = "Surplus" if gap >= 0 else "GAP"
-                    gap_color = "normal" if gap >= 0 else "inverse"
-                    gap_delta = f"{gap_percent:+.1f}%" if gap_percent is not None else None
-                    
-                    st.metric(
-                        label=gap_label,
-                        value=f"${abs(gap):,.0f}",
-                        delta=gap_delta,
-                        delta_color=gap_color,
-                        help=f"Forecast - Target. Positive = ahead of target."
-                    )
-                else:
-                    st.metric(
-                        label="GAP",
-                        value="N/A"
-                    )
-        else:
-            # Show placeholder when forecast not shown
-            with col4:
-                st.metric(
-                    label="Forecast",
-                    value="—",
-                    help="Forecast not shown for historical periods"
-                )
-            with col5:
-                st.metric(
-                    label="GAP",
-                    value="—"
-                )
-    
-    @staticmethod
-    def convert_pipeline_to_backlog_metrics(pipeline_metrics: Dict) -> Dict:
-        """
-        Convert pipeline metrics format to backlog metrics format for Backlog tab.
-        """
-        if not pipeline_metrics:
-            return {}
-        
-        summary = pipeline_metrics.get('summary', {})
-        revenue_data = pipeline_metrics.get('revenue', {})
-        gp_data = pipeline_metrics.get('gross_profit', {})
-        
-        # FIXED: Correct key names
-        return {
-            'total_backlog_revenue': summary.get('total_backlog_revenue', 0),
-            'total_backlog_gp': summary.get('total_backlog_gp', 0),  # FIXED: was 'total_backlog_gross_profit'
-            'in_period_backlog_revenue': revenue_data.get('in_period_backlog', 0),
-            'in_period_backlog_gp': gp_data.get('in_period_backlog', 0),
-            'backlog_orders': summary.get('backlog_orders', 0),
-        }
-    
-    # =========================================================================
-    # MONTHLY TREND CHARTS
-    # =========================================================================
-    
-    @staticmethod
-    def build_monthly_trend_chart(
-        monthly_df: pd.DataFrame,
-        metric: str = "Revenue",
-        show_target: bool = True,
-        target_value: float = None
+    def build_forecast_waterfall_chart(
+        backlog_metrics: Dict,
+        metric: str = 'revenue',
+        title: str = "Forecast vs Target"
     ) -> alt.Chart:
         """
-        Build monthly trend bar chart with optional target line.
+        Build stacked bar chart showing Invoiced + In-Period Backlog vs Target.
+        SYNCED with Salesperson page.
+        """
+        # Get metrics based on type
+        if metric == 'revenue':
+            invoiced = backlog_metrics.get('invoiced_revenue', 0)
+            in_period = backlog_metrics.get('in_period_backlog_revenue', 0)
+            target = backlog_metrics.get('target_revenue', 0)
+        elif metric == 'gp':
+            invoiced = backlog_metrics.get('invoiced_gp', 0)
+            in_period = backlog_metrics.get('in_period_backlog_gp', 0)
+            target = backlog_metrics.get('target_gp', 0)
+        else:  # gp1
+            invoiced = backlog_metrics.get('invoiced_gp1', 0)
+            in_period = backlog_metrics.get('in_period_backlog_gp1', 0)
+            target = backlog_metrics.get('target_gp1', 0)
         
-        Args:
-            monthly_df: DataFrame with month and metric columns
-            metric: Which metric to display
-            show_target: Whether to show target line
-            target_value: Monthly target value
+        forecast = invoiced + in_period
+        
+        # Prepare data for stacked bar
+        data = pd.DataFrame([
+            {'category': 'Performance', 'component': 'Invoiced', 'value': invoiced, 'order': 1},
+            {'category': 'Performance', 'component': 'In-Period Backlog', 'value': in_period, 'order': 2},
+            {'category': 'Target', 'component': 'Target', 'value': target, 'order': 3},
+        ])
+        
+        # Color mapping
+        color_map = {
+            'Invoiced': COLORS.get('primary', '#1f77b4'),
+            'In-Period Backlog': COLORS.get('secondary', '#aec7e8'),
+            'Target': COLORS.get('target', '#d62728'),
+        }
+        
+        bars = alt.Chart(data).mark_bar(
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X('category:N', title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title='Amount (USD)'),
+            color=alt.Color('component:N', 
+                          scale=alt.Scale(domain=list(color_map.keys()), 
+                                         range=list(color_map.values())),
+                          legend=alt.Legend(title='Component', orient='bottom')),
+            order=alt.Order('order:Q'),
+            tooltip=[
+                alt.Tooltip('category:N', title='Category'),
+                alt.Tooltip('component:N', title='Component'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
+            ]
+        )
+        
+        # Add forecast line
+        if target > 0:
+            forecast_line = alt.Chart(pd.DataFrame({'y': [forecast]})).mark_rule(
+                color=COLORS.get('achievement_good', '#28a745'),
+                strokeDash=[5, 5],
+                strokeWidth=2
+            ).encode(
+                y='y:Q'
+            )
             
-        Returns:
-            Altair chart
+            # Add label
+            forecast_text = alt.Chart(pd.DataFrame({
+                'y': [forecast], 
+                'text': [f'Forecast: ${forecast:,.0f}']
+            })).mark_text(
+                align='right',
+                dx=-5,
+                dy=-10,
+                fontSize=11,
+                color=COLORS.get('achievement_good', '#28a745')
+            ).encode(
+                y='y:Q',
+                text='text:N'
+            )
+            
+            chart = bars + forecast_line + forecast_text
+        else:
+            chart = bars
+        
+        return chart.properties(
+            width='container',
+            height=300,
+            title=title
+        )
+    
+    @staticmethod
+    def build_gap_analysis_chart(
+        backlog_metrics: Dict,
+        metrics_to_show: List[str] = ['revenue'],
+        title: str = "Target vs Forecast"
+    ) -> alt.Chart:
+        """
+        Build horizontal bar chart comparing Target vs Forecast.
+        SYNCED with Salesperson page.
+        """
+        data_rows = []
+        
+        for metric in metrics_to_show:
+            if metric == 'revenue':
+                target = backlog_metrics.get('target_revenue', 0)
+                forecast = backlog_metrics.get('forecast_revenue', 0)
+                label = 'Revenue'
+            elif metric == 'gp':
+                target = backlog_metrics.get('target_gp', 0)
+                forecast = backlog_metrics.get('forecast_gp', 0)
+                label = 'Gross Profit'
+            else:  # gp1
+                target = backlog_metrics.get('target_gp1', 0)
+                forecast = backlog_metrics.get('forecast_gp1', 0)
+                label = 'GP1'
+            
+            if target > 0:
+                achievement = (forecast / target * 100)
+                data_rows.append({
+                    'metric': label,
+                    'forecast': forecast,
+                    'target': target,
+                    'achievement': achievement,
+                })
+        
+        if not data_rows:
+            return alt.Chart().mark_text().encode(text=alt.value("No target data"))
+        
+        chart_df = pd.DataFrame(data_rows)
+        
+        # Forecast bar (actual)
+        forecast_bar = alt.Chart(chart_df).mark_bar(
+            color=COLORS.get('primary', '#1f77b4'),
+            cornerRadiusTopRight=4,
+            cornerRadiusBottomRight=4,
+            height=25
+        ).encode(
+            x=alt.X('forecast:Q', title='Amount (USD)'),
+            y=alt.Y('metric:N', title=None),
+            tooltip=[
+                alt.Tooltip('metric:N', title='Metric'),
+                alt.Tooltip('forecast:Q', title='Forecast', format='$,.0f'),
+                alt.Tooltip('target:Q', title='Target', format='$,.0f'),
+                alt.Tooltip('achievement:Q', title='Achievement %', format='.1f'),
+            ]
+        )
+        
+        # Target marker
+        target_tick = alt.Chart(chart_df).mark_tick(
+            color=COLORS.get('target', '#d62728'),
+            thickness=3,
+            size=30
+        ).encode(
+            x='target:Q',
+            y='metric:N'
+        )
+        
+        # Achievement text
+        text = alt.Chart(chart_df).mark_text(
+            align='left',
+            dx=5,
+            fontSize=12,
+            fontWeight='bold'
+        ).encode(
+            x='forecast:Q',
+            y='metric:N',
+            text=alt.Text('achievement:Q', format='.0f'),
+            color=alt.condition(
+                alt.datum.achievement >= 100,
+                alt.value(COLORS.get('achievement_good', '#28a745')),
+                alt.value(COLORS.get('achievement_bad', '#dc3545'))
+            )
+        )
+        
+        return (forecast_bar + target_tick + text).properties(
+            width='container',
+            height=100 + len(metrics_to_show) * 40,
+            title=title
+        )
+    
+    # =========================================================================
+    # MONTHLY TREND CHARTS - UPDATED v2.4.0
+    # =========================================================================
+    
+    @staticmethod
+    def build_monthly_trend_dual_chart(
+        monthly_df: pd.DataFrame,
+        show_gp_percent_line: bool = True
+    ) -> alt.Chart:
+        """
+        Build monthly trend chart with Revenue + GP bars and GP% line.
+        SYNCED with Salesperson page (Image 2).
         """
         if monthly_df.empty:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        # Map metric name to column
-        metric_col_map = {
-            'Revenue': 'revenue',
-            'Gross Profit': 'gross_profit',
-            'GP1': 'gp1'
-        }
-        value_col = metric_col_map.get(metric, 'revenue')
-        
-        if value_col not in monthly_df.columns:
-            return alt.Chart().mark_text().encode(text=alt.value(f"Column {value_col} not found"))
-        
-        # Prepare data
         chart_df = monthly_df.copy()
+        
+        # Ensure month order
         chart_df['month_order'] = chart_df['month'].map(
             {m: i for i, m in enumerate(MONTH_ORDER)}
         )
         chart_df = chart_df.sort_values('month_order')
         
-        # Base bar chart
-        bars = alt.Chart(chart_df).mark_bar(
-            color=COLORS['primary'],
-            cornerRadiusTopLeft=3,
-            cornerRadiusTopRight=3
+        # Calculate GP% if not present
+        if 'gp_percent' not in chart_df.columns:
+            chart_df['gp_percent'] = (chart_df['gross_profit'] / chart_df['revenue'] * 100).fillna(0)
+        
+        # Prepare data for grouped bars
+        bar_data = []
+        for _, row in chart_df.iterrows():
+            bar_data.append({
+                'month': row['month'],
+                'month_order': row['month_order'],
+                'metric': 'Revenue',
+                'value': row.get('revenue', 0),
+                'gp_percent': row.get('gp_percent', 0)
+            })
+            bar_data.append({
+                'month': row['month'],
+                'month_order': row['month_order'],
+                'metric': 'Gross Profit',
+                'value': row.get('gross_profit', 0),
+                'gp_percent': row.get('gp_percent', 0)
+            })
+        
+        bar_df = pd.DataFrame(bar_data)
+        
+        # Color mapping
+        color_scale = alt.Scale(
+            domain=['Revenue', 'Gross Profit'],
+            range=[COLORS.get('revenue', '#FFA500'), COLORS.get('gross_profit', '#1f77b4')]
+        )
+        
+        # Grouped bars
+        bars = alt.Chart(bar_df).mark_bar(
+            cornerRadiusTopLeft=2,
+            cornerRadiusTopRight=2
         ).encode(
-            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
-            y=alt.Y(f'{value_col}:Q', title=metric),
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title='Amount (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color('metric:N', scale=color_scale, legend=alt.Legend(title='Metric', orient='bottom')),
+            xOffset='metric:N',
             tooltip=[
                 alt.Tooltip('month:N', title='Month'),
-                alt.Tooltip(f'{value_col}:Q', title=metric, format='$,.0f')
+                alt.Tooltip('metric:N', title='Metric'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
             ]
         )
         
         chart = bars
         
-        # Add target line if requested
-        if show_target and target_value and target_value > 0:
-            target_df = pd.DataFrame({'target': [target_value]})
-            target_line = alt.Chart(target_df).mark_rule(
-                color=COLORS['target'],
-                strokeDash=[5, 5],
-                strokeWidth=2
+        # Add GP% line if requested
+        if show_gp_percent_line:
+            line_df = chart_df[['month', 'month_order', 'gp_percent']].copy()
+            
+            line = alt.Chart(line_df).mark_line(
+                color=COLORS.get('gross_profit_percent', '#800080'),
+                strokeWidth=2,
+                point=alt.OverlayMarkDef(color=COLORS.get('gross_profit_percent', '#800080'), size=40)
             ).encode(
-                y='target:Q'
+                x=alt.X('month:N', sort=MONTH_ORDER),
+                y=alt.Y('gp_percent:Q', title='GP %', axis=alt.Axis(format='.0f')),
+                tooltip=[
+                    alt.Tooltip('month:N', title='Month'),
+                    alt.Tooltip('gp_percent:Q', title='GP %', format='.1f'),
+                ]
             )
-            chart = chart + target_line
+            
+            # Layer with independent y-axes
+            chart = alt.layer(bars, line).resolve_scale(y='independent')
         
         return chart.properties(
-            width=CHART_WIDTH,
-            height=CHART_HEIGHT
-        ).configure_axis(
-            labelFontSize=11,
-            titleFontSize=12
+            width='container',
+            height=350,
+            title='📊 Monthly Trend'
         )
     
     @staticmethod
-    def build_cumulative_chart(
-        monthly_df: pd.DataFrame,
-        metric: str = "Revenue",
-        target_df: pd.DataFrame = None
+    def build_cumulative_dual_chart(
+        monthly_df: pd.DataFrame
     ) -> alt.Chart:
         """
-        Build cumulative line chart with optional target comparison.
-        
-        Args:
-            monthly_df: DataFrame with month and metric columns
-            metric: Which metric to display
-            target_df: Optional DataFrame with cumulative targets
-            
-        Returns:
-            Altair chart
+        Build cumulative chart with Revenue + GP lines.
+        SYNCED with Salesperson page (Image 2 - Cumulative Performance).
         """
         if monthly_df.empty:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        metric_col_map = {
-            'Revenue': 'revenue',
-            'Gross Profit': 'gross_profit',
-            'GP1': 'gp1'
-        }
-        value_col = metric_col_map.get(metric, 'revenue')
-        
-        if value_col not in monthly_df.columns:
-            return alt.Chart().mark_text().encode(text=alt.value(f"Column {value_col} not found"))
-        
-        # Calculate cumulative
         chart_df = monthly_df.copy()
+        
+        # Ensure month order
         chart_df['month_order'] = chart_df['month'].map(
             {m: i for i, m in enumerate(MONTH_ORDER)}
         )
         chart_df = chart_df.sort_values('month_order')
-        chart_df['cumulative'] = chart_df[value_col].cumsum()
         
-        # Actual line
-        actual_line = alt.Chart(chart_df).mark_line(
-            color=COLORS['primary'],
-            strokeWidth=3,
-            point=True
+        # Calculate cumulative
+        chart_df['cumulative_revenue'] = chart_df['revenue'].cumsum()
+        chart_df['cumulative_gp'] = chart_df['gross_profit'].cumsum()
+        
+        # Prepare data for lines
+        line_data = []
+        for _, row in chart_df.iterrows():
+            line_data.append({
+                'month': row['month'],
+                'month_order': row['month_order'],
+                'metric': 'Cumulative Revenue',
+                'value': row['cumulative_revenue']
+            })
+            line_data.append({
+                'month': row['month'],
+                'month_order': row['month_order'],
+                'metric': 'Cumulative Gross Profit',
+                'value': row['cumulative_gp']
+            })
+        
+        line_df = pd.DataFrame(line_data)
+        
+        # Color scale
+        color_scale = alt.Scale(
+            domain=['Cumulative Revenue', 'Cumulative Gross Profit'],
+            range=[COLORS.get('revenue', '#FFA500'), COLORS.get('gross_profit', '#1f77b4')]
+        )
+        
+        lines = alt.Chart(line_df).mark_line(
+            strokeWidth=2,
+            point=alt.OverlayMarkDef(size=50)
         ).encode(
-            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
-            y=alt.Y('cumulative:Q', title=f'Cumulative {metric}'),
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title='Cumulative Amount (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color('metric:N', scale=color_scale, legend=alt.Legend(title='Metric', orient='bottom')),
             tooltip=[
                 alt.Tooltip('month:N', title='Month'),
-                alt.Tooltip('cumulative:Q', title='Cumulative', format='$,.0f'),
-                alt.Tooltip(f'{value_col}:Q', title='Monthly', format='$,.0f')
+                alt.Tooltip('metric:N', title='Metric'),
+                alt.Tooltip('value:Q', title='Amount', format='$,.0f'),
             ]
         )
         
-        chart = actual_line
-        
-        # Add target line if provided
-        if target_df is not None and not target_df.empty:
-            target_line = alt.Chart(target_df).mark_line(
-                color=COLORS['target'],
-                strokeDash=[5, 5],
-                strokeWidth=2
-            ).encode(
-                x=alt.X('month:N', sort=MONTH_ORDER),
-                y=alt.Y('cumulative_target:Q')
-            )
-            chart = chart + target_line
-        
-        return chart.properties(
-            width=CHART_WIDTH,
-            height=CHART_HEIGHT
+        return lines.properties(
+            width='container',
+            height=350,
+            title='📈 Cumulative Performance'
         )
     
     # =========================================================================
-    # YOY COMPARISON CHART
+    # YOY COMPARISON CHARTS - UPDATED v2.4.0
     # =========================================================================
     
     @staticmethod
@@ -789,17 +664,8 @@ This ensures accurate achievement calculation.
         previous_year: int = None
     ) -> alt.Chart:
         """
-        Build Year-over-Year comparison chart.
-        
-        Args:
-            current_df: Current year monthly data
-            previous_df: Previous year monthly data
-            metric: Which metric to compare
-            current_year: Current year label
-            previous_year: Previous year label
-            
-        Returns:
-            Altair layered chart
+        Build Year-over-Year comparison chart with grouped bars.
+        SYNCED with Salesperson page (Image 3).
         """
         if current_df.empty and previous_df.empty:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
@@ -816,236 +682,250 @@ This ensures accurate achievement calculation.
         
         if not current_df.empty and value_col in current_df.columns:
             curr = current_df[['month', value_col]].copy()
-            curr['year'] = str(current_year) if current_year else 'Current'
+            curr['year'] = f'Current Year' if current_year is None else str(current_year)
+            curr['year_type'] = 'Current Year'
             curr['value'] = curr[value_col]
-            combined_data.append(curr[['month', 'year', 'value']])
+            combined_data.append(curr[['month', 'year', 'year_type', 'value']])
         
         if not previous_df.empty and value_col in previous_df.columns:
             prev = previous_df[['month', value_col]].copy()
-            prev['year'] = str(previous_year) if previous_year else 'Previous'
+            prev['year'] = f'Previous Year' if previous_year is None else str(previous_year)
+            prev['year_type'] = 'Previous Year'
             prev['value'] = prev[value_col]
-            combined_data.append(prev[['month', 'year', 'value']])
+            combined_data.append(prev[['month', 'year', 'year_type', 'value']])
         
         if not combined_data:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
         chart_df = pd.concat(combined_data, ignore_index=True)
         
-        chart = alt.Chart(chart_df).mark_bar().encode(
-            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
-            y=alt.Y('value:Q', title=metric),
-            color=alt.Color('year:N', 
-                          scale=alt.Scale(range=[COLORS['primary'], COLORS['secondary']]),
-                          legend=alt.Legend(title='Year')),
-            xOffset='year:N',
+        # Color scale
+        color_scale = alt.Scale(
+            domain=['Current Year', 'Previous Year'],
+            range=[COLORS.get('current_year', '#1f77b4'), COLORS.get('previous_year', '#aec7e8')]
+        )
+        
+        chart = alt.Chart(chart_df).mark_bar(
+            cornerRadiusTopLeft=2,
+            cornerRadiusTopRight=2
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title=metric, axis=alt.Axis(format='~s')),
+            color=alt.Color('year_type:N', scale=color_scale, legend=alt.Legend(title='Year', orient='bottom')),
+            xOffset='year_type:N',
             tooltip=[
                 alt.Tooltip('month:N', title='Month'),
                 alt.Tooltip('year:N', title='Year'),
                 alt.Tooltip('value:Q', title=metric, format='$,.0f')
             ]
-        ).properties(
-            width=CHART_WIDTH,
-            height=CHART_HEIGHT
         )
         
-        return chart
-    
-    # =========================================================================
-    # RANKING TABLE
-    # =========================================================================
-    
-    @staticmethod
-    def render_kpi_center_ranking_table(
-        ranking_df: pd.DataFrame,
-        show_targets: bool = True,
-        limit: int = 20
-    ):
-        """
-        Render KPI Center ranking as a formatted table.
-        
-        Args:
-            ranking_df: DataFrame with KPI Center performance data
-            show_targets: Whether to show target and achievement columns
-            limit: Maximum rows to display
-        """
-        if ranking_df.empty:
-            st.info("No ranking data available")
-            return
-        
-        # Prepare display columns
-        display_df = ranking_df.head(limit).copy()
-        
-        # Add rank
-        display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
-        
-        # Define column config
-        column_config = {
-            'Rank': st.column_config.NumberColumn('Rank', width='small'),
-            'kpi_center': 'KPI Center',
-            'kpi_type': 'Type',
-            'total_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-            'total_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
-            'total_gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
-            'gp_percent': st.column_config.NumberColumn('GP%', format='%.1f%%'),
-            'customer_count': 'Customers',
-            'order_count': 'Orders',
-        }
-        
-        if show_targets:
-            column_config.update({
-                'target': st.column_config.NumberColumn('Target', format='$%,.0f'),
-                'achievement': st.column_config.ProgressColumn(
-                    'Achievement',
-                    min_value=0,
-                    max_value=150,
-                    format='%.0f%%'
-                ),
-            })
-        
-        # Filter to existing columns
-        display_cols = [c for c in column_config.keys() if c in display_df.columns or c == 'Rank']
-        
-        st.dataframe(
-            display_df[display_cols] if display_cols else display_df,
-            hide_index=True,
-            column_config=column_config,
-            use_container_width=True
+        return chart.properties(
+            width='container',
+            height=350,
+            title=f'📊 Monthly {metric} Comparison'
         )
     
-    # =========================================================================
-    # ACHIEVEMENT BAR CHART - NEW v2.2.0
-    # =========================================================================
-    
     @staticmethod
-    def build_achievement_bar_chart(
-        achievement_df: pd.DataFrame,
-        show_target_line: bool = True
+    def build_yoy_cumulative_chart(
+        current_df: pd.DataFrame,
+        previous_df: pd.DataFrame,
+        metric: str = "Revenue",
+        current_year: int = None,
+        previous_year: int = None
     ) -> alt.Chart:
         """
-        Build horizontal bar chart for KPI achievement comparison.
-        
-        Args:
-            achievement_df: DataFrame with columns:
-                - kpi_center: KPI Center name
-                - achievement: Achievement percentage
-                - kpi_type: Optional KPI type for color coding
-            show_target_line: Whether to show 100% target reference line
-            
-        Returns:
-            Altair chart
+        Build YoY cumulative comparison chart.
+        SYNCED with Salesperson page (Image 3 - Cumulative Revenue).
         """
-        if achievement_df.empty:
-            return alt.Chart().mark_text().encode(text=alt.value("No achievement data"))
+        if current_df.empty and previous_df.empty:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        if 'achievement' not in achievement_df.columns:
-            return alt.Chart().mark_text().encode(text=alt.value("Achievement column not found"))
+        metric_col_map = {
+            'Revenue': 'revenue',
+            'Gross Profit': 'gross_profit',
+            'GP1': 'gp1'
+        }
+        value_col = metric_col_map.get(metric, 'revenue')
         
-        chart_df = achievement_df.copy()
+        # Prepare data
+        line_data = []
         
-        # Add color based on achievement
-        def get_color(ach):
-            if pd.isna(ach):
-                return 'gray'
-            if ach >= 100:
-                return '#22c55e'  # Green
-            elif ach >= 80:
-                return '#f59e0b'  # Amber
-            else:
-                return '#ef4444'  # Red
+        if not current_df.empty and value_col in current_df.columns:
+            curr = current_df.copy()
+            curr['month_order'] = curr['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
+            curr = curr.sort_values('month_order')
+            curr['cumulative'] = curr[value_col].cumsum()
+            
+            for _, row in curr.iterrows():
+                line_data.append({
+                    'month': row['month'],
+                    'month_order': row['month_order'],
+                    'year': 'Current Year',
+                    'value': row['cumulative']
+                })
         
-        chart_df['color'] = chart_df['achievement'].apply(get_color)
+        if not previous_df.empty and value_col in previous_df.columns:
+            prev = previous_df.copy()
+            prev['month_order'] = prev['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
+            prev = prev.sort_values('month_order')
+            prev['cumulative'] = prev[value_col].cumsum()
+            
+            for _, row in prev.iterrows():
+                line_data.append({
+                    'month': row['month'],
+                    'month_order': row['month_order'],
+                    'year': 'Previous Year',
+                    'value': row['cumulative']
+                })
         
-        # Sort by achievement
-        chart_df = chart_df.sort_values('achievement', ascending=True)
+        if not line_data:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        # Base bar chart
-        bars = alt.Chart(chart_df).mark_bar(
-            cornerRadiusTopRight=3,
-            cornerRadiusBottomRight=3
+        chart_df = pd.DataFrame(line_data)
+        
+        # Color scale
+        color_scale = alt.Scale(
+            domain=['Current Year', 'Previous Year'],
+            range=[COLORS.get('current_year', '#1f77b4'), COLORS.get('previous_year', '#aec7e8')]
+        )
+        
+        chart = alt.Chart(chart_df).mark_line(
+            strokeWidth=2,
+            point=alt.OverlayMarkDef(size=50)
         ).encode(
-            x=alt.X('achievement:Q', 
-                   title='Achievement %',
-                   scale=alt.Scale(domain=[0, max(150, chart_df['achievement'].max() * 1.1)])),
-            y=alt.Y('kpi_center:N', sort='-x', title='KPI Center'),
-            color=alt.Color('color:N', scale=None, legend=None),
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month', axis=alt.Axis(labelAngle=0)),
+            y=alt.Y('value:Q', title=f'Cumulative {metric}', axis=alt.Axis(format='~s')),
+            color=alt.Color('year:N', scale=color_scale, legend=alt.Legend(title='Year', orient='bottom')),
+            strokeDash=alt.condition(
+                alt.datum.year == 'Previous Year',
+                alt.value([5, 5]),
+                alt.value([0])
+            ),
             tooltip=[
-                alt.Tooltip('kpi_center:N', title='KPI Center'),
-                alt.Tooltip('achievement:Q', title='Achievement', format='.1f'),
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip('year:N', title='Year'),
+                alt.Tooltip('value:Q', title=f'Cumulative {metric}', format='$,.0f')
+            ]
+        )
+        
+        return chart.properties(
+            width='container',
+            height=350,
+            title=f'📈 Cumulative {metric}'
+        )
+    
+    # =========================================================================
+    # MONTHLY TREND CHART (Simple version for backward compatibility)
+    # =========================================================================
+    
+    @staticmethod
+    def build_monthly_trend_chart(
+        monthly_df: pd.DataFrame,
+        metric: str = "Revenue",
+        show_target: bool = True,
+        target_value: float = None
+    ) -> alt.Chart:
+        """Build simple monthly trend bar chart with optional target line."""
+        if monthly_df.empty:
+            return alt.Chart().mark_text().encode(text=alt.value("No data"))
+        
+        metric_col_map = {'Revenue': 'revenue', 'Gross Profit': 'gross_profit', 'GP1': 'gp1'}
+        value_col = metric_col_map.get(metric, 'revenue')
+        
+        if value_col not in monthly_df.columns:
+            return alt.Chart().mark_text().encode(text=alt.value(f"Column {value_col} not found"))
+        
+        chart_df = monthly_df.copy()
+        chart_df['month_order'] = chart_df['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
+        chart_df = chart_df.sort_values('month_order')
+        
+        bars = alt.Chart(chart_df).mark_bar(
+            color=COLORS.get('primary', '#1f77b4'),
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
+            y=alt.Y(f'{value_col}:Q', title=metric),
+            tooltip=[
+                alt.Tooltip('month:N', title='Month'),
+                alt.Tooltip(f'{value_col}:Q', title=metric, format='$,.0f')
             ]
         )
         
         chart = bars
         
-        # Add 100% target line
-        if show_target_line:
-            target_line = alt.Chart(pd.DataFrame({'target': [100]})).mark_rule(
-                color='red',
+        if show_target and target_value and target_value > 0:
+            target_df = pd.DataFrame({'target': [target_value]})
+            target_line = alt.Chart(target_df).mark_rule(
+                color=COLORS.get('target', '#d62728'),
                 strokeDash=[5, 5],
                 strokeWidth=2
-            ).encode(
-                x='target:Q'
-            )
+            ).encode(y='target:Q')
             chart = chart + target_line
         
-        return chart.properties(
-            width=CHART_WIDTH,
-            height=min(400, len(chart_df) * 25)
-        ).configure_axis(
-            labelFontSize=11,
-            titleFontSize=12
-        )
+        return chart.properties(width='container', height=300)
     
     # =========================================================================
-    # KPI CENTER RANKING CHART
+    # UTILITY METHODS
     # =========================================================================
     
     @staticmethod
-    def build_kpi_center_ranking_chart(
-        ranking_df: pd.DataFrame,
-        metric: str = "revenue",
-        top_n: int = 10
-    ) -> alt.Chart:
-        """
-        Build horizontal bar chart for KPI Center ranking.
+    def convert_pipeline_to_backlog_metrics(pipeline_metrics: Dict) -> Dict:
+        """Convert pipeline metrics format to backlog metrics format."""
+        if not pipeline_metrics:
+            return {}
         
-        Args:
-            ranking_df: DataFrame with KPI Center performance data
-            metric: Column name to rank by
-            top_n: Number of top items to show
+        summary = pipeline_metrics.get('summary', {})
+        revenue_data = pipeline_metrics.get('revenue', {})
+        gp_data = pipeline_metrics.get('gross_profit', {})
+        gp1_data = pipeline_metrics.get('gp1', {})
+        
+        return {
+            # Total backlog
+            'total_backlog_revenue': summary.get('total_backlog_revenue', 0),
+            'total_backlog_gp': summary.get('total_backlog_gp', 0),
+            'total_backlog_gp1': summary.get('total_backlog_gp1', 0),
+            'backlog_orders': summary.get('backlog_orders', 0),
             
-        Returns:
-            Altair chart
-        """
-        if ranking_df.empty:
-            return alt.Chart().mark_text().encode(text=alt.value("No data"))
-        
-        if metric not in ranking_df.columns:
-            return alt.Chart().mark_text().encode(text=alt.value(f"Column {metric} not found"))
-        
-        # Get top N
-        chart_df = ranking_df.nlargest(top_n, metric).copy()
-        
-        # Create chart
-        chart = alt.Chart(chart_df).mark_bar(
-            color=COLORS['primary'],
-            cornerRadiusTopRight=3,
-            cornerRadiusBottomRight=3
-        ).encode(
-            x=alt.X(f'{metric}:Q', title=metric.replace('_', ' ').title()),
-            y=alt.Y('kpi_center:N', sort='-x', title='KPI Center'),
-            tooltip=[
-                alt.Tooltip('kpi_center:N', title='KPI Center'),
-                alt.Tooltip(f'{metric}:Q', title=metric.replace('_', ' ').title(), format='$,.0f')
-            ]
-        ).properties(
-            width=CHART_WIDTH,
-            height=min(300, top_n * 30)
-        )
-        
-        return chart
+            # In-period backlog
+            'in_period_backlog_revenue': revenue_data.get('in_period_backlog', 0),
+            'in_period_backlog_gp': gp_data.get('in_period_backlog', 0),
+            'in_period_backlog_gp1': gp1_data.get('in_period_backlog', 0),
+            
+            # Invoiced
+            'invoiced_revenue': revenue_data.get('invoiced', 0),
+            'invoiced_gp': gp_data.get('invoiced', 0),
+            'invoiced_gp1': gp1_data.get('invoiced', 0),
+            
+            # Targets
+            'target_revenue': revenue_data.get('target', 0),
+            'target_gp': gp_data.get('target', 0),
+            'target_gp1': gp1_data.get('target', 0),
+            
+            # Forecast
+            'forecast_revenue': revenue_data.get('forecast', 0),
+            'forecast_gp': gp_data.get('forecast', 0),
+            'forecast_gp1': gp1_data.get('forecast', 0),
+            
+            # GAP
+            'gap_revenue': revenue_data.get('gap', 0),
+            'gap_gp': gp_data.get('gap', 0),
+            'gap_gp1': gp1_data.get('gap', 0),
+            
+            # Achievement
+            'achievement_revenue': revenue_data.get('forecast_achievement', 0),
+            'achievement_gp': gp_data.get('forecast_achievement', 0),
+            'achievement_gp1': gp1_data.get('forecast_achievement', 0),
+            
+            # KPI Center count
+            'kpi_center_count_revenue': revenue_data.get('kpi_center_count', 0),
+            'kpi_center_count_gp': gp_data.get('kpi_center_count', 0),
+            'kpi_center_count_gp1': gp1_data.get('kpi_center_count', 0),
+        }
     
     # =========================================================================
-    # PARETO CHARTS - NEW v2.3.0
+    # PARETO / TOP PERFORMERS CHARTS (kept from v2.3.0)
     # =========================================================================
     
     @staticmethod
@@ -1057,31 +937,12 @@ This ensures accurate achievement calculation.
         show_cumulative_line: bool = True,
         highlight_80_percent: bool = True
     ) -> alt.Chart:
-        """
-        Build Pareto chart (bar + cumulative line).
-        
-        Args:
-            data_df: DataFrame with value and label columns
-            value_col: Column name for values (e.g., 'revenue')
-            label_col: Column name for labels (e.g., 'customer')
-            title: Chart title
-            show_cumulative_line: Whether to show cumulative % line
-            highlight_80_percent: Whether to highlight 80% threshold
-            
-        Returns:
-            Altair layered chart
-        """
+        """Build Pareto chart with bar + cumulative line."""
         if data_df.empty:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        if value_col not in data_df.columns or label_col not in data_df.columns:
-            return alt.Chart().mark_text().encode(text=alt.value("Required columns not found"))
+        chart_df = data_df.sort_values(value_col, ascending=False).head(20).copy()
         
-        # Prepare data
-        chart_df = data_df.copy()
-        chart_df = chart_df.sort_values(value_col, ascending=False).head(20)  # Limit to top 20
-        
-        # Calculate cumulative percentage
         total = chart_df[value_col].sum()
         if total == 0:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
@@ -1089,13 +950,10 @@ This ensures accurate achievement calculation.
         chart_df['cumulative'] = chart_df[value_col].cumsum()
         chart_df['cumulative_percent'] = (chart_df['cumulative'] / total * 100).round(1)
         chart_df['percent'] = (chart_df[value_col] / total * 100).round(1)
-        
-        # Create order for x-axis
         chart_df['order'] = range(len(chart_df))
         
-        # Base bar chart
         bars = alt.Chart(chart_df).mark_bar(
-            color=COLORS['primary'],
+            color=COLORS.get('primary', '#1f77b4'),
             cornerRadiusTopLeft=3,
             cornerRadiusTopRight=3
         ).encode(
@@ -1114,52 +972,19 @@ This ensures accurate achievement calculation.
         
         chart = bars
         
-        # Add cumulative line
         if show_cumulative_line:
-            # Need a secondary y-axis for percentage
             line = alt.Chart(chart_df).mark_line(
-                color=COLORS['secondary'],
+                color=COLORS.get('secondary', '#aec7e8'),
                 strokeWidth=2,
-                point=alt.OverlayMarkDef(color=COLORS['secondary'], size=50)
+                point=alt.OverlayMarkDef(color=COLORS.get('secondary', '#aec7e8'), size=50)
             ).encode(
-                x=alt.X(f'{label_col}:N', 
-                       sort=alt.EncodingSortField(field='order', order='ascending')),
-                y=alt.Y('cumulative_percent:Q', 
-                       title='Cumulative %',
-                       scale=alt.Scale(domain=[0, 105])),
-                tooltip=[
-                    alt.Tooltip(f'{label_col}:N', title='Name'),
-                    alt.Tooltip('cumulative_percent:Q', title='Cumulative %', format='.1f'),
-                ]
+                x=alt.X(f'{label_col}:N', sort=alt.EncodingSortField(field='order', order='ascending')),
+                y=alt.Y('cumulative_percent:Q', title='Cumulative %', scale=alt.Scale(domain=[0, 105])),
             )
             
-            # Layer with independent y-axes
-            chart = alt.layer(
-                bars,
-                line
-            ).resolve_scale(
-                y='independent'
-            )
+            chart = alt.layer(bars, line).resolve_scale(y='independent')
         
-        # Add 80% threshold line
-        if highlight_80_percent and show_cumulative_line:
-            threshold = alt.Chart(pd.DataFrame({'y': [80]})).mark_rule(
-                color='red',
-                strokeDash=[5, 5],
-                strokeWidth=1.5
-            ).encode(
-                y='y:Q'
-            )
-            # Note: This would need proper layering with independent scales
-        
-        return chart.properties(
-            width=CHART_WIDTH,
-            height=CHART_HEIGHT,
-            title=title
-        ).configure_axis(
-            labelFontSize=10,
-            titleFontSize=12
-        )
+        return chart.properties(width='container', height=350, title=title)
     
     @staticmethod
     def build_top_performers_chart(
@@ -1170,36 +995,20 @@ This ensures accurate achievement calculation.
         title: str = "Top Performers",
         show_percent: bool = True
     ) -> alt.Chart:
-        """
-        Build horizontal bar chart for top performers.
-        
-        Args:
-            data_df: DataFrame with performance data
-            value_col: Column for values
-            label_col: Column for labels
-            top_n: Number of top items to show
-            title: Chart title
-            show_percent: Whether to show percentage labels
-            
-        Returns:
-            Altair chart
-        """
+        """Build horizontal bar chart for top performers."""
         if data_df.empty:
             return alt.Chart().mark_text().encode(text=alt.value("No data"))
         
-        # Get top N
         chart_df = data_df.nlargest(top_n, value_col).copy()
         
-        # Calculate percentage
         total = data_df[value_col].sum()
         if total > 0:
             chart_df['percent'] = (chart_df[value_col] / total * 100).round(1)
         else:
             chart_df['percent'] = 0
         
-        # Create chart
         bars = alt.Chart(chart_df).mark_bar(
-            color=COLORS['primary'],
+            color=COLORS.get('primary', '#1f77b4'),
             cornerRadiusTopRight=4,
             cornerRadiusBottomRight=4
         ).encode(
@@ -1214,7 +1023,6 @@ This ensures accurate achievement calculation.
         
         chart = bars
         
-        # Add text labels if showing percent
         if show_percent:
             text = alt.Chart(chart_df).mark_text(
                 align='left',
@@ -1228,66 +1036,4 @@ This ensures accurate achievement calculation.
             )
             chart = bars + text
         
-        return chart.properties(
-            width=CHART_WIDTH,
-            height=min(400, top_n * 35),
-            title=title
-        )
-    
-    @staticmethod
-    def build_concentration_donut(
-        top_value: float,
-        total_value: float,
-        label: str = "Top 20%",
-        title: str = "Revenue Concentration"
-    ) -> alt.Chart:
-        """
-        Build donut chart showing concentration (e.g., top 20% customers = 80% revenue).
-        
-        Args:
-            top_value: Value from top segment
-            total_value: Total value
-            label: Label for top segment
-            title: Chart title
-            
-        Returns:
-            Altair donut chart
-        """
-        if total_value == 0:
-            return alt.Chart().mark_text().encode(text=alt.value("No data"))
-        
-        top_percent = (top_value / total_value * 100)
-        other_percent = 100 - top_percent
-        
-        data = pd.DataFrame({
-            'category': [label, 'Others'],
-            'value': [top_percent, other_percent],
-            'color': [COLORS['primary'], COLORS['neutral']]
-        })
-        
-        chart = alt.Chart(data).mark_arc(
-            innerRadius=50,
-            outerRadius=90
-        ).encode(
-            theta=alt.Theta('value:Q'),
-            color=alt.Color('color:N', scale=None, legend=None),
-            tooltip=[
-                alt.Tooltip('category:N', title='Segment'),
-                alt.Tooltip('value:Q', title='%', format='.1f'),
-            ]
-        ).properties(
-            width=200,
-            height=200,
-            title=title
-        )
-        
-        # Add center text
-        text = alt.Chart(pd.DataFrame({'text': [f'{top_percent:.0f}%']})).mark_text(
-            size=24,
-            fontWeight='bold',
-            color=COLORS['primary']
-        ).encode(
-            text='text:N'
-        )
-        
-        return chart + text
+        return chart.properties(width='container', height=min(400, top_n * 35), title=title)

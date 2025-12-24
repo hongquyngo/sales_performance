@@ -2,42 +2,20 @@
 """
 KPI Center Performance Dashboard
 
-A comprehensive dashboard for tracking KPI Center performance metrics.
-Features:
-- Revenue, GP, GP1 tracking with targets
-- Complex KPIs (New Customers, Products, Business Revenue) with popup drill-down
-- Pipeline & Forecast with gap analysis
-- YoY comparison
-- Parent-Child KPI Center rollup
-- Backlog risk analysis
-- Top Performers / Pareto Analysis
-- Excel export
-
-Access: admin, GM, MD, sales_manager only
-
-VERSION: 2.3.1
+VERSION: 2.4.0
 CHANGELOG:
+- v2.4.0: SYNCED UI with Salesperson Performance page:
+          - Overview tab now matches SP page layout exactly
+          - Monthly Trend & Cumulative: 2 charts side-by-side with Customer/Brand/Product Excl filters
+          - Year-over-Year Comparison: Tabs (Revenue/GP/GP1), summary metrics, 2 charts
+          - Backlog & Forecast: Inline section with 3 tabs (Revenue/GP/GP1), 
+            5 metrics each + 2 charts per tab (waterfall + gap analysis)
+          - Removed separate PIPELINE & FORECAST and BACKLOG RISK ANALYSIS sections
+          - New Business popover widened to match SP page
 - v2.3.1: BUGFIX - KPI Center filter not working
-          - filter_data_client_side now filters by kpi_center_ids
-          - filter_data_client_side now filters by entity_ids
-          - Added _calculate_backlog_risk_from_df for client-side recalculation
-          - Targets now filtered by both year AND kpi_center_ids
-          - SYNCED exclude_internal logic with Salesperson page:
-            Zero out revenue for internal customers (keep GP intact)
-            instead of removing rows entirely
 - v2.3.0: Phase 3 - Added Analysis tab with Pareto analysis
-          - top_performers_fragment for Customer/Brand/Product analysis
-          - 80/20 concentration insights
-          - Interactive charts with recommendations
-- v2.2.0: Phase 2 enhancements:
-          - monthly_trend_fragment now shows target overlay
-          - backlog_list_fragment now shows overall vs filtered totals
-          - sales_detail_fragment now shows summary cards at top
-- v2.0.0: Added complex KPIs popup drill-down (New Customers/Products/Business detail)
-          Added backlog risk analysis section
-          Added smart data caching (year range expansion)
-          Improved refresh button and cache management
-          Enhanced help popovers throughout
+- v2.2.0: Phase 2 enhancements
+- v2.0.0: Complex KPIs popup, backlog risk, smart caching
 """
 
 import logging
@@ -72,7 +50,7 @@ from utils.kpi_center_performance import (
     pivot_analysis_fragment,
     backlog_list_fragment,
     kpi_center_ranking_fragment,
-    top_performers_fragment,  # NEW v2.3.0
+    top_performers_fragment,
     export_report_fragment,
 )
 
@@ -92,16 +70,12 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Clean dataframe to avoid Arrow serialization errors.
-    Fixes mixed type columns.
-    """
+    """Clean dataframe to avoid Arrow serialization errors."""
     if df.empty:
         return df
     
     df_clean = df.copy()
     
-    # Columns that should be numeric
     year_columns = ['etd_year', 'oc_year', 'invoice_year', 'year']
     numeric_columns = ['days_until_etd', 'days_since_order', 'split_rate_percent']
     
@@ -129,7 +103,6 @@ def check_access():
         st.info("Go to the main page to login")
         st.stop()
     
-    # Check database connection
     db_connected, db_error = check_db_connection()
     if not db_connected:
         st.error(f"❌ Database connection failed: {db_error}")
@@ -158,7 +131,6 @@ def load_lookup_data():
     
     engine = get_db_engine()
     
-    # KPI Center list
     kpi_center_query = """
         SELECT DISTINCT
             kc.id AS kpi_center_id,
@@ -172,7 +144,6 @@ def load_lookup_data():
     """
     kpi_center_df = pd.read_sql(text(kpi_center_query), engine)
     
-    # Entity list
     entity_query = """
         SELECT DISTINCT
             legal_entity_id AS entity_id,
@@ -183,7 +154,6 @@ def load_lookup_data():
     """
     entity_df = pd.read_sql(text(entity_query), engine)
     
-    # Available years
     years_query = """
         SELECT DISTINCT CAST(invoice_year AS SIGNED) AS year
         FROM unified_sales_by_kpi_center_view
@@ -203,23 +173,15 @@ def load_data_for_year_range(
     kpi_center_ids: list,
     entity_ids: list = None
 ) -> dict:
-    """
-    Load data for specified year range.
-    
-    SMART CACHING v2.0.0:
-    - Only reload when year range expands
-    - Caches raw data by year range
-    """
+    """Load data for specified year range."""
     start_date = date(start_year, 1, 1)
     end_date = date(end_year, 12, 31)
     
-    # Progress bar
     progress_bar = st.progress(0, text=f"🔄 Loading data ({start_year}-{end_year})...")
     
     data = {}
     
     try:
-        # Step 1: Sales data
         progress_bar.progress(10, text="📊 Loading sales data...")
         data['sales_df'] = queries.get_sales_data(
             start_date=start_date,
@@ -228,7 +190,6 @@ def load_data_for_year_range(
             entity_ids=entity_ids
         )
         
-        # Step 2: KPI Targets
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
         targets_list = []
         for yr in range(start_year, end_year + 1):
@@ -237,7 +198,6 @@ def load_data_for_year_range(
                 targets_list.append(t)
         data['targets_df'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         
-        # Step 3: Backlog data
         progress_bar.progress(40, text="📦 Loading backlog data...")
         data['backlog_summary_df'] = queries.get_backlog_data(
             kpi_center_ids=kpi_center_ids,
@@ -251,76 +211,38 @@ def load_data_for_year_range(
             entity_ids=entity_ids
         )
         
-        data['backlog_detail_df'] = queries.get_backlog_detail(
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
         data['backlog_by_month_df'] = queries.get_backlog_by_month(
             kpi_center_ids=kpi_center_ids,
             entity_ids=entity_ids
         )
         
-        # Step 4: Backlog risk analysis (NEW v2.0.0)
-        progress_bar.progress(55, text="⚠️ Analyzing backlog risk...")
+        progress_bar.progress(55, text="📋 Loading backlog details...")
+        data['backlog_detail_df'] = queries.get_backlog_detail(
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
+        )
+        
+        progress_bar.progress(70, text="🆕 Loading complex KPIs...")
+        data['new_customers_df'] = queries.get_new_customers(start_date, end_date, kpi_center_ids)
+        data['new_customers_detail_df'] = queries.get_new_customers_detail(start_date, end_date, kpi_center_ids)
+        data['new_products_df'] = queries.get_new_products(start_date, end_date, kpi_center_ids)
+        data['new_products_detail_df'] = data['new_products_df']
+        data['new_business_df'] = queries.get_new_business_revenue(start_date, end_date, kpi_center_ids)
+        data['new_business_detail_df'] = queries.get_new_business_detail(start_date, end_date, kpi_center_ids)
+        
+        progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
         data['backlog_risk'] = queries.get_backlog_risk_analysis(
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids,
-            start_date=start_date,
-            end_date=end_date
-        )
-        
-        # Step 5: Complex KPIs
-        progress_bar.progress(70, text="🆕 Loading new business metrics...")
-        data['new_customers_df'] = queries.get_new_customers(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
             entity_ids=entity_ids
         )
         
-        data['new_products_df'] = queries.get_new_products(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
+        for key in data:
+            if isinstance(data[key], pd.DataFrame) and not data[key].empty:
+                data[key] = _clean_dataframe_for_display(data[key])
         
-        data['new_business_df'] = queries.get_new_business_revenue(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Step 6: Complex KPIs Detail (NEW v2.0.0 - for popup drill-down)
-        progress_bar.progress(85, text="📋 Loading detail data...")
-        data['new_customers_detail_df'] = queries.get_new_customers_detail(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        data['new_products_detail_df'] = queries.get_new_products_detail(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        data['new_business_detail_df'] = queries.get_new_business_detail(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Metadata
         data['_loaded_at'] = datetime.now()
         data['_year_range'] = (start_year, end_year)
         
-        # Complete
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
     except Exception as e:
@@ -336,217 +258,153 @@ def load_data_for_year_range(
     return data
 
 
-def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
-    """
-    Get data from cache or load if needed.
-    Implements smart caching - only reload when year range expands.
-    """
-    required_start_year = filter_values['start_date'].year
-    required_end_year = filter_values['end_date'].year
+def _needs_data_reload(filter_values: dict) -> bool:
+    """Check if data needs to be reloaded."""
+    if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
+        return True
     
-    # Check existing cache
+    cached_start, cached_end = _get_cached_year_range()
+    if cached_start is None or cached_end is None:
+        return True
+    
+    required_start = filter_values['start_date'].year
+    required_end = filter_values['end_date'].year
+    
+    return required_start < cached_start or required_end > cached_end
+
+
+def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
+    """Smart data loading with session-based caching."""
+    required_start = filter_values['start_date'].year
+    required_end = filter_values['end_date'].year
+    
+    kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    entity_ids = filter_values.get('entity_ids', [])
+    
     cached_start, cached_end = _get_cached_year_range()
     
-    # Get cached data if exists
-    cached_data = st.session_state.get('_kpc_raw_cached_data')
-    
-    # Determine if reload needed
-    need_reload = False
-    
-    if cached_data is None:
-        need_reload = True
-        logger.info("No cached data - loading fresh")
-    elif cached_start is None or cached_end is None:
-        need_reload = True
-        logger.info("No cached year range - loading fresh")
-    elif required_start_year < cached_start or required_end_year > cached_end:
-        need_reload = True
-        logger.info(f"Year range expanded: {cached_start}-{cached_end} → {required_start_year}-{required_end_year}")
-    
-    if need_reload:
-        # Load data for required year range (expand to include buffer)
-        load_start_year = min(required_start_year, cached_start or required_start_year)
-        load_end_year = max(required_end_year, cached_end or required_end_year)
+    if _needs_data_reload(filter_values):
+        if cached_start is not None and cached_end is not None:
+            new_start = min(required_start, cached_start)
+            new_end = max(required_end, cached_end)
+        else:
+            current_year = date.today().year
+            new_start = min(required_start, current_year - 2)
+            new_end = max(required_end, current_year)
         
         data = load_data_for_year_range(
             queries=queries,
-            start_year=load_start_year,
-            end_year=load_end_year,
-            kpi_center_ids=filter_values.get('kpi_center_ids', []),
-            entity_ids=filter_values.get('entity_ids', [])
+            start_year=new_start,
+            end_year=new_end,
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
         )
         
-        # Update cache
-        st.session_state['_kpc_raw_cached_data'] = data
-        _set_cached_year_range(load_start_year, load_end_year)
+        st.session_state._kpc_raw_cached_data = data
+        _set_cached_year_range(new_start, new_end)
         
         return data
     
-    return cached_data
+    return st.session_state._kpc_raw_cached_data
 
 
 def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
-    """
-    Filter cached data client-side based on filters.
-    Instant - no DB query needed.
-    
-    FIXED v2.3.1: Added KPI Center and Entity filtering
-    """
+    """Filter cached data client-side based on ALL filters."""
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
-    exclude_internal = filter_values.get('exclude_internal_revenue', True)
-    
-    # ═══════════════════════════════════════════════════════════════
-    # FIX: Get KPI Center and Entity IDs for filtering
-    # ═══════════════════════════════════════════════════════════════
-    selected_kpi_center_ids = filter_values.get('kpi_center_ids', [])
-    selected_entity_ids = filter_values.get('entity_ids', [])
+    kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    entity_ids = filter_values.get('entity_ids', [])
+    year = filter_values['year']
+    exclude_internal_revenue = filter_values.get('exclude_internal_revenue', True)
     
     filtered = {}
     
-    for key, value in raw_data.items():
-        # Skip metadata
+    for key, df in raw_data.items():
         if key.startswith('_'):
             continue
-        
-        # Skip non-dataframe values
-        if not isinstance(value, pd.DataFrame):
-            filtered[key] = value
-            continue
-        
-        if value.empty:
-            filtered[key] = value
-            continue
-        
-        df = value.copy()
-        
-        # ═══════════════════════════════════════════════════════════════
-        # FIX: Filter by KPI Center IDs (CRITICAL)
-        # ═══════════════════════════════════════════════════════════════
-        if selected_kpi_center_ids and 'kpi_center_id' in df.columns:
-            df = df[df['kpi_center_id'].isin(selected_kpi_center_ids)]
-        
-        # ═══════════════════════════════════════════════════════════════
-        # FIX: Filter by Entity IDs
-        # ═══════════════════════════════════════════════════════════════
-        if selected_entity_ids:
-            entity_col = None
-            if 'legal_entity_id' in df.columns:
-                entity_col = 'legal_entity_id'
-            elif 'entity_id' in df.columns:
-                entity_col = 'entity_id'
             
-            if entity_col:
-                df = df[df[entity_col].isin(selected_entity_ids)]
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            filtered[key] = df
+            continue
+        
+        df_filtered = df.copy()
         
         # Filter by date range
-        date_cols = ['inv_date', 'oc_date', 'first_sale_date']
+        date_cols = ['inv_date', 'oc_date', 'invoiced_date', 'first_invoice_date', 'first_sale_date']
         for date_col in date_cols:
-            if date_col in df.columns:
-                df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-                df = df[
-                    (df[date_col] >= pd.Timestamp(start_date)) & 
-                    (df[date_col] <= pd.Timestamp(end_date))
+            if date_col in df_filtered.columns:
+                df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
+                df_filtered = df_filtered[
+                    (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
+                    (df_filtered[date_col] <= pd.Timestamp(end_date))
                 ]
                 break
         
-        # ═══════════════════════════════════════════════════════════════
-        # Exclude Internal Revenue (SYNCED with Salesperson page v2.4.0)
-        # Logic: Zero out revenue for internal customers, keep GP intact
-        # This allows:
-        #   - GP% calculation remains accurate
-        #   - Row count (customers, orders) stays the same
-        #   - Sales performance evaluated with real (external) customers only
-        # ═══════════════════════════════════════════════════════════════
-        if exclude_internal and key == 'sales_df':
-            if 'customer_type' in df.columns and 'sales_by_kpi_center_usd' in df.columns:
-                # Create mask for internal customers
-                is_internal = df['customer_type'].str.lower() == 'internal'
-                
-                # Zero out ONLY revenue for internal customers
-                # GP columns (gross_profit_by_kpi_center_usd, gp1_by_kpi_center_usd) are kept intact
-                if is_internal.any():
-                    df.loc[is_internal, 'sales_by_kpi_center_usd'] = 0
+        # Filter by kpi_center_ids
+        if kpi_center_ids:
+            kpc_ids_set = set(kpi_center_ids)
+            if 'kpi_center_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['kpi_center_id'].isin(kpc_ids_set)]
         
-        # Filter targets by year AND kpi_center_ids
-        if key == 'targets_df':
-            if 'year' in df.columns:
-                df = df[df['year'] == filter_values['year']]
-            # Also filter targets by selected KPI Centers
-            if selected_kpi_center_ids and 'kpi_center_id' in df.columns:
-                df = df[df['kpi_center_id'].isin(selected_kpi_center_ids)]
+        # Filter by entity_ids
+        if entity_ids:
+            entity_ids_set = set(entity_ids)
+            if 'legal_entity_id' in df_filtered.columns:
+                df_filtered = df_filtered[df_filtered['legal_entity_id'].isin(entity_ids_set)]
         
-        filtered[key] = df
+        # Exclude internal revenue
+        if exclude_internal_revenue and 'customer_type' in df_filtered.columns:
+            if 'sales_by_kpi_center_usd' in df_filtered.columns:
+                internal_mask = df_filtered['customer_type'] == 'Internal'
+                df_filtered.loc[internal_mask, 'sales_by_kpi_center_usd'] = 0
+        
+        filtered[key] = df_filtered
     
-    # ═══════════════════════════════════════════════════════════════
-    # FIX: Recalculate backlog_risk from filtered backlog data
-    # ═══════════════════════════════════════════════════════════════
-    backlog_detail_df = filtered.get('backlog_detail_df', pd.DataFrame())
-    if not backlog_detail_df.empty:
-        filtered['backlog_risk'] = _calculate_backlog_risk_from_df(backlog_detail_df)
-    elif 'backlog_risk' in raw_data:
-        filtered['backlog_risk'] = raw_data['backlog_risk']
+    # Filter targets by year AND kpi_center_ids
+    if 'targets_df' in filtered and not filtered['targets_df'].empty:
+        targets = filtered['targets_df']
+        if 'year' in targets.columns:
+            targets = targets[targets['year'] == year]
+        if kpi_center_ids and 'kpi_center_id' in targets.columns:
+            targets = targets[targets['kpi_center_id'].isin(kpi_center_ids)]
+        filtered['targets_df'] = targets
+    
+    # Recalculate backlog risk from filtered data
+    if 'backlog_detail_df' in filtered and not filtered['backlog_detail_df'].empty:
+        filtered['backlog_risk'] = _calculate_backlog_risk_from_df(filtered['backlog_detail_df'])
     
     return filtered
 
 
 def _calculate_backlog_risk_from_df(backlog_df: pd.DataFrame) -> dict:
-    """
-    Calculate backlog risk metrics from filtered backlog DataFrame.
-    NEW v2.3.1: Helper for client-side backlog risk calculation.
-    """
+    """Calculate backlog risk metrics from filtered dataframe."""
     if backlog_df.empty:
-        return {
-            'overdue_orders': 0, 'overdue_revenue': 0, 'overdue_gp': 0,
-            'at_risk_orders': 0, 'at_risk_revenue': 0,
-            'total_orders': 0, 'total_backlog': 0,
-            'in_period_overdue': 0, 'in_period_overdue_revenue': 0,
-            'overdue_percent': 0
-        }
+        return {}
     
-    df = backlog_df.copy()
+    today = date.today()
     
-    # Ensure days_until_etd is numeric
-    if 'days_until_etd' in df.columns:
-        df['days_until_etd'] = pd.to_numeric(df['days_until_etd'], errors='coerce').fillna(0)
-    else:
-        df['days_until_etd'] = 0
+    if 'etd' in backlog_df.columns:
+        backlog_df['etd'] = pd.to_datetime(backlog_df['etd'], errors='coerce')
+        backlog_df['days_until_etd'] = (backlog_df['etd'] - pd.Timestamp(today)).dt.days
     
-    # Identify revenue column
-    rev_col = 'backlog_by_kpi_center_usd' if 'backlog_by_kpi_center_usd' in df.columns else 'total_backlog_usd'
-    gp_col = 'backlog_gp_by_kpi_center_usd' if 'backlog_gp_by_kpi_center_usd' in df.columns else 'total_backlog_gp_usd'
+    revenue_col = 'backlog_by_kpi_center_usd' if 'backlog_by_kpi_center_usd' in backlog_df.columns else 'backlog_usd'
     
-    if rev_col not in df.columns:
-        return {'overdue_orders': 0, 'overdue_revenue': 0, 'total_backlog': 0, 'overdue_percent': 0}
+    if 'days_until_etd' not in backlog_df.columns:
+        return {}
     
-    total_backlog = df[rev_col].sum()
+    overdue = backlog_df[backlog_df['days_until_etd'] < 0]
+    at_risk = backlog_df[(backlog_df['days_until_etd'] >= 0) & (backlog_df['days_until_etd'] <= 7)]
     
-    # Overdue (days_until_etd < 0)
-    overdue_mask = df['days_until_etd'] < 0
-    overdue_orders = df[overdue_mask]['oc_number'].nunique() if 'oc_number' in df.columns else overdue_mask.sum()
-    overdue_revenue = df.loc[overdue_mask, rev_col].sum()
-    overdue_gp = df.loc[overdue_mask, gp_col].sum() if gp_col in df.columns else 0
-    
-    # At risk (0-7 days)
-    at_risk_mask = (df['days_until_etd'] >= 0) & (df['days_until_etd'] <= 7)
-    at_risk_orders = df[at_risk_mask]['oc_number'].nunique() if 'oc_number' in df.columns else at_risk_mask.sum()
-    at_risk_revenue = df.loc[at_risk_mask, rev_col].sum()
-    
-    # Totals
-    total_orders = df['oc_number'].nunique() if 'oc_number' in df.columns else len(df)
-    overdue_percent = (overdue_revenue / total_backlog * 100) if total_backlog > 0 else 0
+    total_backlog = backlog_df[revenue_col].sum() if revenue_col in backlog_df.columns else 0
+    overdue_revenue = overdue[revenue_col].sum() if revenue_col in overdue.columns else 0
     
     return {
-        'overdue_orders': int(overdue_orders),
-        'overdue_revenue': float(overdue_revenue),
-        'overdue_gp': float(overdue_gp),
-        'at_risk_orders': int(at_risk_orders),
-        'at_risk_revenue': float(at_risk_revenue),
-        'total_orders': int(total_orders),
-        'total_backlog': float(total_backlog),
-        'in_period_overdue': int(overdue_orders),
-        'in_period_overdue_revenue': float(overdue_revenue),
-        'overdue_percent': float(overdue_percent)
+        'overdue_orders': len(overdue),
+        'overdue_revenue': overdue_revenue,
+        'at_risk_orders': len(at_risk),
+        'at_risk_revenue': at_risk[revenue_col].sum() if revenue_col in at_risk.columns else 0,
+        'total_backlog': total_backlog,
+        'overdue_percent': (overdue_revenue / total_backlog * 100) if total_backlog > 0 else 0,
     }
 
 
@@ -557,7 +415,6 @@ def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
     kpi_center_ids = filter_values.get('kpi_center_ids', [])
     entity_ids = filter_values.get('entity_ids', [])
     
-    # Previous year same period
     prev_start = date(start_date.year - 1, start_date.month, start_date.day)
     try:
         prev_end = date(end_date.year - 1, end_date.month, end_date.day)
@@ -571,7 +428,6 @@ def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
         entity_ids=entity_ids if entity_ids else None
     )
     
-    # Exclude internal if requested
     if filter_values.get('exclude_internal_revenue', True) and not prev_sales_df.empty:
         if 'customer_type' in prev_sales_df.columns:
             prev_sales_df = prev_sales_df[prev_sales_df['customer_type'] != 'Internal']
@@ -586,14 +442,11 @@ def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
 def main():
     """Main page function."""
     
-    # Check access
     access = check_access()
     
-    # Page header
     st.title("🎯 KPI Center Performance")
     st.caption(f"Logged in as: {st.session_state.get('user_fullname', 'User')} ({st.session_state.get('user_role', '')})")
     
-    # Load lookup data
     try:
         kpi_center_df, entity_df, available_years = load_lookup_data()
     except Exception as e:
@@ -601,18 +454,15 @@ def main():
         logger.error(f"Lookup data error: {e}")
         st.stop()
     
-    # Initialize queries and filters
     queries = KPICenterQueries(access)
     filters = KPICenterFilters(access)
     
-    # Render sidebar filters
     filter_values = filters.render_sidebar_filters(
         kpi_center_df=kpi_center_df,
         entity_df=entity_df,
         available_years=available_years
     )
     
-    # Validate filters
     is_valid, error_msg = filters.validate_filters(filter_values)
     if not is_valid:
         st.error(f"⚠️ Filter error: {error_msg}")
@@ -622,20 +472,14 @@ def main():
     # LOAD DATA WITH SMART CACHING
     # =========================================================================
     
-    # Handle initial load vs form submit
     if _get_applied_filters() is None:
         _set_applied_filters(filter_values)
     
     if filter_values.get('submitted', False):
         _set_applied_filters(filter_values)
     
-    # Use applied filters
     active_filters = _get_applied_filters()
-    
-    # Load data
     raw_data = get_or_load_data(queries, active_filters)
-    
-    # Apply client-side filtering
     data = filter_data_client_side(raw_data, active_filters)
     
     sales_df = data.get('sales_df', pd.DataFrame())
@@ -649,10 +493,8 @@ def main():
     # CALCULATE METRICS
     # =========================================================================
     
-    # Initialize metrics calculator
     metrics_calc = KPICenterMetrics(sales_df, targets_df)
     
-    # Calculate metrics
     overview_metrics = metrics_calc.calculate_overview_metrics(
         period_type=active_filters['period_type'],
         year=active_filters['year'],
@@ -660,14 +502,12 @@ def main():
         end_date=active_filters['end_date']
     )
     
-    # Complex KPIs summary
     complex_kpis = {
         'num_new_customers': data['new_customers_df']['num_new_customers'].sum() if not data.get('new_customers_df', pd.DataFrame()).empty else 0,
         'num_new_products': data['new_products_df']['num_new_products'].sum() if not data.get('new_products_df', pd.DataFrame()).empty else 0,
         'new_business_revenue': data['new_business_df']['new_business_revenue'].sum() if not data.get('new_business_df', pd.DataFrame()).empty else 0,
     }
     
-    # Pipeline & Forecast
     pipeline_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
         total_backlog_df=data.get('backlog_summary_df', pd.DataFrame()),
         in_period_backlog_df=data.get('backlog_in_period_df', pd.DataFrame()),
@@ -677,7 +517,6 @@ def main():
         end_date=active_filters['end_date']
     )
     
-    # Overall KPI Achievement
     overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
         period_type=active_filters['period_type'],
         year=active_filters['year'],
@@ -685,89 +524,423 @@ def main():
         end_date=active_filters['end_date']
     )
     
-    # YoY metrics (if enabled)
     yoy_metrics = None
     if active_filters.get('show_yoy', True):
         prev_sales_df = load_yoy_data(queries, active_filters)
         yoy_metrics = metrics_calc.calculate_yoy_metrics(sales_df, prev_sales_df)
     
-    # Monthly summary
     monthly_df = metrics_calc.prepare_monthly_summary()
-    
-    # KPI Center summary
     kpi_center_summary_df = metrics_calc.aggregate_by_kpi_center()
-    
-    # Period analysis
     period_info = analyze_period(active_filters)
     
-    # Filter summary in header
     filter_summary = filters.get_filter_summary(active_filters)
     st.caption(f"📊 {filter_summary}")
     
     # ==========================================================================
-    # TABS - UPDATED v2.3.0: Added Analysis tab
+    # TABS
     # ==========================================================================
     
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Overview",
         "📋 Sales Detail",
-        "📈 Analysis",  # NEW v2.3.0
+        "📈 Analysis",
         "📦 Backlog",
         "🎯 KPI & Targets",
         "⚙️ Setup"
     ])
     
     # ==========================================================================
-    # TAB 1: OVERVIEW
+    # TAB 1: OVERVIEW - SYNCED with Salesperson page v2.4.0
     # ==========================================================================
     
     with tab1:
-        # KPI Cards with popup drill-down (NEW v2.0.0)
+        # =====================================================================
+        # KPI CARDS (Performance + New Business)
+        # =====================================================================
         KPICenterCharts.render_kpi_cards(
             metrics=overview_metrics,
             yoy_metrics=yoy_metrics,
             complex_kpis=complex_kpis,
             overall_achievement=overall_achievement,
-            # NEW: Pass detail dataframes for popup buttons
             new_customers_df=data.get('new_customers_detail_df'),
             new_products_df=data.get('new_products_detail_df'),
             new_business_df=data.get('new_business_df'),
             new_business_detail_df=data.get('new_business_detail_df')
         )
         
-        # Backlog Risk Analysis (NEW v2.0.0)
-        backlog_risk = data.get('backlog_risk', {})
-        if backlog_risk:
-            KPICenterCharts.render_backlog_risk_section(backlog_risk)
-        
-        # Pipeline & Forecast
-        KPICenterCharts.render_pipeline_forecast_section(
-            pipeline_metrics=pipeline_metrics,
-            show_forecast=period_info.get('show_backlog', True)
-        )
-        
         st.divider()
         
-        # Monthly Trend (Fragment) - UPDATED v2.2.0: Added targets_df
-        st.subheader("📈 Monthly Trend")
+        # =====================================================================
+        # MONTHLY TREND & CUMULATIVE - SYNCED with SP page
+        # =====================================================================
         monthly_trend_fragment(
             sales_df=sales_df,
             filter_values=active_filters,
-            targets_df=targets_df  # NEW v2.2.0: For target overlay
+            targets_df=targets_df,
+            fragment_key="kpc_trend"
         )
         
-        # YoY Comparison (if enabled)
+        st.divider()
+        
+        # =====================================================================
+        # YEAR-OVER-YEAR COMPARISON - SYNCED with SP page
+        # =====================================================================
         if active_filters.get('show_yoy', True):
-            st.divider()
-            st.subheader("📊 Year-over-Year Comparison")
             yoy_comparison_fragment(
                 queries=queries,
                 filter_values=active_filters,
-                current_year=active_filters['year']
+                current_year=active_filters['year'],
+                sales_df=sales_df,
+                fragment_key="kpc_yoy"
             )
+            
+            st.divider()
         
-        # Export section
-        st.divider()
+        # =====================================================================
+        # BACKLOG & FORECAST - SYNCED with SP page (Image 4)
+        # =====================================================================
+        if period_info.get('show_backlog', True):
+            col_bf_header, col_bf_help = st.columns([6, 1])
+            with col_bf_header:
+                st.subheader("📦 Backlog & Forecast")
+            with col_bf_help:
+                with st.popover("ℹ️ Help"):
+                    st.markdown("""
+**📦 Backlog & Forecast**
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| **Total Backlog** | `Σ backlog_by_kpi_center_usd` | All outstanding orders |
+| **In-Period (KPI)** | `Σ backlog WHERE ETD in period` | Backlog expected to ship in period. **Only from KPI Centers with this KPI assigned.** |
+| **Target** | `Σ prorated_target` | Sum of prorated annual targets |
+| **Forecast (KPI)** | `Invoiced + In-Period` | Projected total. **Only from KPI Centers with this KPI assigned.** |
+| **GAP/Surplus** | `Forecast - Target` | Positive = ahead of target, Negative = behind |
+
+---
+
+**⚠️ Important: Data Filtered by KPI Assignment**
+
+Each tab shows data ONLY from KPI Centers who have that specific KPI target:
+- **Revenue tab**: KPI Centers with Revenue KPI
+- **GP tab**: KPI Centers with Gross Profit KPI  
+- **GP1 tab**: KPI Centers with GP1 KPI
+
+This ensures accurate achievement calculation.
+                    """)
+            
+            # Overdue warning
+            backlog_risk = data.get('backlog_risk', {})
+            if backlog_risk and backlog_risk.get('overdue_orders', 0) > 0:
+                overdue_orders = backlog_risk.get('overdue_orders', 0)
+                overdue_revenue = backlog_risk.get('overdue_revenue', 0)
+                st.warning(f"⚠️ {overdue_orders} orders are past ETD. Value: ${overdue_revenue:,.0f}")
+            
+            # GP1/GP ratio note
+            summary_metrics = pipeline_metrics.get('summary', {})
+            gp1_gp_ratio = summary_metrics.get('gp1_gp_ratio', 1.0)
+            if gp1_gp_ratio != 1.0:
+                st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
+            
+            # Convert to backlog metrics format
+            chart_backlog_metrics = KPICenterCharts.convert_pipeline_to_backlog_metrics(pipeline_metrics)
+            
+            # Extract metrics for each tab
+            revenue_metrics = pipeline_metrics.get('revenue', {})
+            gp_metrics = pipeline_metrics.get('gross_profit', {})
+            gp1_metrics = pipeline_metrics.get('gp1', {})
+            
+            # Tabs for Revenue / GP / GP1
+            bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+            
+            # =================================================================
+            # REVENUE TAB
+            # =================================================================
+            with bf_tab1:
+                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+                
+                with col_m1:
+                    st.metric(
+                        label="Total Backlog",
+                        value=f"${summary_metrics.get('total_backlog_revenue', 0):,.0f}",
+                        delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
+                        delta_color="off",
+                        help="All outstanding revenue from pending orders"
+                    )
+                
+                with col_m2:
+                    in_period = revenue_metrics.get('in_period_backlog', 0)
+                    target = revenue_metrics.get('target')
+                    pct = (in_period / target * 100) if target and target > 0 else None
+                    kpc_count = revenue_metrics.get('kpi_center_count', 0)
+                    st.metric(
+                        label="In-Period (KPI)",
+                        value=f"${in_period:,.0f}",
+                        delta=f"{pct:.0f}% of target" if pct else None,
+                        delta_color="off",
+                        help=f"Backlog with ETD in period. Only from {kpc_count} KPI Centers with Revenue KPI."
+                    )
+                
+                with col_m3:
+                    target = revenue_metrics.get('target')
+                    kpc_count = revenue_metrics.get('kpi_center_count', 0)
+                    if target and target > 0:
+                        st.metric(
+                            label="Target",
+                            value=f"${target:,.0f}",
+                            delta=f"{kpc_count} KPI Centers",
+                            delta_color="off",
+                            help=f"Sum of prorated Revenue targets from {kpc_count} KPI Centers"
+                        )
+                    else:
+                        st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
+                
+                with col_m4:
+                    forecast = revenue_metrics.get('forecast')
+                    achievement = revenue_metrics.get('forecast_achievement')
+                    if forecast is not None:
+                        delta_color = "normal" if achievement and achievement >= 100 else "inverse"
+                        st.metric(
+                            label="Forecast (KPI)",
+                            value=f"${forecast:,.0f}",
+                            delta=f"{achievement:.0f}% of target" if achievement else None,
+                            delta_color=delta_color if achievement else "off",
+                            help=f"Invoiced + In-Period Backlog"
+                        )
+                    else:
+                        st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
+                
+                with col_m5:
+                    gap = revenue_metrics.get('gap')
+                    gap_pct = revenue_metrics.get('gap_percent')
+                    if gap is not None:
+                        label = "Surplus ✅" if gap >= 0 else "GAP ⚠️"
+                        delta_color = "normal" if gap >= 0 else "inverse"
+                        st.metric(
+                            label=label,
+                            value=f"${gap:+,.0f}",
+                            delta=f"{gap_pct:+.1f}%" if gap_pct else None,
+                            delta_color=delta_color,
+                            help="Forecast - Target. Positive = ahead, Negative = behind."
+                        )
+                    else:
+                        st.metric(label="GAP", value="N/A", delta_color="off")
+                
+                # Charts row
+                col_bf1, col_bf2 = st.columns(2)
+                with col_bf1:
+                    st.markdown("**Revenue Forecast vs Target**")
+                    forecast_chart = KPICenterCharts.build_forecast_waterfall_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metric='revenue',
+                        title=""
+                    )
+                    st.altair_chart(forecast_chart, use_container_width=True)
+                with col_bf2:
+                    st.markdown("**Revenue: Target vs Forecast**")
+                    gap_chart = KPICenterCharts.build_gap_analysis_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metrics_to_show=['revenue'],
+                        title=""
+                    )
+                    st.altair_chart(gap_chart, use_container_width=True)
+            
+            # =================================================================
+            # GROSS PROFIT TAB
+            # =================================================================
+            with bf_tab2:
+                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+                
+                with col_m1:
+                    st.metric(
+                        label="Total Backlog",
+                        value=f"${summary_metrics.get('total_backlog_gp', 0):,.0f}",
+                        delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
+                        delta_color="off",
+                        help="All outstanding GP from pending orders"
+                    )
+                
+                with col_m2:
+                    in_period = gp_metrics.get('in_period_backlog', 0)
+                    target = gp_metrics.get('target')
+                    pct = (in_period / target * 100) if target and target > 0 else None
+                    kpc_count = gp_metrics.get('kpi_center_count', 0)
+                    st.metric(
+                        label="In-Period (KPI)",
+                        value=f"${in_period:,.0f}",
+                        delta=f"{pct:.0f}% of target" if pct else None,
+                        delta_color="off",
+                        help=f"Backlog with ETD in period. Only from {kpc_count} KPI Centers with GP KPI."
+                    )
+                
+                with col_m3:
+                    target = gp_metrics.get('target')
+                    kpc_count = gp_metrics.get('kpi_center_count', 0)
+                    if target and target > 0:
+                        st.metric(
+                            label="Target",
+                            value=f"${target:,.0f}",
+                            delta=f"{kpc_count} KPI Centers",
+                            delta_color="off",
+                            help=f"Sum of prorated GP targets from {kpc_count} KPI Centers"
+                        )
+                    else:
+                        st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
+                
+                with col_m4:
+                    forecast = gp_metrics.get('forecast')
+                    achievement = gp_metrics.get('forecast_achievement')
+                    if forecast is not None:
+                        delta_color = "normal" if achievement and achievement >= 100 else "inverse"
+                        st.metric(
+                            label="Forecast (KPI)",
+                            value=f"${forecast:,.0f}",
+                            delta=f"{achievement:.0f}% of target" if achievement else None,
+                            delta_color=delta_color if achievement else "off",
+                            help=f"Invoiced + In-Period Backlog"
+                        )
+                    else:
+                        st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
+                
+                with col_m5:
+                    gap = gp_metrics.get('gap')
+                    gap_pct = gp_metrics.get('gap_percent')
+                    if gap is not None:
+                        label = "Surplus ✅" if gap >= 0 else "GAP ⚠️"
+                        delta_color = "normal" if gap >= 0 else "inverse"
+                        st.metric(
+                            label=label,
+                            value=f"${gap:+,.0f}",
+                            delta=f"{gap_pct:+.1f}%" if gap_pct else None,
+                            delta_color=delta_color,
+                            help="Forecast - Target. Positive = ahead, Negative = behind."
+                        )
+                    else:
+                        st.metric(label="GAP", value="N/A", delta_color="off")
+                
+                col_bf1, col_bf2 = st.columns(2)
+                with col_bf1:
+                    st.markdown("**GP Forecast vs Target**")
+                    forecast_chart = KPICenterCharts.build_forecast_waterfall_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metric='gp',
+                        title=""
+                    )
+                    st.altair_chart(forecast_chart, use_container_width=True)
+                with col_bf2:
+                    st.markdown("**GP: Target vs Forecast**")
+                    gap_chart = KPICenterCharts.build_gap_analysis_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metrics_to_show=['gp'],
+                        title=""
+                    )
+                    st.altair_chart(gap_chart, use_container_width=True)
+            
+            # =================================================================
+            # GP1 TAB
+            # =================================================================
+            with bf_tab3:
+                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+                
+                with col_m1:
+                    st.metric(
+                        label="Total Backlog",
+                        value=f"${summary_metrics.get('total_backlog_gp1', 0):,.0f}",
+                        delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
+                        delta_color="off",
+                        help=f"Estimated GP1 backlog (GP × {gp1_gp_ratio:.2%})"
+                    )
+                
+                with col_m2:
+                    in_period = gp1_metrics.get('in_period_backlog', 0)
+                    target = gp1_metrics.get('target')
+                    pct = (in_period / target * 100) if target and target > 0 else None
+                    kpc_count = gp1_metrics.get('kpi_center_count', 0)
+                    st.metric(
+                        label="In-Period (KPI)",
+                        value=f"${in_period:,.0f}",
+                        delta=f"{pct:.0f}% of target" if pct else None,
+                        delta_color="off",
+                        help=f"Estimated GP1 backlog with ETD in period. Only from {kpc_count} KPI Centers with GP1 KPI."
+                    )
+                
+                with col_m3:
+                    target = gp1_metrics.get('target')
+                    kpc_count = gp1_metrics.get('kpi_center_count', 0)
+                    if target and target > 0:
+                        st.metric(
+                            label="Target",
+                            value=f"${target:,.0f}",
+                            delta=f"{kpc_count} KPI Centers",
+                            delta_color="off",
+                            help=f"Sum of prorated GP1 targets from {kpc_count} KPI Centers"
+                        )
+                    else:
+                        st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
+                
+                with col_m4:
+                    forecast = gp1_metrics.get('forecast')
+                    achievement = gp1_metrics.get('forecast_achievement')
+                    if forecast is not None:
+                        delta_color = "normal" if achievement and achievement >= 100 else "inverse"
+                        st.metric(
+                            label="Forecast (KPI)",
+                            value=f"${forecast:,.0f}",
+                            delta=f"{achievement:.0f}% of target" if achievement else None,
+                            delta_color=delta_color if achievement else "off",
+                            help=f"Invoiced + In-Period Backlog (estimated)"
+                        )
+                    else:
+                        st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
+                
+                with col_m5:
+                    gap = gp1_metrics.get('gap')
+                    gap_pct = gp1_metrics.get('gap_percent')
+                    if gap is not None:
+                        label = "Surplus ✅" if gap >= 0 else "GAP ⚠️"
+                        delta_color = "normal" if gap >= 0 else "inverse"
+                        st.metric(
+                            label=label,
+                            value=f"${gap:+,.0f}",
+                            delta=f"{gap_pct:+.1f}%" if gap_pct else None,
+                            delta_color=delta_color,
+                            help="Forecast - Target. Positive = ahead, Negative = behind."
+                        )
+                    else:
+                        st.metric(label="GAP", value="N/A", delta_color="off")
+                
+                col_bf1, col_bf2 = st.columns(2)
+                with col_bf1:
+                    st.markdown("**GP1 Forecast vs Target**")
+                    forecast_chart = KPICenterCharts.build_forecast_waterfall_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metric='gp1',
+                        title=""
+                    )
+                    st.altair_chart(forecast_chart, use_container_width=True)
+                with col_bf2:
+                    st.markdown("**GP1: Target vs Forecast**")
+                    gap_chart = KPICenterCharts.build_gap_analysis_chart(
+                        backlog_metrics=chart_backlog_metrics,
+                        metrics_to_show=['gp1'],
+                        title=""
+                    )
+                    st.altair_chart(gap_chart, use_container_width=True)
+            
+            st.divider()
+        else:
+            st.info(f"""
+            📅 **Forecast not available for historical periods**
+            
+            End date ({active_filters['end_date'].strftime('%Y-%m-%d')}) is in the past.
+            Forecast is only meaningful when end date >= today.
+            
+            💡 **Tip:** To view Forecast, adjust End Date to today or a future date.
+            """)
+            st.divider()
+        
+        # =====================================================================
+        # EXPORT SECTION
+        # =====================================================================
         export_report_fragment(
             metrics=overview_metrics,
             complex_kpis=complex_kpis,
@@ -797,23 +970,21 @@ def main():
         pivot_analysis_fragment(sales_df=sales_df)
     
     # ==========================================================================
-    # TAB 3: ANALYSIS (NEW v2.3.0)
+    # TAB 3: ANALYSIS
     # ==========================================================================
     
     with tab3:
-        # Top Performers / Pareto Analysis
         top_performers_fragment(
             sales_df=sales_df,
             filter_values=active_filters,
-            metrics_calculator=metrics_calc  # Use metrics_calc defined earlier
+            metrics_calculator=metrics_calc
         )
     
     # ==========================================================================
-    # TAB 4: BACKLOG (was TAB 3)
+    # TAB 4: BACKLOG
     # ==========================================================================
     
     with tab4:
-        # Backlog summary cards
         backlog_metrics = KPICenterCharts.convert_pipeline_to_backlog_metrics(pipeline_metrics)
         
         col1, col2, col3, col4 = st.columns(4)
@@ -844,58 +1015,21 @@ def main():
                 value=f"{backlog_metrics.get('backlog_orders', 0):,}"
             )
         
-        # Backlog Risk Summary (NEW v2.0.0)
-        backlog_risk = data.get('backlog_risk', {})
-        if backlog_risk and backlog_risk.get('overdue_orders', 0) > 0:
-            st.divider()
-            st.subheader("⚠️ Risk Analysis")
-            
-            risk_col1, risk_col2, risk_col3 = st.columns(3)
-            
-            with risk_col1:
-                st.metric(
-                    label="🔴 Overdue Orders",
-                    value=f"{backlog_risk.get('overdue_orders', 0):,}",
-                    delta=f"${backlog_risk.get('overdue_revenue', 0):,.0f}",
-                    delta_color="inverse",
-                    help="Orders with ETD in the past"
-                )
-            
-            with risk_col2:
-                st.metric(
-                    label="🟡 At Risk (7 days)",
-                    value=f"{backlog_risk.get('at_risk_orders', 0):,}",
-                    delta=f"${backlog_risk.get('at_risk_revenue', 0):,.0f}",
-                    delta_color="off",
-                    help="Orders with ETD within next 7 days"
-                )
-            
-            with risk_col3:
-                overdue_pct = backlog_risk.get('overdue_percent', 0)
-                st.metric(
-                    label="Overdue %",
-                    value=f"{overdue_pct:.1f}%",
-                    help="Percentage of total backlog that is overdue"
-                )
-        
         st.divider()
         
-        # Backlog detail list - UPDATED v2.2.0: Added total_backlog_df
         backlog_list_fragment(
             backlog_df=data.get('backlog_detail_df', pd.DataFrame()),
             filter_values=active_filters,
-            total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())  # NEW v2.2.0
+            total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())
         )
         
-        # Backlog by ETD month
         backlog_by_month = data.get('backlog_by_month_df', pd.DataFrame())
         if not backlog_by_month.empty:
             st.divider()
             st.subheader("📅 Backlog by ETD Month")
             
-            display_df = backlog_by_month.copy()
             st.dataframe(
-                display_df,
+                backlog_by_month,
                 hide_index=True,
                 column_config={
                     'etd_year': 'Year',
@@ -908,7 +1042,7 @@ def main():
             )
     
     # ==========================================================================
-    # TAB 5: KPI & TARGETS (was TAB 4)
+    # TAB 5: KPI & TARGETS
     # ==========================================================================
     
     with tab5:
@@ -917,7 +1051,6 @@ def main():
         if targets_df.empty:
             st.info("No KPI targets assigned for selected KPI Centers and year")
         else:
-            # Group by KPI Center
             for kpi_center_id in targets_df['kpi_center_id'].unique():
                 kc_targets = targets_df[targets_df['kpi_center_id'] == kpi_center_id]
                 kc_name = kc_targets['kpi_center_name'].iloc[0]
@@ -939,7 +1072,6 @@ def main():
         
         st.divider()
         
-        # KPI Center Ranking
         st.subheader("🏆 KPI Center Ranking")
         kpi_center_ranking_fragment(
             ranking_df=kpi_center_summary_df,
@@ -947,13 +1079,12 @@ def main():
         )
     
     # ==========================================================================
-    # TAB 6: SETUP (was TAB 5)
+    # TAB 6: SETUP
     # ==========================================================================
     
     with tab6:
         st.subheader("⚙️ KPI Center Configuration")
         
-        # KPI Split assignments
         st.markdown("### 📋 KPI Center Split Assignments")
         
         kpi_split_df = queries.get_kpi_split_data(
@@ -963,7 +1094,6 @@ def main():
         if kpi_split_df.empty:
             st.info("No split assignments found for selected KPI Centers")
         else:
-            # Filter options
             col1, col2 = st.columns(2)
             
             with col1:
@@ -1014,7 +1144,6 @@ def main():
                 use_container_width=True
             )
         
-        # KPI Center Hierarchy
         st.divider()
         st.markdown("### 🌳 KPI Center Hierarchy")
         

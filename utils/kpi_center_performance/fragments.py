@@ -2,30 +2,16 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-Reusable UI components using @st.fragment for partial reruns.
-
-VERSION: 2.3.0
+VERSION: 2.4.0
 CHANGELOG:
-- v2.3.0: Phase 3 - Pareto Analysis:
-          - top_performers_fragment(): Customer/Brand/Product analysis
-          - 80/20 concentration insights
-          - Interactive charts and recommendations
-- v2.2.0: Phase 2 enhancements:
-          - sales_detail_fragment: Added summary metrics cards at top
-          - backlog_list_fragment: Added total_backlog_df for overall totals
-          - monthly_trend_fragment: Added targets overlay option
-- v2.0.0: Added risk indicators to backlog list
-          Added enhanced filtering options
-
-Components:
-- monthly_trend_fragment: Monthly performance charts with targets
-- yoy_comparison_fragment: Year-over-Year comparison
-- sales_detail_fragment: Transaction list with filters and summary cards
-- pivot_analysis_fragment: Configurable pivot tables
-- backlog_list_fragment: Backlog detail with risk indicators
-- kpi_center_ranking_fragment: Performance ranking
-- top_performers_fragment: Pareto / Top performers analysis (NEW)
-- export_report_fragment: Excel report generation
+- v2.4.0: SYNCED UI with Salesperson Performance page:
+          - monthly_trend_fragment: 2 charts side-by-side (Monthly Trend + Cumulative)
+            with Customer/Brand/Product Excl filters
+          - yoy_comparison_fragment: Tabs (Revenue/GP/GP1), summary metrics,
+            2 charts (Monthly Comparison + Cumulative)
+          - All filters now have Excl checkbox like SP page
+- v2.3.0: Phase 3 - Pareto Analysis
+- v2.2.0: Phase 2 enhancements
 """
 
 import logging
@@ -44,354 +30,561 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean dataframe for display - handle NaN, dates, etc."""
+    """Clean dataframe for display."""
     if df.empty:
         return df
     
     df = df.copy()
     
-    # Convert date columns
     date_cols = ['inv_date', 'oc_date', 'etd', 'first_sale_date']
     for col in date_cols:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # Fill NaN for string columns
     str_cols = df.select_dtypes(include=['object']).columns
     df[str_cols] = df[str_cols].fillna('')
     
     return df
 
 
-def _format_currency(value) -> str:
-    """Format number as currency."""
-    try:
-        return f"${value:,.0f}"
-    except:
-        return str(value)
-
-
-def _format_percent(value) -> str:
-    try:
-        return f"{value:.1f}%"
-    except:
-        return str(value)
-
-
-def _add_risk_indicator(days_until_etd) -> str:
-    try:
-        days = float(days_until_etd)
-        if pd.isna(days):
-            return "⚪"
-        if days < 0:
-            return "🔴"
-        elif days <= 7:
-            return "🟡"
-        elif days <= 30:
-            return "🟢"
+def _prepare_monthly_summary(sales_df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare monthly summary from sales data."""
+    if sales_df.empty:
+        return pd.DataFrame()
+    
+    df = sales_df.copy()
+    
+    # Ensure invoice_month column
+    if 'invoice_month' not in df.columns:
+        if 'inv_date' in df.columns:
+            df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+            df['invoice_month'] = df['inv_date'].dt.strftime('%b')
         else:
-            return "⚪"
-    except:
-        return "⚪"
+            return pd.DataFrame()
+    
+    # Aggregate by month
+    monthly = df.groupby('invoice_month').agg({
+        'sales_by_kpi_center_usd': 'sum',
+        'gross_profit_by_kpi_center_usd': 'sum',
+        'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in df.columns else 'first',
+        'inv_number': pd.Series.nunique,
+        'customer_id': pd.Series.nunique
+    }).reset_index()
+    
+    monthly.columns = ['month', 'revenue', 'gross_profit', 'gp1', 'orders', 'customers']
+    
+    # Add GP%
+    monthly['gp_percent'] = (monthly['gross_profit'] / monthly['revenue'] * 100).fillna(0).round(1)
+    
+    # Sort by month order
+    monthly['month_order'] = monthly['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
+    monthly = monthly.sort_values('month_order')
+    
+    return monthly
 
 
 # =============================================================================
-# MONTHLY TREND FRAGMENT - ENHANCED v2.2.0 with Targets
+# MONTHLY TREND FRAGMENT - UPDATED v2.4.0 to match SP page
 # =============================================================================
 
 @st.fragment
 def monthly_trend_fragment(
     sales_df: pd.DataFrame,
-    filter_values: Dict,
+    filter_values: Dict = None,
     targets_df: pd.DataFrame = None,
-    show_cumulative: bool = True
+    fragment_key: str = "kpc_trend"
 ):
     """
-    Monthly trend chart with optional targets overlay.
+    Monthly trend chart with Customer/Brand/Product Excl filters.
+    SYNCED with Salesperson page (Image 1 & 2).
     
-    Args:
-        sales_df: Sales data DataFrame
-        filter_values: Current filter settings
-        targets_df: Optional targets DataFrame for overlay
-        show_cumulative: Whether to show cumulative toggle
+    Shows:
+    - Monthly Trend: Revenue + GP bars with GP% line
+    - Cumulative Performance: Cumulative Revenue + GP lines
     """
     if sales_df.empty:
         st.info("No sales data for trend analysis")
         return
     
-    col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+    # Header with Help button
+    col_header, col_help = st.columns([6, 1])
+    with col_header:
+        st.subheader("📊 Monthly Trend & Cumulative")
+    with col_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+**📊 Monthly Trend & Cumulative**
+
+**Charts:**
+- **Monthly Trend**: Revenue (orange) and Gross Profit (blue) bars with GP% line overlay
+- **Cumulative Performance**: Running total of Revenue and GP over the year
+
+**Filters:**
+- **Customer/Brand/Product**: Filter data by specific selections
+- **Excl**: Exclude selected items instead of including them
+            """)
     
-    with col1:
-        customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
-        selected_customer = st.selectbox("Customer", customers, key="trend_customer_filter")
+    # =========================================================================
+    # FILTERS ROW - SYNCED with SP page
+    # =========================================================================
     
-    with col2:
-        brands = ['All'] + sorted(sales_df['brand'].dropna().unique().tolist())
-        selected_brand = st.selectbox("Brand", brands, key="trend_brand_filter")
+    # Customer filter with Excl checkbox
+    col_cust, col_brand, col_prod = st.columns(3)
     
-    with col3:
-        metric = st.selectbox("Metric", ["Revenue", "Gross Profit", "GP1"], key="trend_metric_selector")
+    with col_cust:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Customer**")
+        with subcol2:
+            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer", 
+                                       help="Exclude selected customers")
+        
+        customers = ['All customers...'] + sorted(sales_df['customer'].dropna().unique().tolist())
+        selected_customer = st.selectbox(
+            "Customer", 
+            customers, 
+            key=f"{fragment_key}_customer",
+            label_visibility="collapsed"
+        )
     
-    with col4:
-        # NEW v2.2.0: Target overlay toggle
-        show_target = st.checkbox("Show Target", value=True, key="trend_show_target",
-                                  help="Overlay monthly target line on chart")
+    with col_brand:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Brand**")
+        with subcol2:
+            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand",
+                                    help="Exclude selected brands")
+        
+        brands = ['All brands...'] + sorted(sales_df['brand'].dropna().unique().tolist())
+        selected_brand = st.selectbox(
+            "Brand", 
+            brands, 
+            key=f"{fragment_key}_brand",
+            label_visibility="collapsed"
+        )
+    
+    with col_prod:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Product**")
+        with subcol2:
+            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product",
+                                      help="Exclude selected products")
+        
+        products = ['All products...'] + sorted(sales_df['product_pn'].dropna().unique().tolist()[:100])
+        selected_product = st.selectbox(
+            "Product", 
+            products, 
+            key=f"{fragment_key}_product",
+            label_visibility="collapsed"
+        )
+    
+    # =========================================================================
+    # APPLY FILTERS
+    # =========================================================================
     
     filtered_df = sales_df.copy()
     
-    if selected_customer != 'All':
-        filtered_df = filtered_df[filtered_df['customer'] == selected_customer]
-    if selected_brand != 'All':
-        filtered_df = filtered_df[filtered_df['brand'] == selected_brand]
+    # Customer filter
+    if selected_customer != 'All customers...':
+        if excl_customer:
+            filtered_df = filtered_df[filtered_df['customer'] != selected_customer]
+        else:
+            filtered_df = filtered_df[filtered_df['customer'] == selected_customer]
+    
+    # Brand filter
+    if selected_brand != 'All brands...':
+        if excl_brand:
+            filtered_df = filtered_df[filtered_df['brand'] != selected_brand]
+        else:
+            filtered_df = filtered_df[filtered_df['brand'] == selected_brand]
+    
+    # Product filter
+    if selected_product != 'All products...':
+        if excl_product:
+            filtered_df = filtered_df[filtered_df['product_pn'] != selected_product]
+        else:
+            filtered_df = filtered_df[filtered_df['product_pn'] == selected_product]
     
     if filtered_df.empty:
         st.warning("No data matches the selected filters")
         return
     
-    if 'invoice_month' not in filtered_df.columns:
-        if 'inv_date' in filtered_df.columns:
-            filtered_df['inv_date'] = pd.to_datetime(filtered_df['inv_date'], errors='coerce')
-            filtered_df['invoice_month'] = filtered_df['inv_date'].dt.strftime('%b')
-        else:
-            st.warning("Cannot determine month from data")
-            return
+    # =========================================================================
+    # PREPARE MONTHLY DATA
+    # =========================================================================
     
-    metric_col_map = {'Revenue': 'sales_by_kpi_center_usd', 'Gross Profit': 'gross_profit_by_kpi_center_usd', 'GP1': 'gp1_by_kpi_center_usd'}
-    value_col = metric_col_map.get(metric, 'sales_by_kpi_center_usd')
+    monthly_df = _prepare_monthly_summary(filtered_df)
     
-    if value_col not in filtered_df.columns:
-        st.warning(f"Column {value_col} not available")
+    if monthly_df.empty:
+        st.warning("Could not prepare monthly summary")
         return
     
-    monthly = filtered_df.groupby('invoice_month').agg({value_col: 'sum'}).reset_index()
-    monthly.columns = ['month', 'revenue' if metric == 'Revenue' else 'gross_profit' if metric == 'Gross Profit' else 'gp1']
-    monthly['month_order'] = monthly['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
-    monthly = monthly.sort_values('month_order')
+    # =========================================================================
+    # CHARTS - 2 columns like SP page
+    # =========================================================================
     
-    # NEW v2.2.0: Calculate monthly target from targets_df
-    monthly_target = None
-    if show_target and targets_df is not None and not targets_df.empty:
-        # Map metric to KPI name
-        kpi_name_map = {'Revenue': 'revenue', 'Gross Profit': 'gross_profit', 'GP1': 'gross_profit_1'}
-        kpi_name = kpi_name_map.get(metric, 'revenue')
-        
-        # Sum annual targets for this KPI type
-        mask = targets_df['kpi_name'].str.lower() == kpi_name.lower()
-        annual_target = targets_df[mask]['annual_target_value_numeric'].sum()
-        
-        if annual_target > 0:
-            monthly_target = annual_target / 12
+    chart_col1, chart_col2 = st.columns(2)
     
-    chart = KPICenterCharts.build_monthly_trend_chart(
-        monthly_df=monthly, 
-        metric=metric,
-        show_target=show_target and monthly_target is not None,
-        target_value=monthly_target
-    )
-    st.altair_chart(chart, use_container_width=True)
+    with chart_col1:
+        st.markdown("**📊 Monthly Trend**")
+        trend_chart = KPICenterCharts.build_monthly_trend_dual_chart(
+            monthly_df=monthly_df,
+            show_gp_percent_line=True
+        )
+        st.altair_chart(trend_chart, use_container_width=True)
     
-    # Summary table
-    st.markdown("**Monthly Summary**")
-    display_df = monthly[['month', monthly.columns[1]]].copy()
-    display_df.columns = ['Month', metric]
-    
-    # Add target column if available
-    if monthly_target is not None and show_target:
-        display_df['Target'] = monthly_target
-        display_df['Achievement %'] = (display_df[metric] / monthly_target * 100).round(1)
-    
-    st.dataframe(display_df, hide_index=True, column_config={
-        'Revenue': st.column_config.NumberColumn(format="$%,.0f"),
-        'Gross Profit': st.column_config.NumberColumn(format="$%,.0f"),
-        'GP1': st.column_config.NumberColumn(format="$%,.0f"),
-        'Target': st.column_config.NumberColumn(format="$%,.0f"),
-        'Achievement %': st.column_config.NumberColumn(format="%.1f%%"),
-    }, use_container_width=True)
+    with chart_col2:
+        st.markdown("**📈 Cumulative Performance**")
+        cumulative_chart = KPICenterCharts.build_cumulative_dual_chart(
+            monthly_df=monthly_df
+        )
+        st.altair_chart(cumulative_chart, use_container_width=True)
 
 
 # =============================================================================
-# YOY COMPARISON FRAGMENT
+# YOY COMPARISON FRAGMENT - UPDATED v2.4.0 to match SP page
 # =============================================================================
 
 @st.fragment
-def yoy_comparison_fragment(queries, filter_values: Dict, current_year: int):
+def yoy_comparison_fragment(
+    queries,
+    filter_values: Dict,
+    current_year: int = None,
+    sales_df: pd.DataFrame = None,
+    fragment_key: str = "kpc_yoy"
+):
+    """
+    Year-over-Year comparison with tabs and filters.
+    SYNCED with Salesperson page (Image 3).
+    
+    Shows:
+    - Tabs: Revenue / Gross Profit / GP1
+    - Summary metrics (Current Year vs Previous Year)
+    - Monthly Revenue Comparison (grouped bars)
+    - Cumulative Revenue (lines)
+    """
     from datetime import date
     
-    col1, col2 = st.columns([1, 3])
+    # Header with anchor link
+    st.subheader("📊 Year-over-Year Comparison ↔")
     
-    with col1:
-        compare_year = st.selectbox("Compare with", 
-                                    [current_year - 1, current_year - 2, current_year - 3],
-                                    key="yoy_compare_year")
+    if current_year is None:
+        current_year = filter_values.get('year', date.today().year)
     
-    start_date = filter_values['start_date']
-    end_date = filter_values['end_date']
+    previous_year = current_year - 1
+    
+    # =========================================================================
+    # FILTERS ROW - SYNCED with SP page
+    # =========================================================================
+    
+    col_cust, col_brand, col_prod = st.columns(3)
+    
+    with col_cust:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Customer**")
+        with subcol2:
+            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer",
+                                       help="Exclude selected customers")
+        
+        # Get customer options from current data or query
+        if sales_df is not None and not sales_df.empty:
+            customers = ['All customers...'] + sorted(sales_df['customer'].dropna().unique().tolist())
+        else:
+            customers = ['All customers...']
+        
+        selected_customer = st.selectbox(
+            "Customer",
+            customers,
+            key=f"{fragment_key}_customer",
+            label_visibility="collapsed"
+        )
+    
+    with col_brand:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Brand**")
+        with subcol2:
+            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand",
+                                    help="Exclude selected brands")
+        
+        if sales_df is not None and not sales_df.empty:
+            brands = ['All brands...'] + sorted(sales_df['brand'].dropna().unique().tolist())
+        else:
+            brands = ['All brands...']
+        
+        selected_brand = st.selectbox(
+            "Brand",
+            brands,
+            key=f"{fragment_key}_brand",
+            label_visibility="collapsed"
+        )
+    
+    with col_prod:
+        subcol1, subcol2 = st.columns([3, 1])
+        with subcol1:
+            st.markdown("**Product**")
+        with subcol2:
+            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product",
+                                      help="Exclude selected products")
+        
+        if sales_df is not None and not sales_df.empty:
+            products = ['All products...'] + sorted(sales_df['product_pn'].dropna().unique().tolist()[:100])
+        else:
+            products = ['All products...']
+        
+        selected_product = st.selectbox(
+            "Product",
+            products,
+            key=f"{fragment_key}_product",
+            label_visibility="collapsed"
+        )
+    
+    # =========================================================================
+    # LOAD DATA
+    # =========================================================================
+    
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def load_yoy_data_cached(start_date, end_date, kpi_center_ids, entity_ids, exclude_internal):
+        """Load current and previous year data."""
+        # Current year
+        current_df = queries.get_sales_data(
+            start_date=start_date,
+            end_date=end_date,
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
+        )
+        
+        # Previous year
+        try:
+            prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+        except ValueError:
+            prev_start = date(start_date.year - 1, start_date.month, 28)
+            prev_end = date(end_date.year - 1, end_date.month, 28)
+        
+        previous_df = queries.get_sales_data(
+            start_date=prev_start,
+            end_date=prev_end,
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
+        )
+        
+        # Exclude internal if requested
+        if exclude_internal:
+            if 'customer_type' in current_df.columns:
+                current_df = current_df[current_df['customer_type'] != 'Internal']
+            if 'customer_type' in previous_df.columns:
+                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+        
+        return current_df, previous_df
+    
+    start_date = filter_values.get('start_date', date(current_year, 1, 1))
+    end_date = filter_values.get('end_date', date.today())
     kpi_center_ids = filter_values.get('kpi_center_ids', [])
     entity_ids = filter_values.get('entity_ids', [])
-    
-    current_sales = queries.get_sales_data(start_date=start_date, end_date=end_date, 
-                                           kpi_center_ids=kpi_center_ids, entity_ids=entity_ids if entity_ids else None)
+    exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
     try:
-        compare_start = date(compare_year, start_date.month, start_date.day)
-        compare_end = date(compare_year, end_date.month, end_date.day)
-    except ValueError:
-        compare_start = date(compare_year, start_date.month, 28)
-        compare_end = date(compare_year, end_date.month, 28)
+        current_df, previous_df = load_yoy_data_cached(
+            start_date, end_date, tuple(kpi_center_ids) if kpi_center_ids else None,
+            tuple(entity_ids) if entity_ids else None, exclude_internal
+        )
+    except Exception as e:
+        logger.error(f"Error loading YoY data: {e}")
+        st.error(f"Failed to load comparison data: {e}")
+        return
     
-    compare_sales = queries.get_sales_data(start_date=compare_start, end_date=compare_end,
-                                           kpi_center_ids=kpi_center_ids, entity_ids=entity_ids if entity_ids else None)
+    # =========================================================================
+    # APPLY LOCAL FILTERS
+    # =========================================================================
     
-    if filter_values.get('exclude_internal_revenue', True):
-        if not current_sales.empty and 'customer_type' in current_sales.columns:
-            current_sales = current_sales[current_sales['customer_type'] != 'Internal']
-        if not compare_sales.empty and 'customer_type' in compare_sales.columns:
-            compare_sales = compare_sales[compare_sales['customer_type'] != 'Internal']
+    def apply_filters(df):
+        if df.empty:
+            return df
+        
+        result = df.copy()
+        
+        if selected_customer != 'All customers...':
+            if excl_customer:
+                result = result[result['customer'] != selected_customer]
+            else:
+                result = result[result['customer'] == selected_customer]
+        
+        if selected_brand != 'All brands...':
+            if excl_brand:
+                result = result[result['brand'] != selected_brand]
+            else:
+                result = result[result['brand'] == selected_brand]
+        
+        if selected_product != 'All products...':
+            if excl_product:
+                result = result[result['product_pn'] != selected_product]
+            else:
+                result = result[result['product_pn'] == selected_product]
+        
+        return result
     
-    with col2:
-        metric = st.radio("Metric", ["Revenue", "Gross Profit", "GP1"], horizontal=True, key="yoy_metric")
+    current_filtered = apply_filters(current_df)
+    previous_filtered = apply_filters(previous_df)
     
-    def prepare_monthly(df, metric):
-        if df.empty: return pd.DataFrame()
-        df = df.copy()
-        if 'inv_date' in df.columns:
-            df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
-            df['month'] = df['inv_date'].dt.strftime('%b')
-        elif 'invoice_month' in df.columns:
-            df['month'] = df['invoice_month']
-        else:
-            return pd.DataFrame()
-        metric_col_map = {"Revenue": "sales_by_kpi_center_usd", "Gross Profit": "gross_profit_by_kpi_center_usd", "GP1": "gp1_by_kpi_center_usd"}
-        col_name = metric_col_map[metric]
-        if col_name not in df.columns: return pd.DataFrame()
-        return df.groupby('month')[col_name].sum().reset_index()
+    # =========================================================================
+    # PREPARE MONTHLY SUMMARIES
+    # =========================================================================
     
-    current_monthly = prepare_monthly(current_sales, metric)
-    compare_monthly = prepare_monthly(compare_sales, metric)
+    current_monthly = _prepare_monthly_summary(current_filtered)
+    previous_monthly = _prepare_monthly_summary(previous_filtered)
     
-    chart = KPICenterCharts.build_yoy_comparison_chart(current_df=current_monthly, previous_df=compare_monthly,
-                                                       metric=metric, current_year=current_year, previous_year=compare_year)
-    st.altair_chart(chart, use_container_width=True)
+    # =========================================================================
+    # YEAR COMPARISON HEADER
+    # =========================================================================
     
-    col_map = {"Revenue": "sales_by_kpi_center_usd", "Gross Profit": "gross_profit_by_kpi_center_usd", "GP1": "gp1_by_kpi_center_usd"}
-    col_name = col_map[metric]
-    current_total = current_sales[col_name].sum() if not current_sales.empty and col_name in current_sales.columns else 0
-    compare_total = compare_sales[col_name].sum() if not compare_sales.empty and col_name in compare_sales.columns else 0
+    st.markdown(f"**📅 {current_year} vs {previous_year}**")
     
-    col_curr, col_prev, col_change = st.columns(3)
-    with col_curr:
-        st.metric(label=f"{current_year} {metric}", value=_format_currency(current_total))
-    with col_prev:
-        st.metric(label=f"{compare_year} {metric}", value=_format_currency(compare_total))
-    with col_change:
-        if compare_total > 0:
-            change_pct = ((current_total - compare_total) / compare_total) * 100
-            st.metric(label="YoY Change", value=f"{change_pct:+.1f}%", delta=_format_currency(current_total - compare_total))
-        else:
-            st.metric(label="YoY Change", value="N/A", delta="No previous data")
+    # =========================================================================
+    # TABS: Revenue / Gross Profit / GP1
+    # =========================================================================
+    
+    tab_rev, tab_gp, tab_gp1 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+    
+    for tab, metric_name, metric_col in [
+        (tab_rev, "Revenue", "revenue"),
+        (tab_gp, "Gross Profit", "gross_profit"),
+        (tab_gp1, "GP1", "gp1")
+    ]:
+        with tab:
+            # Calculate totals
+            current_total = current_monthly[metric_col].sum() if not current_monthly.empty and metric_col in current_monthly.columns else 0
+            previous_total = previous_monthly[metric_col].sum() if not previous_monthly.empty and metric_col in previous_monthly.columns else 0
+            
+            # YoY change
+            if previous_total > 0:
+                yoy_change = ((current_total - previous_total) / previous_total * 100)
+                yoy_diff = current_total - previous_total
+            else:
+                yoy_change = 0
+                yoy_diff = current_total
+            
+            # Summary metrics row
+            col_curr, col_prev = st.columns(2)
+            
+            with col_curr:
+                st.markdown(f"**{current_year} {metric_name}**")
+                st.markdown(f"### ${current_total:,.0f}")
+                if yoy_change != 0:
+                    color = "green" if yoy_change > 0 else "red"
+                    arrow = "↑" if yoy_change > 0 else "↓"
+                    st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% YoY]")
+            
+            with col_prev:
+                st.markdown(f"**{previous_year} {metric_name}**")
+                st.markdown(f"### ${previous_total:,.0f}")
+                st.markdown(f"↑ ${yoy_diff:+,.0f} difference" if yoy_diff != 0 else "")
+            
+            st.markdown("")
+            
+            # Charts row
+            chart_col1, chart_col2 = st.columns(2)
+            
+            with chart_col1:
+                st.markdown(f"**📊 Monthly {metric_name} Comparison**")
+                comparison_chart = KPICenterCharts.build_yoy_comparison_chart(
+                    current_df=current_monthly,
+                    previous_df=previous_monthly,
+                    metric=metric_name,
+                    current_year=current_year,
+                    previous_year=previous_year
+                )
+                st.altair_chart(comparison_chart, use_container_width=True)
+            
+            with chart_col2:
+                st.markdown(f"**📈 Cumulative {metric_name}**")
+                cumulative_chart = KPICenterCharts.build_yoy_cumulative_chart(
+                    current_df=current_monthly,
+                    previous_df=previous_monthly,
+                    metric=metric_name,
+                    current_year=current_year,
+                    previous_year=previous_year
+                )
+                st.altair_chart(cumulative_chart, use_container_width=True)
 
 
 # =============================================================================
-# SALES DETAIL FRAGMENT - ENHANCED v2.2.0 with Summary Cards
+# SALES DETAIL FRAGMENT - kept from v2.2.0
 # =============================================================================
 
 @st.fragment
-def sales_detail_fragment(sales_df: pd.DataFrame, filter_values: Dict):
-    """
-    Sales transaction detail with summary metrics cards and filters.
-    
-    NEW v2.2.0: Added summary metrics cards at top showing totals.
-    """
+def sales_detail_fragment(
+    sales_df: pd.DataFrame,
+    filter_values: Dict = None,
+    fragment_key: str = "kpc_sales"
+):
+    """Sales detail list with filters and summary cards."""
     if sales_df.empty:
         st.info("No sales data available")
         return
     
-    st.subheader("📋 Sales Transactions")
+    # Summary cards at top
+    col1, col2, col3, col4 = st.columns(4)
     
-    # NEW v2.2.0: Summary Metrics Cards at top
-    with st.container(border=True):
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        
-        total_revenue = sales_df['sales_by_kpi_center_usd'].sum() if 'sales_by_kpi_center_usd' in sales_df.columns else 0
-        total_gp = sales_df['gross_profit_by_kpi_center_usd'].sum() if 'gross_profit_by_kpi_center_usd' in sales_df.columns else 0
-        total_gp1 = sales_df['gp1_by_kpi_center_usd'].sum() if 'gp1_by_kpi_center_usd' in sales_df.columns else 0
-        total_orders = sales_df['inv_number'].nunique() if 'inv_number' in sales_df.columns else len(sales_df)
-        
-        with col_m1:
-            st.metric("💰 Total Revenue", f"${total_revenue:,.0f}")
-        with col_m2:
-            st.metric("📈 Gross Profit", f"${total_gp:,.0f}")
-        with col_m3:
-            st.metric("📊 GP1", f"${total_gp1:,.0f}")
-        with col_m4:
-            st.metric("📋 Orders", f"{total_orders:,}")
+    with col1:
+        st.metric("Total Revenue", f"${sales_df['sales_by_kpi_center_usd'].sum():,.0f}")
+    with col2:
+        st.metric("Total GP", f"${sales_df['gross_profit_by_kpi_center_usd'].sum():,.0f}")
+    with col3:
+        st.metric("Invoices", f"{sales_df['inv_number'].nunique():,}")
+    with col4:
+        st.metric("Customers", f"{sales_df['customer_id'].nunique():,}")
+    
+    st.divider()
     
     # Filters
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
+    
     with col1:
-        search = st.text_input("🔍 Search", placeholder="Customer, Product, Invoice...", key="detail_search")
+        customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
+        selected_customer = st.selectbox("Customer", customers, key=f"{fragment_key}_cust")
+    
     with col2:
-        kpi_centers = ['All'] + sorted(sales_df['kpi_center'].dropna().unique().tolist())
-        selected_kc = st.selectbox("🎯 KPI Center", kpi_centers, key="detail_kpi_center")
-    with col3:
         brands = ['All'] + sorted(sales_df['brand'].dropna().unique().tolist())
-        selected_brand = st.selectbox("🏷️ Brand", brands, key="detail_brand")
-    with col4:
-        min_revenue = st.number_input("💰 Min Revenue", min_value=0, value=0, step=1000, key="detail_min_revenue")
+        selected_brand = st.selectbox("Brand", brands, key=f"{fragment_key}_brand")
     
-    filtered_df = sales_df.copy()
+    with col3:
+        search = st.text_input("Search Product", placeholder="Part number...", key=f"{fragment_key}_search")
     
-    if search:
-        search_lower = search.lower()
-        mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
-        for col in ['customer', 'product_pn', 'inv_number', 'oc_number', 'pt_code']:
-            if col in filtered_df.columns:
-                mask |= filtered_df[col].fillna('').astype(str).str.lower().str.contains(search_lower)
-        filtered_df = filtered_df[mask]
+    # Apply filters
+    filtered = sales_df.copy()
     
-    if selected_kc != 'All':
-        filtered_df = filtered_df[filtered_df['kpi_center'] == selected_kc]
+    if selected_customer != 'All':
+        filtered = filtered[filtered['customer'] == selected_customer]
     if selected_brand != 'All':
-        filtered_df = filtered_df[filtered_df['brand'] == selected_brand]
-    if min_revenue > 0:
-        filtered_df = filtered_df[filtered_df['sales_by_kpi_center_usd'] >= min_revenue]
+        filtered = filtered[filtered['brand'] == selected_brand]
+    if search:
+        filtered = filtered[filtered['product_pn'].fillna('').str.lower().str.contains(search.lower())]
     
-    # Filtered totals
-    filtered_revenue = filtered_df['sales_by_kpi_center_usd'].sum() if 'sales_by_kpi_center_usd' in filtered_df.columns else 0
-    filtered_gp = filtered_df['gross_profit_by_kpi_center_usd'].sum() if 'gross_profit_by_kpi_center_usd' in filtered_df.columns else 0
+    st.caption(f"Showing {len(filtered):,} transactions")
     
-    st.caption(f"📊 {len(filtered_df):,} of {len(sales_df):,} transactions • Revenue: ${filtered_revenue:,.0f} • GP: ${filtered_gp:,.0f}")
+    # Display columns
+    display_cols = ['inv_date', 'inv_number', 'customer', 'brand', 'product_pn',
+                   'sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 'kpi_center']
+    display_cols = [c for c in display_cols if c in filtered.columns]
     
-    if filtered_df.empty:
-        st.warning("No transactions match the filters")
-        return
-    
-    display_cols = ['inv_date', 'inv_number', 'vat_number', 'kpi_center', 'kpi_type', 'customer', 'customer_code',
-                    'product_pn', 'pt_code', 'brand', 'sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd',
-                    'gp1_by_kpi_center_usd', 'split_rate_percent']
-    display_cols = [c for c in display_cols if c in filtered_df.columns]
-    display_df = _clean_dataframe_for_display(filtered_df[display_cols].head(500).copy())
-    
-    column_config = {
-        'inv_date': st.column_config.DateColumn('📅 Date', width='small'),
-        'inv_number': st.column_config.TextColumn('Invoice #', width='small'),
-        'vat_number': st.column_config.TextColumn('VAT #', width='small'),
-        'kpi_center': st.column_config.TextColumn('🎯 KPI Center'),
-        'kpi_type': st.column_config.TextColumn('Type', width='small'),
-        'customer': st.column_config.TextColumn('👤 Customer'),
-        'customer_code': st.column_config.TextColumn('Code', width='small'),
-        'product_pn': st.column_config.TextColumn('📦 Product'),
-        'pt_code': st.column_config.TextColumn('PT Code', width='small'),
-        'brand': st.column_config.TextColumn('🏷️ Brand', width='small'),
-        'sales_by_kpi_center_usd': st.column_config.NumberColumn('💰 Revenue', format="$%,.0f"),
-        'gross_profit_by_kpi_center_usd': st.column_config.NumberColumn('📈 GP', format="$%,.0f"),
-        'gp1_by_kpi_center_usd': st.column_config.NumberColumn('GP1', format="$%,.0f"),
-        'split_rate_percent': st.column_config.NumberColumn('Split %', format="%.0f%%", width='small'),
-    }
-    
-    st.dataframe(display_df, hide_index=True, column_config=column_config, use_container_width=True)
-    if len(filtered_df) > 500:
-        st.caption("⚠️ Showing first 500 rows. Use Export for complete data.")
+    st.dataframe(
+        filtered[display_cols].head(500),
+        hide_index=True,
+        column_config={
+            'inv_date': st.column_config.DateColumn('Date'),
+            'inv_number': 'Invoice',
+            'customer': 'Customer',
+            'brand': 'Brand',
+            'product_pn': 'Product',
+            'sales_by_kpi_center_usd': st.column_config.NumberColumn('Revenue', format="$%,.0f"),
+            'gross_profit_by_kpi_center_usd': st.column_config.NumberColumn('GP', format="$%,.0f"),
+            'kpi_center': 'KPI Center',
+        },
+        use_container_width=True
+    )
 
 
 # =============================================================================
@@ -399,170 +592,180 @@ def sales_detail_fragment(sales_df: pd.DataFrame, filter_values: Dict):
 # =============================================================================
 
 @st.fragment
-def pivot_analysis_fragment(sales_df: pd.DataFrame):
+def pivot_analysis_fragment(
+    sales_df: pd.DataFrame,
+    fragment_key: str = "kpc_pivot"
+):
+    """Configurable pivot table analysis."""
     if sales_df.empty:
         st.info("No data for pivot analysis")
         return
     
     st.subheader("📊 Pivot Analysis")
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        row_options = [c for c in ['kpi_center', 'customer', 'brand', 'product_pn', 'invoice_month', 'kpi_type'] if c in sales_df.columns]
-        rows = st.selectbox("Rows", row_options, key="pivot_rows")
+        row_options = ['customer', 'brand', 'kpi_center', 'invoice_month']
+        row_by = st.selectbox("Rows", row_options, key=f"{fragment_key}_rows")
+    
     with col2:
-        col_options = ['None'] + [c for c in row_options if c != rows]
-        columns = st.selectbox("Columns", col_options, key="pivot_columns")
+        col_options = ['None', 'invoice_month', 'brand', 'kpi_center']
+        col_by = st.selectbox("Columns", col_options, key=f"{fragment_key}_cols")
+    
     with col3:
-        values = st.selectbox("Values", ["Revenue", "Gross Profit", "GP1", "Count"], key="pivot_values")
+        value_options = ['Revenue', 'Gross Profit', 'GP1', 'Orders']
+        value_metric = st.selectbox("Values", value_options, key=f"{fragment_key}_values")
     
-    value_map = {"Revenue": 'sales_by_kpi_center_usd', "Gross Profit": 'gross_profit_by_kpi_center_usd', "GP1": 'gp1_by_kpi_center_usd', "Count": 'inv_number'}
-    value_col = value_map[values]
-    aggfunc = 'sum' if values != 'Count' else 'nunique'
+    # Map value selection
+    value_col_map = {
+        'Revenue': 'sales_by_kpi_center_usd',
+        'Gross Profit': 'gross_profit_by_kpi_center_usd',
+        'GP1': 'gp1_by_kpi_center_usd',
+        'Orders': 'inv_number'
+    }
+    value_col = value_col_map.get(value_metric, 'sales_by_kpi_center_usd')
     
-    if value_col not in sales_df.columns:
-        st.warning(f"Column {value_col} not available")
-        return
+    # Ensure month column exists
+    df = sales_df.copy()
+    if 'invoice_month' not in df.columns and 'inv_date' in df.columns:
+        df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+        df['invoice_month'] = df['inv_date'].dt.strftime('%b')
     
-    if columns == 'None':
-        pivot = sales_df.groupby(rows)[value_col].agg(aggfunc).reset_index()
-        pivot.columns = [rows, values]
-        pivot = pivot.sort_values(values, ascending=False)
+    # Aggregate
+    if value_metric == 'Orders':
+        agg_func = pd.Series.nunique
     else:
-        pivot = pd.pivot_table(sales_df, values=value_col, index=rows, columns=columns, aggfunc=aggfunc, fill_value=0).reset_index()
+        agg_func = 'sum'
     
-    st.dataframe(_clean_dataframe_for_display(pivot.head(100)), hide_index=True, use_container_width=True)
+    if col_by == 'None':
+        pivot = df.groupby(row_by).agg({value_col: agg_func}).reset_index()
+        pivot.columns = [row_by, value_metric]
+        pivot = pivot.sort_values(value_metric, ascending=False)
+    else:
+        pivot = df.pivot_table(
+            index=row_by,
+            columns=col_by,
+            values=value_col,
+            aggfunc=agg_func,
+            fill_value=0
+        ).reset_index()
+    
+    # Format
+    format_dict = {}
+    if value_metric in ['Revenue', 'Gross Profit', 'GP1']:
+        for col in pivot.columns:
+            if col != row_by:
+                format_dict[col] = st.column_config.NumberColumn(format="$%,.0f")
+    
+    st.dataframe(
+        pivot.head(50),
+        hide_index=True,
+        column_config=format_dict,
+        use_container_width=True
+    )
 
 
 # =============================================================================
-# BACKLOG LIST FRAGMENT - ENHANCED v2.2.0 with Overall Totals
+# BACKLOG LIST FRAGMENT
 # =============================================================================
 
 @st.fragment
 def backlog_list_fragment(
-    backlog_df: pd.DataFrame, 
-    filter_values: Dict,
-    total_backlog_df: pd.DataFrame = None
+    backlog_df: pd.DataFrame,
+    filter_values: Dict = None,
+    total_backlog_df: pd.DataFrame = None,
+    fragment_key: str = "kpc_backlog"
 ):
-    """
-    Backlog detail with risk indicators and filters.
-    
-    Args:
-        backlog_df: Filtered backlog detail DataFrame
-        filter_values: Current filter settings
-        total_backlog_df: Optional overall backlog summary for comparison
-                         NEW v2.2.0: Shows filtered vs total comparison
-    """
+    """Backlog detail list with risk indicators."""
     if backlog_df.empty:
         st.info("No backlog data available")
         return
     
-    st.subheader("📦 Backlog Detail")
+    st.subheader("📋 Backlog Detail")
     
-    # NEW v2.2.0: Summary cards showing filtered vs total
+    # Show overall totals if available
     if total_backlog_df is not None and not total_backlog_df.empty:
-        with st.container(border=True):
-            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-            
-            # Overall totals
-            overall_revenue = total_backlog_df['total_backlog_usd'].sum() if 'total_backlog_usd' in total_backlog_df.columns else 0
-            overall_gp = total_backlog_df['total_backlog_gp_usd'].sum() if 'total_backlog_gp_usd' in total_backlog_df.columns else 0
-            overall_orders = int(total_backlog_df['backlog_orders'].sum()) if 'backlog_orders' in total_backlog_df.columns else 0
-            
-            # Detail totals
-            detail_revenue = backlog_df['backlog_by_kpi_center_usd'].sum() if 'backlog_by_kpi_center_usd' in backlog_df.columns else 0
-            detail_gp = backlog_df['backlog_gp_by_kpi_center_usd'].sum() if 'backlog_gp_by_kpi_center_usd' in backlog_df.columns else 0
-            detail_orders = len(backlog_df)
-            
-            with col_s1:
-                st.metric("💰 Total Backlog", f"${overall_revenue:,.0f}",
-                         help="Total backlog across all KPI Centers")
-            with col_s2:
-                st.metric("📈 Total GP", f"${overall_gp:,.0f}")
-            with col_s3:
-                st.metric("📋 Total Orders", f"{overall_orders:,}")
-            with col_s4:
-                # Show overdue count from detail
-                overdue_count = len(backlog_df[backlog_df.get('days_until_etd', pd.Series()) < 0]) if 'days_until_etd' in backlog_df.columns else 0
-                st.metric("🔴 Overdue", f"{overdue_count:,}",
-                         help="Orders with ETD in the past")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            total_rev = total_backlog_df['backlog_revenue'].sum() if 'backlog_revenue' in total_backlog_df.columns else 0
+            st.metric("Total Backlog", f"${total_rev:,.0f}")
+        with col2:
+            total_gp = total_backlog_df['backlog_gp'].sum() if 'backlog_gp' in total_backlog_df.columns else 0
+            st.metric("Total GP", f"${total_gp:,.0f}")
+        with col3:
+            total_orders = len(backlog_df)
+            st.metric("Orders", f"{total_orders:,}")
+        
+        st.divider()
     
     # Filters
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
     
     with col1:
-        search = st.text_input("🔍 Search", placeholder="Customer, Product, OC#...", key="backlog_search")
+        customers = ['All'] + sorted(backlog_df['customer'].dropna().unique().tolist())
+        selected_customer = st.selectbox("Customer", customers, key=f"{fragment_key}_cust")
+    
     with col2:
-        kpi_centers = ['All'] + sorted(backlog_df['kpi_center'].dropna().unique().tolist())
-        selected_kc = st.selectbox("🎯 KPI Center", kpi_centers, key="backlog_kpi_center")
-    with col3:
-        etd_filter_options = ['All', '🔴 Overdue', '🟡 At Risk (7 days)', '🟢 On Track']
-        selected_etd_filter = st.selectbox("⚠️ ETD Status", etd_filter_options, key="backlog_etd_filter")
-    with col4:
-        status_options = ['All'] + (backlog_df['pending_type'].dropna().unique().tolist() if 'pending_type' in backlog_df.columns else [])
-        selected_status = st.selectbox("📋 Status", status_options, key="backlog_status")
+        risk_filter = st.selectbox("Risk Level", ['All', '🔴 Overdue', '🟡 At Risk', '🟢 OK'],
+                                   key=f"{fragment_key}_risk")
     
-    filtered_df = backlog_df.copy()
+    # Apply filters
+    filtered = backlog_df.copy()
     
-    if 'days_until_etd' in filtered_df.columns:
-        filtered_df['risk_indicator'] = filtered_df['days_until_etd'].apply(_add_risk_indicator)
+    if selected_customer != 'All':
+        filtered = filtered[filtered['customer'] == selected_customer]
     
-    if search:
-        search_lower = search.lower()
-        mask = pd.Series([False] * len(filtered_df), index=filtered_df.index)
-        for col in ['customer', 'product_pn', 'oc_number', 'pt_code']:
-            if col in filtered_df.columns:
-                mask |= filtered_df[col].fillna('').astype(str).str.lower().str.contains(search_lower)
-        filtered_df = filtered_df[mask]
+    # Add risk indicator
+    def get_risk_indicator(days):
+        try:
+            d = float(days)
+            if pd.isna(d):
+                return "⚪"
+            if d < 0:
+                return "🔴"
+            elif d <= 7:
+                return "🟡"
+            elif d <= 30:
+                return "🟢"
+            else:
+                return "⚪"
+        except:
+            return "⚪"
     
-    if selected_kc != 'All':
-        filtered_df = filtered_df[filtered_df['kpi_center'] == selected_kc]
+    if 'days_until_etd' in filtered.columns:
+        filtered['risk'] = filtered['days_until_etd'].apply(get_risk_indicator)
+        
+        if risk_filter != 'All':
+            risk_map = {
+                '🔴 Overdue': '🔴',
+                '🟡 At Risk': '🟡',
+                '🟢 OK': '🟢'
+            }
+            filtered = filtered[filtered['risk'] == risk_map.get(risk_filter, '')]
     
-    if selected_etd_filter != 'All' and 'days_until_etd' in filtered_df.columns:
-        if selected_etd_filter == '🔴 Overdue':
-            filtered_df = filtered_df[filtered_df['days_until_etd'] < 0]
-        elif selected_etd_filter == '🟡 At Risk (7 days)':
-            filtered_df = filtered_df[(filtered_df['days_until_etd'] >= 0) & (filtered_df['days_until_etd'] <= 7)]
-        elif selected_etd_filter == '🟢 On Track':
-            filtered_df = filtered_df[filtered_df['days_until_etd'] > 7]
+    st.caption(f"Showing {len(filtered):,} orders")
     
-    if selected_status != 'All' and 'pending_type' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['pending_type'] == selected_status]
+    # Display
+    display_cols = ['risk', 'etd', 'customer', 'product_pn', 'backlog_by_kpi_center_usd',
+                   'backlog_gp_by_kpi_center_usd', 'kpi_center', 'days_until_etd']
+    display_cols = [c for c in display_cols if c in filtered.columns]
     
-    total_backlog = filtered_df['backlog_by_kpi_center_usd'].sum() if 'backlog_by_kpi_center_usd' in filtered_df.columns else 0
-    overdue_count = len(filtered_df[filtered_df.get('days_until_etd', pd.Series()) < 0]) if 'days_until_etd' in filtered_df.columns else 0
-    st.caption(f"📦 {len(filtered_df):,} items • Filtered Total: ${total_backlog:,.0f}{f' • 🔴 {overdue_count} overdue' if overdue_count > 0 else ''}")
-    
-    if filtered_df.empty:
-        st.warning("No backlog matches the filters")
-        return
-    
-    display_cols = ['risk_indicator', 'oc_number', 'oc_date', 'etd', 'customer', 'product_pn', 'brand', 'kpi_center', 'kpi_type',
-                    'backlog_by_kpi_center_usd', 'backlog_gp_by_kpi_center_usd', 'days_until_etd', 'days_since_order', 'pending_type', 'split_rate_percent']
-    display_cols = [c for c in display_cols if c in filtered_df.columns]
-    display_df = _clean_dataframe_for_display(filtered_df[display_cols].head(500).copy())
-    
-    column_config = {
-        'risk_indicator': st.column_config.TextColumn('⚠️', width='small'),
-        'oc_number': st.column_config.TextColumn('OC #'),
-        'oc_date': st.column_config.DateColumn('📅 OC Date', width='small'),
-        'etd': st.column_config.DateColumn('🚚 ETD', width='small'),
-        'customer': st.column_config.TextColumn('👤 Customer'),
-        'product_pn': st.column_config.TextColumn('📦 Product'),
-        'brand': st.column_config.TextColumn('🏷️ Brand', width='small'),
-        'kpi_center': st.column_config.TextColumn('🎯 KPI Center'),
-        'kpi_type': st.column_config.TextColumn('Type', width='small'),
-        'backlog_by_kpi_center_usd': st.column_config.NumberColumn('💰 Amount', format="$%,.0f"),
-        'backlog_gp_by_kpi_center_usd': st.column_config.NumberColumn('📈 GP', format="$%,.0f"),
-        'days_until_etd': st.column_config.NumberColumn('Days to ETD', width='small'),
-        'days_since_order': st.column_config.NumberColumn('Days Open', width='small'),
-        'pending_type': st.column_config.TextColumn('Status', width='small'),
-        'split_rate_percent': st.column_config.NumberColumn('Split %', format="%.0f%%", width='small'),
-    }
-    
-    st.dataframe(display_df, hide_index=True, column_config=column_config, use_container_width=True)
-    if len(filtered_df) > 500:
-        st.caption("⚠️ Showing first 500 rows. Export for complete data.")
+    st.dataframe(
+        filtered[display_cols].head(500),
+        hide_index=True,
+        column_config={
+            'risk': st.column_config.TextColumn('Risk', width='small'),
+            'etd': st.column_config.DateColumn('ETD'),
+            'customer': 'Customer',
+            'product_pn': 'Product',
+            'backlog_by_kpi_center_usd': st.column_config.NumberColumn('Backlog', format="$%,.0f"),
+            'backlog_gp_by_kpi_center_usd': st.column_config.NumberColumn('GP', format="$%,.0f"),
+            'kpi_center': 'KPI Center',
+            'days_until_etd': st.column_config.NumberColumn('Days', format="%d"),
+        },
+        use_container_width=True
+    )
 
 
 # =============================================================================
@@ -570,95 +773,101 @@ def backlog_list_fragment(
 # =============================================================================
 
 @st.fragment
-def kpi_center_ranking_fragment(ranking_df: pd.DataFrame, show_targets: bool = True):
+def kpi_center_ranking_fragment(
+    ranking_df: pd.DataFrame,
+    show_targets: bool = True,
+    fragment_key: str = "kpc_ranking"
+):
+    """KPI Center performance ranking table."""
     if ranking_df.empty:
         st.info("No ranking data available")
         return
     
-    metric = st.radio("Rank by", ["Revenue", "Gross Profit", "GP1", "Customers"], horizontal=True, key="ranking_metric")
-    metric_col_map = {"Revenue": "revenue", "Gross Profit": "gross_profit", "GP1": "gp1", "Customers": "customers"}
-    sort_col = metric_col_map[metric]
+    # Sort options
+    sort_options = ['Revenue', 'Gross Profit', 'GP1', 'GP %']
+    if show_targets:
+        sort_options.append('Achievement %')
+    
+    sort_by = st.selectbox("Sort by", sort_options, key=f"{fragment_key}_sort")
+    
+    # Map sort selection
+    sort_col_map = {
+        'Revenue': 'total_revenue',
+        'Gross Profit': 'total_gp',
+        'GP1': 'total_gp1',
+        'GP %': 'gp_percent',
+        'Achievement %': 'achievement'
+    }
+    sort_col = sort_col_map.get(sort_by, 'total_revenue')
     
     if sort_col not in ranking_df.columns:
-        st.warning(f"Column {sort_col} not available")
-        return
+        sort_col = 'total_revenue'
     
+    # Sort and add rank
     sorted_df = ranking_df.sort_values(sort_col, ascending=False).copy()
-    sorted_df.insert(0, 'rank', range(1, len(sorted_df) + 1))
+    sorted_df.insert(0, 'Rank', range(1, len(sorted_df) + 1))
     
-    col1, col2 = st.columns([2, 1])
+    # Format
+    column_config = {
+        'Rank': st.column_config.NumberColumn('Rank', width='small'),
+        'kpi_center': 'KPI Center',
+        'total_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
+        'total_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
+        'total_gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
+        'gp_percent': st.column_config.NumberColumn('GP %', format='%.1f%%'),
+        'customer_count': 'Customers',
+        'order_count': 'Orders',
+    }
     
-    with col1:
-        try:
-            chart = KPICenterCharts.build_kpi_center_ranking_chart(sorted_df, metric=sort_col, top_n=10)
-            st.altair_chart(chart, use_container_width=True)
-        except Exception as e:
-            logger.warning(f"Could not render ranking chart: {e}")
+    if show_targets and 'achievement' in sorted_df.columns:
+        column_config['achievement'] = st.column_config.ProgressColumn(
+            'Achievement',
+            min_value=0,
+            max_value=150,
+            format='%.1f%%'
+        )
     
-    with col2:
-        display_cols = ['rank', 'kpi_center', 'revenue', 'gross_profit', 'gp1', 'customers']
-        if show_targets and 'revenue_achievement' in sorted_df.columns:
-            display_cols.append('revenue_achievement')
-        display_cols = [c for c in display_cols if c in sorted_df.columns]
-        display_df = sorted_df[display_cols].head(15).copy()
-        
-        column_config = {
-            'rank': st.column_config.NumberColumn('🏆', width='small'),
-            'kpi_center': st.column_config.TextColumn('KPI Center'),
-            'revenue': st.column_config.NumberColumn('Revenue', format="$%,.0f"),
-            'gross_profit': st.column_config.NumberColumn('GP', format="$%,.0f"),
-            'gp1': st.column_config.NumberColumn('GP1', format="$%,.0f"),
-            'customers': st.column_config.NumberColumn('Customers'),
-            'revenue_achievement': st.column_config.ProgressColumn('Achievement', min_value=0, max_value=150, format='%.0f%%'),
-        }
-        st.dataframe(display_df, hide_index=True, column_config=column_config, use_container_width=True)
+    st.dataframe(
+        sorted_df,
+        hide_index=True,
+        column_config=column_config,
+        use_container_width=True
+    )
 
 
 # =============================================================================
-# TOP PERFORMERS / PARETO ANALYSIS FRAGMENT - NEW v2.3.0
+# TOP PERFORMERS FRAGMENT - kept from v2.3.0
 # =============================================================================
 
 @st.fragment
 def top_performers_fragment(
     sales_df: pd.DataFrame,
-    filter_values: Dict,
-    metrics_calculator = None
+    filter_values: Dict = None,
+    metrics_calculator = None,
+    fragment_key: str = "kpc_top"
 ):
-    """
-    Top Performers / Pareto Analysis fragment.
-    
-    Shows:
-    - Top Customers by Revenue/GP/GP1
-    - Top Brands by Revenue/GP/GP1
-    - Concentration analysis (80/20 rule)
-    
-    Args:
-        sales_df: Sales data DataFrame
-        filter_values: Current filter settings
-        metrics_calculator: Optional KPICenterMetrics instance
-    """
+    """Top performers / Pareto analysis."""
     if sales_df.empty:
-        st.info("No sales data for analysis")
+        st.info("No data for analysis")
         return
     
-    st.subheader("📊 Top Performers Analysis")
+    st.subheader("🏆 Top Performers Analysis")
     
     # Controls
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        analysis_type = st.radio(
+        group_by = st.selectbox(
             "Analyze by",
-            ["Customers", "Brands", "Products"],
-            horizontal=True,
-            key="pareto_analysis_type"
+            ["Customer", "Brand", "Product"],
+            key=f"{fragment_key}_group"
         )
     
     with col2:
         metric = st.selectbox(
             "Metric",
             ["Revenue", "Gross Profit", "GP1"],
-            key="pareto_metric"
+            key=f"{fragment_key}_metric"
         )
     
     with col3:
@@ -668,137 +877,90 @@ def top_performers_fragment(
             max_value=100,
             value=80,
             step=5,
-            key="pareto_top_percent",
-            help="Show items that make up this % of total"
+            key=f"{fragment_key}_pct"
         )
     
-    # Map metric to column
-    metric_col_map = {
-        'Revenue': 'sales_by_kpi_center_usd',
-        'Gross Profit': 'gross_profit_by_kpi_center_usd',
-        'GP1': 'gp1_by_kpi_center_usd'
+    # Map selections
+    group_col_map = {
+        "Customer": "customer",
+        "Brand": "brand",
+        "Product": "product_pn"
     }
-    value_col = metric_col_map.get(metric, 'sales_by_kpi_center_usd')
+    group_col = group_col_map.get(group_by, "customer")
     
-    if value_col not in sales_df.columns:
-        st.warning(f"Column {value_col} not available")
-        return
+    metric_col_map = {
+        "Revenue": "sales_by_kpi_center_usd",
+        "Gross Profit": "gross_profit_by_kpi_center_usd",
+        "GP1": "gp1_by_kpi_center_usd"
+    }
+    value_col = metric_col_map.get(metric, "sales_by_kpi_center_usd")
     
-    # Prepare data based on analysis type
-    if analysis_type == "Customers":
-        group_col = 'customer'
-        id_col = 'customer_id'
-        label = "Customer"
-    elif analysis_type == "Brands":
-        group_col = 'brand'
-        id_col = 'brand'
-        label = "Brand"
-    else:  # Products
-        group_col = 'product_pn'
-        id_col = 'product_id' if 'product_id' in sales_df.columns else 'product_pn'
-        label = "Product"
-    
-    if group_col not in sales_df.columns:
-        st.warning(f"Column {group_col} not available")
-        return
-    
-    # Aggregate data
-    agg_data = sales_df.groupby(group_col).agg({
+    # Aggregate
+    agg_df = sales_df.groupby(group_col).agg({
         'sales_by_kpi_center_usd': 'sum',
         'gross_profit_by_kpi_center_usd': 'sum',
-        'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in sales_df.columns else 'count',
-        'inv_number': 'nunique' if 'inv_number' in sales_df.columns else 'count'
+        'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in sales_df.columns else 'first',
+        'inv_number': pd.Series.nunique
     }).reset_index()
     
-    agg_data.columns = [group_col, 'revenue', 'gross_profit', 'gp1', 'orders']
-    
-    if 'gp1_by_kpi_center_usd' not in sales_df.columns:
-        agg_data['gp1'] = 0
+    agg_df.columns = [group_col, 'revenue', 'gross_profit', 'gp1', 'orders']
     
     # Sort and calculate cumulative
     metric_lower = metric.lower().replace(' ', '_')
-    agg_data = agg_data.sort_values(metric_lower, ascending=False)
+    agg_df = agg_df.sort_values(metric_lower, ascending=False)
     
-    total = agg_data[metric_lower].sum()
+    total = agg_df[metric_lower].sum()
     if total == 0:
         st.warning("No data to analyze")
         return
     
-    agg_data['cumulative'] = agg_data[metric_lower].cumsum()
-    agg_data['cumulative_percent'] = (agg_data['cumulative'] / total * 100).round(1)
-    agg_data['percent'] = (agg_data[metric_lower] / total * 100).round(1)
-    agg_data['rank'] = range(1, len(agg_data) + 1)
+    agg_df['cumulative'] = agg_df[metric_lower].cumsum()
+    agg_df['cumulative_percent'] = (agg_df['cumulative'] / total * 100).round(1)
+    agg_df['percent'] = (agg_df[metric_lower] / total * 100).round(1)
     
     # Filter to top percent
-    cutoff_mask = agg_data['cumulative_percent'] <= top_percent
-    if not cutoff_mask.any():
-        # Include at least the first row
-        top_data = agg_data.head(1).copy()
-    else:
-        # Include the first item that exceeds the threshold
-        first_exceed = (~cutoff_mask).idxmax() if (~cutoff_mask).any() else len(agg_data) - 1
-        top_data = agg_data.loc[:first_exceed].copy()
+    top_data = agg_df[agg_df['cumulative_percent'] <= top_percent].copy()
+    if top_data.empty:
+        top_data = agg_df.head(1).copy()
     
     # Summary metrics
-    st.markdown("---")
+    st.divider()
     
     col_s1, col_s2, col_s3, col_s4 = st.columns(4)
     
     top_count = len(top_data)
-    total_count = len(agg_data)
+    total_count = len(agg_df)
     top_value = top_data[metric_lower].sum()
     concentration = (top_count / total_count * 100) if total_count > 0 else 0
     
     with col_s1:
-        st.metric(
-            f"Top {label}s",
-            f"{top_count:,}",
-            f"of {total_count:,} total",
-            help=f"Number of {label.lower()}s making up {top_percent}% of {metric}"
-        )
+        st.metric(f"Top {group_by}s", f"{top_count:,}", f"of {total_count:,} total")
     
     with col_s2:
-        st.metric(
-            f"Top {top_percent}% {metric}",
-            f"${top_value:,.0f}",
-            f"{(top_value/total*100):.1f}% of total"
-        )
+        st.metric(f"Top {top_percent}% {metric}", f"${top_value:,.0f}",
+                 f"{(top_value/total*100):.1f}% of total")
     
     with col_s3:
-        st.metric(
-            "Concentration",
-            f"{concentration:.1f}%",
-            help=f"{concentration:.1f}% of {label.lower()}s generate {top_percent}% of {metric}"
-        )
+        st.metric("Concentration", f"{concentration:.1f}%")
     
     with col_s4:
-        avg_per_item = top_value / top_count if top_count > 0 else 0
-        st.metric(
-            f"Avg per {label}",
-            f"${avg_per_item:,.0f}"
-        )
+        avg_per = top_value / top_count if top_count > 0 else 0
+        st.metric(f"Avg per {group_by}", f"${avg_per:,.0f}")
     
-    # Display charts and table
+    # Chart and table
     chart_col, table_col = st.columns([1.2, 1])
     
     with chart_col:
-        # Top performers chart
-        try:
-            chart = KPICenterCharts.build_top_performers_chart(
-                data_df=top_data,
-                value_col=metric_lower,
-                label_col=group_col,
-                top_n=min(15, len(top_data)),
-                title=f"Top {label}s by {metric}",
-                show_percent=True
-            )
-            st.altair_chart(chart, use_container_width=True)
-        except Exception as e:
-            logger.warning(f"Could not render chart: {e}")
-            st.warning("Could not render chart")
+        chart = KPICenterCharts.build_top_performers_chart(
+            data_df=top_data,
+            value_col=metric_lower,
+            label_col=group_col,
+            top_n=min(15, len(top_data)),
+            title=f"Top {group_by}s by {metric}"
+        )
+        st.altair_chart(chart, use_container_width=True)
     
     with table_col:
-        # Display table
         display_df = top_data[[group_col, 'revenue', 'gross_profit', 'gp1', 'orders', 'percent', 'cumulative_percent']].copy()
         display_df.insert(0, 'Rank', range(1, len(display_df) + 1))
         
@@ -807,65 +969,16 @@ def top_performers_fragment(
             hide_index=True,
             column_config={
                 'Rank': st.column_config.NumberColumn('🏆', width='small'),
-                group_col: st.column_config.TextColumn(label),
+                group_col: group_by,
                 'revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
                 'gross_profit': st.column_config.NumberColumn('GP', format='$%,.0f'),
                 'gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
-                'orders': st.column_config.NumberColumn('Orders'),
+                'orders': 'Orders',
                 'percent': st.column_config.NumberColumn('% Share', format='%.1f%%'),
                 'cumulative_percent': st.column_config.NumberColumn('Cum %', format='%.1f%%'),
             },
             use_container_width=True
         )
-        
-        if len(top_data) > 20:
-            st.caption(f"Showing top 20 of {len(top_data)} {label.lower()}s")
-    
-    # 80/20 Analysis insight
-    st.markdown("---")
-    
-    # Find how many items make up 80%
-    mask_80 = agg_data['cumulative_percent'] <= 80
-    if mask_80.any():
-        first_exceed_80 = (~mask_80).idxmax() if (~mask_80).any() else len(agg_data) - 1
-        count_80 = len(agg_data.loc[:first_exceed_80])
-        percent_of_total = (count_80 / total_count * 100) if total_count > 0 else 0
-        
-        with st.expander("💡 80/20 Analysis Insight", expanded=True):
-            st.markdown(f"""
-**Pareto Principle Analysis:**
-
-- **{count_80:,} {label.lower()}s** ({percent_of_total:.1f}% of total) generate **80%** of {metric}
-- This indicates {'high' if percent_of_total < 30 else 'moderate' if percent_of_total < 50 else 'distributed'} revenue concentration
-
-**Recommendations:**
-{_get_concentration_recommendations(percent_of_total, label)}
-            """)
-
-
-def _get_concentration_recommendations(concentration_percent: float, entity: str) -> str:
-    """Generate recommendations based on concentration level."""
-    if concentration_percent < 20:
-        return f"""
-- ⚠️ Very high concentration risk - top {entity.lower()}s are critical
-- Focus on relationship management for key accounts
-- Develop contingency plans for top {entity.lower()} churn
-- Consider diversification strategies
-"""
-    elif concentration_percent < 35:
-        return f"""
-- 📊 Healthy concentration with some key accounts
-- Continue nurturing top {entity.lower()} relationships
-- Identify growth potential in mid-tier {entity.lower()}s
-- Monitor dependency on largest {entity.lower()}s
-"""
-    else:
-        return f"""
-- ✅ Well-distributed across {entity.lower()}s
-- Good diversification reduces single-point-of-failure risk
-- Focus on improving average order value
-- Identify opportunities to consolidate wallet share
-"""
 
 
 # =============================================================================
@@ -873,11 +986,20 @@ def _get_concentration_recommendations(concentration_percent: float, entity: str
 # =============================================================================
 
 @st.fragment
-def export_report_fragment(metrics: Dict, complex_kpis: Dict, pipeline_metrics: Dict, filter_values: Dict,
-                           yoy_metrics: Dict = None, kpi_center_summary_df: pd.DataFrame = None,
-                           monthly_df: pd.DataFrame = None, sales_detail_df: pd.DataFrame = None,
-                           backlog_summary_df: pd.DataFrame = None, backlog_detail_df: pd.DataFrame = None,
-                           backlog_by_month_df: pd.DataFrame = None):
+def export_report_fragment(
+    metrics: Dict,
+    complex_kpis: Dict,
+    pipeline_metrics: Dict,
+    filter_values: Dict,
+    yoy_metrics: Dict = None,
+    kpi_center_summary_df: pd.DataFrame = None,
+    monthly_df: pd.DataFrame = None,
+    sales_detail_df: pd.DataFrame = None,
+    backlog_summary_df: pd.DataFrame = None,
+    backlog_detail_df: pd.DataFrame = None,
+    backlog_by_month_df: pd.DataFrame = None
+):
+    """Excel report generation fragment."""
     from .export import KPICenterExport
     
     st.subheader("📥 Export Report")
@@ -897,10 +1019,17 @@ def export_report_fragment(metrics: Dict, complex_kpis: Dict, pipeline_metrics: 
             try:
                 exporter = KPICenterExport()
                 excel_bytes = exporter.create_comprehensive_report(
-                    metrics=metrics, complex_kpis=complex_kpis, pipeline_metrics=pipeline_metrics,
-                    filters=filter_values, yoy_metrics=yoy_metrics, kpi_center_summary_df=kpi_center_summary_df,
-                    monthly_df=monthly_df, sales_detail_df=sales_detail_df, backlog_summary_df=backlog_summary_df,
-                    backlog_detail_df=backlog_detail_df, backlog_by_month_df=backlog_by_month_df,
+                    metrics=metrics,
+                    complex_kpis=complex_kpis,
+                    pipeline_metrics=pipeline_metrics,
+                    filters=filter_values,
+                    yoy_metrics=yoy_metrics,
+                    kpi_center_summary_df=kpi_center_summary_df,
+                    monthly_df=monthly_df,
+                    sales_detail_df=sales_detail_df,
+                    backlog_summary_df=backlog_summary_df,
+                    backlog_detail_df=backlog_detail_df,
+                    backlog_by_month_df=backlog_by_month_df,
                 )
                 st.session_state['kpi_center_export_data'] = excel_bytes
                 st.success("✅ Report generated! Click download below.")
@@ -912,6 +1041,10 @@ def export_report_fragment(metrics: Dict, complex_kpis: Dict, pipeline_metrics: 
         year = filter_values.get('year', 2025)
         period = filter_values.get('period_type', 'YTD')
         filename = f"kpi_center_performance_{year}_{period}.xlsx"
-        st.download_button(label="⬇️ Download Excel Report", data=st.session_state['kpi_center_export_data'],
-                          file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                          key="download_report_btn")
+        st.download_button(
+            label="⬇️ Download Excel Report",
+            data=st.session_state['kpi_center_export_data'],
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_report_btn"
+        )
