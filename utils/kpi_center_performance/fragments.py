@@ -55,28 +55,17 @@ def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
 def _prepare_monthly_summary(sales_df: pd.DataFrame, debug_label: str = "") -> pd.DataFrame:
     """Prepare monthly summary from sales data."""
     if sales_df.empty:
-        print(f"⚠️ _prepare_monthly_summary({debug_label}): INPUT IS EMPTY")
         return pd.DataFrame()
     
     df = sales_df.copy()
-    print(f"🔍 _prepare_monthly_summary({debug_label}): input shape={df.shape}")
     
     # Ensure invoice_month column
     if 'invoice_month' not in df.columns:
         if 'inv_date' in df.columns:
             df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
             df['invoice_month'] = df['inv_date'].dt.strftime('%b')
-            print(f"   Created invoice_month from inv_date")
         else:
-            print(f"   ⚠️ No inv_date column, returning empty")
             return pd.DataFrame()
-    else:
-        print(f"   invoice_month column exists, unique values: {df['invoice_month'].unique().tolist()}")
-    
-    # Check for nulls
-    null_count = df['invoice_month'].isna().sum()
-    if null_count > 0:
-        print(f"   ⚠️ {null_count} null invoice_month values")
     
     # Aggregate by month
     try:
@@ -89,9 +78,8 @@ def _prepare_monthly_summary(sales_df: pd.DataFrame, debug_label: str = "") -> p
         }).reset_index()
         
         monthly.columns = ['month', 'revenue', 'gross_profit', 'gp1', 'orders', 'customers']
-        print(f"   Monthly aggregation result: {monthly.shape}, revenue sum=${monthly['revenue'].sum():,.0f}")
     except Exception as e:
-        print(f"   ❌ Error in groupby: {e}")
+        logger.error(f"Error in _prepare_monthly_summary: {e}")
         return pd.DataFrame()
     
     # Add GP%

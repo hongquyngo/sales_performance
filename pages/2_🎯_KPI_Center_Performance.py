@@ -2,8 +2,10 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.4.0
+VERSION: 2.5.1
 CHANGELOG:
+- v2.5.1: BUGFIX - kpi_type_filter now works in filter_data_client_side()
+          - Removed debug print statements from fragments.py
 - v2.4.0: SYNCED UI with Salesperson Performance page:
           - Overview tab now matches SP page layout exactly
           - Monthly Trend & Cumulative: 2 charts side-by-side with Customer/Brand/Product Excl filters
@@ -345,6 +347,11 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     year = filter_values['year']
     exclude_internal_revenue = filter_values.get('exclude_internal_revenue', True)
     
+    # =========================================================================
+    # NEW v2.5.1: KPI Type filter
+    # =========================================================================
+    kpi_type_filter = filter_values.get('kpi_type_filter', None)
+    
     filtered = {}
     
     for key, df in raw_data.items():
@@ -386,6 +393,12 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 internal_mask = df_filtered['customer_type'] == 'Internal'
                 df_filtered.loc[internal_mask, 'sales_by_kpi_center_usd'] = 0
         
+        # =====================================================================
+        # NEW v2.5.1: Filter by kpi_type
+        # =====================================================================
+        if kpi_type_filter and 'kpi_type' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['kpi_type'] == kpi_type_filter]
+        
         filtered[key] = df_filtered
     
     # Filter targets by year AND kpi_center_ids (using expanded IDs)
@@ -395,6 +408,9 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
             targets = targets[targets['year'] == year]
         if kpi_center_ids and 'kpi_center_id' in targets.columns:
             targets = targets[targets['kpi_center_id'].isin(kpi_center_ids)]
+        # NEW v2.5.1: Filter targets by kpi_type
+        if kpi_type_filter and 'kpi_type' in targets.columns:
+            targets = targets[targets['kpi_type'] == kpi_type_filter]
         filtered['targets_df'] = targets
     
     # Recalculate backlog risk from filtered data
