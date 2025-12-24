@@ -252,11 +252,16 @@ def yoy_comparison_fragment(
     filter_values: Dict,
     current_year: int = None,
     sales_df: pd.DataFrame = None,
+    raw_cached_data: dict = None,  # NEW v2.5.0: Use cached data for YoY
     fragment_key: str = "kpc_yoy"
 ):
     """
     Year-over-Year comparison with tabs and filters.
     SYNCED with Salesperson page (Image 3).
+    
+    UPDATED v2.5.0: Now uses raw_cached_data first before querying DB.
+    This fixes the bug where YoY data was always $0 due to closure issue
+    with @st.cache_data on nested function.
     
     Shows:
     - Tabs: Revenue / Gross Profit / GP1
@@ -342,43 +347,8 @@ def yoy_comparison_fragment(
         )
     
     # =========================================================================
-    # LOAD DATA
+    # LOAD DATA - UPDATED v2.5.0: Use cached data first, then query if needed
     # =========================================================================
-    
-    @st.cache_data(ttl=1800, show_spinner=False)
-    def load_yoy_data_cached(start_date, end_date, kpi_center_ids, entity_ids, exclude_internal):
-        """Load current and previous year data."""
-        # Current year
-        current_df = queries.get_sales_data(
-            start_date=start_date,
-            end_date=end_date,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Previous year
-        try:
-            prev_start = date(start_date.year - 1, start_date.month, start_date.day)
-            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
-        except ValueError:
-            prev_start = date(start_date.year - 1, start_date.month, 28)
-            prev_end = date(end_date.year - 1, end_date.month, 28)
-        
-        previous_df = queries.get_sales_data(
-            start_date=prev_start,
-            end_date=prev_end,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-        
-        # Exclude internal if requested
-        if exclude_internal:
-            if 'customer_type' in current_df.columns:
-                current_df = current_df[current_df['customer_type'] != 'Internal']
-            if 'customer_type' in previous_df.columns:
-                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
-        
-        return current_df, previous_df
     
     start_date = filter_values.get('start_date', date(current_year, 1, 1))
     end_date = filter_values.get('end_date', date.today())
@@ -386,11 +356,85 @@ def yoy_comparison_fragment(
     entity_ids = filter_values.get('entity_ids', [])
     exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
+    # Calculate previous year date range
     try:
-        current_df, previous_df = load_yoy_data_cached(
-            start_date, end_date, tuple(kpi_center_ids) if kpi_center_ids else None,
-            tuple(entity_ids) if entity_ids else None, exclude_internal
-        )
+        prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+        prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+    except ValueError:
+        # Handle Feb 29 edge case
+        prev_start = date(start_date.year - 1, start_date.month, 28)
+        prev_end = date(end_date.year - 1, end_date.month, 28)
+    
+    def get_yoy_data_from_cache_or_query():
+        """
+        Smart YoY data loading:
+        - Current year: Use passed sales_df (already filtered from main cache)
+        - Previous year: Check raw_cached_data first, query DB only if not found
+        """
+        # Current year: Use the already-filtered sales_df passed from main page
+        current_df = sales_df.copy() if sales_df is not None and not sales_df.empty else pd.DataFrame()
+        
+        # Previous year: Try to get from cache first
+        previous_df = pd.DataFrame()
+        cache_hit = False
+        
+        if raw_cached_data and 'sales_df' in raw_cached_data:
+            cached_sales = raw_cached_data['sales_df']
+            
+            if cached_sales is not None and not cached_sales.empty and 'inv_date' in cached_sales.columns:
+                # Convert inv_date to datetime if needed
+                cached_sales = cached_sales.copy()
+                cached_sales['inv_date'] = pd.to_datetime(cached_sales['inv_date'], errors='coerce')
+                
+                # Check if previous year exists in cached data
+                cached_years = cached_sales['inv_date'].dt.year.unique().tolist()
+                
+                if previous_year in cached_years:
+                    # ✅ CACHE HIT - Filter from cache, no DB query needed
+                    logger.debug(f"YoY cache HIT: {previous_year} found in cached years {cached_years}")
+                    
+                    previous_df = cached_sales[
+                        (cached_sales['inv_date'] >= pd.Timestamp(prev_start)) &
+                        (cached_sales['inv_date'] <= pd.Timestamp(prev_end))
+                    ].copy()
+                    
+                    # Apply KPI Center filter
+                    if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
+                        previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
+                    
+                    # Apply Entity filter
+                    if entity_ids and 'legal_entity_id' in previous_df.columns:
+                        previous_df = previous_df[previous_df['legal_entity_id'].isin(entity_ids)]
+                    
+                    cache_hit = True
+                else:
+                    logger.debug(f"YoY cache MISS: {previous_year} not in cached years {cached_years}")
+        
+        # If not in cache, query DB
+        if not cache_hit:
+            logger.debug(f"YoY querying DB for {prev_start} to {prev_end}")
+            try:
+                previous_df = queries.get_sales_data(
+                    start_date=prev_start,
+                    end_date=prev_end,
+                    kpi_center_ids=kpi_center_ids if kpi_center_ids else None,
+                    entity_ids=entity_ids if entity_ids else None
+                )
+            except Exception as e:
+                logger.error(f"Error querying previous year data: {e}")
+                previous_df = pd.DataFrame()
+        
+        # Exclude internal revenue if requested
+        if exclude_internal:
+            if not current_df.empty and 'customer_type' in current_df.columns:
+                current_df = current_df[current_df['customer_type'] != 'Internal']
+            if not previous_df.empty and 'customer_type' in previous_df.columns:
+                previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+        
+        return current_df, previous_df
+    
+    try:
+        current_df, previous_df = get_yoy_data_from_cache_or_query()
     except Exception as e:
         logger.error(f"Error loading YoY data: {e}")
         st.error(f"Failed to load comparison data: {e}")

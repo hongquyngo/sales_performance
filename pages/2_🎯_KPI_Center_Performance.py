@@ -607,6 +607,7 @@ def main():
                 filter_values=active_filters,
                 current_year=active_filters['year'],
                 sales_df=sales_df,
+                raw_cached_data=st.session_state.get('_kpc_raw_cached_data'),  # NEW
                 fragment_key="kpc_yoy"
             )
             

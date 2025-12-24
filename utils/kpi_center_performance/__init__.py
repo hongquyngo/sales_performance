@@ -4,8 +4,13 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 2.3.0
+VERSION: 2.5.0
 CHANGELOG:
+- v2.5.0: BUGFIX - YoY comparison showing $0 for previous year:
+          - fragments.py: Fixed closure bug in yoy_comparison_fragment
+          - fragments.py: Now uses raw_cached_data first before querying DB
+          - Main page: Pass raw_cached_data to yoy_comparison_fragment
+          - Main page: load_lookup_data() now queries from unified_sales_by_kpi_center_view
 - v2.3.0: Phase 3 - Pareto Analysis:
           - charts.py: Added build_pareto_chart(), build_top_performers_chart(),
                        build_concentration_donut()
@@ -131,4 +136,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '2.3.0'
+__version__ = '2.5.0'
