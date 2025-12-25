@@ -10,8 +10,15 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.2.0
+VERSION: 2.6.0
 CHANGELOG:
+- v2.6.0: REFACTORED Complex KPIs to match Salesperson page logic:
+          - SYNCED product_key: COALESCE(CAST(product_id AS CHAR), legacy_code)
+          - FIXED New Business combo scope: Global (not per KPI Center)
+          - ADDED weighted counting: Returns split_rate_percent for fractional credit
+          - ADDED deduplication: GROUP BY (kpi_center, entity) before counting
+          - ADDED customer_code to new_customers_detail for display
+          - UPDATED calculate_complex_kpi_value() to use weighted counting
 - v2.2.0: Added helper methods for Phase 2:
           - calculate_complex_kpi_value(): Single complex KPI calculator
           - get_kpi_center_achievement_summary(): Achievement comparison data
@@ -694,12 +701,22 @@ class KPICenterQueries:
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Get count of NEW CUSTOMERS by KPI Center.
+        Get NEW CUSTOMERS by KPI Center with weighted counting support.
         
-        A customer is "new to company" if their first invoice (across ALL KPI Centers)
-        within the lookback period falls within the selected date range.
+        REFACTORED v2.6.0 to match Salesperson page logic:
+        - A customer is "new to COMPANY" if their first invoice (globally, ANY KPI Center)
+          within the 5-year lookback falls within the selected period
+        - Credit goes to KPI Centers that made first-day sales
+        - Returns individual records with split_rate_percent for weighted counting
+        - Deduplicates per (customer_id, kpi_center_id) combo
         
-        Credit goes to ALL KPI Centers that sold to the customer on their first day.
+        Returns:
+            DataFrame with: customer_id, customer_code, customer, kpi_center_id, 
+                           kpi_center, split_rate_percent, first_invoice_date
+                           
+        Usage for weighted count:
+            df = queries.get_new_customers(start_date, end_date)
+            weighted_count = df['split_rate_percent'].sum() / 100
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -721,43 +738,58 @@ class KPICenterQueries:
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
         query = """
-            WITH customer_first_sale AS (
-                -- Find each customer's first sale date (company-wide)
+            WITH first_customer_date AS (
+                -- Step 1: Find first invoice date for each customer (GLOBALLY - any KPI Center)
                 SELECT 
                     customer_id,
-                    MIN(inv_date) AS first_sale_date
+                    MIN(inv_date) AS first_invoice_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
                   AND customer_id IS NOT NULL
                 GROUP BY customer_id
             ),
-            new_customers_in_period AS (
-                -- Customers whose first sale falls within selected period
-                SELECT customer_id, first_sale_date
-                FROM customer_first_sale
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            first_day_records AS (
+                -- Step 2: Get all records from first invoice date
+                SELECT 
+                    u.customer_id,
+                    u.customer_code,
+                    u.customer,
+                    u.kpi_center_id,
+                    u.kpi_center,
+                    u.split_rate_percent,
+                    fcd.first_invoice_date
+                FROM first_customer_date fcd
+                JOIN unified_sales_by_kpi_center_view u 
+                    ON fcd.customer_id = u.customer_id 
+                    AND u.inv_date = fcd.first_invoice_date
             ),
-            kpi_center_credit AS (
-                -- Credit KPI centers that sold to new customers on first day
-                SELECT DISTINCT
-                    s.kpi_center_id,
-                    s.kpi_center,
-                    nc.customer_id,
-                    s.customer
-                FROM unified_sales_by_kpi_center_view s
-                INNER JOIN new_customers_in_period nc 
-                    ON s.customer_id = nc.customer_id 
-                    AND s.inv_date = nc.first_sale_date
-                WHERE s.kpi_center_id IN :kpi_center_ids
+            deduplicated AS (
+                -- Step 3: Deduplicate per (customer_id, kpi_center_id) combo
+                -- Each combo counted once, use MAX to get non-null values
+                SELECT 
+                    customer_id,
+                    MAX(customer_code) AS customer_code,
+                    MAX(customer) AS customer,
+                    kpi_center_id,
+                    MAX(kpi_center) AS kpi_center,
+                    MAX(split_rate_percent) AS split_rate_percent,
+                    first_invoice_date
+                FROM first_day_records
+                GROUP BY customer_id, kpi_center_id, first_invoice_date
             )
+            -- Step 4: Filter by period and selected KPI Centers
             SELECT 
+                customer_id,
+                customer_code,
+                customer,
                 kpi_center_id,
                 kpi_center,
-                COUNT(DISTINCT customer_id) AS num_new_customers,
-                GROUP_CONCAT(DISTINCT customer ORDER BY customer SEPARATOR ', ') AS new_customer_names
-            FROM kpi_center_credit
-            GROUP BY kpi_center_id, kpi_center
-            ORDER BY num_new_customers DESC
+                split_rate_percent,
+                first_invoice_date
+            FROM deduplicated
+            WHERE first_invoice_date BETWEEN :start_date AND :end_date
+              AND kpi_center_id IN :kpi_center_ids
+            ORDER BY first_invoice_date DESC
         """
         
         params = {
@@ -780,9 +812,12 @@ class KPICenterQueries:
         Get detailed list of NEW CUSTOMERS with first sale info.
         Used for popup drill-down.
         
+        UPDATED v2.6.0: Added split_rate_percent for display.
+        
         Returns:
-            DataFrame with: customer, customer_id, kpi_center, first_sale_date, 
-                           first_sale_revenue, first_sale_gp
+            DataFrame with: customer, customer_code, customer_id, kpi_center, 
+                           first_sale_date, split_rate_percent,
+                           first_day_revenue, first_day_gp, first_day_gp1
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -819,6 +854,7 @@ class KPICenterQueries:
                 s.kpi_center,
                 s.kpi_center_id,
                 nc.first_sale_date,
+                MAX(s.split_rate_percent) AS split_rate_percent,
                 SUM(s.sales_by_kpi_center_usd) AS first_day_revenue,
                 SUM(s.gross_profit_by_kpi_center_usd) AS first_day_gp,
                 SUM(s.gp1_by_kpi_center_usd) AS first_day_gp1
@@ -850,10 +886,23 @@ class KPICenterQueries:
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Get count of NEW PRODUCTS by KPI Center.
+        Get NEW PRODUCTS by KPI Center with weighted counting support.
         
-        A product is "new" if its first sale ever (to any customer, by any KPI Center)
-        within the lookback period falls within the selected date range.
+        REFACTORED v2.6.0 to match Salesperson page logic:
+        - A product is "new" if its first sale ever (to ANY customer, by ANY KPI Center)
+          within the 5-year lookback falls within the selected period
+        - SYNCED product_key: COALESCE(CAST(product_id AS CHAR), legacy_code)
+        - Credit goes to KPI Centers that made first-day sales
+        - Returns individual records with split_rate_percent for weighted counting
+        - Deduplicates per (product_key, kpi_center_id) combo
+        
+        Returns:
+            DataFrame with: product_id, product_pn, pt_code, legacy_code, brand,
+                           kpi_center_id, kpi_center, split_rate_percent, first_sale_date
+                           
+        Usage for weighted count:
+            df = queries.get_new_products(start_date, end_date)
+            weighted_count = df['split_rate_percent'].sum() / 100
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -874,41 +923,90 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # SYNCED v2.6.0: Use same product_key logic as Salesperson
         query = """
-            WITH product_first_sale AS (
+            WITH 
+            -- ================================================================
+            -- Step 1: Create unified product key and find first sale date
+            -- SYNCED: Priority product_id > legacy_code (same as Salesperson)
+            -- ================================================================
+            first_sale_by_product AS (
                 SELECT 
-                    COALESCE(product_id, pt_code) AS product_key,
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
                     MIN(inv_date) AS first_sale_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
-                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
-                GROUP BY COALESCE(product_id, pt_code)
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
-            new_products_in_period AS (
+            
+            -- ================================================================
+            -- Step 2: Filter to products with first sale in selected period
+            -- ================================================================
+            new_products AS (
                 SELECT product_key, first_sale_date
-                FROM product_first_sale
+                FROM first_sale_by_product
                 WHERE first_sale_date BETWEEN :start_date AND :end_date
             ),
-            kpi_center_credit AS (
-                SELECT DISTINCT
-                    s.kpi_center_id,
-                    s.kpi_center,
-                    np.product_key,
-                    s.product_pn
-                FROM unified_sales_by_kpi_center_view s
-                INNER JOIN new_products_in_period np 
-                    ON COALESCE(s.product_id, s.pt_code) = np.product_key
-                    AND s.inv_date = np.first_sale_date
-                WHERE s.kpi_center_id IN :kpi_center_ids
+            
+            -- ================================================================
+            -- Step 3: Get all sales records from first sale date
+            -- ================================================================
+            first_day_records AS (
+                SELECT 
+                    u.product_id,
+                    u.product_pn,
+                    u.pt_code,
+                    u.legacy_code,
+                    u.brand,
+                    u.kpi_center_id,
+                    u.kpi_center,
+                    u.split_rate_percent,
+                    np.first_sale_date
+                FROM new_products np
+                JOIN unified_sales_by_kpi_center_view u 
+                    ON COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = np.product_key
+                    AND u.inv_date = np.first_sale_date
+            ),
+            
+            -- ================================================================
+            -- Step 4: Deduplicate per (product_key, kpi_center_id) combo
+            -- ================================================================
+            deduplicated AS (
+                SELECT 
+                    MAX(product_id) AS product_id,
+                    MAX(product_pn) AS product_pn,
+                    MAX(pt_code) AS pt_code,
+                    MAX(legacy_code) AS legacy_code,
+                    MAX(brand) AS brand,
+                    kpi_center_id,
+                    MAX(kpi_center) AS kpi_center,
+                    MAX(split_rate_percent) AS split_rate_percent,
+                    first_sale_date,
+                    COALESCE(CAST(MAX(product_id) AS CHAR), MAX(legacy_code)) AS product_key
+                FROM first_day_records
+                GROUP BY 
+                    COALESCE(CAST(product_id AS CHAR), legacy_code),
+                    kpi_center_id, 
+                    first_sale_date
             )
+            
+            -- ================================================================
+            -- Step 5: Return results filtered by accessible KPI Centers
+            -- ================================================================
             SELECT 
+                product_id,
+                product_pn,
+                pt_code,
+                legacy_code,
+                brand,
                 kpi_center_id,
                 kpi_center,
-                COUNT(DISTINCT product_key) AS num_new_products,
-                GROUP_CONCAT(DISTINCT product_pn ORDER BY product_pn SEPARATOR ', ') AS new_product_names
-            FROM kpi_center_credit
-            GROUP BY kpi_center_id, kpi_center
-            ORDER BY num_new_products DESC
+                split_rate_percent,
+                first_sale_date
+            FROM deduplicated
+            WHERE kpi_center_id IN :kpi_center_ids
+            ORDER BY first_sale_date DESC
         """
         
         params = {
@@ -931,9 +1029,13 @@ class KPICenterQueries:
         Get detailed list of NEW PRODUCTS with first sale info.
         Used for popup drill-down.
         
+        UPDATED v2.6.0: 
+        - SYNCED product_key: COALESCE(CAST(product_id AS CHAR), legacy_code)
+        - Added split_rate_percent for display
+        
         Returns:
-            DataFrame with: product_pn, brand, kpi_center, first_sale_date,
-                           first_sale_revenue, first_sale_gp, first_customer
+            DataFrame with: product_pn, pt_code, brand, kpi_center, first_sale_date,
+                           first_customers, split_rate_percent, first_day_revenue, first_day_gp
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -948,15 +1050,16 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # SYNCED v2.6.0: Use same product_key logic as Salesperson
         query = """
             WITH product_first_sale AS (
                 SELECT 
-                    COALESCE(product_id, pt_code) AS product_key,
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
                     MIN(inv_date) AS first_sale_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
-                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
-                GROUP BY COALESCE(product_id, pt_code)
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             new_products_in_period AS (
                 SELECT product_key, first_sale_date
@@ -971,11 +1074,12 @@ class KPICenterQueries:
                 s.kpi_center_id,
                 np.first_sale_date,
                 GROUP_CONCAT(DISTINCT s.customer SEPARATOR ', ') AS first_customers,
+                MAX(s.split_rate_percent) AS split_rate_percent,
                 SUM(s.sales_by_kpi_center_usd) AS first_day_revenue,
                 SUM(s.gross_profit_by_kpi_center_usd) AS first_day_gp
             FROM unified_sales_by_kpi_center_view s
             INNER JOIN new_products_in_period np 
-                ON COALESCE(s.product_id, s.pt_code) = np.product_key
+                ON COALESCE(CAST(s.product_id AS CHAR), s.legacy_code) = np.product_key
                 AND s.inv_date = np.first_sale_date
             WHERE s.kpi_center_id IN :kpi_center_ids
             GROUP BY s.product_pn, s.pt_code, s.brand, 
@@ -1003,10 +1107,16 @@ class KPICenterQueries:
         """
         Get NEW BUSINESS REVENUE by KPI Center.
         
-        New business = revenue from customer-product combinations where the first sale
-        of that combo (within lookback) falls within the selected period.
+        REFACTORED v2.6.0 to match Salesperson page logic:
+        - CRITICAL FIX: Combo is now (customer_id, product_key) - GLOBAL, not per KPI Center
+        - New business = revenue from customer-product combinations where the first sale
+          of that combo (GLOBALLY - any KPI Center) falls within the selected period
+        - SYNCED product_key: COALESCE(CAST(product_id AS CHAR), legacy_code)
+        - Includes ALL revenue from new combos in the period, not just first day
         
-        Includes ALL revenue from new combos in the period, not just first day.
+        Returns:
+            DataFrame with: kpi_center_id, kpi_center, num_new_combos, 
+                           new_business_revenue, new_business_gp, new_business_gp1
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -1027,43 +1137,59 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # REFACTORED v2.6.0: Combo is GLOBAL (not per KPI Center)
         query = """
-            WITH combo_first_sale AS (
+            WITH 
+            -- ================================================================
+            -- Step 1: Find first sale date for each customer-product combo GLOBALLY
+            -- CRITICAL: Do NOT include kpi_center_id in GROUP BY
+            -- SYNCED: product_key uses same logic as Salesperson
+            -- ================================================================
+            first_combo_date AS (
                 SELECT 
                     customer_id,
-                    COALESCE(product_id, pt_code) AS product_key,
-                    kpi_center_id,
-                    MIN(inv_date) AS first_sale_date
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
+                    MIN(inv_date) AS first_combo_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
                   AND customer_id IS NOT NULL
-                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
-                GROUP BY customer_id, COALESCE(product_id, pt_code), kpi_center_id
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
+            
+            -- ================================================================
+            -- Step 2: Identify combos that are "new" (first sale within period)
+            -- ================================================================
             new_combos AS (
-                SELECT customer_id, product_key, kpi_center_id, first_sale_date
-                FROM combo_first_sale
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
+                SELECT customer_id, product_key, first_combo_date
+                FROM first_combo_date
+                WHERE first_combo_date BETWEEN :start_date AND :end_date
             ),
-            new_business_sales AS (
+            
+            -- ================================================================
+            -- Step 3: Get ALL revenue from new combos within period
+            -- (not just first day - includes repeat orders of new combos)
+            -- ================================================================
+            all_revenue_in_period AS (
                 SELECT 
-                    s.kpi_center_id,
-                    s.kpi_center,
-                    s.customer_id,
-                    s.customer,
-                    COALESCE(s.product_id, s.pt_code) AS product_key,
-                    s.product_pn,
-                    s.sales_by_kpi_center_usd,
-                    s.gross_profit_by_kpi_center_usd,
-                    s.gp1_by_kpi_center_usd
-                FROM unified_sales_by_kpi_center_view s
-                INNER JOIN new_combos nc 
-                    ON s.customer_id = nc.customer_id
-                    AND COALESCE(s.product_id, s.pt_code) = nc.product_key
-                    AND s.kpi_center_id = nc.kpi_center_id
-                WHERE s.inv_date BETWEEN :start_date AND :end_date
-                  AND s.kpi_center_id IN :kpi_center_ids
+                    u.kpi_center_id,
+                    u.kpi_center,
+                    u.customer_id,
+                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) AS product_key,
+                    u.sales_by_kpi_center_usd,
+                    u.gross_profit_by_kpi_center_usd,
+                    u.gp1_by_kpi_center_usd
+                FROM new_combos nc
+                JOIN unified_sales_by_kpi_center_view u 
+                    ON nc.customer_id = u.customer_id 
+                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
+                WHERE u.inv_date BETWEEN :start_date AND :end_date
+                  AND u.kpi_center_id IN :kpi_center_ids
             )
+            
+            -- ================================================================
+            -- Step 4: Aggregate by KPI Center
+            -- ================================================================
             SELECT 
                 kpi_center_id,
                 kpi_center,
@@ -1071,7 +1197,7 @@ class KPICenterQueries:
                 SUM(sales_by_kpi_center_usd) AS new_business_revenue,
                 SUM(gross_profit_by_kpi_center_usd) AS new_business_gp,
                 SUM(gp1_by_kpi_center_usd) AS new_business_gp1
-            FROM new_business_sales
+            FROM all_revenue_in_period
             GROUP BY kpi_center_id, kpi_center
             ORDER BY new_business_revenue DESC
         """
@@ -1096,9 +1222,15 @@ class KPICenterQueries:
         Get detailed NEW BUSINESS combos with revenue breakdown.
         Used for popup drill-down.
         
+        REFACTORED v2.6.0: 
+        - CRITICAL FIX: Combo is GLOBAL (not per KPI Center)
+        - SYNCED product_key: COALESCE(CAST(product_id AS CHAR), legacy_code)
+        - Added customer_code and split_rate_percent for display
+        
         Returns:
-            DataFrame with: customer, product_pn, brand, kpi_center,
-                           first_sale_date, period_revenue, period_gp
+            DataFrame with: customer, customer_code, product_pn, pt_code, brand,
+                           kpi_center, first_sale_date, split_rate_percent,
+                           period_revenue, period_gp, period_gp1, invoice_count
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -1113,46 +1245,82 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # REFACTORED v2.6.0: Combo is GLOBAL
         query = """
-            WITH combo_first_sale AS (
+            WITH 
+            -- ================================================================
+            -- Step 1: Find first sale date for each customer-product combo GLOBALLY
+            -- ================================================================
+            first_combo_date AS (
                 SELECT 
                     customer_id,
-                    COALESCE(product_id, pt_code) AS product_key,
-                    kpi_center_id,
-                    MIN(inv_date) AS first_sale_date
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
+                    MIN(inv_date) AS first_combo_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
                   AND customer_id IS NOT NULL
-                  AND (product_id IS NOT NULL OR pt_code IS NOT NULL)
-                GROUP BY customer_id, COALESCE(product_id, pt_code), kpi_center_id
+                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
+            
+            -- ================================================================
+            -- Step 2: Identify combos that are "new"
+            -- ================================================================
             new_combos AS (
-                SELECT customer_id, product_key, kpi_center_id, first_sale_date
-                FROM combo_first_sale
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
+                SELECT customer_id, product_key, first_combo_date
+                FROM first_combo_date
+                WHERE first_combo_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- ================================================================
+            -- Step 3: Get detailed revenue data for new combos
+            -- Aggregate by combo + kpi_center
+            -- ================================================================
+            combo_detail AS (
+                SELECT 
+                    u.customer_id,
+                    MAX(u.customer_code) AS customer_code,
+                    u.customer,
+                    MAX(u.product_id) AS product_id,
+                    MAX(u.product_pn) AS product_pn,
+                    MAX(u.pt_code) AS pt_code,
+                    MAX(u.brand) AS brand,
+                    u.kpi_center_id,
+                    MAX(u.kpi_center) AS kpi_center,
+                    MAX(u.split_rate_percent) AS split_rate_percent,
+                    nc.first_combo_date,
+                    SUM(u.sales_by_kpi_center_usd) AS period_revenue,
+                    SUM(u.gross_profit_by_kpi_center_usd) AS period_gp,
+                    SUM(u.gp1_by_kpi_center_usd) AS period_gp1,
+                    COUNT(DISTINCT u.inv_number) AS invoice_count
+                FROM new_combos nc
+                JOIN unified_sales_by_kpi_center_view u 
+                    ON nc.customer_id = u.customer_id 
+                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
+                WHERE u.inv_date BETWEEN :start_date AND :end_date
+                  AND u.kpi_center_id IN :kpi_center_ids
+                GROUP BY 
+                    u.customer_id, 
+                    u.customer,
+                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code),
+                    u.kpi_center_id,
+                    nc.first_combo_date
             )
+            
             SELECT 
-                s.customer,
-                s.customer_id,
-                s.product_pn,
-                s.pt_code,
-                s.brand,
-                s.kpi_center,
-                s.kpi_center_id,
-                nc.first_sale_date,
-                SUM(s.sales_by_kpi_center_usd) AS period_revenue,
-                SUM(s.gross_profit_by_kpi_center_usd) AS period_gp,
-                SUM(s.gp1_by_kpi_center_usd) AS period_gp1,
-                COUNT(DISTINCT s.inv_number) AS invoice_count
-            FROM unified_sales_by_kpi_center_view s
-            INNER JOIN new_combos nc 
-                ON s.customer_id = nc.customer_id
-                AND COALESCE(s.product_id, s.pt_code) = nc.product_key
-                AND s.kpi_center_id = nc.kpi_center_id
-            WHERE s.inv_date BETWEEN :start_date AND :end_date
-              AND s.kpi_center_id IN :kpi_center_ids
-            GROUP BY s.customer, s.customer_id, s.product_pn, s.pt_code, s.brand,
-                     s.kpi_center, s.kpi_center_id, nc.first_sale_date
+                customer,
+                customer_code,
+                product_pn,
+                pt_code,
+                brand,
+                kpi_center,
+                split_rate_percent,
+                first_combo_date AS first_sale_date,
+                period_revenue,
+                period_gp,
+                period_gp1,
+                invoice_count
+            FROM combo_detail
             ORDER BY period_revenue DESC
         """
         
@@ -1266,7 +1434,7 @@ class KPICenterQueries:
         return self._execute_query(query, params, "kpi_split_data")
     
     # =========================================================================
-    # COMPLEX KPI VALUE CALCULATOR - NEW v2.2.0
+    # COMPLEX KPI VALUE CALCULATOR - UPDATED v2.6.0
     # =========================================================================
     
     def calculate_complex_kpi_value(
@@ -1280,8 +1448,7 @@ class KPICenterQueries:
         """
         Calculate a single complex KPI value for specific KPI Centers.
         
-        This is a convenience method that calls the appropriate detail query
-        and returns a summary value.
+        UPDATED v2.6.0: Now uses weighted counting (split_rate_percent / 100).
         
         Args:
             kpi_type: One of 'new_customers', 'new_products', 'new_business'
@@ -1292,8 +1459,8 @@ class KPICenterQueries:
             
         Returns:
             Dict with:
-                - value: The calculated KPI value
-                - count: Number of items (customers/products/combos)
+                - value: The calculated KPI value (weighted count or revenue)
+                - count: Number of records
                 - detail_available: Whether detail data exists
         """
         if not self.access.can_access_page():
@@ -1318,12 +1485,12 @@ class KPICenterQueries:
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
                 
-                count = int(df['num_new_customers'].sum())
+                # UPDATED v2.6.0: Weighted count = sum(split_rate_percent) / 100
+                weighted_count = df['split_rate_percent'].fillna(100).sum() / 100
                 return {
-                    'value': count,
-                    'count': count,
-                    'detail_available': True,
-                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_customers']].to_dict('records')
+                    'value': weighted_count,
+                    'count': len(df),
+                    'detail_available': True
                 }
             
             elif kpi_type == 'new_products':
@@ -1336,12 +1503,12 @@ class KPICenterQueries:
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
                 
-                count = int(df['num_new_products'].sum())
+                # UPDATED v2.6.0: Weighted count = sum(split_rate_percent) / 100
+                weighted_count = df['split_rate_percent'].fillna(100).sum() / 100
                 return {
-                    'value': count,
-                    'count': count,
-                    'detail_available': True,
-                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_products']].to_dict('records')
+                    'value': weighted_count,
+                    'count': len(df),
+                    'detail_available': True
                 }
             
             elif kpi_type == 'new_business':

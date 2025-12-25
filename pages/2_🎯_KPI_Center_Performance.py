@@ -2,8 +2,12 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.5.1
+VERSION: 2.6.0
 CHANGELOG:
+- v2.6.0: REFACTORED Complex KPIs to match Salesperson page logic:
+          - Added calculate_weighted_count() helper function
+          - complex_kpis now uses weighted counting: sum(split_rate_percent) / 100
+          - Requires updated queries.py and charts.py v2.6.0
 - v2.5.1: BUGFIX - kpi_type_filter now works in filter_data_client_side()
           - Removed debug print statements from fragments.py
 - v2.4.0: SYNCED UI with Salesperson Performance page:
@@ -90,6 +94,31 @@ def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
     
     return df_clean
+
+
+def calculate_weighted_count(df: pd.DataFrame, split_col: str = 'split_rate_percent') -> float:
+    """
+    Calculate weighted count from split percentages.
+    
+    NEW v2.6.0: Matches Salesperson page logic where:
+    - Each record represents a (entity, item) combo
+    - The count is weighted by split_rate_percent / 100
+    - Example: If KPI Center has 50% split on a new customer, they get 0.5 credit
+    
+    Args:
+        df: DataFrame with individual records (from get_new_customers/get_new_products)
+        split_col: Column containing split percentage (default: 'split_rate_percent')
+        
+    Returns:
+        Weighted count (float). Formula: sum(split_rate_percent) / 100
+    """
+    if df.empty:
+        return 0.0
+    if split_col not in df.columns:
+        # If no split column, count each row as 1.0
+        return float(len(df))
+    # Sum of (split_rate_percent / 100), treating NULL as 100%
+    return df[split_col].fillna(100).sum() / 100
 
 
 # =============================================================================
@@ -602,10 +631,21 @@ def main():
         end_date=active_filters['end_date']
     )
     
+    # =========================================================================
+    # COMPLEX KPIs - UPDATED v2.6.0: Use weighted counting
+    # =========================================================================
+    # Get DataFrames for complex KPIs
+    new_customers_df = data.get('new_customers_df', pd.DataFrame())
+    new_products_df = data.get('new_products_df', pd.DataFrame())
+    new_business_df = data.get('new_business_df', pd.DataFrame())
+    
     complex_kpis = {
-        'num_new_customers': data['new_customers_df']['num_new_customers'].sum() if not data.get('new_customers_df', pd.DataFrame()).empty else 0,
-        'num_new_products': data['new_products_df']['num_new_products'].sum() if not data.get('new_products_df', pd.DataFrame()).empty else 0,
-        'new_business_revenue': data['new_business_df']['new_business_revenue'].sum() if not data.get('new_business_df', pd.DataFrame()).empty else 0,
+        # Weighted count: sum(split_rate_percent) / 100
+        # This matches Salesperson page logic
+        'num_new_customers': calculate_weighted_count(new_customers_df),
+        'num_new_products': calculate_weighted_count(new_products_df),
+        # Revenue is still a direct sum (unchanged)
+        'new_business_revenue': new_business_df['new_business_revenue'].sum() if not new_business_df.empty else 0,
     }
     
     pipeline_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
