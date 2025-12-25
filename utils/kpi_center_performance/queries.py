@@ -10,8 +10,15 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.6.1
+VERSION: 2.7.0
 CHANGELOG:
+- v2.7.0: FIXED Double Counting & New Business Revenue calculation:
+          - Issue #1: Added `selected_kpi_types` parameter to detect single vs multiple types
+            * Single type selected → Full credit for that type
+            * Multiple types selected → Deduplicate per entity to avoid double counting
+          - Issue #2: Changed MAX() to SUM() in get_new_business_revenue()
+            * Now correctly sums all revenue from new combos within period
+            * Fixed get_new_business_detail() similarly
 - v2.6.1: REFACTORED Complex KPIs with GLOBAL scope (Option B):
           - New Customer: customer_id only, global across all KPI Centers
           - New Product: product_id only, global across all KPI Centers
@@ -702,7 +709,8 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        include_children: bool = True
+        include_children: bool = True,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get NEW CUSTOMERS with GLOBAL scope.
@@ -713,10 +721,20 @@ class KPICenterQueries:
         Returns individual records with split_rate_percent for weighted counting.
         Weighted count = sum(split_rate_percent) / 100
         
-        UPDATED v2.6.1:
-        - Returns individual (customer_id, kpi_center_id) records
-        - Added split_rate_percent for weighted counting
-        - Added customer_code for display
+        UPDATED v2.7.0:
+        - Added `selected_kpi_types` parameter for double-counting prevention
+        - Single type selected → Returns per (customer_id, kpi_center_id) for full credit
+        - Multiple types selected → Deduplicates per customer_id to avoid double counting
+        
+        Args:
+            start_date: Period start date
+            end_date: Period end date
+            kpi_center_ids: List of KPI Center IDs to filter
+            entity_ids: List of entity IDs to filter (not used currently)
+            include_children: Include child KPI Centers
+            selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
+                               If None or single type → no deduplication across types
+                               If multiple types → deduplicate per customer_id
         
         Returns:
             DataFrame with: customer_id, customer_code, customer, kpi_center_id, 
@@ -741,79 +759,162 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
-            WITH 
-            -- ================================================================
-            -- Step 1: Find first invoice date for each customer (GLOBALLY)
-            -- No kpi_center_id in GROUP BY = company-wide first sale
-            -- ================================================================
-            customer_first_sale AS (
+        # Determine if we need to deduplicate across types
+        # Multiple types selected → dedupe per customer_id to avoid double counting
+        dedupe_across_types = selected_kpi_types and len(selected_kpi_types) > 1
+        
+        if dedupe_across_types:
+            # MULTIPLE TYPES: Deduplicate per customer_id (count each customer only once)
+            query = """
+                WITH 
+                -- ================================================================
+                -- Step 1: Find first invoice date for each customer (GLOBALLY)
+                -- ================================================================
+                customer_first_sale AS (
+                    SELECT 
+                        customer_id,
+                        MIN(inv_date) AS first_sale_date
+                    FROM unified_sales_by_kpi_center_view
+                    WHERE inv_date >= :lookback_start
+                      AND customer_id IS NOT NULL
+                    GROUP BY customer_id
+                ),
+                
+                -- ================================================================
+                -- Step 2: Filter to customers with first sale in selected period
+                -- ================================================================
+                new_customers AS (
+                    SELECT customer_id, first_sale_date
+                    FROM customer_first_sale
+                    WHERE first_sale_date BETWEEN :start_date AND :end_date
+                ),
+                
+                -- ================================================================
+                -- Step 3: Get all records from first sale date
+                -- ================================================================
+                first_day_records AS (
+                    SELECT 
+                        s.customer_id,
+                        s.customer_code,
+                        s.customer,
+                        s.kpi_center_id,
+                        s.kpi_center,
+                        s.kpi_type,
+                        s.split_rate_percent,
+                        nc.first_sale_date
+                    FROM new_customers nc
+                    JOIN unified_sales_by_kpi_center_view s
+                        ON nc.customer_id = s.customer_id
+                        AND s.inv_date = nc.first_sale_date
+                    WHERE s.kpi_center_id IN :kpi_center_ids
+                ),
+                
+                -- ================================================================
+                -- Step 4: DEDUPLICATE per customer_id (NOT per kpi_center_id)
+                -- When multiple types selected, count each customer only ONCE
+                -- Concatenate KPI Centers for display
+                -- ================================================================
+                deduplicated AS (
+                    SELECT 
+                        customer_id,
+                        MAX(customer_code) AS customer_code,
+                        MAX(customer) AS customer,
+                        -- Use MIN kpi_center_id for consistency (or could use any)
+                        MIN(kpi_center_id) AS kpi_center_id,
+                        GROUP_CONCAT(DISTINCT kpi_center ORDER BY kpi_center SEPARATOR ', ') AS kpi_center,
+                        -- For weighted count: use 100% since we're counting once per customer
+                        100.0 AS split_rate_percent,
+                        first_sale_date
+                    FROM first_day_records
+                    GROUP BY customer_id, first_sale_date
+                )
+                
                 SELECT 
                     customer_id,
-                    MIN(inv_date) AS first_sale_date
-                FROM unified_sales_by_kpi_center_view
-                WHERE inv_date >= :lookback_start
-                  AND customer_id IS NOT NULL
-                GROUP BY customer_id
-            ),
-            
-            -- ================================================================
-            -- Step 2: Filter to customers with first sale in selected period
-            -- ================================================================
-            new_customers AS (
-                SELECT customer_id, first_sale_date
-                FROM customer_first_sale
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
-            ),
-            
-            -- ================================================================
-            -- Step 3: Get all records from first sale date
-            -- Credit ALL KPI Centers that sold on first day
-            -- ================================================================
-            first_day_records AS (
-                SELECT 
-                    s.customer_id,
-                    s.customer_code,
-                    s.customer,
-                    s.kpi_center_id,
-                    s.kpi_center,
-                    s.split_rate_percent,
-                    nc.first_sale_date
-                FROM new_customers nc
-                JOIN unified_sales_by_kpi_center_view s
-                    ON nc.customer_id = s.customer_id
-                    AND s.inv_date = nc.first_sale_date
-                WHERE s.kpi_center_id IN :kpi_center_ids
-            ),
-            
-            -- ================================================================
-            -- Step 4: Deduplicate per (customer_id, kpi_center_id)
-            -- Each combo counted once even if multiple invoice lines
-            -- ================================================================
-            deduplicated AS (
-                SELECT 
-                    customer_id,
-                    MAX(customer_code) AS customer_code,
-                    MAX(customer) AS customer,
+                    customer_code,
+                    customer,
                     kpi_center_id,
-                    MAX(kpi_center) AS kpi_center,
-                    MAX(split_rate_percent) AS split_rate_percent,
+                    kpi_center,
+                    split_rate_percent,
                     first_sale_date
-                FROM first_day_records
-                GROUP BY customer_id, kpi_center_id, first_sale_date
-            )
-            
-            SELECT 
-                customer_id,
-                customer_code,
-                customer,
-                kpi_center_id,
-                kpi_center,
-                split_rate_percent,
-                first_sale_date
-            FROM deduplicated
-            ORDER BY first_sale_date DESC, customer
-        """
+                FROM deduplicated
+                ORDER BY first_sale_date DESC, customer
+            """
+        else:
+            # SINGLE TYPE: Keep per (customer_id, kpi_center_id) for full credit
+            query = """
+                WITH 
+                -- ================================================================
+                -- Step 1: Find first invoice date for each customer (GLOBALLY)
+                -- No kpi_center_id in GROUP BY = company-wide first sale
+                -- ================================================================
+                customer_first_sale AS (
+                    SELECT 
+                        customer_id,
+                        MIN(inv_date) AS first_sale_date
+                    FROM unified_sales_by_kpi_center_view
+                    WHERE inv_date >= :lookback_start
+                      AND customer_id IS NOT NULL
+                    GROUP BY customer_id
+                ),
+                
+                -- ================================================================
+                -- Step 2: Filter to customers with first sale in selected period
+                -- ================================================================
+                new_customers AS (
+                    SELECT customer_id, first_sale_date
+                    FROM customer_first_sale
+                    WHERE first_sale_date BETWEEN :start_date AND :end_date
+                ),
+                
+                -- ================================================================
+                -- Step 3: Get all records from first sale date
+                -- Credit ALL KPI Centers that sold on first day
+                -- ================================================================
+                first_day_records AS (
+                    SELECT 
+                        s.customer_id,
+                        s.customer_code,
+                        s.customer,
+                        s.kpi_center_id,
+                        s.kpi_center,
+                        s.split_rate_percent,
+                        nc.first_sale_date
+                    FROM new_customers nc
+                    JOIN unified_sales_by_kpi_center_view s
+                        ON nc.customer_id = s.customer_id
+                        AND s.inv_date = nc.first_sale_date
+                    WHERE s.kpi_center_id IN :kpi_center_ids
+                ),
+                
+                -- ================================================================
+                -- Step 4: Deduplicate per (customer_id, kpi_center_id)
+                -- Each combo counted once even if multiple invoice lines
+                -- ================================================================
+                deduplicated AS (
+                    SELECT 
+                        customer_id,
+                        MAX(customer_code) AS customer_code,
+                        MAX(customer) AS customer,
+                        kpi_center_id,
+                        MAX(kpi_center) AS kpi_center,
+                        MAX(split_rate_percent) AS split_rate_percent,
+                        first_sale_date
+                    FROM first_day_records
+                    GROUP BY customer_id, kpi_center_id, first_sale_date
+                )
+                
+                SELECT 
+                    customer_id,
+                    customer_code,
+                    customer,
+                    kpi_center_id,
+                    kpi_center,
+                    split_rate_percent,
+                    first_sale_date
+                FROM deduplicated
+                ORDER BY first_sale_date DESC, customer
+            """
         
         params = {
             'lookback_start': lookback_start,
@@ -928,7 +1029,8 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        include_children: bool = True
+        include_children: bool = True,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get NEW PRODUCTS with GLOBAL scope.
@@ -938,10 +1040,20 @@ class KPICenterQueries:
         
         Uses only product_id as identifier (no fallback to legacy_code/pt_code).
         
-        UPDATED v2.6.1:
-        - Uses product_id only (ignores records with NULL product_id)
-        - Global scope: same product sold by different KPI Centers = same product
-        - Returns individual records with split_rate_percent for weighted counting
+        UPDATED v2.7.0:
+        - Added `selected_kpi_types` parameter for double-counting prevention
+        - Single type selected → Returns per (product_id, kpi_center_id) for full credit
+        - Multiple types selected → Deduplicates per product_id to avoid double counting
+        
+        Args:
+            start_date: Period start date
+            end_date: Period end date
+            kpi_center_ids: List of KPI Center IDs to filter
+            entity_ids: List of entity IDs to filter (not used currently)
+            include_children: Include child KPI Centers
+            selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
+                               If None or single type → no deduplication across types
+                               If multiple types → deduplicate per product_id
         
         Returns:
             DataFrame with: product_id, product_pn, pt_code, brand, kpi_center_id,
@@ -966,82 +1078,166 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
-            WITH 
-            -- ================================================================
-            -- Step 1: Find first sale date for each product (GLOBALLY)
-            -- Uses product_id only - no fallback to legacy_code/pt_code
-            -- ================================================================
-            product_first_sale AS (
+        # Determine if we need to deduplicate across types
+        dedupe_across_types = selected_kpi_types and len(selected_kpi_types) > 1
+        
+        if dedupe_across_types:
+            # MULTIPLE TYPES: Deduplicate per product_id (count each product only once)
+            query = """
+                WITH 
+                -- ================================================================
+                -- Step 1: Find first sale date for each product (GLOBALLY)
+                -- ================================================================
+                product_first_sale AS (
+                    SELECT 
+                        product_id,
+                        MIN(inv_date) AS first_sale_date
+                    FROM unified_sales_by_kpi_center_view
+                    WHERE inv_date >= :lookback_start
+                      AND product_id IS NOT NULL
+                    GROUP BY product_id
+                ),
+                
+                -- ================================================================
+                -- Step 2: Filter to products with first sale in selected period
+                -- ================================================================
+                new_products AS (
+                    SELECT product_id, first_sale_date
+                    FROM product_first_sale
+                    WHERE first_sale_date BETWEEN :start_date AND :end_date
+                ),
+                
+                -- ================================================================
+                -- Step 3: Get all records from first sale date
+                -- ================================================================
+                first_day_records AS (
+                    SELECT 
+                        s.product_id,
+                        s.product_pn,
+                        s.pt_code,
+                        s.brand,
+                        s.kpi_center_id,
+                        s.kpi_center,
+                        s.kpi_type,
+                        s.split_rate_percent,
+                        np.first_sale_date
+                    FROM new_products np
+                    JOIN unified_sales_by_kpi_center_view s
+                        ON np.product_id = s.product_id
+                        AND s.inv_date = np.first_sale_date
+                    WHERE s.kpi_center_id IN :kpi_center_ids
+                      AND s.product_id IS NOT NULL
+                ),
+                
+                -- ================================================================
+                -- Step 4: DEDUPLICATE per product_id (NOT per kpi_center_id)
+                -- When multiple types selected, count each product only ONCE
+                -- ================================================================
+                deduplicated AS (
+                    SELECT 
+                        product_id,
+                        MAX(product_pn) AS product_pn,
+                        MAX(pt_code) AS pt_code,
+                        MAX(brand) AS brand,
+                        MIN(kpi_center_id) AS kpi_center_id,
+                        GROUP_CONCAT(DISTINCT kpi_center ORDER BY kpi_center SEPARATOR ', ') AS kpi_center,
+                        -- For weighted count: use 100% since we're counting once per product
+                        100.0 AS split_rate_percent,
+                        first_sale_date
+                    FROM first_day_records
+                    GROUP BY product_id, first_sale_date
+                )
+                
                 SELECT 
                     product_id,
-                    MIN(inv_date) AS first_sale_date
-                FROM unified_sales_by_kpi_center_view
-                WHERE inv_date >= :lookback_start
-                  AND product_id IS NOT NULL
-                GROUP BY product_id
-            ),
-            
-            -- ================================================================
-            -- Step 2: Filter to products with first sale in selected period
-            -- ================================================================
-            new_products AS (
-                SELECT product_id, first_sale_date
-                FROM product_first_sale
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
-            ),
-            
-            -- ================================================================
-            -- Step 3: Get all records from first sale date
-            -- Credit ALL KPI Centers that sold on first day
-            -- ================================================================
-            first_day_records AS (
-                SELECT 
-                    s.product_id,
-                    s.product_pn,
-                    s.pt_code,
-                    s.brand,
-                    s.kpi_center_id,
-                    s.kpi_center,
-                    s.split_rate_percent,
-                    np.first_sale_date
-                FROM new_products np
-                JOIN unified_sales_by_kpi_center_view s
-                    ON np.product_id = s.product_id
-                    AND s.inv_date = np.first_sale_date
-                WHERE s.kpi_center_id IN :kpi_center_ids
-                  AND s.product_id IS NOT NULL
-            ),
-            
-            -- ================================================================
-            -- Step 4: Deduplicate per (product_id, kpi_center_id)
-            -- ================================================================
-            deduplicated AS (
-                SELECT 
-                    product_id,
-                    MAX(product_pn) AS product_pn,
-                    MAX(pt_code) AS pt_code,
-                    MAX(brand) AS brand,
+                    product_pn,
+                    pt_code,
+                    brand,
                     kpi_center_id,
-                    MAX(kpi_center) AS kpi_center,
-                    MAX(split_rate_percent) AS split_rate_percent,
+                    kpi_center,
+                    split_rate_percent,
                     first_sale_date
-                FROM first_day_records
-                GROUP BY product_id, kpi_center_id, first_sale_date
-            )
-            
-            SELECT 
-                product_id,
-                product_pn,
-                pt_code,
-                brand,
-                kpi_center_id,
-                kpi_center,
-                split_rate_percent,
-                first_sale_date
-            FROM deduplicated
-            ORDER BY first_sale_date DESC, product_pn
-        """
+                FROM deduplicated
+                ORDER BY first_sale_date DESC, product_pn
+            """
+        else:
+            # SINGLE TYPE: Keep per (product_id, kpi_center_id) for full credit
+            query = """
+                WITH 
+                -- ================================================================
+                -- Step 1: Find first sale date for each product (GLOBALLY)
+                -- Uses product_id only - no fallback to legacy_code/pt_code
+                -- ================================================================
+                product_first_sale AS (
+                    SELECT 
+                        product_id,
+                        MIN(inv_date) AS first_sale_date
+                    FROM unified_sales_by_kpi_center_view
+                    WHERE inv_date >= :lookback_start
+                      AND product_id IS NOT NULL
+                    GROUP BY product_id
+                ),
+                
+                -- ================================================================
+                -- Step 2: Filter to products with first sale in selected period
+                -- ================================================================
+                new_products AS (
+                    SELECT product_id, first_sale_date
+                    FROM product_first_sale
+                    WHERE first_sale_date BETWEEN :start_date AND :end_date
+                ),
+                
+                -- ================================================================
+                -- Step 3: Get all records from first sale date
+                -- Credit ALL KPI Centers that sold on first day
+                -- ================================================================
+                first_day_records AS (
+                    SELECT 
+                        s.product_id,
+                        s.product_pn,
+                        s.pt_code,
+                        s.brand,
+                        s.kpi_center_id,
+                        s.kpi_center,
+                        s.split_rate_percent,
+                        np.first_sale_date
+                    FROM new_products np
+                    JOIN unified_sales_by_kpi_center_view s
+                        ON np.product_id = s.product_id
+                        AND s.inv_date = np.first_sale_date
+                    WHERE s.kpi_center_id IN :kpi_center_ids
+                      AND s.product_id IS NOT NULL
+                ),
+                
+                -- ================================================================
+                -- Step 4: Deduplicate per (product_id, kpi_center_id)
+                -- ================================================================
+                deduplicated AS (
+                    SELECT 
+                        product_id,
+                        MAX(product_pn) AS product_pn,
+                        MAX(pt_code) AS pt_code,
+                        MAX(brand) AS brand,
+                        kpi_center_id,
+                        MAX(kpi_center) AS kpi_center,
+                        MAX(split_rate_percent) AS split_rate_percent,
+                        first_sale_date
+                    FROM first_day_records
+                    GROUP BY product_id, kpi_center_id, first_sale_date
+                )
+                
+                SELECT 
+                    product_id,
+                    product_pn,
+                    pt_code,
+                    brand,
+                    kpi_center_id,
+                    kpi_center,
+                    split_rate_percent,
+                    first_sale_date
+                FROM deduplicated
+                ORDER BY first_sale_date DESC, product_pn
+            """
         
         params = {
             'lookback_start': lookback_start,
@@ -1156,14 +1352,16 @@ class KPICenterQueries:
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get new business revenue - first-time customer-product combinations.
         
         FIXED v2.7.0:
-        - Deduplicate per combo to avoid double counting when multiple KPI types selected
-        - When same combo sold by Territory + Vertical, count only ONCE
+        - Changed MAX() to SUM() to correctly aggregate all revenue from new combos
+        - Added `selected_kpi_types` for consistency (though New Business Revenue
+          already deduplicates per combo by design)
         
         Returns:
             DataFrame with: num_new_combos, new_business_revenue, new_business_gp, new_business_gp1
@@ -1231,17 +1429,17 @@ class KPICenterQueries:
             ),
             
             -- ================================================================
-            -- Step 4: FIXED - Deduplicate per combo
+            -- Step 4: FIXED - Deduplicate per combo & SUM revenue
             -- When same combo sold by multiple KPI Centers (Territory + Vertical),
-            -- count only ONCE to avoid double counting
+            -- count only ONCE but SUM all revenue within the combo
             -- ================================================================
             combo_deduplicated AS (
                 SELECT 
                     customer_id,
                     product_id,
-                    MAX(sales_by_kpi_center_usd) AS combo_revenue,
-                    MAX(gross_profit_by_kpi_center_usd) AS combo_gp,
-                    MAX(gp1_by_kpi_center_usd) AS combo_gp1
+                    SUM(sales_by_kpi_center_usd) AS combo_revenue,
+                    SUM(gross_profit_by_kpi_center_usd) AS combo_gp,
+                    SUM(gp1_by_kpi_center_usd) AS combo_gp1
                 FROM new_business_sales
                 GROUP BY customer_id, product_id
             )
@@ -1272,14 +1470,15 @@ class KPICenterQueries:
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get detailed NEW BUSINESS combos with revenue breakdown.
         Used for popup drill-down.
         
         FIXED v2.7.0:
-        - Deduplicate per combo to avoid double counting
+        - Changed MAX() to SUM() for revenue aggregation
         - GROUP_CONCAT KPI Centers for display (shows all assigned KPI Centers)
         
         Returns:
@@ -1348,7 +1547,7 @@ class KPICenterQueries:
             )
             
             -- ================================================================
-            -- FIXED: Deduplicate per combo, GROUP_CONCAT KPI Centers
+            -- FIXED: Deduplicate per combo, GROUP_CONCAT KPI Centers, SUM revenue
             -- ================================================================
             SELECT 
                 customer_id,
@@ -1362,9 +1561,9 @@ class KPICenterQueries:
                 GROUP_CONCAT(DISTINCT kpi_center ORDER BY kpi_center SEPARATOR ', ') AS kpi_center,
                 MAX(split_rate_percent) AS split_rate_percent,
                 MAX(first_sale_date) AS first_sale_date,
-                -- Revenue is same across KPI Centers, just take MAX
-                MAX(sales_by_kpi_center_usd) AS new_business_revenue,
-                MAX(gross_profit_by_kpi_center_usd) AS new_business_gp
+                -- FIXED: SUM all revenue within the combo (not MAX)
+                SUM(sales_by_kpi_center_usd) AS new_business_revenue,
+                SUM(gross_profit_by_kpi_center_usd) AS new_business_gp
             FROM new_business_sales
             GROUP BY customer_id, product_id
             ORDER BY new_business_revenue DESC
@@ -1490,13 +1689,15 @@ class KPICenterQueries:
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None
     ) -> dict:
         """
         Calculate value for a complex KPI type.
         
-        UPDATED v2.6.1: Uses weighted counting for new_customers and new_products.
-        Weighted count = sum(split_rate_percent) / 100
+        UPDATED v2.7.0: Added selected_kpi_types parameter for double-counting prevention.
+        - Single type selected → Full credit for that type
+        - Multiple types selected → Deduplicate per entity to avoid double counting
         
         Args:
             kpi_type: 'new_customers', 'new_products', or 'new_business'
@@ -1504,6 +1705,7 @@ class KPICenterQueries:
             end_date: Period end
             kpi_center_ids: Optional list of KPI Center IDs
             entity_ids: Optional list of entity IDs (for filtering)
+            selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
             
         Returns:
             dict with: value, count, detail_available, by_kpi_center
@@ -1514,13 +1716,13 @@ class KPICenterQueries:
                     start_date=start_date,
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
-                    entity_ids=entity_ids
+                    entity_ids=entity_ids,
+                    selected_kpi_types=selected_kpi_types
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
                 
-                # UPDATED v2.6.1: Weighted counting
-                # Each record has split_rate_percent, sum them / 100
+                # Weighted counting: sum(split_rate_percent) / 100
                 weighted_count = df['split_rate_percent'].fillna(100).sum() / 100
                 
                 # Aggregate by KPI Center for detail
@@ -1541,12 +1743,13 @@ class KPICenterQueries:
                     start_date=start_date,
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
-                    entity_ids=entity_ids
+                    entity_ids=entity_ids,
+                    selected_kpi_types=selected_kpi_types
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
                 
-                # UPDATED v2.6.1: Weighted counting
+                # Weighted counting: sum(split_rate_percent) / 100
                 weighted_count = df['split_rate_percent'].fillna(100).sum() / 100
                 
                 # Aggregate by KPI Center for detail
@@ -1567,7 +1770,8 @@ class KPICenterQueries:
                     start_date=start_date,
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
-                    entity_ids=entity_ids
+                    entity_ids=entity_ids,
+                    selected_kpi_types=selected_kpi_types
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
@@ -1578,7 +1782,7 @@ class KPICenterQueries:
                     'value': total_revenue,
                     'count': total_combos,
                     'detail_available': True,
-                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_combos', 'new_business_revenue']].to_dict('records')
+                    'by_kpi_center': df[['kpi_center_id', 'kpi_center', 'num_new_combos', 'new_business_revenue']].to_dict('records') if 'kpi_center_id' in df.columns else []
                 }
             
             else:

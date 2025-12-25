@@ -2,8 +2,16 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.6.0
+VERSION: 2.7.0
 CHANGELOG:
+- v2.7.0: FIXED Double Counting & New Business Revenue:
+          - Issue #1: Added get_selected_kpi_types() helper to detect single vs multiple types
+            * Single type selected → Full credit for that type (no dedupe)
+            * Multiple types selected → Dedupe per entity to avoid double counting
+          - Issue #2: queries.py now uses SUM() instead of MAX() for New Business Revenue
+          - Updated load_data_for_year_range() to pass selected_kpi_types
+          - Updated _needs_data_reload() to check kpi_type changes
+          - Requires updated queries.py v2.7.0
 - v2.6.0: REFACTORED Complex KPIs to match Salesperson page logic:
           - Added calculate_weighted_count() helper function
           - complex_kpis now uses weighted counting: sum(split_rate_percent) / 100
@@ -119,6 +127,49 @@ def calculate_weighted_count(df: pd.DataFrame, split_col: str = 'split_rate_perc
         return float(len(df))
     # Sum of (split_rate_percent / 100), treating NULL as 100%
     return df[split_col].fillna(100).sum() / 100
+
+
+def get_selected_kpi_types(filter_values: dict, kpi_center_df: pd.DataFrame) -> list:
+    """
+    Derive selected_kpi_types for dedupe logic.
+    
+    NEW v2.7.0: Used to prevent double counting in Complex KPIs.
+    
+    Logic:
+    - If kpi_type_filter is set to a single type → returns [type] (no dedupe needed)
+    - If kpi_type_filter is None or 'All' → returns all types from selected KPI Centers
+      (triggers dedupe when > 1 type)
+    
+    Args:
+        filter_values: Dictionary from filters containing kpi_type_filter, kpi_center_ids
+        kpi_center_df: DataFrame with kpi_center_id, kpi_type columns
+        
+    Returns:
+        List of KPI types. Length determines dedupe behavior:
+        - len == 1: Single type selected, no dedupe
+        - len > 1: Multiple types, dedupe per entity
+    """
+    kpi_type_filter = filter_values.get('kpi_type_filter')
+    
+    # Case 1: Single type explicitly selected → no dedupe
+    if kpi_type_filter and kpi_type_filter not in ['All', 'all', '']:
+        return [kpi_type_filter]
+    
+    # Case 2: All types or no filter → derive from selected KPI Centers
+    kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    
+    if kpi_center_ids and not kpi_center_df.empty:
+        # Get types from selected KPI Centers
+        selected_df = kpi_center_df[kpi_center_df['kpi_center_id'].isin(kpi_center_ids)]
+        if not selected_df.empty and 'kpi_type' in selected_df.columns:
+            types = selected_df['kpi_type'].dropna().unique().tolist()
+            return types if types else []
+    
+    # Fallback: return all available types
+    if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
+        return kpi_center_df['kpi_type'].dropna().unique().tolist()
+    
+    return []
 
 
 # =============================================================================
@@ -269,7 +320,8 @@ def load_data_for_year_range(
     kpi_center_ids: list,
     entity_ids: list = None,
     display_start: date = None,  # NEW: Display period start for complex KPIs
-    display_end: date = None     # NEW: Display period end for complex KPIs
+    display_end: date = None,    # NEW: Display period end for complex KPIs
+    selected_kpi_types: list = None  # NEW v2.7.0: For double-counting prevention
 ) -> dict:
     """
     Load data for specified year range.
@@ -282,6 +334,7 @@ def load_data_for_year_range(
         entity_ids: Optional list of entity IDs to filter
         display_start: Actual display period start date (for complex KPIs that can't be filtered client-side)
         display_end: Actual display period end date (for complex KPIs that can't be filtered client-side)
+        selected_kpi_types: List of selected KPI types for dedupe logic (NEW v2.7.0)
     
     Returns:
         dict: Dictionary containing all loaded DataFrames
@@ -290,6 +343,7 @@ def load_data_for_year_range(
         - Sales data uses cache period (start_year to end_year) because it CAN be filtered client-side
         - Complex KPIs (new_customers, new_products, new_business) use display period because 
           they return aggregated data WITHOUT date columns, so they CANNOT be filtered client-side
+        - NEW v2.7.0: selected_kpi_types is passed to complex KPI queries for dedupe logic
     """
     # Cache period - for data that CAN be filtered client-side
     cache_start = date(start_year, 1, 1)
@@ -348,16 +402,30 @@ def load_data_for_year_range(
         
         progress_bar.progress(70, text="🆕 Loading complex KPIs...")
         # =====================================================================
-        # FIXED: Complex KPIs use DISPLAY period (NOT cache period)
-        # These queries return aggregated data WITHOUT date columns,
-        # so they CANNOT be filtered client-side by filter_data_client_side()
+        # FIXED v2.7.0: Complex KPIs now receive selected_kpi_types for dedupe
+        # - Single type → no dedupe (full credit per KPI Center)
+        # - Multiple types → dedupe per entity to avoid double counting
         # =====================================================================
-        data['new_customers_df'] = queries.get_new_customers(kpi_start, kpi_end, kpi_center_ids)
-        data['new_customers_detail_df'] = queries.get_new_customers_detail(kpi_start, kpi_end, kpi_center_ids)
-        data['new_products_df'] = queries.get_new_products(kpi_start, kpi_end, kpi_center_ids)
+        data['new_customers_df'] = queries.get_new_customers(
+            kpi_start, kpi_end, kpi_center_ids,
+            selected_kpi_types=selected_kpi_types
+        )
+        data['new_customers_detail_df'] = queries.get_new_customers_detail(
+            kpi_start, kpi_end, kpi_center_ids
+        )
+        data['new_products_df'] = queries.get_new_products(
+            kpi_start, kpi_end, kpi_center_ids,
+            selected_kpi_types=selected_kpi_types
+        )
         data['new_products_detail_df'] = data['new_products_df']
-        data['new_business_df'] = queries.get_new_business_revenue(kpi_start, kpi_end, kpi_center_ids)
-        data['new_business_detail_df'] = queries.get_new_business_detail(kpi_start, kpi_end, kpi_center_ids)
+        data['new_business_df'] = queries.get_new_business_revenue(
+            kpi_start, kpi_end, kpi_center_ids,
+            selected_kpi_types=selected_kpi_types
+        )
+        data['new_business_detail_df'] = queries.get_new_business_detail(
+            kpi_start, kpi_end, kpi_center_ids,
+            selected_kpi_types=selected_kpi_types
+        )
         
         progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
         data['backlog_risk'] = queries.get_backlog_risk_analysis(
@@ -373,6 +441,8 @@ def load_data_for_year_range(
         data['_year_range'] = (start_year, end_year)
         # Store display period for reference
         data['_display_period'] = (kpi_start, kpi_end)
+        # NEW v2.7.0: Store selected_kpi_types for reload check
+        data['_selected_kpi_types'] = selected_kpi_types
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
@@ -392,7 +462,7 @@ def _needs_data_reload(filter_values: dict) -> bool:
     """
     Check if data needs to be reloaded.
     
-    FIXED: Also check if display period changed (for complex KPIs).
+    FIXED v2.7.0: Also check if selected_kpi_types changed (for complex KPIs dedupe).
     """
     if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
         return True
@@ -422,16 +492,43 @@ def _needs_data_reload(filter_values: dict) -> bool:
             filter_values['end_date'] != cached_display_end):
             return True
     
+    # =========================================================================
+    # NEW v2.7.0: Check if kpi_type_filter changed
+    # This affects dedupe logic in complex KPIs
+    # =========================================================================
+    cached_kpi_types = cached_data.get('_selected_kpi_types')
+    # We'll compare in get_or_load_data since we need kpi_center_df
+    # For now, check if kpi_type_filter itself changed
+    cached_kpi_type_filter = cached_data.get('_kpi_type_filter')
+    current_kpi_type_filter = filter_values.get('kpi_type_filter')
+    
+    if cached_kpi_type_filter != current_kpi_type_filter:
+        return True
+    
     return False
 
 
-def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
-    """Smart data loading with session-based caching."""
+def get_or_load_data(queries: KPICenterQueries, filter_values: dict, kpi_center_df: pd.DataFrame = None) -> dict:
+    """
+    Smart data loading with session-based caching.
+    
+    UPDATED v2.7.0: Added kpi_center_df parameter to derive selected_kpi_types.
+    """
     required_start = filter_values['start_date'].year
     required_end = filter_values['end_date'].year
     
     kpi_center_ids = filter_values.get('kpi_center_ids', [])
     entity_ids = filter_values.get('entity_ids', [])
+    
+    # =========================================================================
+    # NEW v2.7.0: Derive selected_kpi_types for dedupe logic
+    # =========================================================================
+    if kpi_center_df is not None:
+        selected_kpi_types = get_selected_kpi_types(filter_values, kpi_center_df)
+    else:
+        # Fallback: use kpi_type_filter directly
+        kpi_type_filter = filter_values.get('kpi_type_filter')
+        selected_kpi_types = [kpi_type_filter] if kpi_type_filter else None
     
     cached_start, cached_end = _get_cached_year_range()
     
@@ -454,8 +551,15 @@ def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
             # FIXED: Pass display period for complex KPIs
             # =========================================================
             display_start=filter_values['start_date'],
-            display_end=filter_values['end_date']
+            display_end=filter_values['end_date'],
+            # =========================================================
+            # NEW v2.7.0: Pass selected_kpi_types for dedupe logic
+            # =========================================================
+            selected_kpi_types=selected_kpi_types
         )
+        
+        # Store kpi_type_filter for reload check
+        data['_kpi_type_filter'] = filter_values.get('kpi_type_filter')
         
         st.session_state._kpc_raw_cached_data = data
         _set_cached_year_range(new_start, new_end)
@@ -669,7 +773,10 @@ def main():
         _set_applied_filters(filter_values)
     
     active_filters = _get_applied_filters()
-    raw_data = get_or_load_data(queries, active_filters)
+    # =========================================================================
+    # UPDATED v2.7.0: Pass kpi_center_df for selected_kpi_types derivation
+    # =========================================================================
+    raw_data = get_or_load_data(queries, active_filters, kpi_center_df=kpi_center_df)
     data = filter_data_client_side(raw_data, active_filters)
     
     sales_df = data.get('sales_df', pd.DataFrame())
