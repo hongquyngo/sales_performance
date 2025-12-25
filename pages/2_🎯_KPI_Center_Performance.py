@@ -267,11 +267,38 @@ def load_data_for_year_range(
     start_year: int,
     end_year: int,
     kpi_center_ids: list,
-    entity_ids: list = None
+    entity_ids: list = None,
+    display_start: date = None,  # NEW: Display period start for complex KPIs
+    display_end: date = None     # NEW: Display period end for complex KPIs
 ) -> dict:
-    """Load data for specified year range."""
-    start_date = date(start_year, 1, 1)
-    end_date = date(end_year, 12, 31)
+    """
+    Load data for specified year range.
+    
+    Args:
+        queries: KPICenterQueries instance
+        start_year: Start year for cache range
+        end_year: End year for cache range
+        kpi_center_ids: List of KPI Center IDs to filter
+        entity_ids: Optional list of entity IDs to filter
+        display_start: Actual display period start date (for complex KPIs that can't be filtered client-side)
+        display_end: Actual display period end date (for complex KPIs that can't be filtered client-side)
+    
+    Returns:
+        dict: Dictionary containing all loaded DataFrames
+    
+    Note:
+        - Sales data uses cache period (start_year to end_year) because it CAN be filtered client-side
+        - Complex KPIs (new_customers, new_products, new_business) use display period because 
+          they return aggregated data WITHOUT date columns, so they CANNOT be filtered client-side
+    """
+    # Cache period - for data that CAN be filtered client-side
+    cache_start = date(start_year, 1, 1)
+    cache_end = date(end_year, 12, 31)
+    
+    # Display period - for complex KPIs that CANNOT be filtered client-side
+    # If not provided, fall back to cache period
+    kpi_start = display_start or cache_start
+    kpi_end = display_end or cache_end
     
     progress_bar = st.progress(0, text=f"🔄 Loading data ({start_year}-{end_year})...")
     
@@ -279,9 +306,10 @@ def load_data_for_year_range(
     
     try:
         progress_bar.progress(10, text="📊 Loading sales data...")
+        # Sales data uses CACHE period (can be filtered client-side via inv_date column)
         data['sales_df'] = queries.get_sales_data(
-            start_date=start_date,
-            end_date=end_date,
+            start_date=cache_start,
+            end_date=cache_end,
             kpi_center_ids=kpi_center_ids,
             entity_ids=entity_ids
         )
@@ -301,8 +329,8 @@ def load_data_for_year_range(
         )
         
         data['backlog_in_period_df'] = queries.get_backlog_in_period(
-            start_date=start_date,
-            end_date=end_date,
+            start_date=cache_start,
+            end_date=cache_end,
             kpi_center_ids=kpi_center_ids,
             entity_ids=entity_ids
         )
@@ -319,12 +347,17 @@ def load_data_for_year_range(
         )
         
         progress_bar.progress(70, text="🆕 Loading complex KPIs...")
-        data['new_customers_df'] = queries.get_new_customers(start_date, end_date, kpi_center_ids)
-        data['new_customers_detail_df'] = queries.get_new_customers_detail(start_date, end_date, kpi_center_ids)
-        data['new_products_df'] = queries.get_new_products(start_date, end_date, kpi_center_ids)
+        # =====================================================================
+        # FIXED: Complex KPIs use DISPLAY period (NOT cache period)
+        # These queries return aggregated data WITHOUT date columns,
+        # so they CANNOT be filtered client-side by filter_data_client_side()
+        # =====================================================================
+        data['new_customers_df'] = queries.get_new_customers(kpi_start, kpi_end, kpi_center_ids)
+        data['new_customers_detail_df'] = queries.get_new_customers_detail(kpi_start, kpi_end, kpi_center_ids)
+        data['new_products_df'] = queries.get_new_products(kpi_start, kpi_end, kpi_center_ids)
         data['new_products_detail_df'] = data['new_products_df']
-        data['new_business_df'] = queries.get_new_business_revenue(start_date, end_date, kpi_center_ids)
-        data['new_business_detail_df'] = queries.get_new_business_detail(start_date, end_date, kpi_center_ids)
+        data['new_business_df'] = queries.get_new_business_revenue(kpi_start, kpi_end, kpi_center_ids)
+        data['new_business_detail_df'] = queries.get_new_business_detail(kpi_start, kpi_end, kpi_center_ids)
         
         progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
         data['backlog_risk'] = queries.get_backlog_risk_analysis(
@@ -338,6 +371,8 @@ def load_data_for_year_range(
         
         data['_loaded_at'] = datetime.now()
         data['_year_range'] = (start_year, end_year)
+        # Store display period for reference
+        data['_display_period'] = (kpi_start, kpi_end)
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
@@ -353,9 +388,12 @@ def load_data_for_year_range(
     
     return data
 
-
 def _needs_data_reload(filter_values: dict) -> bool:
-    """Check if data needs to be reloaded."""
+    """
+    Check if data needs to be reloaded.
+    
+    FIXED: Also check if display period changed (for complex KPIs).
+    """
     if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
         return True
     
@@ -366,7 +404,25 @@ def _needs_data_reload(filter_values: dict) -> bool:
     required_start = filter_values['start_date'].year
     required_end = filter_values['end_date'].year
     
-    return required_start < cached_start or required_end > cached_end
+    # Check if year range needs expansion
+    if required_start < cached_start or required_end > cached_end:
+        return True
+    
+    # =========================================================================
+    # FIXED: Check if display period changed (for complex KPIs)
+    # Complex KPIs can't be filtered client-side, so we need to reload
+    # when the display period changes
+    # =========================================================================
+    cached_data = st.session_state._kpc_raw_cached_data
+    cached_display_period = cached_data.get('_display_period')
+    
+    if cached_display_period:
+        cached_display_start, cached_display_end = cached_display_period
+        if (filter_values['start_date'] != cached_display_start or 
+            filter_values['end_date'] != cached_display_end):
+            return True
+    
+    return False
 
 
 def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
@@ -393,7 +449,12 @@ def get_or_load_data(queries: KPICenterQueries, filter_values: dict) -> dict:
             start_year=new_start,
             end_year=new_end,
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
+            entity_ids=entity_ids,
+            # =========================================================
+            # FIXED: Pass display period for complex KPIs
+            # =========================================================
+            display_start=filter_values['start_date'],
+            display_end=filter_values['end_date']
         )
         
         st.session_state._kpc_raw_cached_data = data

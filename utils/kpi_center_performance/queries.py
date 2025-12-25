@@ -1159,19 +1159,14 @@ class KPICenterQueries:
         entity_ids: List[int] = None
     ) -> pd.DataFrame:
         """
-        Get NEW BUSINESS REVENUE with GLOBAL combo scope.
+        Get new business revenue - first-time customer-product combinations.
         
-        "New business" = first time a specific product is sold to a specific customer
-        (GLOBALLY, across all KPI Centers).
-        
-        UPDATED v2.6.1:
-        - Global combo scope: GROUP BY (customer_id, product_id) without kpi_center_id
-        - If combo exists anywhere in company history, it's NOT new for any KPI Center
-        - Uses product_id only (no fallback)
+        FIXED v2.7.0:
+        - Deduplicate per combo to avoid double counting when multiple KPI types selected
+        - When same combo sold by Territory + Vertical, count only ONCE
         
         Returns:
-            DataFrame with: kpi_center_id, kpi_center, num_new_combos,
-                           new_business_revenue, new_business_gp, new_business_gp1
+            DataFrame with: num_new_combos, new_business_revenue, new_business_gp, new_business_gp1
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -1199,8 +1194,8 @@ class KPICenterQueries:
                     MIN(inv_date) AS first_combo_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
-                  AND customer_id IS NOT NULL
-                  AND product_id IS NOT NULL
+                AND customer_id IS NOT NULL
+                AND product_id IS NOT NULL
                 GROUP BY customer_id, product_id
             ),
             
@@ -1231,23 +1226,35 @@ class KPICenterQueries:
                     ON nc.customer_id = s.customer_id
                     AND nc.product_id = s.product_id
                 WHERE s.inv_date BETWEEN :start_date AND :end_date
-                  AND s.kpi_center_id IN :kpi_center_ids
-                  AND s.product_id IS NOT NULL
+                AND s.kpi_center_id IN :kpi_center_ids
+                AND s.product_id IS NOT NULL
+            ),
+            
+            -- ================================================================
+            -- Step 4: FIXED - Deduplicate per combo
+            -- When same combo sold by multiple KPI Centers (Territory + Vertical),
+            -- count only ONCE to avoid double counting
+            -- ================================================================
+            combo_deduplicated AS (
+                SELECT 
+                    customer_id,
+                    product_id,
+                    MAX(sales_by_kpi_center_usd) AS combo_revenue,
+                    MAX(gross_profit_by_kpi_center_usd) AS combo_gp,
+                    MAX(gp1_by_kpi_center_usd) AS combo_gp1
+                FROM new_business_sales
+                GROUP BY customer_id, product_id
             )
             
             -- ================================================================
-            -- Final: Aggregate by KPI Center
+            -- Final: Aggregate totals (single row result)
             -- ================================================================
             SELECT 
-                kpi_center_id,
-                kpi_center,
-                COUNT(DISTINCT CONCAT(customer_id, '-', product_id)) AS num_new_combos,
-                SUM(sales_by_kpi_center_usd) AS new_business_revenue,
-                SUM(gross_profit_by_kpi_center_usd) AS new_business_gp,
-                SUM(gp1_by_kpi_center_usd) AS new_business_gp1
-            FROM new_business_sales
-            GROUP BY kpi_center_id, kpi_center
-            ORDER BY new_business_revenue DESC
+                COUNT(*) AS num_new_combos,
+                SUM(combo_revenue) AS new_business_revenue,
+                SUM(combo_gp) AS new_business_gp,
+                SUM(combo_gp1) AS new_business_gp1
+            FROM combo_deduplicated
         """
         
         params = {
@@ -1258,7 +1265,8 @@ class KPICenterQueries:
         }
         
         return self._execute_query(query, params, "new_business_revenue")
-    
+
+
     def get_new_business_detail(
         self,
         start_date: date,
@@ -1270,15 +1278,14 @@ class KPICenterQueries:
         Get detailed NEW BUSINESS combos with revenue breakdown.
         Used for popup drill-down.
         
-        UPDATED v2.6.1:
-        - Global combo scope
-        - Added customer_code for display
-        - Uses product_id only
+        FIXED v2.7.0:
+        - Deduplicate per combo to avoid double counting
+        - GROUP_CONCAT KPI Centers for display (shows all assigned KPI Centers)
         
         Returns:
             DataFrame with: customer_id, customer_code, customer, product_id, product_pn,
-                           pt_code, brand, kpi_center_id, kpi_center, split_rate_percent,
-                           first_sale_date, period_revenue, period_gp
+                        pt_code, brand, kpi_center (comma-separated list), split_rate_percent,
+                        first_sale_date, new_business_revenue, new_business_gp
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -1303,8 +1310,8 @@ class KPICenterQueries:
                     MIN(inv_date) AS first_combo_date
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
-                  AND customer_id IS NOT NULL
-                  AND product_id IS NOT NULL
+                AND customer_id IS NOT NULL
+                AND product_id IS NOT NULL
                 GROUP BY customer_id, product_id
             ),
             
@@ -1315,48 +1322,52 @@ class KPICenterQueries:
                 WHERE first_combo_date BETWEEN :start_date AND :end_date
             ),
             
-            -- Step 3: Aggregate all period revenue per (customer, product, kpi_center)
-            new_business_detail AS (
+            -- Step 3: Get all sales records for new combos
+            new_business_sales AS (
                 SELECT 
                     s.customer_id,
-                    MAX(s.customer_code) AS customer_code,
-                    MAX(s.customer) AS customer,
+                    s.customer_code,
+                    s.customer,
                     s.product_id,
-                    MAX(s.product_pn) AS product_pn,
-                    MAX(s.pt_code) AS pt_code,
-                    MAX(s.brand) AS brand,
+                    s.product_pn,
+                    s.pt_code,
+                    s.brand,
                     s.kpi_center_id,
-                    MAX(s.kpi_center) AS kpi_center,
-                    MAX(s.split_rate_percent) AS split_rate_percent,
+                    s.kpi_center,
+                    s.split_rate_percent,
                     nc.first_combo_date AS first_sale_date,
-                    SUM(s.sales_by_kpi_center_usd) AS period_revenue,
-                    SUM(s.gross_profit_by_kpi_center_usd) AS period_gp
+                    s.sales_by_kpi_center_usd,
+                    s.gross_profit_by_kpi_center_usd
                 FROM new_combos nc
                 JOIN unified_sales_by_kpi_center_view s
                     ON nc.customer_id = s.customer_id
                     AND nc.product_id = s.product_id
                 WHERE s.inv_date BETWEEN :start_date AND :end_date
-                  AND s.kpi_center_id IN :kpi_center_ids
-                  AND s.product_id IS NOT NULL
-                GROUP BY s.customer_id, s.product_id, s.kpi_center_id, nc.first_combo_date
+                AND s.kpi_center_id IN :kpi_center_ids
+                AND s.product_id IS NOT NULL
             )
             
+            -- ================================================================
+            -- FIXED: Deduplicate per combo, GROUP_CONCAT KPI Centers
+            -- ================================================================
             SELECT 
                 customer_id,
-                customer_code,
-                customer,
+                MAX(customer_code) AS customer_code,
+                MAX(customer) AS customer,
                 product_id,
-                product_pn,
-                pt_code,
-                brand,
-                kpi_center_id,
-                kpi_center,
-                split_rate_percent,
-                first_sale_date,
-                period_revenue,
-                period_gp
-            FROM new_business_detail
-            ORDER BY period_revenue DESC
+                MAX(product_pn) AS product_pn,
+                MAX(pt_code) AS pt_code,
+                MAX(brand) AS brand,
+                -- Show all assigned KPI Centers as comma-separated list
+                GROUP_CONCAT(DISTINCT kpi_center ORDER BY kpi_center SEPARATOR ', ') AS kpi_center,
+                MAX(split_rate_percent) AS split_rate_percent,
+                MAX(first_sale_date) AS first_sale_date,
+                -- Revenue is same across KPI Centers, just take MAX
+                MAX(sales_by_kpi_center_usd) AS new_business_revenue,
+                MAX(gross_profit_by_kpi_center_usd) AS new_business_gp
+            FROM new_business_sales
+            GROUP BY customer_id, product_id
+            ORDER BY new_business_revenue DESC
         """
         
         params = {
@@ -1367,7 +1378,8 @@ class KPICenterQueries:
         }
         
         return self._execute_query(query, params, "new_business_detail")
-    
+
+
     # =========================================================================
     # LOOKUP DATA METHODS
     # =========================================================================
