@@ -2,8 +2,12 @@
 """
 Altair Chart Builders for KPI Center Performance
 
-VERSION: 2.6.0
+VERSION: 2.7.0
 CHANGELOG:
+- v2.7.0: UPDATED Popovers to merge rows with same entity:
+          - New Customers Detail: Group by customer_id, concatenate KPI Centers
+          - New Products Detail: Group by product_id, concatenate KPI Centers
+          - Now matches New Business Revenue detail format
 - v2.6.0: REFACTORED NEW BUSINESS section to match Salesperson page:
           - Improved Help section with detailed definitions table
           - Wider popovers (min-width: 600px+) matching Salesperson
@@ -208,7 +212,8 @@ class KPICenterCharts:
                 col1, col2, col3 = st.columns(3)
                 
                 # ---------------------------------------------------------
-                # NEW CUSTOMERS with Detail Popover - SYNCED v2.6.0
+                # NEW CUSTOMERS with Detail Popover - UPDATED v2.7.0
+                # Gộp các dòng cùng customer nhưng khác KPI Type
                 # ---------------------------------------------------------
                 with col1:
                     new_customers = complex_kpis.get('num_new_customers', 0)
@@ -231,61 +236,75 @@ class KPICenterCharts:
                             with st.popover("📋"):
                                 # SYNCED: 550px width like Salesperson
                                 st.markdown('<div style="min-width:550px"><b>📋 New Customers Detail</b></div>', unsafe_allow_html=True)
-                                st.caption(f"Total: {len(new_customers_df)} records")
                                 
-                                # SYNCED: Column order matching Salesperson
-                                display_cols = ['customer', 'customer_code', 'kpi_center', 'split_rate_percent', 'first_sale_date']
-                                available_cols = [c for c in display_cols if c in new_customers_df.columns]
+                                # =====================================================
+                                # UPDATED v2.7.0: Gộp các dòng cùng customer_id
+                                # Khi 1 customer được credit bởi nhiều KPI Centers
+                                # (Territory + Vertical), gộp lại thành 1 dòng
+                                # =====================================================
+                                display_df = new_customers_df.copy()
                                 
-                                if available_cols:
-                                    display_df = new_customers_df[available_cols].copy()
-                                    
-                                    # SYNCED: Format customer as "Customer Name | Code"
-                                    if 'customer_code' in display_df.columns and 'customer' in display_df.columns:
-                                        display_df['customer_display'] = display_df.apply(
-                                            lambda row: f"{row['customer']} | {row['customer_code']}" 
-                                                if pd.notna(row.get('customer_code')) and row.get('customer_code')
-                                                else str(row['customer']),
-                                            axis=1
-                                        )
-                                        display_df = display_df.drop(columns=['customer', 'customer_code'], errors='ignore')
-                                        cols_order = ['customer_display'] + [c for c in display_df.columns if c != 'customer_display']
-                                        display_df = display_df[cols_order]
-                                    
-                                    # Sort by date descending
-                                    date_col = 'first_sale_date' if 'first_sale_date' in display_df.columns else 'first_invoice_date'
-                                    if date_col in display_df.columns:
-                                        display_df = display_df.sort_values(date_col, ascending=False)
-                                        display_df[date_col] = pd.to_datetime(display_df[date_col]).dt.strftime('%Y-%m-%d')
-                                    
-                                    # SYNCED: Split % format - "0%" for null (not "100%")
-                                    if 'split_rate_percent' in display_df.columns:
-                                        display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
-                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
-                                        )
-                                    
-                                    # SYNCED: Rename columns using dict (not column_config)
-                                    col_rename = {
-                                        'customer_display': 'Customer',
-                                        'customer': 'Customer',
-                                        'kpi_center': 'KPI Center',
-                                        'split_rate_percent': 'Split %',
-                                        'first_sale_date': 'First Invoice',
-                                        'first_invoice_date': 'First Invoice'
-                                    }
-                                    display_df = display_df.rename(columns=col_rename)
-                                    
-                                    st.dataframe(
-                                        display_df,
-                                        use_container_width=True,
-                                        hide_index=True,
-                                        height=min(400, len(display_df) * 35 + 40)
+                                # Check if we need to aggregate (multiple KPI Centers per customer)
+                                if 'customer_id' in display_df.columns:
+                                    # Group by customer_id, concatenate kpi_centers
+                                    aggregated = display_df.groupby('customer_id').agg({
+                                        'customer': 'first',
+                                        'customer_code': 'first',
+                                        'kpi_center': lambda x: ', '.join(sorted(set(str(v) for v in x.dropna()))),
+                                        'split_rate_percent': 'max',  # Take max or could sum
+                                        'first_sale_date': 'first'
+                                    }).reset_index()
+                                    display_df = aggregated
+                                
+                                st.caption(f"Total: {len(display_df)} unique customers")
+                                
+                                # Format customer as "Customer Name | Code"
+                                if 'customer_code' in display_df.columns and 'customer' in display_df.columns:
+                                    display_df['customer_display'] = display_df.apply(
+                                        lambda row: f"{row['customer']} | {row['customer_code']}" 
+                                            if pd.notna(row.get('customer_code')) and row.get('customer_code')
+                                            else str(row['customer']),
+                                        axis=1
                                     )
+                                    display_df = display_df.drop(columns=['customer', 'customer_code', 'customer_id'], errors='ignore')
+                                    cols_order = ['customer_display'] + [c for c in display_df.columns if c != 'customer_display']
+                                    display_df = display_df[cols_order]
+                                
+                                # Sort by date descending
+                                date_col = 'first_sale_date' if 'first_sale_date' in display_df.columns else 'first_invoice_date'
+                                if date_col in display_df.columns:
+                                    display_df = display_df.sort_values(date_col, ascending=False)
+                                    display_df[date_col] = pd.to_datetime(display_df[date_col]).dt.strftime('%Y-%m-%d')
+                                
+                                # Split % format - "0%" for null
+                                if 'split_rate_percent' in display_df.columns:
+                                    display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
+                                        lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
+                                    )
+                                
+                                # Rename columns
+                                col_rename = {
+                                    'customer_display': 'Customer',
+                                    'customer': 'Customer',
+                                    'kpi_center': 'KPI Center',
+                                    'split_rate_percent': 'Split %',
+                                    'first_sale_date': 'First Invoice',
+                                    'first_invoice_date': 'First Invoice'
+                                }
+                                display_df = display_df.rename(columns=col_rename)
+                                
+                                st.dataframe(
+                                    display_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    height=min(400, len(display_df) * 35 + 40)
+                                )
                         else:
                             st.caption("")
                 
                 # ---------------------------------------------------------
-                # NEW PRODUCTS with Detail Popover - SYNCED v2.6.0
+                # NEW PRODUCTS with Detail Popover - UPDATED v2.7.0
+                # Gộp các dòng cùng product nhưng khác KPI Type
                 # ---------------------------------------------------------
                 with col2:
                     new_products = complex_kpis.get('num_new_products', 0)
@@ -308,11 +327,36 @@ class KPICenterCharts:
                             with st.popover("📋"):
                                 # SYNCED: 650px width like Salesperson
                                 st.markdown('<div style="min-width:650px"><b>📋 New Products Detail</b></div>', unsafe_allow_html=True)
-                                st.caption(f"Total: {len(new_products_df)} records")
                                 
+                                # =====================================================
+                                # UPDATED v2.7.0: Gộp các dòng cùng product_id
+                                # Khi 1 product được credit bởi nhiều KPI Centers,
+                                # gộp lại thành 1 dòng
+                                # =====================================================
                                 display_df = new_products_df.copy()
                                 
-                                # SYNCED: Format product as "pt_code | Name"
+                                # Check if we need to aggregate (multiple KPI Centers per product)
+                                if 'product_id' in display_df.columns:
+                                    # Group by product_id, concatenate kpi_centers
+                                    agg_dict = {
+                                        'kpi_center': lambda x: ', '.join(sorted(set(str(v) for v in x.dropna()))),
+                                        'split_rate_percent': 'max',
+                                        'first_sale_date': 'first'
+                                    }
+                                    # Add optional columns
+                                    if 'product_pn' in display_df.columns:
+                                        agg_dict['product_pn'] = 'first'
+                                    if 'pt_code' in display_df.columns:
+                                        agg_dict['pt_code'] = 'first'
+                                    if 'brand' in display_df.columns:
+                                        agg_dict['brand'] = 'first'
+                                    
+                                    aggregated = display_df.groupby('product_id').agg(agg_dict).reset_index()
+                                    display_df = aggregated
+                                
+                                st.caption(f"Total: {len(display_df)} unique products")
+                                
+                                # Format product as "pt_code | Name"
                                 def format_product(row):
                                     parts = []
                                     if pd.notna(row.get('pt_code')) and row.get('pt_code'):
@@ -335,13 +379,13 @@ class KPICenterCharts:
                                         display_df = display_df.sort_values('first_sale_date', ascending=False)
                                         display_df['first_sale_date'] = pd.to_datetime(display_df['first_sale_date']).dt.strftime('%Y-%m-%d')
                                     
-                                    # SYNCED: Split % format - "0%" for null
+                                    # Split % format - "0%" for null
                                     if 'split_rate_percent' in display_df.columns:
                                         display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
                                             lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
                                         )
                                     
-                                    # SYNCED: Rename columns
+                                    # Rename columns
                                     display_df.columns = ['Product', 'Brand', 'KPI Center', 'Split %', 'First Sale'][:len(display_df.columns)]
                                     
                                     st.dataframe(

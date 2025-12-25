@@ -441,8 +441,9 @@ def load_data_for_year_range(
         data['_year_range'] = (start_year, end_year)
         # Store display period for reference
         data['_display_period'] = (kpi_start, kpi_end)
-        # NEW v2.7.0: Store selected_kpi_types for reload check
+        # NEW v2.7.0: Store for reload check
         data['_selected_kpi_types'] = selected_kpi_types
+        data['_kpi_center_ids'] = kpi_center_ids  # CRITICAL: For reload check when KPI Center changes
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
@@ -462,7 +463,8 @@ def _needs_data_reload(filter_values: dict) -> bool:
     """
     Check if data needs to be reloaded.
     
-    FIXED v2.7.0: Also check if selected_kpi_types changed (for complex KPIs dedupe).
+    FIXED v2.7.0: Also check if kpi_center_ids or kpi_type changed.
+    Complex KPIs are queried with these parameters, so must reload when changed.
     """
     if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
         return True
@@ -478,12 +480,13 @@ def _needs_data_reload(filter_values: dict) -> bool:
     if required_start < cached_start or required_end > cached_end:
         return True
     
+    cached_data = st.session_state._kpc_raw_cached_data
+    
     # =========================================================================
     # FIXED: Check if display period changed (for complex KPIs)
     # Complex KPIs can't be filtered client-side, so we need to reload
     # when the display period changes
     # =========================================================================
-    cached_data = st.session_state._kpc_raw_cached_data
     cached_display_period = cached_data.get('_display_period')
     
     if cached_display_period:
@@ -493,12 +496,21 @@ def _needs_data_reload(filter_values: dict) -> bool:
             return True
     
     # =========================================================================
+    # FIXED v2.7.0: Check if kpi_center_ids changed
+    # Complex KPIs are queried with kpi_center_ids parameter, must reload!
+    # =========================================================================
+    cached_kpi_center_ids = cached_data.get('_kpi_center_ids')
+    current_kpi_center_ids = filter_values.get('kpi_center_ids', [])
+    
+    if cached_kpi_center_ids is not None:
+        # Compare as sets (order doesn't matter)
+        if set(cached_kpi_center_ids) != set(current_kpi_center_ids):
+            return True
+    
+    # =========================================================================
     # NEW v2.7.0: Check if kpi_type_filter changed
     # This affects dedupe logic in complex KPIs
     # =========================================================================
-    cached_kpi_types = cached_data.get('_selected_kpi_types')
-    # We'll compare in get_or_load_data since we need kpi_center_df
-    # For now, check if kpi_type_filter itself changed
     cached_kpi_type_filter = cached_data.get('_kpi_type_filter')
     current_kpi_type_filter = filter_values.get('kpi_type_filter')
     
