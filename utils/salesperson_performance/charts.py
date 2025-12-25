@@ -375,11 +375,26 @@ class SalespersonCharts:
                                 st.markdown('<div style="min-width:550px"><b>📋 New Customers Detail</b></div>', unsafe_allow_html=True)
                                 st.caption(f"Total: {len(new_customers_df)} records")
                                 
-                                display_cols = ['customer', 'sales_name', 'split_rate_percent', 'first_invoice_date']
+                                # UPDATED v1.6.0: Include customer_code for display
+                                display_cols = ['customer', 'customer_code', 'sales_name', 'split_rate_percent', 'first_invoice_date']
                                 available_cols = [c for c in display_cols if c in new_customers_df.columns]
                                 
                                 if available_cols:
                                     display_df = new_customers_df[available_cols].copy()
+                                    
+                                    # UPDATED v1.6.0: Format customer display as "Customer Name | Code"
+                                    if 'customer_code' in display_df.columns:
+                                        display_df['customer_display'] = display_df.apply(
+                                            lambda row: f"{row['customer']} | {row['customer_code']}" 
+                                                if pd.notna(row.get('customer_code')) and row.get('customer_code')
+                                                else str(row['customer']),
+                                            axis=1
+                                        )
+                                        # Drop original columns and use formatted display
+                                        display_df = display_df.drop(columns=['customer', 'customer_code'])
+                                        # Reorder columns: customer_display first
+                                        cols_order = ['customer_display'] + [c for c in display_df.columns if c != 'customer_display']
+                                        display_df = display_df[cols_order]
                                     
                                     # Sort by date descending
                                     if 'first_invoice_date' in display_df.columns:
@@ -394,8 +409,15 @@ class SalespersonCharts:
                                             lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
                                         )
                                     
-                                    # Rename columns
-                                    display_df.columns = ['Customer', 'Salesperson', 'Split %', 'First Invoice'][:len(display_df.columns)]
+                                    # Rename columns based on what we have
+                                    col_rename = {
+                                        'customer_display': 'Customer',
+                                        'customer': 'Customer',
+                                        'sales_name': 'Salesperson',
+                                        'split_rate_percent': 'Split %',
+                                        'first_invoice_date': 'First Invoice'
+                                    }
+                                    display_df = display_df.rename(columns=col_rename)
                                     
                                     st.dataframe(
                                         display_df,
@@ -405,7 +427,6 @@ class SalespersonCharts:
                                     )
                         else:
                             st.caption("")
-                
                 # ---------------------------------------------------------
                 # NEW PRODUCTS with Detail Popover
                 # ---------------------------------------------------------
@@ -503,7 +524,7 @@ class SalespersonCharts:
                         if detail_df is not None and not detail_df.empty:
                             with st.popover("📋"):
                                 # Force wider container for detailed view
-                                st.markdown('<div style="min-width:750px"><b>📋 New Business Revenue Detail</b></div>', unsafe_allow_html=True)
+                                st.markdown('<div style="min-width:800px"><b>📋 New Business Revenue Detail</b></div>', unsafe_allow_html=True)
                                 
                                 # Check if this is detailed data (has customer column) or aggregated
                                 is_detail_data = 'customer' in detail_df.columns
@@ -512,6 +533,17 @@ class SalespersonCharts:
                                     st.caption(f"New Customer-Product Combos | Total: {len(detail_df)} records")
                                     
                                     display_df = detail_df.copy()
+                                    
+                                    # UPDATED v1.6.0: Format customer display as "Customer Name | Code"
+                                    if 'customer_code' in display_df.columns:
+                                        display_df['customer_display'] = display_df.apply(
+                                            lambda row: f"{row['customer']} | {row['customer_code']}" 
+                                                if pd.notna(row.get('customer_code')) and row.get('customer_code')
+                                                else str(row['customer']),
+                                            axis=1
+                                        )
+                                    else:
+                                        display_df['customer_display'] = display_df['customer']
                                     
                                     # Format product as "pt_code | Name | Package size"
                                     def format_product(row):
@@ -527,8 +559,9 @@ class SalespersonCharts:
                                     display_df['product_display'] = display_df.apply(format_product, axis=1)
                                     
                                     # Select and order columns for display
-                                    display_cols = ['customer', 'product_display', 'brand', 'sales_name', 
-                                                   'split_rate_percent', 'revenue', 'gross_profit', 'first_combo_date']
+                                    # UPDATED v1.6.0: Use customer_display instead of customer
+                                    display_cols = ['customer_display', 'product_display', 'brand', 'sales_name', 
+                                                'split_rate_percent', 'revenue', 'gross_profit', 'first_combo_date']
                                     available_cols = [c for c in display_cols if c in display_df.columns]
                                     display_df = display_df[available_cols].copy()
                                     
@@ -558,8 +591,9 @@ class SalespersonCharts:
                                         )
                                     
                                     # Rename columns for display
+                                    # UPDATED v1.6.0: customer_display -> Customer
                                     col_rename = {
-                                        'customer': 'Customer',
+                                        'customer_display': 'Customer',
                                         'product_display': 'Product',
                                         'brand': 'Brand',
                                         'sales_name': 'Salesperson',
@@ -610,7 +644,6 @@ class SalespersonCharts:
                                         )
                         else:
                             st.caption("")
-    
     # =========================================================================
     # MONTHLY TREND CHART
     # =========================================================================

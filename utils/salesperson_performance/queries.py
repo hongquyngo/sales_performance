@@ -264,12 +264,11 @@ class SalespersonQueries:
         
         Credit is given to the salesperson who made the first sale.
         
-        Returns DataFrame with: customer_id, customer, sales_id, sales_name,
-                               split_rate_percent, first_invoice_date
+        Returns DataFrame with: customer_id, customer_code, customer, sales_id, sales_name,
+                            split_rate_percent, first_invoice_date
         
         UPDATED v1.1.0: Changed from "new to salesperson" to "new to company"
-        - Old: PARTITION BY customer_id, sales_id (customer is new if first sale BY THIS SALESPERSON)
-        - New: PARTITION BY customer_id (customer is new if first sale EVER TO COMPANY)
+        UPDATED v1.6.0: Added customer_code for display in popover
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -282,10 +281,7 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        # FIXED v1.1.0: PARTITION BY customer_id (new to company, not new to salesperson)
-        # FIXED v1.2.0: RANK() instead of ROW_NUMBER() to credit all salespeople 
-        #               who made first sale on same day
-        # FIXED v1.3.0: Added deduplication - each customer+salesperson combo counted once
+        # UPDATED v1.6.0: Added customer_code to all CTEs and final SELECT
         query = """
             WITH first_customer_date AS (
                 -- Step 1: Find first invoice date for each customer (globally)
@@ -298,8 +294,10 @@ class SalespersonQueries:
             ),
             first_day_records AS (
                 -- Step 2: Get all records from first invoice date
+                -- UPDATED: Added customer_code
                 SELECT 
                     u.customer_id,
+                    u.customer_code,
                     u.customer,
                     u.sales_id,
                     u.sales_name,
@@ -312,8 +310,10 @@ class SalespersonQueries:
             ),
             deduplicated AS (
                 -- Step 3: Deduplicate per customer + salesperson (count each combo once)
+                -- UPDATED: Added MAX(customer_code)
                 SELECT 
                     customer_id,
+                    MAX(customer_code) as customer_code,
                     MAX(customer) as customer,
                     sales_id,
                     MAX(sales_name) as sales_name,
@@ -324,6 +324,7 @@ class SalespersonQueries:
             )
             SELECT 
                 customer_id,
+                customer_code,
                 customer,
                 sales_id,
                 sales_name,
@@ -331,7 +332,7 @@ class SalespersonQueries:
                 first_invoice_date
             FROM deduplicated
             WHERE first_invoice_date BETWEEN :start_date AND :end_date
-              AND sales_id IN :employee_ids
+            AND sales_id IN :employee_ids
             ORDER BY first_invoice_date DESC
         """
         
@@ -343,7 +344,7 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_customers")
-    
+
     # =========================================================================
     # COMPLEX KPIs - NEW PRODUCTS (REFACTORED v1.4.0)
     # =========================================================================
@@ -362,24 +363,22 @@ class SalespersonQueries:
         - Falls within the specified date range
         - When looking back LOOKBACK_YEARS years
         
-        REFACTORED v1.4.0: 
-        - Uses COALESCE(product_id, legacy_code) as unified product key
-        - Handles history data (has legacy_code, may lack product_id)
-        - Handles realtime data (has product_id, now also has legacy_code)
-        - No longer needs JOIN with products table
-        - Correctly identifies same product across different identifier systems
+        FIXED v1.7.0: 
+        - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
+        - Reason: legacy_code in REALTIME can contain multiple comma-separated values
+        - product_id is always consistent and unique across systems
         
         Logic:
-        1. Create unified product key using COALESCE(legacy_code, product_id)
-           - Prefer legacy_code because it bridges history and realtime
-           - Fall back to product_id for products without legacy mapping
+        1. Create unified product key using COALESCE(product_id, legacy_code)
+        - Prefer product_id because it's consistent across systems
+        - Fall back to legacy_code for old HISTORY records without product_id
         2. Find MIN(inv_date) for each unified product key
         3. Filter to products where first sale is within selected period
         4. Credit all salespeople who sold on the first day (split scenario)
         5. Deduplicate per (product, salesperson) combo
         
-        Returns DataFrame with: product_id, product_pn, legacy_code, brand,
-                               sales_id, sales_name, split_rate_percent, first_sale_date
+        Returns DataFrame with: product_id, product_pn, pt_code, package_size, legacy_code, brand,
+                            sales_id, sales_name, split_rate_percent, first_sale_date
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -392,21 +391,23 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
         query = """
             WITH 
             -- ================================================================
             -- Step 1: Create unified product key and find first sale date
-            -- Priority: legacy_code (bridges systems) > product_id (fallback)
+            -- FIXED v1.7.0: Priority product_id > legacy_code
+            -- Reason: legacy_code can have multiple comma-separated values in REALTIME
             -- ================================================================
             first_sale_by_product AS (
                 SELECT 
-                    -- Unified key: prefer legacy_code, fallback to product_id
-                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
+                    -- Unified key: prefer product_id (consistent), fallback to legacy_code
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
                     MIN(inv_date) as first_sale_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                GROUP BY COALESCE(legacy_code, CAST(product_id AS CHAR))
+                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
             -- ================================================================
@@ -421,7 +422,7 @@ class SalespersonQueries:
             -- ================================================================
             -- Step 3: Get all sales records from first sale date
             -- Join back to get full product info and salesperson attribution
-            -- UPDATED v1.5.0: Added pt_code, package_size from unified view
+            -- FIXED v1.7.0: Use same product_key logic
             -- ================================================================
             first_day_records AS (
                 SELECT 
@@ -437,13 +438,14 @@ class SalespersonQueries:
                     np.first_sale_date
                 FROM new_products np
                 JOIN unified_sales_by_salesperson_view u 
-                    ON COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = np.product_key
+                    ON COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = np.product_key
                     AND u.inv_date = np.first_sale_date
             ),
             
             -- ================================================================
             -- Step 4: Deduplicate - Each (product_key, sales_id) counted once
             -- Handles multiple invoice lines for same product on same day
+            -- FIXED v1.7.0: Use same product_key logic
             -- ================================================================
             deduplicated AS (
                 SELECT 
@@ -459,17 +461,16 @@ class SalespersonQueries:
                     MAX(split_rate_percent) as split_rate_percent,
                     first_sale_date,
                     -- Keep product_key for grouping
-                    COALESCE(MAX(legacy_code), CAST(MAX(product_id) AS CHAR)) as product_key
+                    COALESCE(CAST(MAX(product_id) AS CHAR), MAX(legacy_code)) as product_key
                 FROM first_day_records
                 GROUP BY 
-                    COALESCE(legacy_code, CAST(product_id AS CHAR)),
+                    COALESCE(CAST(product_id AS CHAR), legacy_code),
                     sales_id, 
                     first_sale_date
             )
             
             -- ================================================================
             -- Final: Return results filtered by accessible salespeople
-            -- UPDATED v1.5.0: pt_code, package_size from unified view directly
             -- ================================================================
             SELECT 
                 product_id,
@@ -495,11 +496,11 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_products")
-    
+
     # =========================================================================
     # COMPLEX KPIs - NEW BUSINESS REVENUE
     # =========================================================================
-    
+        
     def get_new_business_revenue(
         self,
         start_date: date,
@@ -512,10 +513,10 @@ class SalespersonQueries:
         "New business" = first time a specific product is sold to a specific customer.
         Revenue is attributed based on the sales split percentage.
         
-        UPDATED v1.4.0: Uses unified product key (legacy_code or product_id)
-        to correctly identify customer-product combinations across systems.
+        FIXED v1.7.0: Changed product_key from COALESCE(legacy_code, product_id) 
+        to COALESCE(product_id, legacy_code) for consistent combo identification.
         
-        Returns DataFrame with: sales_id, sales_name, new_business_revenue, new_combos_count
+        Returns DataFrame with: sales_id, sales_name, new_business_revenue, new_business_gp, new_combos_count
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -528,25 +529,22 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        # FIXED v1.3.0: Get ALL revenue from "new" combos within period
-        #               A combo is "new" if its first sale ever (in lookback) falls within period
-        #               Revenue = all sales of that combo in period, not just first day
-        # UPDATED v1.4.0: Use unified product key for consistent combo identification
+        # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
         query = """
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each customer-product combo
-            -- Use unified product key to bridge history and realtime
+            -- FIXED v1.7.0: Use product_id as primary key
             -- ================================================================
             first_combo_date AS (
                 SELECT 
                     customer_id,
-                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
                     MIN(inv_date) as first_combo_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                GROUP BY customer_id, COALESCE(legacy_code, CAST(product_id AS CHAR))
+                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
             -- ================================================================
@@ -561,11 +559,12 @@ class SalespersonQueries:
             -- ================================================================
             -- Step 3: Get ALL revenue from new combos within period
             -- (not just first day - includes repeat orders of new combos)
+            -- FIXED v1.7.0: Use same product_key logic
             -- ================================================================
             all_revenue_in_period AS (
                 SELECT 
                     u.customer_id,
-                    COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) AS product_key,
+                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) AS product_key,
                     u.sales_id,
                     u.sales_name,
                     u.sales_by_split_usd,
@@ -573,7 +572,7 @@ class SalespersonQueries:
                 FROM new_combos nc
                 JOIN unified_sales_by_salesperson_view u 
                     ON nc.customer_id = u.customer_id 
-                    AND COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = nc.product_key
+                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
                 WHERE u.inv_date BETWEEN :start_date AND :end_date
             )
             
@@ -600,7 +599,8 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_business_revenue")
-    
+
+
     def get_new_business_detail(
         self,
         start_date: date,
@@ -610,11 +610,14 @@ class SalespersonQueries:
         """
         Get detailed line items for new business (first customer-product combos).
         
-        NEW v1.5.0: Returns line-by-line detail instead of aggregate.
-        Used for popover display showing each new combo.
+        Returns line-by-line detail for popover display showing each new combo.
         
-        Returns DataFrame with: customer, product info (pt_code, product_pn, package_size),
-                               brand, salesperson, revenue, GP, first_combo_date
+        FIXED v1.7.0: 
+        - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
+        - Added customer_code for display in popover
+        
+        Returns DataFrame with: customer, customer_code, product info (pt_code, product_pn, package_size),
+                            brand, salesperson, revenue, GP, first_combo_date
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -627,20 +630,22 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # FIXED v1.7.0: Changed product_key priority + Added customer_code
         query = """
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each customer-product combo
+            -- FIXED v1.7.0: Use product_id as primary key
             -- ================================================================
             first_combo_date AS (
                 SELECT 
                     customer_id,
-                    COALESCE(legacy_code, CAST(product_id AS CHAR)) AS product_key,
+                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
                     MIN(inv_date) as first_combo_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
-                  AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                GROUP BY customer_id, COALESCE(legacy_code, CAST(product_id AS CHAR))
+                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
             -- ================================================================
@@ -655,11 +660,12 @@ class SalespersonQueries:
             -- ================================================================
             -- Step 3: Get detailed revenue data for new combos
             -- Aggregate by combo + salesperson
-            -- UPDATED: package_size from unified view directly
+            -- FIXED v1.7.0: Use same product_key logic + Added customer_code
             -- ================================================================
             combo_detail AS (
                 SELECT 
                     u.customer_id,
+                    MAX(u.customer_code) as customer_code,
                     u.customer,
                     MAX(u.product_id) as product_id,
                     MAX(u.product_pn) as product_pn,
@@ -675,22 +681,23 @@ class SalespersonQueries:
                 FROM new_combos nc
                 JOIN unified_sales_by_salesperson_view u 
                     ON nc.customer_id = u.customer_id 
-                    AND COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)) = nc.product_key
+                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
                 WHERE u.inv_date BETWEEN :start_date AND :end_date
-                  AND u.sales_id IN :employee_ids
+                AND u.sales_id IN :employee_ids
                 GROUP BY 
                     u.customer_id, 
                     u.customer,
-                    COALESCE(u.legacy_code, CAST(u.product_id AS CHAR)),
+                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code),
                     u.sales_id,
                     nc.first_combo_date
             )
             
             -- ================================================================
-            -- Final: Return directly from combo_detail (no JOIN needed)
+            -- Final: Return with customer_code for display
             -- ================================================================
             SELECT 
                 customer,
+                customer_code,
                 product_pn,
                 pt_code,
                 package_size,
@@ -712,7 +719,7 @@ class SalespersonQueries:
         }
         
         return self._execute_query(query, params, "new_business_detail")
-    
+
     # =========================================================================
     # COMPLEX KPI HELPER - CALCULATE FOR SPECIFIC EMPLOYEES (NEW v1.6.0)
     # =========================================================================
