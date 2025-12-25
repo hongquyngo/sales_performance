@@ -493,322 +493,343 @@ class KPICenterFilters:
         self.access = access
     
     def render_filter_form(
-        self,
-        kpi_center_df: pd.DataFrame,
-        entity_df: pd.DataFrame = None,
-        default_start_date: date = None,
-        default_end_date: date = None
-    ) -> Tuple[Dict, bool]:
-        """
-        Render ALL filters inside a form - only applies when user clicks Apply.
-        This prevents page reruns on every filter change.
-        
-        SYNCED v2.2.0 with Salesperson logic:
-        - Period definitions shown in tooltip (?) icon next to Period label
-        - YTD/QTD/MTD: Auto-calculate for CURRENT YEAR (today.year)
-        - Custom: Date inputs enabled for any date range selection
-        - Date inputs show default values from database
-        - Identical tooltip: "Start/End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-        
-        UPDATED v2.3.0:
-        - Dynamic year check for "Only with KPI" checkbox
-        - Parent-child expansion for kpi_center_ids
-        
-        Args:
-            kpi_center_df: KPI Center options
-            entity_df: Entity options  
-            default_start_date: Default start date (from DB - Jan 1 of latest sales year)
-            default_end_date: Default end date (from DB - max backlog ETD or today)
-        
-        Returns:
-            Tuple of (filter_values dict, submitted boolean)
-        """
-        # Default dates if not provided
-        today = date.today()
-        current_year = today.year
-        
-        if default_start_date is None:
-            default_start_date = date(current_year, 1, 1)
-        if default_end_date is None:
-            default_end_date = today
-        
-        # Pre-calculate date ranges for CURRENT YEAR (same as Salesperson)
-        current_quarter = (today.month - 1) // 3 + 1
-        quarter_start_month = (current_quarter - 1) * 3 + 1
-        
-        ytd_start = date(current_year, 1, 1)
-        ytd_end = today
-        
-        qtd_start = date(current_year, quarter_start_month, 1)
-        qtd_end = today
-        
-        mtd_start = date(current_year, today.month, 1)
-        mtd_end = today
-        
-        with st.sidebar:
-            st.header("🎯 KPI Center Filters")
+            self,
+            kpi_center_df: pd.DataFrame,
+            entity_df: pd.DataFrame = None,
+            default_start_date: date = None,
+            default_end_date: date = None,
+            kpi_types_with_assignment: set = None,  # NEW v2.6.0
+        ) -> Tuple[Dict, bool]:
+            """
+            Render ALL filters inside a form - only applies when user clicks Apply.
+            This prevents page reruns on every filter change.
             
-            # Show access info at top
-            self._render_access_info()
+            SYNCED v2.2.0 with Salesperson logic:
+            - Period definitions shown in tooltip (?) icon next to Period label
+            - YTD/QTD/MTD: Auto-calculate for CURRENT YEAR (today.year)
+            - Custom: Date inputs enabled for any date range selection
+            - Date inputs show default values from database
+            - Identical tooltip: "Start/End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
             
-            st.divider()
+            UPDATED v2.3.0:
+            - Dynamic year check for "Only with KPI" checkbox
+            - Parent-child expansion for kpi_center_ids
             
-            # =================================================================
-            # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
-            # =================================================================
-            with st.form("kpi_center_filter_form", border=False):
+            UPDATED v2.6.0:
+            - KPI Type dropdown filtered when "Only with KPI" is checked
+            - Added kpi_types_with_assignment param
+            
+            Args:
+                kpi_center_df: KPI Center options
+                entity_df: Entity options  
+                default_start_date: Default start date (from DB - Jan 1 of latest sales year)
+                default_end_date: Default end date (from DB - max backlog ETD or today)
+                kpi_types_with_assignment: Set of KPI Types that have KPI assignments (NEW v2.6.0)
+            
+            Returns:
+                Tuple of (filter_values dict, submitted boolean)
+            """
+            # Default dates if not provided
+            today = date.today()
+            current_year = today.year
+            
+            if default_start_date is None:
+                default_start_date = date(current_year, 1, 1)
+            if default_end_date is None:
+                default_end_date = today
+            
+            # Pre-calculate date ranges for CURRENT YEAR (same as Salesperson)
+            current_quarter = (today.month - 1) // 3 + 1
+            quarter_start_month = (current_quarter - 1) * 3 + 1
+            
+            ytd_start = date(current_year, 1, 1)
+            ytd_end = today
+            
+            qtd_start = date(current_year, quarter_start_month, 1)
+            qtd_end = today
+            
+            mtd_start = date(current_year, today.month, 1)
+            mtd_end = today
+            
+            with st.sidebar:
+                st.header("🎯 KPI Center Filters")
                 
-                # =============================================================
-                # DATE RANGE SECTION (SYNCED with Salesperson v2.2.0)
-                # =============================================================
-                st.markdown("**📅 Date Range**")
-                st.caption("Applies to Sales data. Backlog shows full pipeline.")
-                
-                # Period type radio with detailed tooltip (same as Salesperson)
-                # Period definitions shown in tooltip (?), not as visible text
-                period_type = st.radio(
-                    "Period",
-                    options=['YTD', 'QTD', 'MTD', 'Custom'],
-                    index=0,  # Default to YTD
-                    horizontal=True,
-                    key="form_period_type",
-                    help=(
-                        f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
-                        f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
-                        f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
-                        f"**Custom**: Select any date range using Start/End inputs"
-                    )
-                )
-                
-                # Date inputs - ALWAYS VISIBLE but only used for Custom mode
-                # Tooltip clearly indicates behavior (same as Salesperson)
-                col_start, col_end = st.columns(2)
-                
-                with col_start:
-                    start_date_input = st.date_input(
-                        "Start",
-                        value=default_start_date,
-                        key="form_start_date",
-                        help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                    )
-                
-                with col_end:
-                    end_date_input = st.date_input(
-                        "End",
-                        value=default_end_date,
-                        key="form_end_date",
-                        help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                    )
+                # Show access info at top
+                self._render_access_info()
                 
                 st.divider()
                 
-                # =============================================================
-                # KPI FILTER CHECKBOX - UPDATED v2.3.0: Dynamic year check
-                # =============================================================
-                only_with_kpi = st.checkbox(
-                    "Only with KPI assignment",
-                    value=True,
-                    key="form_only_with_kpi",
-                    help=(
-                        "Show only KPI Centers that have KPI targets assigned for the selected period. "
-                        "Uncheck to include all KPI Centers."
-                    )
-                )
-                
-                # =====================================================
-                # DYNAMIC YEAR CHECK - NEW v2.3.0
-                # Determine which years to check based on period type
-                # =====================================================
-                if period_type in ['YTD', 'QTD', 'MTD']:
-                    # Standard periods use current year
-                    kpi_check_years = [current_year]
-                else:
-                    # Custom mode: check all years in the selected date range
-                    start_year = start_date_input.year
-                    end_year = end_date_input.year
-                    kpi_check_years = list(range(start_year, end_year + 1))
-                
-                # Pre-fetch KPI Center IDs for filtering
-                kpi_center_ids_with_kpi = []
-                filtered_kpi_center_df = kpi_center_df.copy()
-                
-                if only_with_kpi and not kpi_center_df.empty:
-                    kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years)
-                    if kpi_center_ids_with_kpi:
-                        filtered_kpi_center_df = kpi_center_df[
-                            kpi_center_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
-                        ]
-                        excluded_count = len(kpi_center_df) - len(filtered_kpi_center_df)
-                        if excluded_count > 0:
-                            # Show which years are being checked
-                            years_str = ", ".join(map(str, kpi_check_years))
-                            st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI in {years_str} ({excluded_count} hidden)")
-                
-                # =============================================================
-                # KPI CENTER FILTER
-                # =============================================================
-                st.markdown("**🎯 KPI Center**")
-                
-                if filtered_kpi_center_df.empty:
-                    kpi_center_ids = []
-                    st.warning("No KPI Centers available")
-                else:
-                    all_kpi_centers = filtered_kpi_center_df['kpi_center_name'].tolist()
-                    id_map = dict(zip(
-                        filtered_kpi_center_df['kpi_center_name'],
-                        filtered_kpi_center_df['kpi_center_id']
-                    ))
+                # =================================================================
+                # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
+                # =================================================================
+                with st.form("kpi_center_filter_form", border=False):
                     
-                    options = ['All'] + all_kpi_centers
+                    # =============================================================
+                    # DATE RANGE SECTION (SYNCED with Salesperson v2.2.0)
+                    # =============================================================
+                    st.markdown("**📅 Date Range**")
+                    st.caption("Applies to Sales data. Backlog shows full pipeline.")
                     
-                    selected_names = st.multiselect(
-                        "Select KPI Centers",
-                        options=options,
-                        default=['All'],
-                        key="form_kpi_center",
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Convert to IDs
-                    if 'All' in selected_names or not selected_names:
-                        kpi_center_ids = list(id_map.values())
-                    else:
-                        kpi_center_ids = [id_map[name] for name in selected_names if name in id_map]
-                
-                # =============================================================
-                # KPI TYPE FILTER
-                # =============================================================
-                kpi_type_filter = None
-                if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
-                    types = kpi_center_df['kpi_type'].dropna().unique().tolist()
-                    if types:
-                        kpi_type_options = ['All Types'] + sorted(types)
-                        selected_type = st.selectbox(
-                            "KPI Type",
-                            options=kpi_type_options,
-                            index=0,
-                            key="form_kpi_type",
-                            help="Filter by KPI Center type (e.g., TERRITORY, INTERNAL)"
+                    # Period type radio with detailed tooltip (same as Salesperson)
+                    # Period definitions shown in tooltip (?), not as visible text
+                    period_type = st.radio(
+                        "Period",
+                        options=['YTD', 'QTD', 'MTD', 'Custom'],
+                        index=0,  # Default to YTD
+                        horizontal=True,
+                        key="form_period_type",
+                        help=(
+                            f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**Custom**: Select any date range using Start/End inputs"
                         )
-                        if selected_type != 'All Types':
-                            kpi_type_filter = selected_type
-                
-                st.divider()
-                
-                # =============================================================
-                # ENTITY FILTER
-                # =============================================================
-                st.markdown("**🏢 Legal Entity**")
-                
-                entity_ids = []
-                if entity_df is not None and not entity_df.empty:
-                    entity_options = ['All'] + entity_df['entity_name'].tolist()
-                    entity_id_map = dict(zip(
-                        entity_df['entity_name'],
-                        entity_df['entity_id']
-                    ))
-                    
-                    selected_entities = st.multiselect(
-                        "Select entities",
-                        options=entity_options,
-                        default=['All'],
-                        key="form_entity",
-                        label_visibility="collapsed"
                     )
                     
-                    if 'All' in selected_entities or not selected_entities:
-                        entity_ids = []  # No filter
+                    # Date inputs - ALWAYS VISIBLE but only used for Custom mode
+                    # Tooltip clearly indicates behavior (same as Salesperson)
+                    col_start, col_end = st.columns(2)
+                    
+                    with col_start:
+                        start_date_input = st.date_input(
+                            "Start",
+                            value=default_start_date,
+                            key="form_start_date",
+                            help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+                        )
+                    
+                    with col_end:
+                        end_date_input = st.date_input(
+                            "End",
+                            value=default_end_date,
+                            key="form_end_date",
+                            help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
+                        )
+                    
+                    st.divider()
+                    
+                    # =============================================================
+                    # KPI FILTER CHECKBOX - UPDATED v2.3.0: Dynamic year check
+                    # =============================================================
+                    only_with_kpi = st.checkbox(
+                        "Only with KPI assignment",
+                        value=True,
+                        key="form_only_with_kpi",
+                        help=(
+                            "Show only KPI Centers that have KPI targets assigned for the selected period. "
+                            "Uncheck to include all KPI Centers."
+                        )
+                    )
+                    
+                    # =====================================================
+                    # DYNAMIC YEAR CHECK - NEW v2.3.0
+                    # Determine which years to check based on period type
+                    # =====================================================
+                    if period_type in ['YTD', 'QTD', 'MTD']:
+                        # Standard periods use current year
+                        kpi_check_years = [current_year]
                     else:
-                        entity_ids = [
-                            entity_id_map[name]
-                            for name in selected_entities
-                            if name in entity_id_map
-                        ]
-                
-                st.divider()
-                
-                # =============================================================
-                # EXCLUDE INTERNAL REVENUE
-                # =============================================================
-                exclude_internal = st.checkbox(
-                    "Exclude internal revenue",
-                    value=True,
-                    key="form_exclude_internal",
-                    help=(
-                        "Exclude revenue from internal company transactions. "
-                        "Gross Profit is kept intact for accurate GP% calculation."
+                        # Custom mode: check all years in the selected date range
+                        start_year = start_date_input.year
+                        end_year = end_date_input.year
+                        kpi_check_years = list(range(start_year, end_year + 1))
+                    
+                    # Pre-fetch KPI Center IDs for filtering
+                    kpi_center_ids_with_kpi = []
+                    filtered_kpi_center_df = kpi_center_df.copy()
+                    
+                    if only_with_kpi and not kpi_center_df.empty:
+                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years)
+                        if kpi_center_ids_with_kpi:
+                            filtered_kpi_center_df = kpi_center_df[
+                                kpi_center_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
+                            ]
+                            excluded_count = len(kpi_center_df) - len(filtered_kpi_center_df)
+                            if excluded_count > 0:
+                                # Show which years are being checked
+                                years_str = ", ".join(map(str, kpi_check_years))
+                                st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI in {years_str} ({excluded_count} hidden)")
+                    
+                    # =============================================================
+                    # KPI CENTER FILTER
+                    # =============================================================
+                    st.markdown("**🎯 KPI Center**")
+                    
+                    if filtered_kpi_center_df.empty:
+                        kpi_center_ids = []
+                        st.warning("No KPI Centers available")
+                    else:
+                        all_kpi_centers = filtered_kpi_center_df['kpi_center_name'].tolist()
+                        id_map = dict(zip(
+                            filtered_kpi_center_df['kpi_center_name'],
+                            filtered_kpi_center_df['kpi_center_id']
+                        ))
+                        
+                        options = ['All'] + all_kpi_centers
+                        
+                        selected_names = st.multiselect(
+                            "Select KPI Centers",
+                            options=options,
+                            default=['All'],
+                            key="form_kpi_center",
+                            label_visibility="collapsed"
+                        )
+                        
+                        # Convert to IDs
+                        if 'All' in selected_names or not selected_names:
+                            kpi_center_ids = list(id_map.values())
+                        else:
+                            kpi_center_ids = [id_map[name] for name in selected_names if name in id_map]
+                    
+                    # =============================================================
+                    # KPI TYPE FILTER - UPDATED v2.6.0
+                    # When "Only with KPI" is checked, only show KPI Types that have
+                    # KPI Centers with assignments
+                    # =============================================================
+                    kpi_type_filter = None
+                    if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
+                        # Get all KPI types from KPI Centers with sales data
+                        all_types = set(kpi_center_df['kpi_type'].dropna().unique().tolist())
+                        
+                        # Filter types based on "Only with KPI" checkbox
+                        if only_with_kpi and kpi_types_with_assignment:
+                            # Only show types that have KPI Centers with assignments
+                            available_types = sorted(all_types & kpi_types_with_assignment)
+                            hidden_types = len(all_types) - len(available_types)
+                            if hidden_types > 0:
+                                st.caption(f"📋 {len(available_types)} KPI Types shown ({hidden_types} hidden)")
+                        else:
+                            # Show all types
+                            available_types = sorted(all_types)
+                        
+                        if available_types:
+                            kpi_type_options = ['All Types'] + available_types
+                            selected_type = st.selectbox(
+                                "KPI Type",
+                                options=kpi_type_options,
+                                index=0,
+                                key="form_kpi_type",
+                                help="Filter by KPI Center type (e.g., BRAND, TERRITORY). When 'Only with KPI' is checked, only types with assigned KPIs are shown."
+                            )
+                            if selected_type != 'All Types':
+                                kpi_type_filter = selected_type
+                    
+                    st.divider()
+                    
+                    # =============================================================
+                    # ENTITY FILTER
+                    # =============================================================
+                    st.markdown("**🏢 Legal Entity**")
+                    
+                    entity_ids = []
+                    if entity_df is not None and not entity_df.empty:
+                        entity_options = ['All'] + entity_df['entity_name'].tolist()
+                        entity_id_map = dict(zip(
+                            entity_df['entity_name'],
+                            entity_df['entity_id']
+                        ))
+                        
+                        selected_entities = st.multiselect(
+                            "Select entities",
+                            options=entity_options,
+                            default=['All'],
+                            key="form_entity",
+                            label_visibility="collapsed"
+                        )
+                        
+                        if 'All' in selected_entities or not selected_entities:
+                            entity_ids = []  # No filter
+                        else:
+                            entity_ids = [
+                                entity_id_map[name]
+                                for name in selected_entities
+                                if name in entity_id_map
+                            ]
+                    
+                    st.divider()
+                    
+                    # =============================================================
+                    # EXCLUDE INTERNAL REVENUE
+                    # =============================================================
+                    exclude_internal = st.checkbox(
+                        "Exclude internal revenue",
+                        value=True,
+                        key="form_exclude_internal",
+                        help=(
+                            "Exclude revenue from internal company transactions. "
+                            "Gross Profit is kept intact for accurate GP% calculation."
+                        )
                     )
-                )
-                
-                st.divider()
-                
-                # =============================================================
-                # SUBMIT BUTTON
-                # =============================================================
-                submitted = st.form_submit_button(
-                    "🔍 Apply Filters",
-                    use_container_width=True,
-                    type="primary"
-                )
-        
-        # =================================================================
-        # DETERMINE ACTUAL DATES BASED ON PERIOD TYPE (same as Salesperson)
-        # =================================================================
-        if period_type == 'YTD':
-            start_date = ytd_start
-            end_date = ytd_end
-            year = current_year
-        elif period_type == 'QTD':
-            start_date = qtd_start
-            end_date = qtd_end
-            year = current_year
-        elif period_type == 'MTD':
-            start_date = mtd_start
-            end_date = mtd_end
-            year = current_year
-        else:  # Custom
-            start_date = start_date_input
-            end_date = end_date_input
-            # Validation
-            if start_date > end_date:
-                end_date = start_date
-            # Use start_date's year for KPI matching
-            year = start_date.year
-        
-        # =================================================================
-        # EXPAND KPI CENTER IDs WITH CHILDREN - NEW v2.3.0
-        # =================================================================
-        # Store original selection for display/reference
-        kpi_center_ids_selected = kpi_center_ids.copy()
-        
-        # Expand to include all children
-        kpi_center_ids_expanded = _expand_kpi_center_ids_with_children(kpi_center_ids)
-        
-        # Show expansion info if children were added
-        if len(kpi_center_ids_expanded) > len(kpi_center_ids_selected):
-            children_added = len(kpi_center_ids_expanded) - len(kpi_center_ids_selected)
-            logger.debug(f"KPI Centers: {len(kpi_center_ids_selected)} selected + {children_added} children = {len(kpi_center_ids_expanded)} total")
-        
-        # Build filter values dict
-        filter_values = {
-            'period_type': period_type,
-            'year': year,
-            'start_date': start_date,
-            'end_date': end_date,
-            # NEW v2.3.0: Both selected and expanded IDs
-            'kpi_center_ids': kpi_center_ids_expanded,           # Use this for data filtering
-            'kpi_center_ids_selected': kpi_center_ids_selected,  # Original user selection
-            'kpi_center_ids_expanded': kpi_center_ids_expanded,  # Explicit expanded list
-            'kpi_type_filter': kpi_type_filter,
-            'entity_ids': entity_ids,
-            'exclude_internal_revenue': exclude_internal,
-            'show_yoy': True,  # Always enabled
-            'only_with_kpi': only_with_kpi,
-            'kpi_check_years': kpi_check_years,  # NEW: Years used for KPI check
-        }
-        
-        return filter_values, submitted
-    
+                    
+                    st.divider()
+                    
+                    # =============================================================
+                    # SUBMIT BUTTON
+                    # =============================================================
+                    submitted = st.form_submit_button(
+                        "🔍 Apply Filters",
+                        use_container_width=True,
+                        type="primary"
+                    )
+            
+            # =================================================================
+            # DETERMINE ACTUAL DATES BASED ON PERIOD TYPE (same as Salesperson)
+            # =================================================================
+            if period_type == 'YTD':
+                start_date = ytd_start
+                end_date = ytd_end
+                year = current_year
+            elif period_type == 'QTD':
+                start_date = qtd_start
+                end_date = qtd_end
+                year = current_year
+            elif period_type == 'MTD':
+                start_date = mtd_start
+                end_date = mtd_end
+                year = current_year
+            else:  # Custom
+                start_date = start_date_input
+                end_date = end_date_input
+                # Validation
+                if start_date > end_date:
+                    end_date = start_date
+                # Use start_date's year for KPI matching
+                year = start_date.year
+            
+            # =================================================================
+            # EXPAND KPI CENTER IDs WITH CHILDREN - NEW v2.3.0
+            # =================================================================
+            # Store original selection for display/reference
+            kpi_center_ids_selected = kpi_center_ids.copy()
+            
+            # Expand to include all children
+            kpi_center_ids_expanded = _expand_kpi_center_ids_with_children(kpi_center_ids)
+            
+            # Show expansion info if children were added
+            if len(kpi_center_ids_expanded) > len(kpi_center_ids_selected):
+                children_added = len(kpi_center_ids_expanded) - len(kpi_center_ids_selected)
+                logger.debug(f"KPI Centers: {len(kpi_center_ids_selected)} selected + {children_added} children = {len(kpi_center_ids_expanded)} total")
+            
+            # Build filter values dict
+            filter_values = {
+                'period_type': period_type,
+                'year': year,
+                'start_date': start_date,
+                'end_date': end_date,
+                # NEW v2.3.0: Both selected and expanded IDs
+                'kpi_center_ids': kpi_center_ids_expanded,           # Use this for data filtering
+                'kpi_center_ids_selected': kpi_center_ids_selected,  # Original user selection
+                'kpi_center_ids_expanded': kpi_center_ids_expanded,  # Explicit expanded list
+                'kpi_type_filter': kpi_type_filter,
+                'entity_ids': entity_ids,
+                'exclude_internal_revenue': exclude_internal,
+                'show_yoy': True,  # Always enabled
+                'only_with_kpi': only_with_kpi,
+                'kpi_check_years': kpi_check_years,  # NEW: Years used for KPI check
+            }
+            
+            return filter_values, submitted
+
     # =========================================================================
     # LEGACY METHOD - For backward compatibility
     # =========================================================================
@@ -817,14 +838,16 @@ class KPICenterFilters:
         self,
         kpi_center_df: pd.DataFrame,
         entity_df: pd.DataFrame = None,
-        available_years: List[int] = None
+        available_years: List[int] = None,
+        kpi_types_with_assignment: set = None,  # NEW v2.6.0
     ) -> Dict:
         """
         Legacy method - redirects to render_filter_form for backward compatibility.
         """
         filter_values, _ = self.render_filter_form(
             kpi_center_df=kpi_center_df,
-            entity_df=entity_df
+            entity_df=entity_df,
+            kpi_types_with_assignment=kpi_types_with_assignment,  # NEW v2.6.0
         )
         filter_values['submitted'] = True  # Always consider as submitted for legacy
         return filter_values

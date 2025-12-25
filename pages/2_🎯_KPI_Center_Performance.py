@@ -130,9 +130,20 @@ def load_lookup_data():
     """
     Load lookup data for filters (cached).
     
-    UPDATED v2.5.0: KPI Center and KPI Type loaded dynamically from 
-    unified_sales_by_kpi_center_view instead of kpi_centers table.
-    This ensures dropdown only shows KPI Centers with actual sales data.
+    UPDATED v2.6.0: 
+    - KPI Center: From unified_sales_by_kpi_center_view (có sales data)
+    - KPI Centers with KPI: From sales_kpi_center_assignments_view (có KPI assignment)
+    - KPI Type: Filtered by assignment when "Only with KPI" checkbox ticked
+    - Legal Entity: Join với companies table để lấy english_name (đồng nhất naming)
+    - Available Years: From unified_sales_by_kpi_center_view
+    
+    Returns:
+        Tuple of:
+        - kpi_center_df: DataFrame with all KPI Centers having sales data
+        - entity_df: DataFrame with Legal Entities (english_name from companies table)
+        - available_years: List of years with sales data
+        - kpi_center_ids_with_assignment: Set of KPI Center IDs with KPI assignment
+        - kpi_types_with_assignment: Set of KPI Types with KPI assignment
     """
     from utils.db import get_db_engine
     from sqlalchemy import text
@@ -140,7 +151,8 @@ def load_lookup_data():
     engine = get_db_engine()
     
     # =========================================================================
-    # KPI CENTER & KPI TYPE - From unified_sales_by_kpi_center_view (UPDATED)
+    # 1. KPI CENTER - From unified_sales_by_kpi_center_view
+    #    (Only KPI Centers with actual sales data)
     # =========================================================================
     kpi_center_query = """
         SELECT DISTINCT
@@ -159,20 +171,46 @@ def load_lookup_data():
         kpi_center_df['description'] = None
     
     # =========================================================================
-    # LEGAL ENTITY - From unified_sales_by_kpi_center_view (no change)
+    # 2. KPI CENTERS WITH KPI ASSIGNMENT - For "Only with KPI" checkbox filter
+    #    Returns kpi_center_id and kpi_type for filtering both dropdowns
+    # =========================================================================
+    kpi_assignment_query = """
+        SELECT DISTINCT 
+            kac.kpi_center_id,
+            kc.type AS kpi_type
+        FROM sales_kpi_center_assignments_view kac
+        LEFT JOIN kpi_centers kc ON kac.kpi_center_id = kc.id
+        WHERE kac.kpi_center_id IS NOT NULL
+    """
+    kpi_assignment_df = pd.read_sql(text(kpi_assignment_query), engine)
+    
+    # Create set of KPI Center IDs with assignments (for filtering KPI Center dropdown)
+    kpi_center_ids_with_assignment = set(
+        kpi_assignment_df['kpi_center_id'].tolist()
+    ) if not kpi_assignment_df.empty else set()
+    
+    # Create set of KPI Types that have assignments (for filtering KPI Type dropdown)
+    kpi_types_with_assignment = set(
+        kpi_assignment_df['kpi_type'].dropna().tolist()
+    ) if not kpi_assignment_df.empty else set()
+    
+    # =========================================================================
+    # 3. LEGAL ENTITY - Join với companies table để lấy english_name
+    #    (Đảm bảo tên đồng nhất giữa data cũ và mới)
     # =========================================================================
     entity_query = """
         SELECT DISTINCT
-            legal_entity_id AS entity_id,
-            legal_entity AS entity_name
-        FROM unified_sales_by_kpi_center_view
-        WHERE legal_entity_id IS NOT NULL
-        ORDER BY legal_entity
+            v.legal_entity_id AS entity_id,
+            COALESCE(c.english_name, v.legal_entity) AS entity_name
+        FROM unified_sales_by_kpi_center_view v
+        LEFT JOIN companies c ON v.legal_entity_id = c.id
+        WHERE v.legal_entity_id IS NOT NULL
+        ORDER BY entity_name
     """
     entity_df = pd.read_sql(text(entity_query), engine)
     
     # =========================================================================
-    # AVAILABLE YEARS - From unified_sales_by_kpi_center_view (no change)
+    # 4. AVAILABLE YEARS - From unified_sales_by_kpi_center_view
     # =========================================================================
     years_query = """
         SELECT DISTINCT CAST(invoice_year AS SIGNED) AS year
@@ -183,7 +221,18 @@ def load_lookup_data():
     years_df = pd.read_sql(text(years_query), engine)
     available_years = years_df['year'].tolist() if not years_df.empty else [datetime.now().year]
     
-    return kpi_center_df, entity_df, available_years
+    # =========================================================================
+    # 5. RETURN EXTENDED TUPLE
+    # =========================================================================
+    return (
+        kpi_center_df,                      # All KPI Centers with sales data
+        entity_df,                          # Legal Entities with english_name
+        available_years,                    # Available years
+        kpi_center_ids_with_assignment,     # Set of KPI Center IDs with KPI assignment
+        kpi_types_with_assignment,          # Set of KPI Types with KPI assignment
+    )
+
+
 def load_data_for_year_range(
     queries: KPICenterQueries,
     start_year: int,
@@ -492,7 +541,13 @@ def main():
     st.caption(f"Logged in as: {st.session_state.get('user_fullname', 'User')} ({st.session_state.get('user_role', '')})")
     
     try:
-        kpi_center_df, entity_df, available_years = load_lookup_data()
+        (
+            kpi_center_df, 
+            entity_df, 
+            available_years,
+            kpi_center_ids_with_assignment,
+            kpi_types_with_assignment,
+        ) = load_lookup_data()
     except Exception as e:
         st.error(f"Failed to load lookup data: {e}")
         logger.error(f"Lookup data error: {e}")
@@ -504,7 +559,8 @@ def main():
     filter_values = filters.render_sidebar_filters(
         kpi_center_df=kpi_center_df,
         entity_df=entity_df,
-        available_years=available_years
+        available_years=available_years,
+        kpi_types_with_assignment=kpi_types_with_assignment,  # NEW v2.6.0
     )
     
     is_valid, error_msg = filters.validate_filters(filter_values)
