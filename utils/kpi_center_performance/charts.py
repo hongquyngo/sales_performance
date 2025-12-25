@@ -169,7 +169,7 @@ class KPICenterCharts:
                 )
         
         # =====================================================================
-        # 🆕 NEW BUSINESS SECTION - REFACTORED v2.6.0 to match Salesperson
+        # 🆕 NEW BUSINESS SECTION - SYNCED v2.6.0 with Salesperson page
         # =====================================================================
         if show_complex and complex_kpis:
             with st.container(border=True):
@@ -178,38 +178,37 @@ class KPICenterCharts:
                 with col_header:
                     st.markdown("**🆕 NEW BUSINESS**")
                 with col_help:
-                    # UPDATED v2.6.0: Detailed help matching Salesperson page
                     with st.popover("ℹ️ Help"):
                         st.markdown("""
-**🆕 New Business Metrics Definitions**
-
-| Metric | Definition | Lookback |
-|--------|------------|----------|
-| **New Customers** | Customers with **first invoice to COMPANY** in period | 5 years |
-| **New Products** | Products with **first sale ever** in period | 5 years |
-| **New Business Revenue** | Revenue from **first product-customer combo** | 5 years |
-
-**Counting Method:**
-- Values are **proportionally counted** based on split %
-- Example: If KPI Center has 50% split on a new customer, they get 0.5 new customer credit
-
-**"New" Definitions:**
-- **New Customer**: Customer has NEVER purchased from the company before (globally, any KPI Center). Credit goes to KPI Center who made the first sale.
-- **New Product**: Product has NEVER been sold to ANY customer before. Credit goes to KPI Center who introduced it.
-- **New Business Revenue**: Revenue from first time a specific product is sold to a specific customer.
-
-**Lookback Period:** 5 years from period end date
-
-**Formula Summary:**
-- New Customer Count = Σ(split_rate / 100) for each first-time customer
-- New Product Count = Σ(split_rate / 100) for each first-time product
-- New Business Revenue = Σ(sales_by_kpi_center_usd) for first customer-product combos
+                        **🆕 New Business Metrics Definitions**
+                        
+                        | Metric | Definition | Lookback |
+                        |--------|------------|----------|
+                        | New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
+                        | New Products | Products with **first sale ever** in period | 5 years |
+                        | New Business Revenue | Revenue from **first product-customer combo** | 5 years |
+                        
+                        **Counting Method:**
+                        - Values are **proportionally counted** based on split %
+                        - Example: If KPI Center has 50% split on a new customer, they get 0.5 new customer credit
+                        
+                        **"New" Definitions:**
+                        - **New Customer**: Customer has NEVER purchased from the company before (globally, any KPI Center). Credit goes to KPI Center who made the first sale.
+                        - **New Product**: Product has NEVER been sold to ANY customer before. Credit goes to KPI Center who introduced it.
+                        - **New Business Revenue**: Revenue from first time a specific product is sold to a specific customer.
+                        
+                        **Lookback Period:** 5 years from period start date
+                        
+                        **Formula Summary:**
+                        - New Customer Count = Σ(split_rate / 100) for each first-time customer
+                        - New Product Count = Σ(split_rate / 100) for each first-time product
+                        - New Business Revenue = Σ(sales_by_kpi_center_usd) for first customer-product combos
                         """)
                 
                 col1, col2, col3 = st.columns(3)
                 
                 # ---------------------------------------------------------
-                # NEW CUSTOMERS with Detail Popover - UPDATED v2.6.0
+                # NEW CUSTOMERS with Detail Popover - SYNCED v2.6.0
                 # ---------------------------------------------------------
                 with col1:
                     new_customers = complex_kpis.get('num_new_customers', 0)
@@ -230,18 +229,18 @@ class KPICenterCharts:
                     with btn_col:
                         if new_customers_df is not None and not new_customers_df.empty:
                             with st.popover("📋"):
-                                # Force wider container - UPDATED v2.6.0
-                                st.markdown('<div style="min-width:600px"><b>📋 New Customers Detail</b></div>', unsafe_allow_html=True)
+                                # SYNCED: 550px width like Salesperson
+                                st.markdown('<div style="min-width:550px"><b>📋 New Customers Detail</b></div>', unsafe_allow_html=True)
                                 st.caption(f"Total: {len(new_customers_df)} records")
                                 
-                                # Prepare display dataframe
-                                display_cols = ['customer', 'customer_code', 'kpi_center', 'split_rate_percent', 'first_sale_date', 'first_day_revenue', 'first_day_gp']
+                                # SYNCED: Column order matching Salesperson
+                                display_cols = ['customer', 'customer_code', 'kpi_center', 'split_rate_percent', 'first_sale_date']
                                 available_cols = [c for c in display_cols if c in new_customers_df.columns]
                                 
                                 if available_cols:
                                     display_df = new_customers_df[available_cols].copy()
                                     
-                                    # UPDATED v2.6.0: Format customer display as "Customer Name | Code"
+                                    # SYNCED: Format customer as "Customer Name | Code"
                                     if 'customer_code' in display_df.columns and 'customer' in display_df.columns:
                                         display_df['customer_display'] = display_df.apply(
                                             lambda row: f"{row['customer']} | {row['customer_code']}" 
@@ -250,7 +249,6 @@ class KPICenterCharts:
                                             axis=1
                                         )
                                         display_df = display_df.drop(columns=['customer', 'customer_code'], errors='ignore')
-                                        # Reorder: customer_display first
                                         cols_order = ['customer_display'] + [c for c in display_df.columns if c != 'customer_display']
                                         display_df = display_df[cols_order]
                                     
@@ -260,36 +258,34 @@ class KPICenterCharts:
                                         display_df = display_df.sort_values(date_col, ascending=False)
                                         display_df[date_col] = pd.to_datetime(display_df[date_col]).dt.strftime('%Y-%m-%d')
                                     
-                                    # Format Split %
+                                    # SYNCED: Split % format - "0%" for null (not "100%")
                                     if 'split_rate_percent' in display_df.columns:
                                         display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
-                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "100%"
+                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
                                         )
                                     
-                                    # Column config
-                                    col_config = {
+                                    # SYNCED: Rename columns using dict (not column_config)
+                                    col_rename = {
                                         'customer_display': 'Customer',
                                         'customer': 'Customer',
                                         'kpi_center': 'KPI Center',
                                         'split_rate_percent': 'Split %',
                                         'first_sale_date': 'First Invoice',
-                                        'first_invoice_date': 'First Invoice',
-                                        'first_day_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-                                        'first_day_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
+                                        'first_invoice_date': 'First Invoice'
                                     }
+                                    display_df = display_df.rename(columns=col_rename)
                                     
                                     st.dataframe(
-                                        display_df.head(100),
+                                        display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=min(400, len(display_df) * 35 + 40),
-                                        column_config=col_config
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
                         else:
                             st.caption("")
                 
                 # ---------------------------------------------------------
-                # NEW PRODUCTS with Detail Popover - UPDATED v2.6.0
+                # NEW PRODUCTS with Detail Popover - SYNCED v2.6.0
                 # ---------------------------------------------------------
                 with col2:
                     new_products = complex_kpis.get('num_new_products', 0)
@@ -310,50 +306,55 @@ class KPICenterCharts:
                     with btn_col:
                         if new_products_df is not None and not new_products_df.empty:
                             with st.popover("📋"):
-                                # Force wider container
-                                st.markdown('<div style="min-width:600px"><b>📋 New Products Detail</b></div>', unsafe_allow_html=True)
+                                # SYNCED: 650px width like Salesperson
+                                st.markdown('<div style="min-width:650px"><b>📋 New Products Detail</b></div>', unsafe_allow_html=True)
                                 st.caption(f"Total: {len(new_products_df)} records")
                                 
-                                display_cols = ['product_pn', 'pt_code', 'brand', 'kpi_center', 'split_rate_percent', 'first_sale_date', 'first_day_revenue', 'first_day_gp']
-                                available_cols = [c for c in display_cols if c in new_products_df.columns]
+                                display_df = new_products_df.copy()
+                                
+                                # SYNCED: Format product as "pt_code | Name"
+                                def format_product(row):
+                                    parts = []
+                                    if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                                        parts.append(str(row['pt_code']))
+                                    if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                                        parts.append(str(row['product_pn']))
+                                    return ' | '.join(parts) if parts else 'N/A'
+                                
+                                display_df['product_display'] = display_df.apply(format_product, axis=1)
+                                
+                                # Select columns for display
+                                display_cols = ['product_display', 'brand', 'kpi_center', 'split_rate_percent', 'first_sale_date']
+                                available_cols = [c for c in display_cols if c in display_df.columns]
                                 
                                 if available_cols:
-                                    display_df = new_products_df[available_cols].copy()
+                                    display_df = display_df[available_cols].copy()
                                     
                                     # Sort by date descending
                                     if 'first_sale_date' in display_df.columns:
                                         display_df = display_df.sort_values('first_sale_date', ascending=False)
                                         display_df['first_sale_date'] = pd.to_datetime(display_df['first_sale_date']).dt.strftime('%Y-%m-%d')
                                     
-                                    # Format Split %
+                                    # SYNCED: Split % format - "0%" for null
                                     if 'split_rate_percent' in display_df.columns:
                                         display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
-                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "100%"
+                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
                                         )
                                     
-                                    col_config = {
-                                        'product_pn': 'Product',
-                                        'pt_code': 'PT Code',
-                                        'brand': 'Brand',
-                                        'kpi_center': 'KPI Center',
-                                        'split_rate_percent': 'Split %',
-                                        'first_sale_date': 'First Sale',
-                                        'first_day_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-                                        'first_day_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
-                                    }
+                                    # SYNCED: Rename columns
+                                    display_df.columns = ['Product', 'Brand', 'KPI Center', 'Split %', 'First Sale'][:len(display_df.columns)]
                                     
                                     st.dataframe(
-                                        display_df.head(100),
+                                        display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=min(400, len(display_df) * 35 + 40),
-                                        column_config=col_config
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
                         else:
                             st.caption("")
                 
                 # ---------------------------------------------------------
-                # NEW BUSINESS REVENUE with Detail Popover - UPDATED v2.6.0
+                # NEW BUSINESS REVENUE with Detail Popover - SYNCED v2.6.0
                 # ---------------------------------------------------------
                 with col3:
                     new_biz_rev = complex_kpis.get('new_business_revenue', 0)
@@ -368,24 +369,27 @@ class KPICenterCharts:
                             label="New Business Revenue",
                             value=f"${new_biz_rev:,.0f}",
                             delta=delta_str,
-                            help="Revenue from customer-product combos first sold in selected period (5-year lookback)."
+                            help="Revenue from first-time product-customer combinations (5-year lookback)."
                         )
                     
                     with btn_col:
-                        if new_business_detail_df is not None and not new_business_detail_df.empty:
+                        # Prefer detail_df if available, fallback to aggregated df
+                        detail_df = new_business_detail_df if new_business_detail_df is not None else new_business_df
+                        
+                        if detail_df is not None and not detail_df.empty:
                             with st.popover("📋"):
-                                # Force wider container - Wider for New Business
-                                st.markdown('<div style="min-width:700px"><b>📋 New Business Detail (Customer-Product Combos)</b></div>', unsafe_allow_html=True)
-                                st.caption(f"Total: {len(new_business_detail_df)} combos")
+                                # SYNCED: 800px width like Salesperson
+                                st.markdown('<div style="min-width:800px"><b>📋 New Business Revenue Detail</b></div>', unsafe_allow_html=True)
                                 
-                                display_cols = ['customer', 'customer_code', 'product_pn', 'brand', 'kpi_center', 
-                                               'split_rate_percent', 'first_sale_date', 'period_revenue', 'period_gp', 'invoice_count']
-                                available_cols = [c for c in display_cols if c in new_business_detail_df.columns]
+                                # Check if this is detailed data (has customer column) or aggregated
+                                is_detail_data = 'customer' in detail_df.columns
                                 
-                                if available_cols:
-                                    display_df = new_business_detail_df[available_cols].copy()
+                                if is_detail_data:
+                                    st.caption(f"New Customer-Product Combos | Total: {len(detail_df)} records")
                                     
-                                    # Format customer display as "Customer Name | Code"
+                                    display_df = detail_df.copy()
+                                    
+                                    # SYNCED: Format customer as "Customer Name | Code"
                                     if 'customer_code' in display_df.columns and 'customer' in display_df.columns:
                                         display_df['customer_display'] = display_df.apply(
                                             lambda row: f"{row['customer']} | {row['customer_code']}" 
@@ -393,65 +397,102 @@ class KPICenterCharts:
                                                 else str(row['customer']),
                                             axis=1
                                         )
-                                        display_df = display_df.drop(columns=['customer', 'customer_code'], errors='ignore')
-                                        cols_order = ['customer_display'] + [c for c in display_df.columns if c != 'customer_display']
-                                        display_df = display_df[cols_order]
+                                    else:
+                                        display_df['customer_display'] = display_df['customer']
+                                    
+                                    # SYNCED: Format product as "pt_code | Name"
+                                    def format_product(row):
+                                        parts = []
+                                        if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                                            parts.append(str(row['pt_code']))
+                                        if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                                            parts.append(str(row['product_pn']))
+                                        return ' | '.join(parts) if parts else 'N/A'
+                                    
+                                    display_df['product_display'] = display_df.apply(format_product, axis=1)
+                                    
+                                    # Select and order columns for display
+                                    display_cols = ['customer_display', 'product_display', 'brand', 'kpi_center', 
+                                                    'split_rate_percent', 'period_revenue', 'period_gp', 'first_sale_date']
+                                    available_cols = [c for c in display_cols if c in display_df.columns]
+                                    display_df = display_df[available_cols].copy()
                                     
                                     # Sort by revenue descending
                                     if 'period_revenue' in display_df.columns:
                                         display_df = display_df.sort_values('period_revenue', ascending=False)
                                     
-                                    # Format date
+                                    # Format columns
                                     if 'first_sale_date' in display_df.columns:
                                         display_df['first_sale_date'] = pd.to_datetime(display_df['first_sale_date']).dt.strftime('%Y-%m-%d')
                                     
-                                    # Format Split %
+                                    # SYNCED: Split % format - "0%" for null
                                     if 'split_rate_percent' in display_df.columns:
                                         display_df['split_rate_percent'] = display_df['split_rate_percent'].apply(
-                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "100%"
+                                            lambda x: f"{x:.0f}%" if pd.notna(x) else "0%"
                                         )
                                     
-                                    col_config = {
+                                    # SYNCED: Pre-format Revenue/GP with $
+                                    if 'period_revenue' in display_df.columns:
+                                        display_df['period_revenue'] = display_df['period_revenue'].apply(
+                                            lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                        )
+                                    
+                                    if 'period_gp' in display_df.columns:
+                                        display_df['period_gp'] = display_df['period_gp'].apply(
+                                            lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                        )
+                                    
+                                    # SYNCED: Rename columns
+                                    col_rename = {
                                         'customer_display': 'Customer',
-                                        'customer': 'Customer',
-                                        'product_pn': 'Product',
+                                        'product_display': 'Product',
                                         'brand': 'Brand',
                                         'kpi_center': 'KPI Center',
                                         'split_rate_percent': 'Split %',
-                                        'first_sale_date': 'First Sale',
-                                        'period_revenue': st.column_config.NumberColumn('Period Revenue', format='$%,.0f'),
-                                        'period_gp': st.column_config.NumberColumn('Period GP', format='$%,.0f'),
-                                        'invoice_count': 'Invoices',
+                                        'period_revenue': 'Revenue',
+                                        'period_gp': 'GP',
+                                        'first_sale_date': 'First Sale'
                                     }
+                                    display_df = display_df.rename(columns=col_rename)
                                     
                                     st.dataframe(
-                                        display_df.head(100),
+                                        display_df,
                                         use_container_width=True,
                                         hide_index=True,
-                                        height=400,
-                                        column_config=col_config
+                                        height=min(400, len(display_df) * 35 + 40)
                                     )
-                                
-                                # Summary by KPI Center
-                                if new_business_df is not None and not new_business_df.empty:
-                                    st.divider()
-                                    st.markdown("**Summary by KPI Center**")
-                                    summary_cols = ['kpi_center', 'num_new_combos', 'new_business_revenue', 'new_business_gp']
-                                    summary_cols = [c for c in summary_cols if c in new_business_df.columns]
+                                else:
+                                    # Fallback: Show aggregated by KPI Center (backward compatible)
+                                    st.caption(f"By KPI Center | Total: {len(detail_df)} records")
                                     
-                                    summary_config = {
-                                        'kpi_center': 'KPI Center',
-                                        'num_new_combos': 'New Combos',
-                                        'new_business_revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-                                        'new_business_gp': st.column_config.NumberColumn('GP', format='$%,.0f'),
-                                    }
+                                    display_cols = ['kpi_center', 'new_business_revenue', 'new_business_gp', 'num_new_combos']
+                                    available_cols = [c for c in display_cols if c in detail_df.columns]
                                     
-                                    st.dataframe(
-                                        new_business_df[summary_cols] if summary_cols else new_business_df,
-                                        hide_index=True,
-                                        column_config=summary_config,
-                                        use_container_width=True
-                                    )
+                                    if available_cols:
+                                        display_df = detail_df[available_cols].copy()
+                                        
+                                        if 'new_business_revenue' in display_df.columns:
+                                            display_df = display_df.sort_values('new_business_revenue', ascending=False)
+                                            display_df['new_business_revenue'] = display_df['new_business_revenue'].apply(
+                                                lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                            )
+                                        if 'new_business_gp' in display_df.columns:
+                                            display_df['new_business_gp'] = display_df['new_business_gp'].apply(
+                                                lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                            )
+                                        if 'num_new_combos' in display_df.columns:
+                                            display_df['num_new_combos'] = display_df['num_new_combos'].apply(
+                                                lambda x: f"{int(x):,}" if pd.notna(x) else "0"
+                                            )
+                                        
+                                        display_df.columns = ['KPI Center', 'Revenue', 'Gross Profit', 'New Combos'][:len(display_df.columns)]
+                                        
+                                        st.dataframe(
+                                            display_df,
+                                            use_container_width=True,
+                                            hide_index=True,
+                                            height=min(400, len(display_df) * 35 + 40)
+                                        )
                         else:
                             st.caption("")
     
