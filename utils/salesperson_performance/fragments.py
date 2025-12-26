@@ -1303,6 +1303,183 @@ def backlog_list_fragment(
         height=400
     )
 
+# =============================================================================
+# FRAGMENT: BACKLOG BY ETD MONTH (NEW v2.5.0)
+# Multi-year view with Timeline/Stacked/Single Year modes
+# =============================================================================
+
+@st.fragment
+def backlog_by_etd_fragment(
+    backlog_by_month_df: pd.DataFrame,
+    metrics_calc,  # SalespersonMetrics instance
+    current_year: int,
+    fragment_key: str = "backlog_etd"
+):
+    """
+    Fragment for Backlog by ETD Month with multi-year support.
+    
+    Runs independently - changing view mode won't reload entire page.
+    
+    Features:
+    - Timeline: Chronological view "Jan'25, Feb'25, ..., Jan'26"
+    - Stacked by Month: Compare same months across years
+    - Single Year: Original behavior with year selector
+    
+    Args:
+        backlog_by_month_df: Raw backlog data grouped by ETD year/month
+        metrics_calc: SalespersonMetrics instance for data preparation
+        current_year: Current filter year (for Single Year default)
+        fragment_key: Unique key prefix for widgets
+        
+    CHANGELOG:
+    - v1.0.0: Initial implementation for multi-year backlog view
+    """
+    from .charts import SalespersonCharts
+    from .constants import MONTH_ORDER
+    
+    st.markdown("#### 📅 Backlog by ETD Month")
+    
+    # Check if we have backlog data
+    if backlog_by_month_df.empty:
+        st.info("No backlog data available")
+        return
+    
+    # Get unique years
+    df_years = backlog_by_month_df.copy()
+    df_years['etd_year'] = pd.to_numeric(df_years['etd_year'], errors='coerce').fillna(0).astype(int)
+    unique_years = sorted(df_years['etd_year'].unique())
+    
+    # Show year info if multi-year
+    if len(unique_years) > 1:
+        year_list = ', '.join(map(str, unique_years))
+        st.info(f"📆 Backlog spans {len(unique_years)} years: {year_list}")
+    
+    # View mode selector
+    col_view, col_spacer = st.columns([2, 4])
+    with col_view:
+        view_mode = st.radio(
+            "View Mode",
+            options=["Timeline", "Stacked by Month", "Single Year"],
+            horizontal=True,
+            key=f"{fragment_key}_view_mode",
+            help="Timeline: Chronological view | Stacked: Compare months across years | Single Year: One year only"
+        )
+    
+    if view_mode == "Timeline":
+        # =============================================================
+        # TIMELINE VIEW - Chronological across all years
+        # =============================================================
+        backlog_monthly = metrics_calc.prepare_backlog_by_month_multiyear(
+            backlog_by_month_df=backlog_by_month_df,
+            include_empty_months=False
+        )
+        
+        if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+            chart = SalespersonCharts.build_backlog_by_month_chart_multiyear(
+                monthly_df=backlog_monthly,
+                title="",
+                color_by_year=True,
+                show_totals_by_year=True
+            )
+            st.altair_chart(chart, use_container_width=True)
+            
+            # Data table with year info
+            display_cols = ['year_month', 'etd_year', 'backlog_revenue', 'backlog_gp', 'order_count']
+            display_cols = [c for c in display_cols if c in backlog_monthly.columns]
+            
+            st.dataframe(
+                backlog_monthly[display_cols].style.format({
+                    'backlog_revenue': '${:,.0f}',
+                    'backlog_gp': '${:,.0f}',
+                    'order_count': '{:,.0f}'
+                }),
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+        else:
+            st.info("No backlog data to display")
+    
+    elif view_mode == "Stacked by Month":
+        # =============================================================
+        # STACKED VIEW - Compare same months across years
+        # =============================================================
+        backlog_monthly = metrics_calc.prepare_backlog_by_month_multiyear(
+            backlog_by_month_df=backlog_by_month_df,
+            include_empty_months=False
+        )
+        
+        if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+            chart = SalespersonCharts.build_backlog_by_month_stacked(
+                monthly_df=backlog_monthly,
+                title=""
+            )
+            st.altair_chart(chart, use_container_width=True)
+            
+            # Pivot table: months as rows, years as columns
+            pivot_df = backlog_monthly.pivot_table(
+                index='etd_month',
+                columns='etd_year',
+                values='backlog_revenue',
+                aggfunc='sum',
+                fill_value=0
+            )
+            # Reorder months
+            pivot_df = pivot_df.reindex(MONTH_ORDER)
+            pivot_df = pivot_df.dropna(how='all')
+            
+            # Add total column
+            pivot_df['Total'] = pivot_df.sum(axis=1)
+            
+            st.dataframe(
+                pivot_df.style.format('${:,.0f}'),
+                use_container_width=True
+            )
+        else:
+            st.info("No backlog data to display")
+    
+    else:  # Single Year
+        # =============================================================
+        # SINGLE YEAR VIEW - Original behavior with year selector
+        # =============================================================
+        col_year, _ = st.columns([2, 4])
+        with col_year:
+            # Default to current_year if available, else first year
+            default_idx = 0
+            if current_year in unique_years:
+                default_idx = unique_years.index(current_year)
+            
+            selected_year = st.selectbox(
+                "Select Year",
+                options=unique_years,
+                index=default_idx,
+                key=f"{fragment_key}_year_select"
+            )
+        
+        backlog_monthly = metrics_calc.prepare_backlog_by_month(
+            backlog_by_month_df=backlog_by_month_df,
+            year=selected_year
+        )
+        
+        if not backlog_monthly.empty and backlog_monthly['backlog_revenue'].sum() > 0:
+            chart = SalespersonCharts.build_backlog_by_month_chart(
+                monthly_df=backlog_monthly,
+                title=f"Backlog by ETD Month - {selected_year}"
+            )
+            st.altair_chart(chart, use_container_width=True)
+            
+            # Monthly table
+            st.dataframe(
+                backlog_monthly[['month', 'backlog_revenue', 'backlog_gp', 'order_count']].style.format({
+                    'backlog_revenue': '${:,.0f}',
+                    'backlog_gp': '${:,.0f}',
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info(f"No backlog data for {selected_year}")
+
 
 # =============================================================================
 # FRAGMENT: EXPORT REPORT (NEW v2.4.0)
@@ -1440,4 +1617,5 @@ __all__ = [
     'pivot_analysis_fragment',
     'backlog_list_fragment',
     'export_report_fragment',
+    'backlog_by_etd_fragment',
 ]
