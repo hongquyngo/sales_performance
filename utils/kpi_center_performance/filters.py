@@ -14,8 +14,16 @@ Renders filter UI elements:
 REQUIREMENTS:
 - Streamlit >= 1.33.0 (for @st.fragment support)
 
-VERSION: 2.10.2
+VERSION: 2.11.0
 CHANGELOG:
+- v2.11.0: MAJOR REFACTOR - All filters in single @st.fragment:
+          - Entity now filters by KPI Type (like KPI Center)
+          - Date Range moved into fragment
+          - YTD/QTD/MTD: date pickers show values but DISABLED
+          - Custom: date pickers ENABLED
+          - Added _get_entities_by_kpi_type() helper
+          - Removed st.form - fragment handles instant updates
+          - Submit button triggers page rerun via session_state flag
 - v2.10.2: UX improvement - Always reset KPI Center to ['All'] when KPI Type changes:
           - Previous: Only reset when selection became invalid (inconsistent behavior)
           - Now: Track KPI Type changes via _prev_kpi_type session state
@@ -113,6 +121,56 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
 
 
 # =============================================================================
+# ENTITY BY KPI TYPE HELPER - NEW v2.11.0
+# =============================================================================
+
+def _get_entities_by_kpi_type(kpi_type: str = None) -> pd.DataFrame:
+    """
+    Get Legal Entities that have sales data for the selected KPI Type.
+    
+    Args:
+        kpi_type: KPI Type to filter by (e.g., 'TERRITORY', 'VERTICAL')
+                  If None, returns all entities with sales data
+        
+    Returns:
+        DataFrame with columns: entity_id, entity_name
+    """
+    try:
+        from utils.db import get_db_engine
+        engine = get_db_engine()
+        
+        if kpi_type:
+            query = """
+                SELECT DISTINCT
+                    v.legal_entity_id AS entity_id,
+                    COALESCE(c.english_name, v.legal_entity) AS entity_name
+                FROM unified_sales_by_kpi_center_view v
+                LEFT JOIN companies c ON v.legal_entity_id = c.id
+                WHERE v.legal_entity_id IS NOT NULL
+                  AND v.kpi_type = :kpi_type
+                ORDER BY entity_name
+            """
+            df = pd.read_sql(text(query), engine, params={'kpi_type': kpi_type})
+        else:
+            query = """
+                SELECT DISTINCT
+                    v.legal_entity_id AS entity_id,
+                    COALESCE(c.english_name, v.legal_entity) AS entity_name
+                FROM unified_sales_by_kpi_center_view v
+                LEFT JOIN companies c ON v.legal_entity_id = c.id
+                WHERE v.legal_entity_id IS NOT NULL
+                ORDER BY entity_name
+            """
+            df = pd.read_sql(text(query), engine)
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error fetching entities by KPI Type: {e}")
+        return pd.DataFrame(columns=['entity_id', 'entity_name'])
+
+
+# =============================================================================
 # PARENT-CHILD HIERARCHY HELPER - NEW v2.3.0
 # =============================================================================
 
@@ -195,52 +253,65 @@ class FilterResult:
     
     def __repr__(self) -> str:
         mode = "EXCLUDE" if self.excluded else "INCLUDE"
-        return f"FilterResult({len(self.selected)} items, {mode}, active={self.is_active})"
+        if not self.is_active:
+            return "FilterResult(inactive)"
+        return f"FilterResult({mode} {len(self.selected)} items)"
 
 
-def render_multiselect_filter(
+def render_multiselect_with_exclude(
     label: str,
     options: List[Any],
-    key: str,
-    default_excluded: bool = False,
-    placeholder: str = "Select...",
+    default: List[Any] = None,
+    key: str = None,
     help_text: str = None,
-    max_selections: int = None,
-    container = None
+    ctx = None
 ) -> FilterResult:
     """
-    Render a multiselect filter with an "Excl" (Excluded) checkbox.
+    Render a multiselect with an Exclude checkbox.
+    
+    Args:
+        label: Label for the multiselect
+        options: List of options
+        default: Default selected values
+        key: Unique key prefix for widgets
+        help_text: Help text for multiselect
+        ctx: Streamlit context (st or st.sidebar)
+        
+    Returns:
+        FilterResult with selected items, exclude flag, and is_active flag
     """
-    ctx = container if container else st
+    if ctx is None:
+        ctx = st
     
-    # Header row with label and Excl checkbox
-    col_label, col_excl = ctx.columns([4, 1])
+    if default is None:
+        default = []
     
-    with col_label:
+    # Layout: Label with Exclude checkbox on right
+    col1, col2 = ctx.columns([3, 1])
+    
+    with col1:
         ctx.markdown(f"**{label}**")
     
-    with col_excl:
+    with col2:
         excluded = ctx.checkbox(
             "Excl",
-            value=default_excluded,
-            key=f"{key}_excl",
-            help="Tick to EXCLUDE selected items instead of filtering to them"
+            value=False,
+            key=f"{key}_exclude",
+            help="Tick to EXCLUDE items matching this condition"
         )
     
     # Multiselect
     selected = ctx.multiselect(
         label=label,
         options=options,
-        default=[],
+        default=default,
         key=f"{key}_select",
-        placeholder=placeholder,
         help=help_text,
-        max_selections=max_selections,
         label_visibility="collapsed"
     )
     
     # Determine if filter is active
-    is_active = len(selected) > 0
+    is_active = len(selected) > 0 and selected != ['All']
     
     return FilterResult(
         selected=selected,
@@ -255,109 +326,28 @@ def apply_multiselect_filter(
     filter_result: FilterResult
 ) -> pd.DataFrame:
     """
-    Apply multiselect filter to a DataFrame.
+    Apply multiselect filter to DataFrame.
+    
+    Args:
+        df: DataFrame to filter
+        column: Column name to filter on
+        filter_result: FilterResult from render_multiselect_with_exclude
+        
+    Returns:
+        Filtered DataFrame
     """
     if df.empty or not filter_result.is_active:
         return df
     
     if column not in df.columns:
-        logger.warning(f"Column '{column}' not found in DataFrame")
         return df
     
     if filter_result.excluded:
-        # Exclude mode: remove rows with selected values
+        # EXCLUDE mode: keep rows NOT in selected
         return df[~df[column].isin(filter_result.selected)]
     else:
-        # Include mode: keep only rows with selected values
+        # INCLUDE mode: keep rows IN selected
         return df[df[column].isin(filter_result.selected)]
-
-
-# =============================================================================
-# TEXT SEARCH FILTER
-# =============================================================================
-
-@dataclass
-class TextSearchResult:
-    """Result from text search filter."""
-    query: str
-    excluded: bool
-    is_active: bool
-
-
-def render_text_search_filter(
-    label: str,
-    key: str,
-    placeholder: str = "Search...",
-    help_text: str = None,
-    container = None
-) -> TextSearchResult:
-    """
-    Render a text search filter with Excl option.
-    """
-    ctx = container if container else st
-    
-    # Header row
-    col_label, col_excl = ctx.columns([4, 1])
-    
-    with col_label:
-        ctx.markdown(f"**{label}**")
-    
-    with col_excl:
-        excluded = ctx.checkbox(
-            "Excl",
-            value=False,
-            key=f"{key}_excl",
-            help="Tick to EXCLUDE items matching search"
-        )
-    
-    # Text input
-    query = ctx.text_input(
-        label=label,
-        placeholder=placeholder,
-        key=f"{key}_input",
-        help=help_text,
-        label_visibility="collapsed"
-    )
-    
-    return TextSearchResult(
-        query=query.strip(),
-        excluded=excluded,
-        is_active=bool(query.strip())
-    )
-
-
-def apply_text_search_filter(
-    df: pd.DataFrame,
-    columns: List[str],
-    search_result: TextSearchResult,
-    case_sensitive: bool = False
-) -> pd.DataFrame:
-    """
-    Apply text search filter to DataFrame (searches across multiple columns).
-    """
-    if df.empty or not search_result.is_active:
-        return df
-    
-    query = search_result.query
-    if not case_sensitive:
-        query = query.lower()
-    
-    # Build combined mask across all columns
-    combined_mask = pd.Series([False] * len(df), index=df.index)
-    
-    for column in columns:
-        if column in df.columns:
-            col_values = df[column].astype(str)
-            if not case_sensitive:
-                col_values = col_values.str.lower()
-            
-            mask = col_values.str.contains(query, na=False, regex=False)
-            combined_mask = combined_mask | mask
-    
-    if search_result.excluded:
-        return df[~combined_mask]
-    else:
-        return df[combined_mask]
 
 
 # =============================================================================
@@ -366,37 +356,38 @@ def apply_text_search_filter(
 
 @dataclass
 class NumberRangeResult:
-    """Result from number range filter."""
+    """Result from a number range filter."""
     min_value: Optional[float]
     max_value: Optional[float]
     excluded: bool
     is_active: bool
 
 
-def render_number_filter(
+def render_number_filter_with_exclude(
     label: str,
-    key: str,
     default_min: float = 0,
     step: float = 1000,
+    key: str = None,
     help_text: str = None,
-    container = None
+    ctx = None
 ) -> NumberRangeResult:
     """
-    Render a minimum number filter with Excl option.
+    Render a number input with Exclude checkbox.
     """
-    ctx = container if container else st
+    if ctx is None:
+        ctx = st
     
-    # Header row
-    col_label, col_excl = ctx.columns([4, 1])
+    # Layout
+    col1, col2 = ctx.columns([3, 1])
     
-    with col_label:
+    with col1:
         ctx.markdown(f"**{label}**")
     
-    with col_excl:
+    with col2:
         excluded = ctx.checkbox(
             "Excl",
             value=False,
-            key=f"{key}_excl",
+            key=f"{key}_exclude",
             help="Tick to EXCLUDE items matching this condition"
         )
     
@@ -502,9 +493,11 @@ class KPICenterFilters:
     - Identical tooltip text for Start/End inputs
     - Same caption note about Sales data vs Backlog
     
-    UPDATED v2.3.0:
-    - Dynamic year check for "Only with KPI" based on period type
-    - Parent-child hierarchy expansion for KPI Centers
+    UPDATED v2.11.0:
+    - ALL filters now in single @st.fragment (no full page rerun)
+    - Entity filters by KPI Type (dynamic)
+    - Date pickers: disabled for YTD/QTD/MTD, enabled for Custom
+    - No more st.form - fragment handles all updates
     
     Usage:
         filters = KPICenterFilters(access)
@@ -523,33 +516,24 @@ class KPICenterFilters:
             entity_df: pd.DataFrame = None,
             default_start_date: date = None,
             default_end_date: date = None,
-            kpi_types_with_assignment: set = None,  # NEW v2.6.0
+            kpi_types_with_assignment: set = None,
         ) -> Tuple[Dict, bool]:
             """
-            Render ALL filters inside a form - only applies when user clicks Apply.
-            This prevents page reruns on every filter change.
+            Render ALL filters inside a single @st.fragment.
+            No full page rerun when filters change - only fragment reruns.
             
-            SYNCED v2.2.0 with Salesperson logic:
-            - Period definitions shown in tooltip (?) icon next to Period label
-            - YTD/QTD/MTD: Auto-calculate for CURRENT YEAR (today.year)
-            - Custom: Date inputs enabled for any date range selection
-            - Date inputs show default values from database
-            - Identical tooltip: "Start/End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-            
-            UPDATED v2.3.0:
-            - Dynamic year check for "Only with KPI" checkbox
-            - Parent-child expansion for kpi_center_ids
-            
-            UPDATED v2.6.0:
-            - KPI Type dropdown filtered when "Only with KPI" is checked
-            - Added kpi_types_with_assignment param
+            v2.11.0 IMPROVEMENTS:
+            - Entity dropdown now filters by KPI Type
+            - Date pickers: DISABLED for YTD/QTD/MTD, ENABLED for Custom
+            - All filters in fragment for instant feedback
+            - Submit button sets flag to trigger main page data reload
             
             Args:
                 kpi_center_df: KPI Center options
-                entity_df: Entity options  
+                entity_df: Entity options (fallback if _get_entities_by_kpi_type fails)
                 default_start_date: Default start date (from DB - Jan 1 of latest sales year)
                 default_end_date: Default end date (from DB - max backlog ETD or today)
-                kpi_types_with_assignment: Set of KPI Types that have KPI assignments (NEW v2.6.0)
+                kpi_types_with_assignment: Set of KPI Types that have KPI assignments
             
             Returns:
                 Tuple of (filter_values dict, submitted boolean)
@@ -563,7 +547,7 @@ class KPICenterFilters:
             if default_end_date is None:
                 default_end_date = today
             
-            # Pre-calculate date ranges for CURRENT YEAR (same as Salesperson)
+            # Pre-calculate date ranges for CURRENT YEAR
             current_quarter = (today.month - 1) // 3 + 1
             quarter_start_month = (current_quarter - 1) * 3 + 1
             
@@ -585,21 +569,21 @@ class KPICenterFilters:
                 st.divider()
                 
                 # =================================================================
-                # KPI TYPE & KPI CENTER - WRAPPED IN FRAGMENT FOR NO PAGE RERUN
-                # NEW v2.10.0: Using @st.fragment to avoid full page reload
+                # ALL FILTERS WRAPPED IN SINGLE FRAGMENT - v2.11.0
+                # Changes here only rerun fragment, not whole page
                 # =================================================================
                 
                 @st.fragment
-                def kpi_type_center_fragment():
+                def all_filters_fragment():
                     """
-                    Fragment for KPI Type and KPI Center selection.
-                    Changes here only rerun this fragment, not the whole page.
-                    Values are passed out via session_state.
+                    Single fragment containing ALL filter controls.
+                    Values are passed to outer scope via session_state.
                     """
-                    # ---------------------------------------------------------
-                    # KPI TYPE FILTER
-                    # ---------------------------------------------------------
-                    kpi_type_filter_local = 'TERRITORY'  # Default
+                    
+                    # =========================================================
+                    # 1. KPI TYPE FILTER
+                    # =========================================================
+                    kpi_type_filter_local = 'TERRITORY'
                     available_types = []
                     
                     if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
@@ -611,12 +595,7 @@ class KPICenterFilters:
                             available_types = sorted(all_types)
                         
                         if available_types:
-                            # =====================================================
-                            # FIX v2.10.1: Use widget key directly for session_state
-                            # Don't mix index + key - causes double-click bug
-                            # =====================================================
-                            
-                            # Initialize with the SAME key used by selectbox
+                            # Initialize session state
                             if 'frag_kpi_type' not in st.session_state:
                                 st.session_state.frag_kpi_type = (
                                     'TERRITORY' if 'TERRITORY' in available_types 
@@ -627,21 +606,18 @@ class KPICenterFilters:
                             if st.session_state.frag_kpi_type not in available_types:
                                 st.session_state.frag_kpi_type = available_types[0]
                             
-                            # NO index parameter! Streamlit manages value via key
                             selected_type = st.selectbox(
                                 "KPI Type",
                                 options=available_types,
                                 key="frag_kpi_type",
-                                help="Select KPI Type. KPI Center options update instantly."
+                                help="Select KPI Type. KPI Center and Entity options update instantly."
                             )
                             
                             kpi_type_filter_local = selected_type
                     
-                    # ---------------------------------------------------------
-                    # ONLY WITH KPI CHECKBOX
-                    # FIX v2.10.1: Use widget key directly
-                    # ---------------------------------------------------------
-                    # Initialize with widget key
+                    # =========================================================
+                    # 2. ONLY WITH KPI CHECKBOX
+                    # =========================================================
                     if 'frag_only_with_kpi' not in st.session_state:
                         st.session_state.frag_only_with_kpi = True
                     
@@ -657,45 +633,40 @@ class KPICenterFilters:
                     if only_with_kpi_local:
                         kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years_local)
                     
-                    # ---------------------------------------------------------
-                    # KPI CENTER FILTER (filtered by KPI Type)
-                    # ---------------------------------------------------------
+                    # =========================================================
+                    # 3. KPI CENTER FILTER (filtered by KPI Type)
+                    # =========================================================
                     st.markdown("**🎯 KPI Center**")
                     
-                    filtered_df = kpi_center_df.copy()
+                    filtered_kc_df = kpi_center_df.copy()
                     kpi_center_ids_local = []
                     
                     if not kpi_center_df.empty:
                         # Filter by KPI Type
                         if 'kpi_type' in kpi_center_df.columns and kpi_type_filter_local:
-                            filtered_df = filtered_df[filtered_df['kpi_type'] == kpi_type_filter_local]
+                            filtered_kc_df = filtered_kc_df[filtered_kc_df['kpi_type'] == kpi_type_filter_local]
                         
                         # Filter by KPI assignment
                         if only_with_kpi_local and kpi_center_ids_with_kpi:
-                            filtered_df = filtered_df[
-                                filtered_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
+                            filtered_kc_df = filtered_kc_df[
+                                filtered_kc_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
                             ]
                         
                         # Show info
                         total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
-                        filtered_count = len(filtered_df)
+                        filtered_count = len(filtered_kc_df)
                         hidden_count = total_in_type - filtered_count
                         
                         if hidden_count > 0:
                             st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
                     
-                    if filtered_df.empty:
+                    if filtered_kc_df.empty:
                         st.warning(f"No KPI Centers for type '{kpi_type_filter_local}'")
                     else:
-                        all_kpi_centers = filtered_df['kpi_center_name'].tolist()
-                        id_map = dict(zip(filtered_df['kpi_center_name'], filtered_df['kpi_center_id']))
+                        all_kpi_centers = filtered_kc_df['kpi_center_name'].tolist()
+                        id_map = dict(zip(filtered_kc_df['kpi_center_name'], filtered_kc_df['kpi_center_id']))
                         
                         options = ['All'] + sorted(all_kpi_centers)
-                        
-                        # =====================================================
-                        # FIX v2.10.2: Always reset to ['All'] when KPI Type changes
-                        # This provides consistent UX across all type switches
-                        # =====================================================
                         
                         # Track previous KPI Type to detect changes
                         prev_kpi_type = st.session_state.get('_prev_kpi_type', None)
@@ -704,11 +675,11 @@ class KPICenterFilters:
                             # KPI Type changed → reset to All
                             st.session_state.frag_kpi_center = ['All']
                             st.session_state._prev_kpi_type = kpi_type_filter_local
+                            # Also reset Entity when KPI Type changes
+                            st.session_state.frag_entity = ['All']
                         elif 'frag_kpi_center' not in st.session_state:
-                            # First time → initialize to All
                             st.session_state.frag_kpi_center = ['All']
                         
-                        # Don't use default parameter - let key manage state
                         selected_names = st.multiselect(
                             "Select KPI Centers",
                             options=options,
@@ -721,114 +692,181 @@ class KPICenterFilters:
                         else:
                             kpi_center_ids_local = [id_map[name] for name in selected_names if name in id_map]
                     
-                    # =========================================================
-                    # Pass values to outer scope via session_state
-                    # We use separate keys for IDs since widgets store names
-                    # =========================================================
-                    st.session_state._frag_kpi_center_ids = kpi_center_ids_local
-                    st.session_state._frag_kpi_check_years = kpi_check_years_local
-                
-                # Execute the fragment
-                kpi_type_center_fragment()
-                
-                # Read values from session_state
-                # Widget values: read directly from widget keys
-                kpi_type_filter = st.session_state.get('frag_kpi_type', 'TERRITORY')
-                only_with_kpi = st.session_state.get('frag_only_with_kpi', True)
-                # Computed values: read from _frag_ keys set by fragment
-                kpi_center_ids = st.session_state.get('_frag_kpi_center_ids', [])
-                kpi_check_years = st.session_state.get('_frag_kpi_check_years', [current_year])
-                
-                st.divider()
-                
-                # =================================================================
-                # REMAINING FILTERS INSIDE FORM
-                # =================================================================
-                with st.form("kpi_center_filter_form", border=False):
-                    
-                    # =============================================================
-                    # DATE RANGE SECTION (SYNCED with Salesperson v2.2.0)
-                    # =============================================================
-                    st.markdown("**📅 Date Range**")
-                    st.caption("Applies to Sales data. Backlog shows full pipeline.")
-                    
-                    # Period type radio with detailed tooltip (same as Salesperson)
-                    # Period definitions shown in tooltip (?), not as visible text
-                    period_type = st.radio(
-                        "Period",
-                        options=['YTD', 'QTD', 'MTD', 'Custom'],
-                        index=0,  # Default to YTD
-                        horizontal=True,
-                        key="form_period_type",
-                        help=(
-                            f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
-                            f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
-                            f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
-                            f"**Custom**: Select any date range using Start/End inputs"
-                        )
-                    )
-                    
-                    # Date inputs - ALWAYS VISIBLE but only used for Custom mode
-                    # Tooltip clearly indicates behavior (same as Salesperson)
-                    col_start, col_end = st.columns(2)
-                    
-                    with col_start:
-                        start_date_input = st.date_input(
-                            "Start",
-                            value=default_start_date,
-                            key="form_start_date",
-                            help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                        )
-                    
-                    with col_end:
-                        end_date_input = st.date_input(
-                            "End",
-                            value=default_end_date,
-                            key="form_end_date",
-                            help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                        )
-                    
                     st.divider()
                     
-                    # =============================================================
-                    # ENTITY FILTER
-                    # =============================================================
+                    # =========================================================
+                    # 4. ENTITY FILTER (filtered by KPI Type) - NEW v2.11.0
+                    # =========================================================
                     st.markdown("**🏢 Legal Entity**")
                     
-                    entity_ids = []
-                    if entity_df is not None and not entity_df.empty:
-                        entity_options = ['All'] + entity_df['entity_name'].tolist()
+                    entity_ids_local = []
+                    
+                    # Get entities for selected KPI Type
+                    filtered_entity_df = _get_entities_by_kpi_type(kpi_type_filter_local)
+                    
+                    # Fallback to provided entity_df if query fails
+                    if filtered_entity_df.empty and entity_df is not None:
+                        filtered_entity_df = entity_df.copy()
+                    
+                    if not filtered_entity_df.empty:
+                        entity_count = len(filtered_entity_df)
+                        st.caption(f"📋 {entity_count} entities with {kpi_type_filter_local} data")
+                        
+                        entity_options = ['All'] + filtered_entity_df['entity_name'].tolist()
                         entity_id_map = dict(zip(
-                            entity_df['entity_name'],
-                            entity_df['entity_id']
+                            filtered_entity_df['entity_name'],
+                            filtered_entity_df['entity_id']
                         ))
+                        
+                        # Initialize entity selection
+                        if 'frag_entity' not in st.session_state:
+                            st.session_state.frag_entity = ['All']
+                        
+                        # Validate current selection against available options
+                        current_selection = st.session_state.frag_entity
+                        valid_selection = [e for e in current_selection if e in entity_options]
+                        if not valid_selection:
+                            valid_selection = ['All']
+                        if valid_selection != current_selection:
+                            st.session_state.frag_entity = valid_selection
                         
                         selected_entities = st.multiselect(
                             "Select entities",
                             options=entity_options,
-                            default=['All'],
-                            key="form_entity",
+                            key="frag_entity",
                             label_visibility="collapsed"
                         )
                         
                         if 'All' in selected_entities or not selected_entities:
-                            entity_ids = []  # No filter
+                            entity_ids_local = []  # No filter
                         else:
-                            entity_ids = [
+                            entity_ids_local = [
                                 entity_id_map[name]
                                 for name in selected_entities
                                 if name in entity_id_map
                             ]
+                    else:
+                        st.info("No entities found for selected KPI Type")
                     
                     st.divider()
                     
-                    # =============================================================
-                    # EXCLUDE INTERNAL REVENUE
-                    # =============================================================
-                    exclude_internal = st.checkbox(
+                    # =========================================================
+                    # 5. DATE RANGE SECTION - IMPROVED v2.11.0
+                    # =========================================================
+                    st.markdown("**📅 Date Range**")
+                    st.caption("Applies to Sales data. Backlog shows full pipeline.")
+                    
+                    # Period type radio
+                    if 'frag_period_type' not in st.session_state:
+                        st.session_state.frag_period_type = 'YTD'
+                    
+                    period_type_local = st.radio(
+                        "Period",
+                        options=['YTD', 'QTD', 'MTD', 'Custom'],
+                        key="frag_period_type",
+                        horizontal=True,
+                        help=(
+                            f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**Custom**: Select any date range using Start/End inputs below"
+                        )
+                    )
+                    
+                    # Determine if date pickers should be disabled
+                    is_custom = (period_type_local == 'Custom')
+                    
+                    # Calculate display dates based on period type
+                    if period_type_local == 'YTD':
+                        display_start = ytd_start
+                        display_end = ytd_end
+                    elif period_type_local == 'QTD':
+                        display_start = qtd_start
+                        display_end = qtd_end
+                    elif period_type_local == 'MTD':
+                        display_start = mtd_start
+                        display_end = mtd_end
+                    else:  # Custom
+                        # Use stored custom dates or defaults
+                        display_start = st.session_state.get('frag_custom_start', default_start_date)
+                        display_end = st.session_state.get('frag_custom_end', default_end_date)
+                    
+                    # Date inputs
+                    col_start, col_end = st.columns(2)
+                    
+                    with col_start:
+                        if is_custom:
+                            # ENABLED - user can edit
+                            start_date_input = st.date_input(
+                                "Start",
+                                value=display_start,
+                                key="frag_start_date",
+                                help="Start date for Custom period"
+                            )
+                            # Store custom date
+                            st.session_state.frag_custom_start = start_date_input
+                        else:
+                            # DISABLED - just show calculated date
+                            st.date_input(
+                                "Start",
+                                value=display_start,
+                                key="frag_start_date_display",
+                                disabled=True,
+                                help=f"Auto-calculated for {period_type_local}"
+                            )
+                            start_date_input = display_start
+                    
+                    with col_end:
+                        if is_custom:
+                            # ENABLED - user can edit
+                            end_date_input = st.date_input(
+                                "End",
+                                value=display_end,
+                                key="frag_end_date",
+                                help="End date for Custom period"
+                            )
+                            # Store custom date
+                            st.session_state.frag_custom_end = end_date_input
+                        else:
+                            # DISABLED - just show calculated date
+                            st.date_input(
+                                "End",
+                                value=display_end,
+                                key="frag_end_date_display",
+                                disabled=True,
+                                help=f"Auto-calculated for {period_type_local}"
+                            )
+                            end_date_input = display_end
+                    
+                    # Final date values
+                    if period_type_local == 'YTD':
+                        final_start = ytd_start
+                        final_end = ytd_end
+                    elif period_type_local == 'QTD':
+                        final_start = qtd_start
+                        final_end = qtd_end
+                    elif period_type_local == 'MTD':
+                        final_start = mtd_start
+                        final_end = mtd_end
+                    else:  # Custom
+                        final_start = start_date_input
+                        final_end = end_date_input
+                        # Validate
+                        if final_start > final_end:
+                            final_end = final_start
+                            st.warning("⚠️ End date adjusted to match Start date")
+                    
+                    st.divider()
+                    
+                    # =========================================================
+                    # 6. EXCLUDE INTERNAL REVENUE
+                    # =========================================================
+                    if 'frag_exclude_internal' not in st.session_state:
+                        st.session_state.frag_exclude_internal = True
+                    
+                    exclude_internal_local = st.checkbox(
                         "Exclude internal revenue",
-                        value=True,
-                        key="form_exclude_internal",
+                        key="frag_exclude_internal",
                         help=(
                             "Exclude revenue from internal company transactions. "
                             "Gross Profit is kept intact for accurate GP% calculation."
@@ -837,43 +875,59 @@ class KPICenterFilters:
                     
                     st.divider()
                     
-                    # =============================================================
-                    # SUBMIT BUTTON
-                    # =============================================================
-                    submitted = st.form_submit_button(
+                    # =========================================================
+                    # 7. APPLY BUTTON
+                    # =========================================================
+                    if st.button(
                         "🔍 Apply Filters",
                         use_container_width=True,
-                        type="primary"
-                    )
+                        type="primary",
+                        key="frag_apply_btn"
+                    ):
+                        # Set flag to trigger main page data reload
+                        st.session_state._filters_submitted = True
+                        st.rerun()
+                    
+                    # =========================================================
+                    # PASS VALUES TO OUTER SCOPE VIA SESSION STATE
+                    # =========================================================
+                    st.session_state._frag_kpi_type_filter = kpi_type_filter_local
+                    st.session_state._frag_only_with_kpi = only_with_kpi_local
+                    st.session_state._frag_kpi_center_ids = kpi_center_ids_local
+                    st.session_state._frag_kpi_check_years = kpi_check_years_local
+                    st.session_state._frag_entity_ids = entity_ids_local
+                    st.session_state._frag_period_type = period_type_local
+                    st.session_state._frag_start_date = final_start
+                    st.session_state._frag_end_date = final_end
+                    st.session_state._frag_exclude_internal = exclude_internal_local
+                
+                # Execute the fragment
+                all_filters_fragment()
+                
+                # Read values from session_state
+                kpi_type_filter = st.session_state.get('_frag_kpi_type_filter', 'TERRITORY')
+                only_with_kpi = st.session_state.get('_frag_only_with_kpi', True)
+                kpi_center_ids = st.session_state.get('_frag_kpi_center_ids', [])
+                kpi_check_years = st.session_state.get('_frag_kpi_check_years', [current_year])
+                entity_ids = st.session_state.get('_frag_entity_ids', [])
+                period_type = st.session_state.get('_frag_period_type', 'YTD')
+                start_date = st.session_state.get('_frag_start_date', ytd_start)
+                end_date = st.session_state.get('_frag_end_date', ytd_end)
+                exclude_internal = st.session_state.get('_frag_exclude_internal', True)
+                
+                # Check if submitted
+                submitted = st.session_state.pop('_filters_submitted', False)
             
             # =================================================================
-            # DETERMINE ACTUAL DATES BASED ON PERIOD TYPE (same as Salesperson)
+            # DETERMINE YEAR FROM DATES
             # =================================================================
-            if period_type == 'YTD':
-                start_date = ytd_start
-                end_date = ytd_end
+            if period_type in ['YTD', 'QTD', 'MTD']:
                 year = current_year
-            elif period_type == 'QTD':
-                start_date = qtd_start
-                end_date = qtd_end
-                year = current_year
-            elif period_type == 'MTD':
-                start_date = mtd_start
-                end_date = mtd_end
-                year = current_year
-            else:  # Custom
-                start_date = start_date_input
-                end_date = end_date_input
-                # Validation
-                if start_date > end_date:
-                    end_date = start_date
-                # Use start_date's year for KPI matching
+            else:
                 year = start_date.year
             
             # =================================================================
-            # RECALCULATE kpi_check_years based on actual period (v2.10.0)
-            # For YTD/QTD/MTD: current year
-            # For Custom: all years in the selected date range
+            # RECALCULATE kpi_check_years based on actual period
             # =================================================================
             if period_type in ['YTD', 'QTD', 'MTD']:
                 kpi_check_years = [current_year]
@@ -882,15 +936,11 @@ class KPICenterFilters:
                 kpi_check_years = list(range(start_date.year, end_date.year + 1))
             
             # =================================================================
-            # EXPAND KPI CENTER IDs WITH CHILDREN - NEW v2.3.0
+            # EXPAND KPI CENTER IDs WITH CHILDREN
             # =================================================================
-            # Store original selection for display/reference
             kpi_center_ids_selected = kpi_center_ids.copy()
-            
-            # Expand to include all children
             kpi_center_ids_expanded = _expand_kpi_center_ids_with_children(kpi_center_ids)
             
-            # Show expansion info if children were added
             if len(kpi_center_ids_expanded) > len(kpi_center_ids_selected):
                 children_added = len(kpi_center_ids_expanded) - len(kpi_center_ids_selected)
                 logger.debug(f"KPI Centers: {len(kpi_center_ids_selected)} selected + {children_added} children = {len(kpi_center_ids_expanded)} total")
@@ -901,16 +951,15 @@ class KPICenterFilters:
                 'year': year,
                 'start_date': start_date,
                 'end_date': end_date,
-                # NEW v2.3.0: Both selected and expanded IDs
-                'kpi_center_ids': kpi_center_ids_expanded,           # Use this for data filtering
-                'kpi_center_ids_selected': kpi_center_ids_selected,  # Original user selection
-                'kpi_center_ids_expanded': kpi_center_ids_expanded,  # Explicit expanded list
+                'kpi_center_ids': kpi_center_ids_expanded,
+                'kpi_center_ids_selected': kpi_center_ids_selected,
+                'kpi_center_ids_expanded': kpi_center_ids_expanded,
                 'kpi_type_filter': kpi_type_filter,
                 'entity_ids': entity_ids,
                 'exclude_internal_revenue': exclude_internal,
-                'show_yoy': True,  # Always enabled
+                'show_yoy': True,
                 'only_with_kpi': only_with_kpi,
-                'kpi_check_years': kpi_check_years,  # NEW: Years used for KPI check
+                'kpi_check_years': kpi_check_years,
             }
             
             return filter_values, submitted
@@ -924,7 +973,7 @@ class KPICenterFilters:
         kpi_center_df: pd.DataFrame,
         entity_df: pd.DataFrame = None,
         available_years: List[int] = None,
-        kpi_types_with_assignment: set = None,  # NEW v2.6.0
+        kpi_types_with_assignment: set = None,
     ) -> Dict:
         """
         Legacy method - redirects to render_filter_form for backward compatibility.
@@ -932,9 +981,9 @@ class KPICenterFilters:
         filter_values, _ = self.render_filter_form(
             kpi_center_df=kpi_center_df,
             entity_df=entity_df,
-            kpi_types_with_assignment=kpi_types_with_assignment,  # NEW v2.6.0
+            kpi_types_with_assignment=kpi_types_with_assignment,
         )
-        filter_values['submitted'] = True  # Always consider as submitted for legacy
+        filter_values['submitted'] = True
         return filter_values
     
     # =========================================================================
@@ -966,7 +1015,7 @@ class KPICenterFilters:
             f"{filters['end_date'].strftime('%b %d')})"
         )
         
-        # KPI Centers count - UPDATED v2.3.0: Show selected vs expanded
+        # KPI Centers count
         kc_selected = len(filters.get('kpi_center_ids_selected', []))
         kc_expanded = len(filters.get('kpi_center_ids_expanded', filters.get('kpi_center_ids', [])))
         
@@ -1009,6 +1058,15 @@ class KPICenterFilters:
 # =============================================================================
 # STANDALONE FUNCTIONS
 # =============================================================================
+
+# =============================================================================
+# BACKWARD COMPATIBILITY ALIASES
+# =============================================================================
+
+# Alias for old function name used in __init__.py
+render_multiselect_filter = render_multiselect_with_exclude
+apply_filter_to_dataframe = apply_multiselect_filter
+
 
 def analyze_period(filter_values: Dict) -> Dict:
     """
