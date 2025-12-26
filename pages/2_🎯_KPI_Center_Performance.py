@@ -204,23 +204,20 @@ def check_access():
 # =============================================================================
 # DATA LOADING WITH SMART CACHING
 # =============================================================================
-
 @st.cache_data(ttl=1800)
 def load_lookup_data():
     """
     Load lookup data for filters (cached).
     
-    UPDATED v2.6.0: 
-    - KPI Center: From unified_sales_by_kpi_center_view (có sales data)
-    - KPI Centers with KPI: From sales_kpi_center_assignments_view (có KPI assignment)
-    - KPI Type: Filtered by assignment when "Only with KPI" checkbox ticked
-    - Legal Entity: Join với companies table để lấy english_name (đồng nhất naming)
-    - Available Years: From unified_sales_by_kpi_center_view
+    UPDATED v2.10.0 (Option B - Sales view + Parents):
+    - KPI Center: Leaf nodes từ unified view + tất cả ancestors
+    - Includes hierarchy info: parent_center_id, level, has_children
+    - Parent KPI Centers now visible in dropdown for rollup selection
     
     Returns:
         Tuple of:
-        - kpi_center_df: DataFrame with all KPI Centers having sales data
-        - entity_df: DataFrame with Legal Entities (english_name from companies table)
+        - kpi_center_df: DataFrame with KPI Centers including parents + hierarchy info
+        - entity_df: DataFrame with Legal Entities
         - available_years: List of years with sales data
         - kpi_center_ids_with_assignment: Set of KPI Center IDs with KPI assignment
         - kpi_types_with_assignment: Set of KPI Types with KPI assignment
@@ -231,23 +228,101 @@ def load_lookup_data():
     engine = get_db_engine()
     
     # =========================================================================
-    # 1. KPI CENTER - From unified_sales_by_kpi_center_view
-    #    (Only KPI Centers with actual sales data)
+    # 1. KPI CENTER - Option B: Sales view + All Ancestors
+    #    - Lấy leaf nodes có sales từ unified view
+    #    - Recursive CTE để lấy tất cả ancestors (parents)
+    #    - Include hierarchy info: parent_center_id, level, has_children
     # =========================================================================
     kpi_center_query = """
-        SELECT DISTINCT
-            kpi_center_id,
-            kpi_center AS kpi_center_name,
-            kpi_type
-        FROM unified_sales_by_kpi_center_view
-        WHERE kpi_center_id IS NOT NULL
-        ORDER BY kpi_type, kpi_center
+        WITH RECURSIVE 
+        -- Step 1: Get leaf nodes from sales data
+        leaf_nodes AS (
+            SELECT DISTINCT kpi_center_id
+            FROM unified_sales_by_kpi_center_view
+            WHERE kpi_center_id IS NOT NULL
+        ),
+        
+        -- Step 2: Get all ancestors (parents) recursively
+        all_ancestors AS (
+            -- Base case: leaf nodes and their immediate parents
+            SELECT kc.id AS kpi_center_id, kc.parent_center_id
+            FROM kpi_centers kc
+            WHERE kc.id IN (SELECT kpi_center_id FROM leaf_nodes)
+              AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+            
+            UNION
+            
+            -- Recursive case: parent's parent, etc.
+            SELECT kc.id, kc.parent_center_id
+            FROM kpi_centers kc
+            INNER JOIN all_ancestors aa ON kc.id = aa.parent_center_id
+            WHERE kc.delete_flag = 0 OR kc.delete_flag IS NULL
+        ),
+        
+        -- Step 3: Combine leaf nodes + ancestors into unique set
+        all_relevant_ids AS (
+            SELECT DISTINCT kpi_center_id FROM all_ancestors
+        ),
+        
+        -- Step 4: Calculate level (0 = root, 1 = child, etc.)
+        hierarchy_levels AS (
+            -- Level 0: roots (no parent)
+            SELECT 
+                kc.id AS kpi_center_id,
+                kc.name AS kpi_center_name,
+                kc.type AS kpi_type,
+                kc.parent_center_id,
+                0 AS level
+            FROM kpi_centers kc
+            WHERE kc.id IN (SELECT kpi_center_id FROM all_relevant_ids)
+              AND kc.parent_center_id IS NULL
+              AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+            
+            UNION ALL
+            
+            -- Recursive: children
+            SELECT 
+                kc.id,
+                kc.name,
+                kc.type,
+                kc.parent_center_id,
+                hl.level + 1
+            FROM kpi_centers kc
+            INNER JOIN hierarchy_levels hl ON kc.parent_center_id = hl.kpi_center_id
+            WHERE kc.id IN (SELECT kpi_center_id FROM all_relevant_ids)
+              AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+        ),
+        
+        -- Step 5: Determine which nodes have children
+        children_count AS (
+            SELECT 
+                parent_center_id,
+                COUNT(*) as child_count
+            FROM kpi_centers
+            WHERE parent_center_id IS NOT NULL
+              AND id IN (SELECT kpi_center_id FROM all_relevant_ids)
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+            GROUP BY parent_center_id
+        )
+        
+        -- Final SELECT
+        SELECT 
+            hl.kpi_center_id,
+            hl.kpi_center_name,
+            hl.kpi_type,
+            hl.parent_center_id,
+            hl.level,
+            CASE WHEN cc.child_count > 0 THEN 1 ELSE 0 END AS has_children
+        FROM hierarchy_levels hl
+        LEFT JOIN children_count cc ON hl.kpi_center_id = cc.parent_center_id
+        ORDER BY hl.kpi_type, hl.level, hl.kpi_center_name
     """
     kpi_center_df = pd.read_sql(text(kpi_center_query), engine)
     
-    # Add placeholder columns for backward compatibility
+    # Convert has_children to boolean
     if not kpi_center_df.empty:
-        kpi_center_df['parent_center_id'] = None
+        kpi_center_df['has_children'] = kpi_center_df['has_children'].astype(bool)
+        # Add description column for backward compatibility
         kpi_center_df['description'] = None
     
     # =========================================================================
@@ -305,7 +380,7 @@ def load_lookup_data():
     # 5. RETURN EXTENDED TUPLE
     # =========================================================================
     return (
-        kpi_center_df,                      # All KPI Centers with sales data
+        kpi_center_df,                      # KPI Centers with hierarchy info
         entity_df,                          # Legal Entities with english_name
         available_years,                    # Available years
         kpi_center_ids_with_assignment,     # Set of KPI Center IDs with KPI assignment

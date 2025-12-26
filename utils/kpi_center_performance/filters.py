@@ -14,8 +14,17 @@ Renders filter UI elements:
 REQUIREMENTS:
 - Streamlit >= 1.33.0 (for @st.fragment support)
 
-VERSION: 2.11.0
+VERSION: 2.12.0
 CHANGELOG:
+- v2.12.0: ADDED Hierarchy Display for KPI Center dropdown:
+          - Added _build_hierarchy_display_options() helper
+          - Parent KPI Centers now visible with 📁 prefix
+          - Children indented with tree-like structure (├─, └─)
+          - Expansion works when user selects parent
+          - load_lookup_data() in main page updated to include parents
+          - FIXED: _get_kpi_centers_with_assignments() now includes parents
+            Business rule: If child has KPI assignment, parent is also considered
+            as having assignment (parent KPI = sum of children KPIs)
 - v2.11.0: MAJOR REFACTOR - All filters in single @st.fragment:
           - Entity now filters by KPI Type (like KPI Center)
           - Date Range moved into fragment
@@ -91,11 +100,15 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
     """
     Get list of KPI Center IDs that have KPI assignments in given years.
     
+    UPDATED v2.12.0: Now includes all ancestors (parents) of KPI Centers 
+    with direct assignments. Business logic: Parent KPI = sum of children KPIs,
+    so if any child has assignment, parent should also be considered as having assignment.
+    
     Args:
         years: List of years to check
         
     Returns:
-        List of kpi_center_ids with KPI assignments
+        List of kpi_center_ids with KPI assignments (direct or inherited from children)
     """
     if not years:
         return []
@@ -104,16 +117,45 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
         from utils.db import get_db_engine
         engine = get_db_engine()
         
+        # Query includes:
+        # 1. KPI Centers with direct assignments
+        # 2. All ancestors (parents) of those KPI Centers
         query = """
+            WITH RECURSIVE 
+            -- Step 1: Get KPI Centers with direct assignments
+            direct_assignments AS (
+                SELECT DISTINCT kpi_center_id
+                FROM sales_kpi_center_assignments_view 
+                WHERE year IN :years
+            ),
+            
+            -- Step 2: Get all ancestors (parents) recursively
+            all_with_ancestors AS (
+                -- Base case: direct assignments
+                SELECT kpi_center_id, kpi_center_id AS original_id
+                FROM direct_assignments
+                
+                UNION
+                
+                -- Recursive case: parents of KPI Centers
+                SELECT kc.parent_center_id AS kpi_center_id, awa.original_id
+                FROM kpi_centers kc
+                INNER JOIN all_with_ancestors awa ON kc.id = awa.kpi_center_id
+                WHERE kc.parent_center_id IS NOT NULL
+                  AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+            )
+            
             SELECT DISTINCT kpi_center_id 
-            FROM sales_kpi_center_assignments_view 
-            WHERE year IN :years
+            FROM all_with_ancestors
+            WHERE kpi_center_id IS NOT NULL
             ORDER BY kpi_center_id
         """
         
         with engine.connect() as conn:
             result = conn.execute(text(query), {'years': tuple(years)})
-            return [row[0] for row in result]
+            ids = [row[0] for row in result]
+            logger.debug(f"KPI Centers with assignments (incl. parents): {len(ids)} for years {years}")
+            return ids
             
     except Exception as e:
         logger.error(f"Error fetching KPI Centers with assignments: {e}")
@@ -236,6 +278,155 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
         logger.error(f"Error expanding KPI Center IDs with children: {e}")
         # Fallback: return original IDs
         return kpi_center_ids
+
+
+# =============================================================================
+# HIERARCHY DISPLAY HELPER - NEW v2.12.0
+# =============================================================================
+
+def _build_hierarchy_display_options(
+    kpi_center_df: pd.DataFrame,
+    kpi_type_filter: str = None
+) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
+    """
+    Build display options for KPI Center dropdown with hierarchy visualization.
+    
+    Creates indented tree-like display names for KPI Centers:
+    - Parent nodes: 📁 prefix
+    - Children: indented with ├─ or └─
+    
+    Args:
+        kpi_center_df: DataFrame with columns:
+            - kpi_center_id
+            - kpi_center_name  
+            - kpi_type
+            - parent_center_id (optional)
+            - level (optional)
+            - has_children (optional)
+        kpi_type_filter: Optional KPI Type to filter by
+        
+    Returns:
+        Tuple of:
+        - options: List of display names (sorted by hierarchy)
+        - display_to_id: Dict mapping display_name → kpi_center_id
+        - id_to_display: Dict mapping kpi_center_id → display_name
+        
+    Example output:
+        options = [
+            '📁 ALL',
+            '  📁 PTV',
+            '    HAN',
+            '    DAN',
+            '    SGN',
+            '  📁 OVERSEA',
+            '    📁 SEA',
+            '      PTP',
+            '      ROSEA',
+            '    ROW',
+        ]
+    """
+    if kpi_center_df.empty:
+        return [], {}, {}
+    
+    df = kpi_center_df.copy()
+    
+    # Filter by KPI Type if specified
+    if kpi_type_filter and 'kpi_type' in df.columns:
+        df = df[df['kpi_type'] == kpi_type_filter]
+    
+    if df.empty:
+        return [], {}, {}
+    
+    # Check if hierarchy columns exist
+    has_hierarchy = all(col in df.columns for col in ['parent_center_id', 'level', 'has_children'])
+    
+    if not has_hierarchy:
+        # Fallback: flat list (no hierarchy info)
+        options = sorted(df['kpi_center_name'].tolist())
+        display_to_id = dict(zip(df['kpi_center_name'], df['kpi_center_id']))
+        id_to_display = dict(zip(df['kpi_center_id'], df['kpi_center_name']))
+        return options, display_to_id, id_to_display
+    
+    # Build hierarchy tree
+    options = []
+    display_to_id = {}
+    id_to_display = {}
+    
+    # Create lookup dicts
+    id_to_row = {row['kpi_center_id']: row for _, row in df.iterrows()}
+    children_map = {}  # parent_id → list of children rows
+    
+    for _, row in df.iterrows():
+        parent_id = row.get('parent_center_id')
+        if pd.notna(parent_id):
+            parent_id = int(parent_id)
+            if parent_id not in children_map:
+                children_map[parent_id] = []
+            children_map[parent_id].append(row)
+    
+    # Sort children by name
+    for parent_id in children_map:
+        children_map[parent_id] = sorted(children_map[parent_id], key=lambda x: x['kpi_center_name'])
+    
+    def build_tree(node_id: int, indent: str = "", is_last: bool = True, is_root: bool = True):
+        """Recursively build tree display."""
+        if node_id not in id_to_row:
+            return
+        
+        row = id_to_row[node_id]
+        name = row['kpi_center_name']
+        has_children = row.get('has_children', False)
+        kpi_center_id = row['kpi_center_id']
+        
+        # Build display name
+        if is_root:
+            # Root level - no indent
+            prefix = "📁 " if has_children else ""
+            display_name = f"{prefix}{name}"
+        else:
+            # Child level - with indent
+            branch = "└─ " if is_last else "├─ "
+            prefix = "📁 " if has_children else ""
+            display_name = f"{indent}{branch}{prefix}{name}"
+        
+        options.append(display_name)
+        display_to_id[display_name] = kpi_center_id
+        id_to_display[kpi_center_id] = display_name
+        
+        # Process children
+        if node_id in children_map:
+            children = children_map[node_id]
+            for i, child_row in enumerate(children):
+                child_id = child_row['kpi_center_id']
+                is_last_child = (i == len(children) - 1)
+                
+                # Calculate new indent
+                if is_root:
+                    new_indent = "  "
+                else:
+                    extension = "   " if is_last else "│  "
+                    new_indent = indent + extension
+                
+                build_tree(child_id, new_indent, is_last_child, is_root=False)
+    
+    # Find root nodes (no parent or parent not in current filtered set)
+    root_nodes = []
+    filtered_ids = set(df['kpi_center_id'].tolist())
+    
+    for _, row in df.iterrows():
+        parent_id = row.get('parent_center_id')
+        if pd.isna(parent_id) or int(parent_id) not in filtered_ids:
+            root_nodes.append(row)
+    
+    # Sort root nodes by name
+    root_nodes = sorted(root_nodes, key=lambda x: x['kpi_center_name'])
+    
+    # Build tree for each root
+    for i, root_row in enumerate(root_nodes):
+        is_last_root = (i == len(root_nodes) - 1)
+        build_tree(root_row['kpi_center_id'], "", is_last_root, is_root=True)
+    
+    return options, display_to_id, id_to_display
 
 
 # =============================================================================
@@ -493,6 +684,11 @@ class KPICenterFilters:
     - Identical tooltip text for Start/End inputs
     - Same caption note about Sales data vs Backlog
     
+    UPDATED v2.12.0:
+    - KPI Center dropdown now shows hierarchy with indent/prefix
+    - Parent KPI Centers visible with 📁 prefix
+    - Children indented with tree-like structure
+    
     UPDATED v2.11.0:
     - ALL filters now in single @st.fragment (no full page rerun)
     - Entity filters by KPI Type (dynamic)
@@ -522,6 +718,10 @@ class KPICenterFilters:
             Render ALL filters inside a single @st.fragment.
             No full page rerun when filters change - only fragment reruns.
             
+            v2.12.0 IMPROVEMENTS:
+            - KPI Center dropdown now shows hierarchy with tree-like display
+            - Parent KPI Centers visible with 📁 prefix
+            
             v2.11.0 IMPROVEMENTS:
             - Entity dropdown now filters by KPI Type
             - Date pickers: DISABLED for YTD/QTD/MTD, ENABLED for Custom
@@ -529,7 +729,7 @@ class KPICenterFilters:
             - Submit button sets flag to trigger main page data reload
             
             Args:
-                kpi_center_df: KPI Center options
+                kpi_center_df: KPI Center options (with hierarchy columns if available)
                 entity_df: Entity options (fallback if _get_entities_by_kpi_type fails)
                 default_start_date: Default start date (from DB - Jan 1 of latest sales year)
                 default_end_date: Default end date (from DB - max backlog ETD or today)
@@ -634,7 +834,7 @@ class KPICenterFilters:
                         kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years_local)
                     
                     # =========================================================
-                    # 3. KPI CENTER FILTER (filtered by KPI Type)
+                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.12.0
                     # =========================================================
                     st.markdown("**🎯 KPI Center**")
                     
@@ -663,10 +863,16 @@ class KPICenterFilters:
                     if filtered_kc_df.empty:
                         st.warning(f"No KPI Centers for type '{kpi_type_filter_local}'")
                     else:
-                        all_kpi_centers = filtered_kc_df['kpi_center_name'].tolist()
-                        id_map = dict(zip(filtered_kc_df['kpi_center_name'], filtered_kc_df['kpi_center_id']))
+                        # =====================================================
+                        # BUILD HIERARCHY DISPLAY - NEW v2.12.0
+                        # =====================================================
+                        hierarchy_options, display_to_id, id_to_display = _build_hierarchy_display_options(
+                            filtered_kc_df,
+                            kpi_type_filter=None  # Already filtered above
+                        )
                         
-                        options = ['All'] + sorted(all_kpi_centers)
+                        # Add 'All' option at the beginning
+                        options = ['All'] + hierarchy_options
                         
                         # Track previous KPI Type to detect changes
                         prev_kpi_type = st.session_state.get('_prev_kpi_type', None)
@@ -680,17 +886,30 @@ class KPICenterFilters:
                         elif 'frag_kpi_center' not in st.session_state:
                             st.session_state.frag_kpi_center = ['All']
                         
-                        selected_names = st.multiselect(
+                        # Validate current selection against available options
+                        current_selection = st.session_state.frag_kpi_center
+                        valid_selection = [s for s in current_selection if s in options]
+                        if not valid_selection:
+                            valid_selection = ['All']
+                        if valid_selection != current_selection:
+                            st.session_state.frag_kpi_center = valid_selection
+                        
+                        selected_display_names = st.multiselect(
                             "Select KPI Centers",
                             options=options,
                             key="frag_kpi_center",
                             label_visibility="collapsed"
                         )
                         
-                        if 'All' in selected_names or not selected_names:
-                            kpi_center_ids_local = list(id_map.values())
+                        # Convert display names back to IDs
+                        if 'All' in selected_display_names or not selected_display_names:
+                            kpi_center_ids_local = list(display_to_id.values())
                         else:
-                            kpi_center_ids_local = [id_map[name] for name in selected_names if name in id_map]
+                            kpi_center_ids_local = [
+                                display_to_id[name] 
+                                for name in selected_display_names 
+                                if name in display_to_id
+                            ]
                     
                     st.divider()
                     
