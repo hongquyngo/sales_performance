@@ -51,7 +51,7 @@ Usage:
 """
 
 # Access Control
-from .access_control import AccessControl, ALLOWED_ROLES
+from .access_control import AccessControl
 
 # Queries
 from .queries import KPICenterQueries

@@ -114,7 +114,6 @@ class KPICenterExport:
         backlog_summary_df: pd.DataFrame = None,
         backlog_detail_df: pd.DataFrame = None,
         backlog_by_month_df: pd.DataFrame = None,
-        in_period_backlog_analysis: Dict = None,
     ) -> BytesIO:
         """
         Create comprehensive Excel report with all performance data.

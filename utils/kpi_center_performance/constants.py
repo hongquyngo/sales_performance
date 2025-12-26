@@ -79,62 +79,6 @@ MONTH_ORDER = [
 
 PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'Custom']
 
-QUARTER_MONTHS = {
-    1: [1, 2, 3],
-    2: [4, 5, 6],
-    3: [7, 8, 9],
-    4: [10, 11, 12]
-}
-
-# =====================================================================
-# KPI CONFIGURATIONS
-# =====================================================================
-
-KPI_TYPES = {
-    "revenue": {
-        "name": "revenue",
-        "display_name": "Revenue",
-        "unit": "USD",
-        "format": "${:,.0f}",
-        "icon": "💰"
-    },
-    "gross_profit": {
-        "name": "gross_profit",
-        "display_name": "Gross Profit",
-        "unit": "USD",
-        "format": "${:,.0f}",
-        "icon": "📈"
-    },
-    "gross_profit_1": {
-        "name": "gross_profit_1",
-        "display_name": "GP1",
-        "unit": "USD",
-        "format": "${:,.0f}",
-        "icon": "📊"
-    },
-    "num_new_customers": {
-        "name": "num_new_customers",
-        "display_name": "New Customers",
-        "unit": "customer",
-        "format": "{:.1f}",
-        "icon": "👥"
-    },
-    "num_new_products": {
-        "name": "num_new_products",
-        "display_name": "New Products",
-        "unit": "product",
-        "format": "{:.1f}",
-        "icon": "📦"
-    },
-    "new_business_revenue": {
-        "name": "new_business_revenue",
-        "display_name": "New Business Revenue",
-        "unit": "USD",
-        "format": "${:,.0f}",
-        "icon": "💼"
-    },
-}
-
 # KPI Center Types
 KPI_CENTER_TYPES = ['Sales Team', 'Product Line', 'Region', 'Channel', 'Other']
 

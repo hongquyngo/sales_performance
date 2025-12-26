@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from .constants import MONTH_ORDER, QUARTER_MONTHS, KPI_TYPES
+from .constants import MONTH_ORDER
 
 logger = logging.getLogger(__name__)
 
