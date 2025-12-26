@@ -2,8 +2,13 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.7.0
+VERSION: 2.8.0
 CHANGELOG:
+- v2.8.0: KPI Type filter changed to SINGLE SELECTION:
+          - Removed "All Types" option (filters.py v2.8.0)
+          - Always single type → no double counting, no dedupe needed
+          - Default: TERRITORY
+          - Simplified get_selected_kpi_types() - always returns single type
 - v2.7.0: FIXED Double Counting & New Business Revenue:
           - Issue #1: Added get_selected_kpi_types() helper to detect single vs multiple types
             * Single type selected → Full credit for that type (no dedupe)
@@ -133,43 +138,25 @@ def get_selected_kpi_types(filter_values: dict, kpi_center_df: pd.DataFrame) -> 
     """
     Derive selected_kpi_types for dedupe logic.
     
-    NEW v2.7.0: Used to prevent double counting in Complex KPIs.
-    
-    Logic:
-    - If kpi_type_filter is set to a single type → returns [type] (no dedupe needed)
-    - If kpi_type_filter is None or 'All' → returns all types from selected KPI Centers
-      (triggers dedupe when > 1 type)
+    UPDATED v2.8.0: Now always returns single type (no "All Types" option).
+    KPI Type filter is now single selection to prevent double counting.
     
     Args:
-        filter_values: Dictionary from filters containing kpi_type_filter, kpi_center_ids
-        kpi_center_df: DataFrame with kpi_center_id, kpi_type columns
+        filter_values: Dictionary from filters containing kpi_type_filter
+        kpi_center_df: DataFrame with kpi_center_id, kpi_type columns (unused in v2.8.0)
         
     Returns:
-        List of KPI types. Length determines dedupe behavior:
-        - len == 1: Single type selected, no dedupe
-        - len > 1: Multiple types, dedupe per entity
+        List with single KPI type. Always len == 1, so no dedupe needed.
     """
     kpi_type_filter = filter_values.get('kpi_type_filter')
     
-    # Case 1: Single type explicitly selected → no dedupe
-    if kpi_type_filter and kpi_type_filter not in ['All', 'all', '']:
+    # v2.8.0: kpi_type_filter is always a single valid type (TERRITORY, VERTICAL, etc.)
+    # No more "All Types" option, so this always returns a single-element list
+    if kpi_type_filter:
         return [kpi_type_filter]
     
-    # Case 2: All types or no filter → derive from selected KPI Centers
-    kpi_center_ids = filter_values.get('kpi_center_ids', [])
-    
-    if kpi_center_ids and not kpi_center_df.empty:
-        # Get types from selected KPI Centers
-        selected_df = kpi_center_df[kpi_center_df['kpi_center_id'].isin(kpi_center_ids)]
-        if not selected_df.empty and 'kpi_type' in selected_df.columns:
-            types = selected_df['kpi_type'].dropna().unique().tolist()
-            return types if types else []
-    
-    # Fallback: return all available types
-    if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
-        return kpi_center_df['kpi_type'].dropna().unique().tolist()
-    
-    return []
+    # Fallback (shouldn't happen in v2.8.0+): return TERRITORY as default
+    return ['TERRITORY']
 
 
 # =============================================================================

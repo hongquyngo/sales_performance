@@ -9,10 +9,15 @@ Renders filter UI elements:
 - Entity selector
 - Internal revenue filter
 - YoY comparison toggle
-- KPI Type filter
+- KPI Type filter (single selection)
 
-VERSION: 2.3.0
+VERSION: 2.8.0
 CHANGELOG:
+- v2.8.0: KPI Type filter changed to SINGLE SELECTION:
+          - Removed "All Types" option to prevent double counting
+          - Same transaction can be split across multiple KPI Types
+          - Default: TERRITORY
+          - Help text explains single selection requirement
 - v2.3.0: BUGFIX - Parent-Child Hierarchy & Dynamic Year Check
           - Added _expand_kpi_center_ids_with_children() to expand parent → all children
           - Fixed "Only with KPI" checkbox to check years based on selected period
@@ -682,11 +687,13 @@ class KPICenterFilters:
                             kpi_center_ids = [id_map[name] for name in selected_names if name in id_map]
                     
                     # =============================================================
-                    # KPI TYPE FILTER - UPDATED v2.6.0
-                    # When "Only with KPI" is checked, only show KPI Types that have
-                    # KPI Centers with assignments
+                    # KPI TYPE FILTER - UPDATED v2.8.0
+                    # Single selection only to avoid double counting
+                    # Each transaction can be split across multiple KPI Types,
+                    # so selecting multiple types would cause double counting.
+                    # Default: TERRITORY
                     # =============================================================
-                    kpi_type_filter = None
+                    kpi_type_filter = 'TERRITORY'  # Default value
                     if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
                         # Get all KPI types from KPI Centers with sales data
                         all_types = set(kpi_center_df['kpi_type'].dropna().unique().tolist())
@@ -703,16 +710,22 @@ class KPICenterFilters:
                             available_types = sorted(all_types)
                         
                         if available_types:
-                            kpi_type_options = ['All Types'] + available_types
+                            # Find default index (TERRITORY if available, else first option)
+                            default_index = 0
+                            if 'TERRITORY' in available_types:
+                                default_index = available_types.index('TERRITORY')
+                            
                             selected_type = st.selectbox(
                                 "KPI Type",
-                                options=kpi_type_options,
-                                index=0,
+                                options=available_types,
+                                index=default_index,
                                 key="form_kpi_type",
-                                help="Filter by KPI Center type (e.g., BRAND, TERRITORY). When 'Only with KPI' is checked, only types with assigned KPIs are shown."
+                                help=(
+                                    "Select ONE KPI Type to view. Single selection required to avoid "
+                                    "double counting (same transaction can be split across multiple types)."
+                                )
                             )
-                            if selected_type != 'All Types':
-                                kpi_type_filter = selected_type
+                            kpi_type_filter = selected_type
                     
                     st.divider()
                     
