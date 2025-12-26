@@ -2,8 +2,19 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 2.5.0
+VERSION: 2.6.0
 CHANGELOG:
+- v2.6.0: REFACTORED sales_detail_fragment (SYNCED with Salesperson page):
+          - 7 summary metrics cards (Revenue, GP, GP1, Orders, Customers, Avg Order, Avg GP/Cust)
+          - 5 filter columns: Customer, Brand, Product (multiselect), OC#/Customer PO (text), Min Amount (number)
+          - All filters have Excl checkbox for exclude mode
+          - Calculate original values (pre-split): Total Revenue, Total GP
+          - Format Product display: "PT Code | Name | Package Size"
+          - Format OC/PO display: "OC#\\n(PO: xxx)"
+          - Detailed column config with comprehensive tooltips
+          - Column Legend expander with formula explanations
+          - Export Filtered View button
+          - UPDATED pivot_analysis_fragment: default to Gross Profit like SP
 - v2.5.0: ADDED Multi-Year Comparison (synced with Salesperson page):
           - yoy_comparison_fragment: Now detects actual years in data
           - >= 2 years → Multi-Year Comparison with grouped bars & cumulative lines
@@ -21,11 +32,24 @@ CHANGELOG:
 
 import logging
 from typing import Dict, Optional, List
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 from .charts import KPICenterCharts
 from .constants import MONTH_ORDER
+
+from .filters import (
+    FilterResult,
+    TextSearchResult,
+    NumberRangeResult,
+    render_multiselect_filter,
+    apply_multiselect_filter,
+    render_text_search_filter,
+    apply_text_search_filter,
+    render_number_filter,
+    apply_number_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -705,84 +729,391 @@ def yoy_comparison_fragment(
 
 
 # =============================================================================
-# SALES DETAIL FRAGMENT - kept from v2.2.0
+# SALES DETAIL FRAGMENT - REFACTORED v2.6.0 (SYNCED with Salesperson)
 # =============================================================================
 
 @st.fragment
 def sales_detail_fragment(
     sales_df: pd.DataFrame,
     filter_values: Dict = None,
+    overview_metrics: Dict = None,
     fragment_key: str = "kpc_sales"
 ):
-    """Sales detail list with filters and summary cards."""
+    """
+    Fragment for Sales Detail transaction list with filters.
+    
+    REFACTORED v2.6.0: Fully synced with Salesperson Performance page.
+    - 7 summary metrics cards
+    - 5 filter columns with Excl checkboxes
+    - Original value calculation (pre-split)
+    - Formatted Product and OC/PO display
+    - Detailed column config with tooltips
+    - Column Legend expander
+    - Export Filtered View button
+    """
     if sales_df.empty:
-        st.info("No sales data available")
+        st.info("No sales data for selected period")
         return
     
-    # Summary cards at top
-    col1, col2, col3, col4 = st.columns(4)
+    # =================================================================
+    # SUMMARY METRICS CARDS (7 columns - SYNCED with Salesperson)
+    # =================================================================
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
-    with col1:
-        st.metric("Total Revenue", f"${sales_df['sales_by_kpi_center_usd'].sum():,.0f}")
-    with col2:
-        st.metric("Total GP", f"${sales_df['gross_profit_by_kpi_center_usd'].sum():,.0f}")
-    with col3:
-        st.metric("Invoices", f"{sales_df['inv_number'].nunique():,}")
-    with col4:
-        st.metric("Customers", f"{sales_df['customer_id'].nunique():,}")
+    total_revenue = sales_df['sales_by_kpi_center_usd'].sum()
+    total_gp = sales_df['gross_profit_by_kpi_center_usd'].sum()
+    total_gp1 = sales_df['gp1_by_kpi_center_usd'].sum() if 'gp1_by_kpi_center_usd' in sales_df.columns else 0
+    gp_percent = (total_gp / total_revenue * 100) if total_revenue > 0 else 0
+    total_invoices = sales_df['inv_number'].nunique()
+    total_orders = sales_df['oc_number'].nunique() if 'oc_number' in sales_df.columns else total_invoices
+    total_customers = sales_df['customer_id'].nunique()
+    
+    with col_s1:
+        st.metric(
+            "💰 Revenue",
+            f"${total_revenue:,.0f}",
+            delta=f"{total_invoices:,} invoices",
+            delta_color="off",
+            help="Total revenue from all transactions (split-adjusted)"
+        )
+    with col_s2:
+        st.metric(
+            "📈 Gross Profit",
+            f"${total_gp:,.0f}",
+            delta=f"{gp_percent:.1f}% margin",
+            delta_color="off",
+            help="Total gross profit (split-adjusted)"
+        )
+    with col_s3:
+        st.metric(
+            "📊 GP1",
+            f"${total_gp1:,.0f}",
+            delta_color="off",
+            help="GP1 = GP - (Broker Commission × 1.2)"
+        )
+    with col_s4:
+        st.metric(
+            "📋 Orders",
+            f"{total_orders:,}",
+            delta_color="off",
+            help="Number of unique order confirmations"
+        )
+    with col_s5:
+        st.metric(
+            "👥 Customers",
+            f"{total_customers:,}",
+            delta_color="off",
+            help="Number of unique customers"
+        )
+    with col_s6:
+        # Average order value
+        avg_order = total_revenue / total_orders if total_orders > 0 else 0
+        st.metric(
+            "📦 Avg Order",
+            f"${avg_order:,.0f}",
+            delta_color="off",
+            help="Average revenue per order"
+        )
+    with col_s7:
+        # Average GP per customer
+        avg_gp_customer = total_gp / total_customers if total_customers > 0 else 0
+        st.metric(
+            "💵 Avg GP/Cust",
+            f"${avg_gp_customer:,.0f}",
+            delta_color="off",
+            help="Average gross profit per customer"
+        )
     
     st.divider()
     
-    # Filters
-    col1, col2, col3 = st.columns(3)
+    # =================================================================
+    # IMPROVED FILTERS - 5 columns with Excl option (SYNCED with Salesperson)
+    # =================================================================
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
     
-    with col1:
-        customers = ['All'] + sorted(sales_df['customer'].dropna().unique().tolist())
-        selected_customer = st.selectbox("Customer", customers, key=f"{fragment_key}_cust")
+    # Customer filter
+    with col_f1:
+        customer_options = sorted(sales_df['customer'].dropna().unique().tolist())
+        customer_filter = render_multiselect_filter(
+            label="Customer",
+            options=customer_options,
+            key=f"{fragment_key}_customer",
+            placeholder="All customers..."
+        )
     
-    with col2:
-        brands = ['All'] + sorted(sales_df['brand'].dropna().unique().tolist())
-        selected_brand = st.selectbox("Brand", brands, key=f"{fragment_key}_brand")
+    # Brand filter
+    with col_f2:
+        brand_options = sorted(sales_df['brand'].dropna().unique().tolist())
+        brand_filter = render_multiselect_filter(
+            label="Brand",
+            options=brand_options,
+            key=f"{fragment_key}_brand",
+            placeholder="All brands..."
+        )
     
-    with col3:
-        search = st.text_input("Search Product", placeholder="Part number...", key=f"{fragment_key}_search")
+    # Product filter
+    with col_f3:
+        product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
+        product_filter = render_multiselect_filter(
+            label="Product",
+            options=product_options,
+            key=f"{fragment_key}_product",
+            placeholder="All products..."
+        )
     
-    # Apply filters
-    filtered = sales_df.copy()
+    # OC# / Customer PO search
+    with col_f4:
+        oc_po_filter = render_text_search_filter(
+            label="OC# / Customer PO",
+            key=f"{fragment_key}_oc_po",
+            placeholder="Search..."
+        )
     
-    if selected_customer != 'All':
-        filtered = filtered[filtered['customer'] == selected_customer]
-    if selected_brand != 'All':
-        filtered = filtered[filtered['brand'] == selected_brand]
-    if search:
-        filtered = filtered[filtered['product_pn'].fillna('').str.lower().str.contains(search.lower())]
+    # Min Amount filter
+    with col_f5:
+        amount_filter = render_number_filter(
+            label="Min Amount ($)",
+            key=f"{fragment_key}_min_amount",
+            default_min=0,
+            step=1000
+        )
     
-    st.caption(f"Showing {len(filtered):,} transactions")
+    # =================================================================
+    # APPLY ALL FILTERS
+    # =================================================================
+    filtered_df = sales_df.copy()
     
-    # Display columns
-    display_cols = ['inv_date', 'inv_number', 'customer', 'brand', 'product_pn',
-                   'sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 'kpi_center']
-    display_cols = [c for c in display_cols if c in filtered.columns]
+    # Apply multiselect filters
+    filtered_df = apply_multiselect_filter(filtered_df, 'customer', customer_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'brand', brand_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', product_filter)
     
+    # Apply text search on multiple columns
+    if 'oc_number' in filtered_df.columns or 'customer_po_number' in filtered_df.columns:
+        search_columns = []
+        if 'oc_number' in filtered_df.columns:
+            search_columns.append('oc_number')
+        if 'customer_po_number' in filtered_df.columns:
+            search_columns.append('customer_po_number')
+        filtered_df = apply_text_search_filter(
+            filtered_df, 
+            columns=search_columns,
+            search_result=oc_po_filter
+        )
+    
+    # Apply number filter
+    filtered_df = apply_number_filter(filtered_df, 'sales_by_kpi_center_usd', amount_filter)
+    
+    # =================================================================
+    # Show filter summary
+    # =================================================================
+    active_filters = []
+    if customer_filter.is_active:
+        mode = "excl" if customer_filter.excluded else "incl"
+        active_filters.append(f"Customer: {len(customer_filter.selected)} ({mode})")
+    if brand_filter.is_active:
+        mode = "excl" if brand_filter.excluded else "incl"
+        active_filters.append(f"Brand: {len(brand_filter.selected)} ({mode})")
+    if product_filter.is_active:
+        mode = "excl" if product_filter.excluded else "incl"
+        active_filters.append(f"Product: {len(product_filter.selected)} ({mode})")
+    if oc_po_filter.is_active:
+        mode = "excl" if oc_po_filter.excluded else "incl"
+        active_filters.append(f"OC/PO: '{oc_po_filter.query}' ({mode})")
+    if amount_filter.is_active:
+        mode = "excl" if amount_filter.excluded else "incl"
+        active_filters.append(f"Amount: ≥${amount_filter.min_value:,.0f} ({mode})")
+    
+    if active_filters:
+        st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
+    
+    # =================================================================
+    # Calculate Original (pre-split) values
+    # Formula: Original = Split Value / (Split % / 100)
+    # Note: GP1 is calculated field, no "original" value exists
+    # =================================================================
+    filtered_df = filtered_df.copy()
+    
+    # Avoid division by zero - default to 100% if split is 0 or missing
+    if 'split_rate_percent' in filtered_df.columns:
+        split_pct = filtered_df['split_rate_percent'].replace(0, 100).fillna(100) / 100
+    else:
+        split_pct = 1.0
+    
+    # Calculate original values (before split) - only Revenue and GP
+    filtered_df['total_revenue_usd'] = filtered_df['sales_by_kpi_center_usd'] / split_pct
+    filtered_df['total_gp_usd'] = filtered_df['gross_profit_by_kpi_center_usd'] / split_pct
+    
+    # =================================================================
+    # Format Product as "pt_code | Name | Package size"
+    # =================================================================
+    def format_product_display(row):
+        parts = []
+        if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+            parts.append(str(row['pt_code']))
+        if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+            parts.append(str(row['product_pn']))
+        if pd.notna(row.get('package_size')) and row.get('package_size'):
+            parts.append(str(row['package_size']))
+        return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+    
+    filtered_df['product_display'] = filtered_df.apply(format_product_display, axis=1)
+    
+    # =================================================================
+    # Format OC with Customer PO: "OC#\n(PO: xxx)"
+    # =================================================================
+    def format_oc_po(row):
+        oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+        po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+        if oc and po:
+            return f"{oc}\n(PO: {po})"
+        elif oc:
+            return oc
+        elif po:
+            return f"(PO: {po})"
+        return ''
+    
+    if 'oc_number' in filtered_df.columns:
+        filtered_df['oc_po_display'] = filtered_df.apply(format_oc_po, axis=1)
+    
+    # =================================================================
+    # Display columns - reordered with new formatted columns
+    # =================================================================
+    display_columns = [
+        'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
+        'total_revenue_usd', 'total_gp_usd',  # Original values (Revenue, GP only)
+        'split_rate_percent',
+        'sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 'gp1_by_kpi_center_usd',  # Split values
+        'kpi_center'
+    ]
+    available_cols = [c for c in display_columns if c in filtered_df.columns]
+    
+    st.markdown(f"**Showing {len(filtered_df):,} transactions** (of {len(sales_df):,} total)")
+    
+    # Prepare display dataframe
+    display_detail = filtered_df[available_cols].head(500).copy()
+    
+    # =================================================================
+    # Configure columns with tooltips using st.column_config
+    # =================================================================
+    column_config = {
+        'inv_date': st.column_config.DateColumn(
+            "Date",
+            help="Invoice date"
+        ),
+        'inv_number': st.column_config.TextColumn(
+            "Invoice#",
+            help="Invoice number"
+        ),
+        'oc_po_display': st.column_config.TextColumn(
+            "OC / PO",
+            help="Order Confirmation number and Customer PO",
+            width="medium"
+        ),
+        'customer': st.column_config.TextColumn(
+            "Customer",
+            help="Customer name",
+            width="medium"
+        ),
+        'product_display': st.column_config.TextColumn(
+            "Product",
+            help="Product: PT Code | Name | Package Size",
+            width="large"
+        ),
+        'brand': st.column_config.TextColumn(
+            "Brand",
+            help="Product brand/manufacturer"
+        ),
+        # Original values (before split)
+        'total_revenue_usd': st.column_config.NumberColumn(
+            "Total Revenue",
+            help="💰 ORIGINAL invoice revenue (100% of line item)\n\nThis is the full value BEFORE applying KPI Center split.",
+            format="$%.0f"
+        ),
+        'total_gp_usd': st.column_config.NumberColumn(
+            "Total GP",
+            help="📈 ORIGINAL gross profit (100% of line item)\n\nFormula: Revenue - COGS\n\nThis is the full GP BEFORE applying KPI Center split.",
+            format="$%.0f"
+        ),
+        # Split percentage
+        'split_rate_percent': st.column_config.NumberColumn(
+            "Split %",
+            help="👥 KPI Center credit split percentage\n\nThis KPI Center receives this % of the total revenue/GP/GP1.\n\n100% = Full credit\n50% = Shared equally with another KPI Center",
+            format="%.0f%%"
+        ),
+        # Split values (after split)
+        'sales_by_kpi_center_usd': st.column_config.NumberColumn(
+            "Revenue",
+            help="💰 CREDITED revenue for this KPI Center\n\n📐 Formula: Total Revenue × Split %\n\nThis is the revenue credited to this KPI Center after applying their split percentage.",
+            format="$%.0f"
+        ),
+        'gross_profit_by_kpi_center_usd': st.column_config.NumberColumn(
+            "GP",
+            help="📈 CREDITED gross profit for this KPI Center\n\n📐 Formula: Total GP × Split %\n\nThis is the GP credited to this KPI Center after applying their split percentage.",
+            format="$%.0f"
+        ),
+        'gp1_by_kpi_center_usd': st.column_config.NumberColumn(
+            "GP1",
+            help="📊 CREDITED GP1 for this KPI Center\n\n📐 Formula: (GP - Broker Commission × 1.2) × Split %\n\nGP1 is calculated from GP after deducting commission, then split.",
+            format="$%.0f"
+        ),
+        'kpi_center': st.column_config.TextColumn(
+            "KPI Center",
+            help="KPI Center receiving credit for this transaction"
+        ),
+    }
+    
+    # Display table with column configuration
     st.dataframe(
-        filtered[display_cols].head(500),
+        display_detail,
+        column_config=column_config,
+        use_container_width=True,
         hide_index=True,
-        column_config={
-            'inv_date': st.column_config.DateColumn('Date'),
-            'inv_number': 'Invoice',
-            'customer': 'Customer',
-            'brand': 'Brand',
-            'product_pn': 'Product',
-            'sales_by_kpi_center_usd': st.column_config.NumberColumn('Revenue', format="$%,.0f"),
-            'gross_profit_by_kpi_center_usd': st.column_config.NumberColumn('GP', format="$%,.0f"),
-            'kpi_center': 'KPI Center',
-        },
-        use_container_width=True
+        height=500
     )
+    
+    # Legend for quick reference
+    with st.expander("📖 Column Legend", expanded=False):
+        st.markdown("""
+        | Column | Description | Formula |
+        |--------|-------------|---------|
+        | **OC / PO** | Order Confirmation & Customer PO | Combined display |
+        | **Product** | PT Code \\| Name \\| Package Size | Formatted product info |
+        | **Total Revenue** | Original invoice amount (100%) | Full line item value |
+        | **Total GP** | Original gross profit (100%) | Revenue - COGS |
+        | **Split %** | Credit allocation to KPI Center | Assigned by KPI split rules |
+        | **Revenue** | Credited revenue | Total Revenue × Split % |
+        | **GP** | Credited gross profit | Total GP × Split % |
+        | **GP1** | Credited GP1 | (GP - Broker Commission × 1.2) × Split % |
+        
+        > 💡 **Note:** GP1 is a calculated field (GP minus commission), so there's no "original" GP1 value.
+        
+        > 💡 **Tip:** Hover over column headers to see detailed tooltips.
+        """)
+    
+    # Export filtered view button
+    st.caption("💡 For full report with all data, use **Export Report** section")
+    if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help="Export only the filtered transactions shown above"):
+        from .export import KPICenterExport
+        
+        exporter = KPICenterExport()
+        excel_bytes = exporter.create_report(
+            summary_df=pd.DataFrame(),
+            monthly_df=pd.DataFrame(),
+            metrics=overview_metrics or {},
+            filters=filter_values or {},
+            detail_df=filtered_df
+        )
+        st.download_button(
+            label="⬇️ Download Filtered Data",
+            data=excel_bytes,
+            file_name=f"kpi_center_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 
 # =============================================================================
-# PIVOT ANALYSIS FRAGMENT
+# PIVOT ANALYSIS FRAGMENT - UPDATED v2.6.0 (SYNCED with Salesperson)
 # =============================================================================
 
 @st.fragment
@@ -790,35 +1121,50 @@ def pivot_analysis_fragment(
     sales_df: pd.DataFrame,
     fragment_key: str = "kpc_pivot"
 ):
-    """Configurable pivot table analysis."""
+    """
+    Configurable pivot table analysis.
+    
+    SYNCED with Salesperson page:
+    - Same layout: 3 columns for Rows/Columns/Values
+    - Same default: customer / invoice_month / Gross Profit
+    - Same styling: background_gradient on Total column
+    - Same month ordering: Jan → Dec
+    """
     if sales_df.empty:
         st.info("No data for pivot analysis")
         return
     
     st.subheader("📊 Pivot Analysis")
     
-    col1, col2, col3 = st.columns(3)
+    # Pivot configuration - 3 columns like Salesperson
+    col_p1, col_p2, col_p3 = st.columns(3)
     
-    with col1:
-        row_options = ['customer', 'brand', 'kpi_center', 'invoice_month']
-        row_by = st.selectbox("Rows", row_options, key=f"{fragment_key}_rows")
+    with col_p1:
+        # Row options - kpi_center instead of sales_name
+        row_options = ['customer', 'brand', 'kpi_center', 'product_pn', 'legal_entity']
+        row_options = [r for r in row_options if r in sales_df.columns]
+        pivot_rows = st.selectbox("Rows", row_options, index=0, key=f"{fragment_key}_rows")
     
-    with col2:
-        col_options = ['None', 'invoice_month', 'brand', 'kpi_center']
-        col_by = st.selectbox("Columns", col_options, key=f"{fragment_key}_cols")
+    with col_p2:
+        # Column options - kpi_center instead of sales_name
+        col_options = ['invoice_month', 'brand', 'customer', 'kpi_center']
+        pivot_cols = st.selectbox("Columns", col_options, index=0, key=f"{fragment_key}_cols")
     
-    with col3:
-        value_options = ['Revenue', 'Gross Profit', 'GP1', 'Orders']
-        value_metric = st.selectbox("Values", value_options, key=f"{fragment_key}_values")
-    
-    # Map value selection
-    value_col_map = {
-        'Revenue': 'sales_by_kpi_center_usd',
-        'Gross Profit': 'gross_profit_by_kpi_center_usd',
-        'GP1': 'gp1_by_kpi_center_usd',
-        'Orders': 'inv_number'
-    }
-    value_col = value_col_map.get(value_metric, 'sales_by_kpi_center_usd')
+    with col_p3:
+        # Value options with friendly labels - DEFAULT index=1 (Gross Profit) like SP
+        value_options = ['sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 'gp1_by_kpi_center_usd']
+        value_options = [v for v in value_options if v in sales_df.columns]
+        
+        # Default to Gross Profit (index=1) if available
+        default_idx = 1 if len(value_options) > 1 else 0
+        
+        pivot_values = st.selectbox(
+            "Values", 
+            value_options, 
+            index=default_idx, 
+            key=f"{fragment_key}_values",
+            format_func=lambda x: x.replace('_by_kpi_center_usd', '').replace('_', ' ').title()
+        )
     
     # Ensure month column exists
     df = sales_df.copy()
@@ -826,38 +1172,34 @@ def pivot_analysis_fragment(
         df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
         df['invoice_month'] = df['inv_date'].dt.strftime('%b')
     
-    # Aggregate
-    if value_metric == 'Orders':
-        agg_func = pd.Series.nunique
-    else:
-        agg_func = 'sum'
-    
-    if col_by == 'None':
-        pivot = df.groupby(row_by).agg({value_col: agg_func}).reset_index()
-        pivot.columns = [row_by, value_metric]
-        pivot = pivot.sort_values(value_metric, ascending=False)
-    else:
-        pivot = df.pivot_table(
-            index=row_by,
-            columns=col_by,
-            values=value_col,
-            aggfunc=agg_func,
+    # Create pivot
+    if pivot_rows in df.columns and (pivot_cols in df.columns or pivot_cols == 'invoice_month'):
+        pivot_df = df.pivot_table(
+            values=pivot_values,
+            index=pivot_rows,
+            columns=pivot_cols,
+            aggfunc='sum',
             fill_value=0
-        ).reset_index()
-    
-    # Format
-    format_dict = {}
-    if value_metric in ['Revenue', 'Gross Profit', 'GP1']:
-        for col in pivot.columns:
-            if col != row_by:
-                format_dict[col] = st.column_config.NumberColumn(format="$%,.0f")
-    
-    st.dataframe(
-        pivot.head(50),
-        hide_index=True,
-        column_config=format_dict,
-        use_container_width=True
-    )
+        )
+        
+        # Add totals
+        pivot_df['Total'] = pivot_df.sum(axis=1)
+        pivot_df = pivot_df.sort_values('Total', ascending=False)
+        
+        # Reorder columns (months) - Jan → Dec like Salesperson
+        if pivot_cols == 'invoice_month':
+            month_cols = [m for m in MONTH_ORDER if m in pivot_df.columns]
+            other_cols = [c for c in pivot_df.columns if c not in MONTH_ORDER and c != 'Total']
+            pivot_df = pivot_df[month_cols + other_cols + ['Total']]
+        
+        # Display with same styling as Salesperson
+        st.dataframe(
+            pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
+            use_container_width=True,
+            height=500
+        )
+    else:
+        st.warning("Selected columns not available in data")
 
 
 # =============================================================================

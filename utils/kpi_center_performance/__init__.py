@@ -4,8 +4,19 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 2.5.0
+VERSION: 2.13.0
 CHANGELOG:
+- v2.13.0: SYNCED sales_detail_fragment with Salesperson page:
+          - filters.py: Added TextSearchResult, render_text_search_filter(),
+                        apply_text_search_filter(), render_number_filter alias
+          - fragments.py: Refactored sales_detail_fragment:
+            * 7 summary metrics cards
+            * 5 filter columns with Excl checkboxes
+            * Original value calculation (pre-split)
+            * Formatted Product and OC/PO display
+            * Column tooltips and Legend expander
+            * Export Filtered View button
+          - Updated pivot_analysis_fragment: default to Gross Profit
 - v2.5.0: ADDED Multi-Year Comparison (synced with Salesperson page):
           - charts.py: Added build_multi_year_monthly_chart(), 
                        build_multi_year_cumulative_chart(), 
@@ -63,9 +74,19 @@ from .metrics import KPICenterMetrics
 from .filters import (
     KPICenterFilters,
     analyze_period,
+    # Multiselect filter
+    FilterResult,
     render_multiselect_filter,
     apply_multiselect_filter,
-    FilterResult,
+    # Text search filter (NEW v2.13.0)
+    TextSearchResult,
+    render_text_search_filter,
+    apply_text_search_filter,
+    # Number filter
+    NumberRangeResult,
+    render_number_filter,
+    apply_number_filter,
+    # Cache helpers
     clear_data_cache,
 )
 
@@ -108,12 +129,20 @@ __all__ = [
     'KPICenterFilters',
     'KPICenterCharts',
     'KPICenterExport',
-    'FilterResult',
     
-    # Functions
+    # Filter Result Classes
+    'FilterResult',
+    'TextSearchResult',
+    'NumberRangeResult',
+    
+    # Filter Functions
     'analyze_period',
     'render_multiselect_filter',
     'apply_multiselect_filter',
+    'render_text_search_filter',
+    'apply_text_search_filter',
+    'render_number_filter',
+    'apply_number_filter',
     'clear_data_cache',
     
     # Fragments
@@ -123,7 +152,7 @@ __all__ = [
     'pivot_analysis_fragment',
     'backlog_list_fragment',
     'kpi_center_ranking_fragment',
-    'top_performers_fragment',  # NEW v2.3.0
+    'top_performers_fragment',
     'export_report_fragment',
     
     # Constants
@@ -138,4 +167,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '2.12.0'
+__version__ = '2.13.0'

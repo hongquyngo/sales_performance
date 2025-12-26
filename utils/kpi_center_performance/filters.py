@@ -14,8 +14,13 @@ Renders filter UI elements:
 REQUIREMENTS:
 - Streamlit >= 1.33.0 (for @st.fragment support)
 
-VERSION: 2.12.0
+VERSION: 2.13.0
 CHANGELOG:
+- v2.13.0: SYNCED with Salesperson filters v2.5.0:
+          - Added TextSearchResult dataclass for text search filters
+          - Added render_text_search_filter() for OC#/Customer PO search
+          - Added apply_text_search_filter() for multi-column text search
+          - Added render_number_filter alias for consistency with Salesperson
 - v2.12.0: ADDED Hierarchy Display for KPI Center dropdown:
           - Added _build_hierarchy_display_options() helper
           - Parent KPI Centers now visible with 📁 prefix
@@ -539,6 +544,114 @@ def apply_multiselect_filter(
     else:
         # INCLUDE mode: keep rows IN selected
         return df[df[column].isin(filter_result.selected)]
+
+
+# =============================================================================
+# TEXT SEARCH FILTER - NEW v2.13.0 (SYNCED with Salesperson)
+# =============================================================================
+
+@dataclass
+class TextSearchResult:
+    """Result from text search filter."""
+    query: str
+    excluded: bool
+    is_active: bool
+
+
+def render_text_search_filter(
+    label: str,
+    key: str,
+    placeholder: str = "Search...",
+    help_text: str = None,
+    ctx = None
+) -> TextSearchResult:
+    """
+    Render a text search filter with Excl option.
+    
+    Args:
+        label: Filter label
+        key: Unique widget key
+        placeholder: Placeholder text
+        help_text: Optional help tooltip
+        ctx: Optional Streamlit context
+        
+    Returns:
+        TextSearchResult with query, excluded flag, and is_active flag
+    """
+    if ctx is None:
+        ctx = st
+    
+    # Header row
+    col_label, col_excl = ctx.columns([4, 1])
+    
+    with col_label:
+        ctx.markdown(f"**{label}**")
+    
+    with col_excl:
+        excluded = ctx.checkbox(
+            "Excl",
+            value=False,
+            key=f"{key}_excl",
+            help="Tick to EXCLUDE items matching search"
+        )
+    
+    # Text input
+    query = ctx.text_input(
+        label=label,
+        placeholder=placeholder,
+        key=f"{key}_input",
+        help=help_text,
+        label_visibility="collapsed"
+    )
+    
+    return TextSearchResult(
+        query=query.strip(),
+        excluded=excluded,
+        is_active=bool(query.strip())
+    )
+
+
+def apply_text_search_filter(
+    df: pd.DataFrame,
+    columns: List[str],
+    search_result: TextSearchResult,
+    case_sensitive: bool = False
+) -> pd.DataFrame:
+    """
+    Apply text search filter to DataFrame (searches across multiple columns).
+    
+    Args:
+        df: DataFrame to filter
+        columns: List of column names to search in
+        search_result: TextSearchResult from render_text_search_filter
+        case_sensitive: Whether search is case-sensitive
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if df.empty or not search_result.is_active:
+        return df
+    
+    query = search_result.query
+    if not case_sensitive:
+        query = query.lower()
+    
+    # Build combined mask across all columns
+    combined_mask = pd.Series([False] * len(df), index=df.index)
+    
+    for column in columns:
+        if column in df.columns:
+            col_values = df[column].astype(str)
+            if not case_sensitive:
+                col_values = col_values.str.lower()
+            
+            mask = col_values.str.contains(query, na=False, regex=False)
+            combined_mask = combined_mask | mask
+    
+    if search_result.excluded:
+        return df[~combined_mask]
+    else:
+        return df[combined_mask]
 
 
 # =============================================================================
@@ -1284,6 +1397,7 @@ class KPICenterFilters:
 
 # Alias for old function name used in __init__.py
 render_multiselect_filter = render_multiselect_with_exclude
+render_number_filter = render_number_filter_with_exclude
 apply_filter_to_dataframe = apply_multiselect_filter
 
 
