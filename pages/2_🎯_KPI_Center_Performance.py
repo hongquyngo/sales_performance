@@ -2,8 +2,13 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.9.1
+VERSION: 2.10.0
 CHANGELOG:
+- v2.10.0: SYNCED Sales Detail tab with Salesperson page:
+          - Added sub-tabs: "📄 Transaction List" and "📊 Pivot Analysis"
+          - Each sub-tab is a fragment for better performance
+          - Transaction List: 7 summary cards, 5 filters with Excl, original values
+          - Pivot Analysis: Default to Gross Profit, same styling as SP
 - v2.9.1: FIXED Exclude Internal Revenue logic in load_yoy_data():
           - Business rule: Internal sales → Revenue = 0, GP/GP1 kept (real profit)
           - Previous: Filtered out rows entirely (lost GP/GP1 for YoY comparison)
@@ -1388,18 +1393,40 @@ This ensures accurate achievement calculation.
         )
     
     # ==========================================================================
-    # TAB 2: SALES DETAIL
+    # TAB 2: SALES DETAIL (with Sub-tabs like Salesperson)
     # ==========================================================================
     
     with tab2:
-        sales_detail_fragment(
-            sales_df=sales_df,
-            filter_values=active_filters
-        )
+        st.subheader("📋 Sales Transaction Detail")
         
-        st.divider()
-        
-        pivot_analysis_fragment(sales_df=sales_df)
+        if sales_df.empty:
+            st.info("No sales data for selected period")
+        else:
+            # Sub-tabs for detail views - EACH IS A FRAGMENT
+            # Only reruns when filters in that sub-tab change
+            detail_tab1, detail_tab2 = st.tabs(["📄 Transaction List", "📊 Pivot Analysis"])
+            
+            with detail_tab1:
+                # =============================================================
+                # TRANSACTION LIST - FRAGMENT
+                # Only reruns when filters in this section change
+                # =============================================================
+                sales_detail_fragment(
+                    sales_df=sales_df,
+                    overview_metrics=overview_metrics,
+                    filter_values=active_filters,
+                    fragment_key="kpc_detail"
+                )
+            
+            with detail_tab2:
+                # =============================================================
+                # PIVOT ANALYSIS - FRAGMENT  
+                # Only reruns when pivot config changes
+                # =============================================================
+                pivot_analysis_fragment(
+                    sales_df=sales_df,
+                    fragment_key="kpc_pivot"
+                )
     
     # ==========================================================================
     # TAB 3: ANALYSIS

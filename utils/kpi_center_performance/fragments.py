@@ -837,8 +837,7 @@ def sales_detail_fragment(
         customer_filter = render_multiselect_filter(
             label="Customer",
             options=customer_options,
-            key=f"{fragment_key}_customer",
-            placeholder="All customers..."
+            key=f"{fragment_key}_customer"
         )
     
     # Brand filter
@@ -847,8 +846,7 @@ def sales_detail_fragment(
         brand_filter = render_multiselect_filter(
             label="Brand",
             options=brand_options,
-            key=f"{fragment_key}_brand",
-            placeholder="All brands..."
+            key=f"{fragment_key}_brand"
         )
     
     # Product filter
@@ -857,8 +855,7 @@ def sales_detail_fragment(
         product_filter = render_multiselect_filter(
             label="Product",
             options=product_options,
-            key=f"{fragment_key}_product",
-            placeholder="All products..."
+            key=f"{fragment_key}_product"
         )
     
     # OC# / Customer PO search
