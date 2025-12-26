@@ -2,8 +2,13 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.9.0
+VERSION: 2.9.1
 CHANGELOG:
+- v2.9.1: FIXED Exclude Internal Revenue logic in load_yoy_data():
+          - Business rule: Internal sales → Revenue = 0, GP/GP1 kept (real profit)
+          - Previous: Filtered out rows entirely (lost GP/GP1 for YoY comparison)
+          - Now: Set revenue = 0, keep rows for GP/GP1 calculation
+          - Consistent with filter_data_client_side() logic
 - v2.9.0: FIXED Complex KPIs (New Business) not reflecting filter changes:
           - Issue: New Customers/Products/Business Revenue not updating when 
             KPI Center, KPI Type, or Legal Entity filters changed
@@ -752,7 +757,15 @@ def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
     
     if filter_values.get('exclude_internal_revenue', True) and not prev_sales_df.empty:
         if 'customer_type' in prev_sales_df.columns:
-            prev_sales_df = prev_sales_df[prev_sales_df['customer_type'] != 'Internal']
+            # =================================================================
+            # FIXED v2.9.1: Exclude Internal Revenue - Set revenue = 0, keep GP/GP1
+            # Business rule: Internal sales have Revenue = 0 but GP/GP1 are real profit
+            # Previous: Filtered out rows entirely (wrong - lost GP/GP1)
+            # Now: Set revenue = 0, keep rows for GP/GP1 calculation
+            # =================================================================
+            if 'sales_by_kpi_center_usd' in prev_sales_df.columns:
+                internal_mask = prev_sales_df['customer_type'] == 'Internal'
+                prev_sales_df.loc[internal_mask, 'sales_by_kpi_center_usd'] = 0
     
     return prev_sales_df
 
