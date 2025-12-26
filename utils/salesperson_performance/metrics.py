@@ -1365,6 +1365,157 @@ class SalespersonMetrics:
         
         return df
     
+    def prepare_backlog_by_month_multiyear(
+        self,
+        backlog_by_month_df: pd.DataFrame,
+        include_empty_months: bool = False
+    ) -> pd.DataFrame:
+        """
+        Prepare backlog by month for multi-year chart display.
+        
+        Unlike prepare_backlog_by_month(), this method:
+        - Does NOT filter to a single year
+        - Creates combined year-month labels (e.g., "Jan'25", "Feb'26")
+        - Sorts chronologically across years
+        - Supports color-coding by year
+        
+        Args:
+            backlog_by_month_df: Backlog data grouped by ETD year/month
+                Expected columns: etd_year, etd_month, backlog_revenue, backlog_gp, order_count
+            include_empty_months: If True, include months with zero backlog
+                (fills gaps between first and last month with data)
+        
+        Returns:
+            DataFrame with columns:
+            - year_month: Combined label (e.g., "Jan'25")
+            - etd_year: Year as int
+            - etd_month: Month abbreviation
+            - month_num: Month number (1-12) for sorting
+            - sort_order: Integer for chronological sorting (year*100 + month)
+            - backlog_revenue: Revenue amount
+            - backlog_gp: Gross profit amount
+            - order_count: Number of orders
+        
+        Example output:
+            year_month | etd_year | etd_month | sort_order | backlog_revenue
+            Jan'25     | 2025     | Jan       | 202501     | 27,249
+            Feb'25     | 2025     | Feb       | 202502     | 21,502
+            ...
+            Jan'26     | 2026     | Jan       | 202601     | 45,000
+        
+        CHANGELOG:
+        - v1.0.0: Initial implementation for multi-year backlog view
+        """
+        if backlog_by_month_df.empty:
+            return pd.DataFrame({
+                'year_month': [],
+                'etd_year': [],
+                'etd_month': [],
+                'month_num': [],
+                'sort_order': [],
+                'backlog_revenue': [],
+                'backlog_gp': [],
+                'order_count': [],
+            })
+        
+        df = backlog_by_month_df.copy()
+        
+        # Ensure etd_year is integer
+        df['etd_year'] = pd.to_numeric(df['etd_year'], errors='coerce').fillna(0).astype(int)
+        
+        # Create month number for sorting
+        month_to_num = {m: i+1 for i, m in enumerate(MONTH_ORDER)}
+        df['month_num'] = df['etd_month'].map(month_to_num)
+        
+        # Create sort order: year * 100 + month (e.g., 202501, 202502, ..., 202601)
+        df['sort_order'] = df['etd_year'] * 100 + df['month_num']
+        
+        # Create combined year-month label
+        # Format: "Jan'25", "Feb'25", etc.
+        df['year_month'] = df.apply(
+            lambda row: f"{row['etd_month']}'{str(row['etd_year'])[-2:]}", 
+            axis=1
+        )
+        
+        # Sort chronologically
+        df = df.sort_values('sort_order').reset_index(drop=True)
+        
+        # Optionally fill empty months (gaps between first and last data point)
+        if include_empty_months and len(df) > 0:
+            min_order = df['sort_order'].min()
+            max_order = df['sort_order'].max()
+            
+            # Generate all year-months between min and max
+            all_periods = []
+            current = min_order
+            while current <= max_order:
+                year = current // 100
+                month = current % 100
+                if 1 <= month <= 12:
+                    month_abbr = MONTH_ORDER[month - 1]
+                    all_periods.append({
+                        'sort_order': current,
+                        'etd_year': year,
+                        'etd_month': month_abbr,
+                        'month_num': month,
+                        'year_month': f"{month_abbr}'{str(year)[-2:]}",
+                    })
+                # Move to next month
+                if month == 12:
+                    current = (year + 1) * 100 + 1
+                else:
+                    current += 1
+            
+            all_periods_df = pd.DataFrame(all_periods)
+            
+            # Merge with actual data
+            df = all_periods_df.merge(
+                df[['sort_order', 'backlog_revenue', 'backlog_gp', 'order_count']],
+                on='sort_order',
+                how='left'
+            ).fillna(0)
+        
+        # Ensure numeric columns
+        for col in ['backlog_revenue', 'backlog_gp', 'order_count']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        # Select and order columns
+        result_cols = ['year_month', 'etd_year', 'etd_month', 'month_num', 
+                    'sort_order', 'backlog_revenue', 'backlog_gp', 'order_count']
+        result_cols = [c for c in result_cols if c in df.columns]
+        
+        return df[result_cols]
+
+
+    def get_backlog_year_summary(
+        self,
+        backlog_by_month_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Get summary of backlog by year for legend/info display.
+        
+        Returns:
+            DataFrame with columns: etd_year, total_revenue, total_gp, total_orders
+        """
+        if backlog_by_month_df.empty:
+            return pd.DataFrame()
+        
+        df = backlog_by_month_df.copy()
+        df['etd_year'] = pd.to_numeric(df['etd_year'], errors='coerce').fillna(0).astype(int)
+        
+        summary = df.groupby('etd_year').agg({
+            'backlog_revenue': 'sum',
+            'backlog_gp': 'sum',
+            'order_count': 'sum'
+        }).reset_index()
+        
+        summary.columns = ['etd_year', 'total_revenue', 'total_gp', 'total_orders']
+        summary = summary.sort_values('etd_year')
+        
+        return summary
+
+
     def _get_empty_backlog_monthly(self) -> pd.DataFrame:
         """Return empty backlog monthly summary."""
         return pd.DataFrame({

@@ -1543,6 +1543,249 @@ class SalespersonCharts:
         return chart
     
     @staticmethod
+    def build_backlog_by_month_chart_multiyear(
+        monthly_df: pd.DataFrame,
+        title: str = "📅 Backlog by ETD Month",
+        color_by_year: bool = True,
+        show_totals_by_year: bool = True
+    ) -> alt.Chart:
+        """
+        Build bar chart showing backlog distribution by ETD month across multiple years.
+        
+        Features:
+        - X-axis shows combined year-month labels (e.g., "Jan'25", "Feb'25", "Jan'26")
+        - Bars are color-coded by year for easy distinction
+        - Chronologically sorted across years
+        - Tooltips include year information
+        
+        Args:
+            monthly_df: DataFrame from prepare_backlog_by_month_multiyear() with columns:
+                - year_month: Combined label (e.g., "Jan'25")
+                - etd_year: Year as int
+                - sort_order: For chronological sorting
+                - backlog_revenue, backlog_gp, order_count
+            title: Chart title
+            color_by_year: If True, bars are colored by year. If False, single color.
+            show_totals_by_year: If True, show year totals in subtitle
+            
+        Returns:
+            Altair chart
+            
+        CHANGELOG:
+        - v1.0.0: Initial implementation for multi-year backlog view
+        """
+        if monthly_df.empty:
+            return SalespersonCharts._empty_chart("No backlog data")
+        
+        df = monthly_df.copy()
+        
+        # Ensure required columns exist
+        if 'year_month' not in df.columns:
+            # Fallback: try to create from etd_year and etd_month
+            if 'etd_year' in df.columns and 'etd_month' in df.columns:
+                df['year_month'] = df.apply(
+                    lambda row: f"{row['etd_month']}'{str(int(row['etd_year']))[-2:]}", 
+                    axis=1
+                )
+            else:
+                return SalespersonCharts._empty_chart("Missing year_month column")
+        
+        # Ensure sort_order exists
+        if 'sort_order' not in df.columns:
+            if 'etd_year' in df.columns and 'etd_month' in df.columns:
+                month_to_num = {m: i+1 for i, m in enumerate(MONTH_ORDER)}
+                df['month_num'] = df['etd_month'].map(month_to_num)
+                df['sort_order'] = df['etd_year'].astype(int) * 100 + df['month_num']
+            else:
+                df['sort_order'] = range(len(df))
+        
+        # Sort by sort_order
+        df = df.sort_values('sort_order').reset_index(drop=True)
+        
+        # Create ordered list for x-axis
+        year_month_order = df['year_month'].tolist()
+        
+        # Convert etd_year to string for color encoding
+        df['year_str'] = df['etd_year'].astype(int).astype(str)
+        
+        # Define year colors (cycling through a palette)
+        year_colors = {
+            '2024': '#aec7e8',  # Light blue (past)
+            '2025': '#1f77b4',  # Blue (current)
+            '2026': '#2ca02c',  # Green (future)
+            '2027': '#ff7f0e',  # Orange (far future)
+            '2028': '#9467bd',  # Purple
+            '2029': '#8c564b',  # Brown
+        }
+        
+        # Get unique years and assign colors
+        unique_years = sorted(df['year_str'].unique())
+        year_color_domain = unique_years
+        year_color_range = [year_colors.get(y, '#17becf') for y in unique_years]
+        
+        # Build chart
+        if color_by_year:
+            # Bars colored by year
+            bars = alt.Chart(df).mark_bar().encode(
+                x=alt.X(
+                    'year_month:N', 
+                    sort=year_month_order, 
+                    title='ETD Month',
+                    axis=alt.Axis(
+                        labelAngle=-45,
+                        labelFontSize=10
+                    )
+                ),
+                y=alt.Y(
+                    'backlog_revenue:Q', 
+                    title='Backlog (USD)', 
+                    axis=alt.Axis(format='~s')
+                ),
+                color=alt.Color(
+                    'year_str:N',
+                    title='Year',
+                    scale=alt.Scale(domain=year_color_domain, range=year_color_range),
+                    legend=alt.Legend(orient='top-right')
+                ),
+                tooltip=[
+                    alt.Tooltip('year_month:N', title='Period'),
+                    alt.Tooltip('etd_year:O', title='Year'),
+                    alt.Tooltip('etd_month:N', title='Month'),
+                    alt.Tooltip('backlog_revenue:Q', title='Backlog', format='$,.0f'),
+                    alt.Tooltip('backlog_gp:Q', title='GP', format='$,.0f'),
+                    alt.Tooltip('order_count:Q', title='Orders', format=',')
+                ]
+            )
+        else:
+            # Single color bars
+            bars = alt.Chart(df).mark_bar(color=COLORS['new_customer']).encode(
+                x=alt.X(
+                    'year_month:N', 
+                    sort=year_month_order, 
+                    title='ETD Month',
+                    axis=alt.Axis(labelAngle=-45, labelFontSize=10)
+                ),
+                y=alt.Y(
+                    'backlog_revenue:Q', 
+                    title='Backlog (USD)', 
+                    axis=alt.Axis(format='~s')
+                ),
+                tooltip=[
+                    alt.Tooltip('year_month:N', title='Period'),
+                    alt.Tooltip('etd_year:O', title='Year'),
+                    alt.Tooltip('backlog_revenue:Q', title='Backlog', format='$,.0f'),
+                    alt.Tooltip('backlog_gp:Q', title='GP', format='$,.0f'),
+                    alt.Tooltip('order_count:Q', title='Orders', format=',')
+                ]
+            )
+        
+        # Text labels on bars (only for non-zero values)
+        df_nonzero = df[df['backlog_revenue'] > 0]
+        
+        text = alt.Chart(df_nonzero).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-5,
+            fontSize=9,
+            color=COLORS['text_dark']
+        ).encode(
+            x=alt.X('year_month:N', sort=year_month_order),
+            y=alt.Y('backlog_revenue:Q'),
+            text=alt.Text('backlog_revenue:Q', format=',.0f')
+        )
+        
+        # Build subtitle with year totals
+        subtitle = ""
+        if show_totals_by_year:
+            year_totals = df.groupby('year_str')['backlog_revenue'].sum()
+            total_parts = [f"{y}: ${v:,.0f}" for y, v in sorted(year_totals.items())]
+            if total_parts:
+                subtitle = " | ".join(total_parts)
+        
+        # Combine layers
+        chart = alt.layer(bars, text).properties(
+            width=CHART_WIDTH,
+            height=350,
+            title=alt.TitleParams(
+                text=title,
+                subtitle=subtitle if subtitle else None,
+                subtitleColor='#666666',
+                subtitleFontSize=11
+            )
+        )
+        
+        return chart
+
+
+    @staticmethod
+    def build_backlog_by_month_stacked(
+        monthly_df: pd.DataFrame,
+        title: str = "📅 Backlog by ETD Month (Stacked by Year)"
+    ) -> alt.Chart:
+        """
+        Build STACKED bar chart showing backlog by month with years stacked.
+        
+        This view groups bars by MONTH (Jan, Feb, ...) and stacks years within each month.
+        Useful when comparing same-month backlog across years.
+        
+        Args:
+            monthly_df: DataFrame from prepare_backlog_by_month_multiyear()
+            title: Chart title
+            
+        Returns:
+            Altair stacked bar chart
+        """
+        if monthly_df.empty:
+            return SalespersonCharts._empty_chart("No backlog data")
+        
+        df = monthly_df.copy()
+        
+        # Ensure required columns
+        if 'etd_month' not in df.columns:
+            return SalespersonCharts._empty_chart("Missing etd_month column")
+        
+        df['year_str'] = df['etd_year'].astype(int).astype(str)
+        
+        # Year colors
+        year_colors = {
+            '2024': '#aec7e8',
+            '2025': '#1f77b4',
+            '2026': '#2ca02c',
+            '2027': '#ff7f0e',
+            '2028': '#9467bd',
+        }
+        
+        unique_years = sorted(df['year_str'].unique())
+        year_color_range = [year_colors.get(y, '#17becf') for y in unique_years]
+        
+        # Stacked bar chart
+        chart = alt.Chart(df).mark_bar().encode(
+            x=alt.X('etd_month:N', sort=MONTH_ORDER, title='Month'),
+            y=alt.Y('sum(backlog_revenue):Q', title='Backlog (USD)', axis=alt.Axis(format='~s')),
+            color=alt.Color(
+                'year_str:N',
+                title='Year',
+                scale=alt.Scale(domain=unique_years, range=year_color_range),
+                legend=alt.Legend(orient='top-right')
+            ),
+            order=alt.Order('etd_year:O', sort='ascending'),
+            tooltip=[
+                alt.Tooltip('etd_month:N', title='Month'),
+                alt.Tooltip('year_str:N', title='Year'),
+                alt.Tooltip('backlog_revenue:Q', title='Backlog', format='$,.0f'),
+                alt.Tooltip('backlog_gp:Q', title='GP', format='$,.0f'),
+                alt.Tooltip('order_count:Q', title='Orders', format=',')
+            ]
+        ).properties(
+            width=CHART_WIDTH,
+            height=350,
+            title=title
+        )
+        
+        return chart
+
+
+    @staticmethod
     def build_gap_analysis_chart(
         backlog_metrics: Dict,
         metrics_to_show: list = None,
