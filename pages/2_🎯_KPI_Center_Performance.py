@@ -2,8 +2,16 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.8.0
+VERSION: 2.9.0
 CHANGELOG:
+- v2.9.0: FIXED Complex KPIs (New Business) not reflecting filter changes:
+          - Issue: New Customers/Products/Business Revenue not updating when 
+            KPI Center, KPI Type, or Legal Entity filters changed
+          - Root cause 1: _needs_data_reload() didn't check entity_ids changes
+          - Root cause 2: load_data_for_year_range() didn't pass entity_ids to complex KPIs
+          - Fix: Added entity_ids check in _needs_data_reload()
+          - Fix: Pass entity_ids to all complex KPI queries
+          - Fix: Store _entity_ids in cached data for reload comparison
 - v2.8.0: KPI Type filter changed to SINGLE SELECTION:
           - Removed "All Types" option (filters.py v2.8.0)
           - Always single type → no double counting, no dedupe needed
@@ -389,28 +397,40 @@ def load_data_for_year_range(
         
         progress_bar.progress(70, text="🆕 Loading complex KPIs...")
         # =====================================================================
+        # FIXED v2.9.0: Complex KPIs now receive entity_ids for proper filtering
         # FIXED v2.7.0: Complex KPIs now receive selected_kpi_types for dedupe
         # - Single type → no dedupe (full credit per KPI Center)
         # - Multiple types → dedupe per entity to avoid double counting
         # =====================================================================
         data['new_customers_df'] = queries.get_new_customers(
             kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
             selected_kpi_types=selected_kpi_types
         )
         data['new_customers_detail_df'] = queries.get_new_customers_detail(
-            kpi_start, kpi_end, kpi_center_ids
+            kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
+            selected_kpi_types=selected_kpi_types
         )
         data['new_products_df'] = queries.get_new_products(
             kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
             selected_kpi_types=selected_kpi_types
         )
-        data['new_products_detail_df'] = data['new_products_df']
+        # Use same data for detail (already filtered)
+        data['new_products_detail_df'] = queries.get_new_products_detail(
+            kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
+            selected_kpi_types=selected_kpi_types
+        )
         data['new_business_df'] = queries.get_new_business_revenue(
             kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
             selected_kpi_types=selected_kpi_types
         )
         data['new_business_detail_df'] = queries.get_new_business_detail(
             kpi_start, kpi_end, kpi_center_ids,
+            entity_ids=entity_ids,
             selected_kpi_types=selected_kpi_types
         )
         
@@ -431,6 +451,8 @@ def load_data_for_year_range(
         # NEW v2.7.0: Store for reload check
         data['_selected_kpi_types'] = selected_kpi_types
         data['_kpi_center_ids'] = kpi_center_ids  # CRITICAL: For reload check when KPI Center changes
+        # NEW v2.9.0: Store entity_ids for reload check
+        data['_entity_ids'] = entity_ids
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
@@ -450,8 +472,8 @@ def _needs_data_reload(filter_values: dict) -> bool:
     """
     Check if data needs to be reloaded.
     
-    FIXED v2.7.0: Also check if kpi_center_ids or kpi_type changed.
-    Complex KPIs are queried with these parameters, so must reload when changed.
+    FIXED v2.9.0: Added entity_ids check.
+    Complex KPIs are queried with entity_ids parameter, so must reload when changed.
     """
     if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
         return True
@@ -502,6 +524,20 @@ def _needs_data_reload(filter_values: dict) -> bool:
     current_kpi_type_filter = filter_values.get('kpi_type_filter')
     
     if cached_kpi_type_filter != current_kpi_type_filter:
+        return True
+    
+    # =========================================================================
+    # NEW v2.9.0: Check if entity_ids changed
+    # Complex KPIs are queried with entity_ids parameter, must reload!
+    # =========================================================================
+    cached_entity_ids = cached_data.get('_entity_ids')
+    current_entity_ids = filter_values.get('entity_ids', [])
+    
+    # Normalize: empty list and None should be treated the same
+    cached_set = set(cached_entity_ids) if cached_entity_ids else set()
+    current_set = set(current_entity_ids) if current_entity_ids else set()
+    
+    if cached_set != current_set:
         return True
     
     return False

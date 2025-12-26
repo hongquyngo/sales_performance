@@ -10,8 +10,16 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.7.0
+VERSION: 2.9.0
 CHANGELOG:
+- v2.9.0: FIXED Complex KPIs not filtering by entity_ids:
+          - get_new_customers(): Added entity_ids filter to SQL query
+          - get_new_customers_detail(): Added entity_ids filter to SQL query
+          - get_new_products(): Added entity_ids filter to SQL query
+          - get_new_products_detail(): Added entity_ids filter to SQL query
+          - get_new_business_revenue(): Added entity_ids filter to SQL query
+          - get_new_business_detail(): Added entity_ids filter to SQL query
+          - Now Complex KPIs properly reflect Legal Entity filter changes
 - v2.7.0: FIXED Double Counting & New Business Revenue calculation:
           - Issue #1: Added `selected_kpi_types` parameter to detect single vs multiple types
             * Single type selected → Full credit for that type
@@ -763,9 +771,14 @@ class KPICenterQueries:
         # Multiple types selected → dedupe per customer_id to avoid double counting
         dedupe_across_types = selected_kpi_types and len(selected_kpi_types) > 1
         
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
         if dedupe_across_types:
             # MULTIPLE TYPES: Deduplicate per customer_id (count each customer only once)
-            query = """
+            query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first invoice date for each customer (GLOBALLY)
@@ -791,6 +804,7 @@ class KPICenterQueries:
                 
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
+                -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -807,6 +821,8 @@ class KPICenterQueries:
                         ON nc.customer_id = s.customer_id
                         AND s.inv_date = nc.first_sale_date
                     WHERE s.kpi_center_id IN :kpi_center_ids
+                    {kpi_type_filter}
+                    {entity_filter}
                 ),
                 
                 -- ================================================================
@@ -842,7 +858,9 @@ class KPICenterQueries:
             """
         else:
             # SINGLE TYPE: Keep per (customer_id, kpi_center_id) for full credit
-            query = """
+            # NOTE: entity_filter and kpi_type_filter already built above
+            
+            query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first invoice date for each customer (GLOBALLY)
@@ -870,6 +888,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
                 -- Credit ALL KPI Centers that sold on first day
+                -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -885,6 +904,8 @@ class KPICenterQueries:
                         ON nc.customer_id = s.customer_id
                         AND s.inv_date = nc.first_sale_date
                     WHERE s.kpi_center_id IN :kpi_center_ids
+                    {kpi_type_filter}
+                    {entity_filter}
                 ),
                 
                 -- ================================================================
@@ -923,6 +944,14 @@ class KPICenterQueries:
             'kpi_center_ids': tuple(kpi_center_ids)
         }
         
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
+        
         return self._execute_query(query, params, "new_customers")
     
     def get_new_customers_detail(
@@ -930,7 +959,8 @@ class KPICenterQueries:
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get detailed NEW CUSTOMERS with first sale revenue info.
@@ -956,7 +986,12 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
+        query = f"""
             WITH 
             -- Step 1: Find first invoice date for each customer (GLOBALLY)
             customer_first_sale AS (
@@ -977,6 +1012,7 @@ class KPICenterQueries:
             ),
             
             -- Step 3: Aggregate first day sales per (customer, kpi_center)
+            -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
             first_day_sales AS (
                 SELECT 
                     s.customer_id,
@@ -993,6 +1029,8 @@ class KPICenterQueries:
                     ON nc.customer_id = s.customer_id
                     AND s.inv_date = nc.first_sale_date
                 WHERE s.kpi_center_id IN :kpi_center_ids
+                {kpi_type_filter}
+                {entity_filter}
                 GROUP BY s.customer_id, s.kpi_center_id, nc.first_sale_date
             )
             
@@ -1016,6 +1054,14 @@ class KPICenterQueries:
             'end_date': end_date,
             'kpi_center_ids': tuple(kpi_center_ids)
         }
+        
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
         
         return self._execute_query(query, params, "new_customers_detail")
     
@@ -1081,9 +1127,14 @@ class KPICenterQueries:
         # Determine if we need to deduplicate across types
         dedupe_across_types = selected_kpi_types and len(selected_kpi_types) > 1
         
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
         if dedupe_across_types:
             # MULTIPLE TYPES: Deduplicate per product_id (count each product only once)
-            query = """
+            query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first sale date for each product (GLOBALLY)
@@ -1109,6 +1160,7 @@ class KPICenterQueries:
                 
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
+                -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -1127,6 +1179,8 @@ class KPICenterQueries:
                         AND s.inv_date = np.first_sale_date
                     WHERE s.kpi_center_id IN :kpi_center_ids
                       AND s.product_id IS NOT NULL
+                      {kpi_type_filter}
+                      {entity_filter}
                 ),
                 
                 -- ================================================================
@@ -1162,7 +1216,7 @@ class KPICenterQueries:
             """
         else:
             # SINGLE TYPE: Keep per (product_id, kpi_center_id) for full credit
-            query = """
+            query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first sale date for each product (GLOBALLY)
@@ -1190,6 +1244,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
                 -- Credit ALL KPI Centers that sold on first day
+                -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -1207,6 +1262,8 @@ class KPICenterQueries:
                         AND s.inv_date = np.first_sale_date
                     WHERE s.kpi_center_id IN :kpi_center_ids
                       AND s.product_id IS NOT NULL
+                      {kpi_type_filter}
+                      {entity_filter}
                 ),
                 
                 -- ================================================================
@@ -1246,6 +1303,14 @@ class KPICenterQueries:
             'kpi_center_ids': tuple(kpi_center_ids)
         }
         
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
+        
         return self._execute_query(query, params, "new_products")
     
     def get_new_products_detail(
@@ -1253,7 +1318,8 @@ class KPICenterQueries:
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None
     ) -> pd.DataFrame:
         """
         Get detailed NEW PRODUCTS with first sale revenue info.
@@ -1277,7 +1343,12 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
+        query = f"""
             WITH 
             -- Step 1: Find first sale date for each product (GLOBALLY)
             product_first_sale AS (
@@ -1298,6 +1369,7 @@ class KPICenterQueries:
             ),
             
             -- Step 3: Aggregate first day sales per (product, kpi_center)
+            -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
             first_day_sales AS (
                 SELECT 
                     s.product_id,
@@ -1316,6 +1388,8 @@ class KPICenterQueries:
                     AND s.inv_date = np.first_sale_date
                 WHERE s.kpi_center_id IN :kpi_center_ids
                   AND s.product_id IS NOT NULL
+                  {kpi_type_filter}
+                  {entity_filter}
                 GROUP BY s.product_id, s.kpi_center_id, np.first_sale_date
             )
             
@@ -1340,6 +1414,14 @@ class KPICenterQueries:
             'end_date': end_date,
             'kpi_center_ids': tuple(kpi_center_ids)
         }
+        
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
         
         return self._execute_query(query, params, "new_products_detail")
     
@@ -1379,7 +1461,12 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
+        query = f"""
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each (customer, product) combo
@@ -1409,6 +1496,7 @@ class KPICenterQueries:
             -- ================================================================
             -- Step 3: Get ALL revenue from new combos within period
             -- (not just first day - includes repeat orders of new combos)
+            -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
             -- ================================================================
             new_business_sales AS (
                 SELECT 
@@ -1426,6 +1514,8 @@ class KPICenterQueries:
                 WHERE s.inv_date BETWEEN :start_date AND :end_date
                 AND s.kpi_center_id IN :kpi_center_ids
                 AND s.product_id IS NOT NULL
+                {kpi_type_filter}
+                {entity_filter}
             ),
             
             -- ================================================================
@@ -1461,6 +1551,14 @@ class KPICenterQueries:
             'end_date': end_date,
             'kpi_center_ids': tuple(kpi_center_ids)
         }
+        
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
         
         return self._execute_query(query, params, "new_business_revenue")
 
@@ -1499,7 +1597,12 @@ class KPICenterQueries:
         
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
-        query = """
+        # Build filter conditions - FIXED v2.9.0
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        # CRITICAL FIX v2.9.0: Filter by kpi_type!
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        
+        query = f"""
             WITH 
             -- Step 1: Find first sale date for each (customer, product) combo (GLOBAL)
             combo_first_sale AS (
@@ -1522,6 +1625,7 @@ class KPICenterQueries:
             ),
             
             -- Step 3: Get all sales records for new combos
+            -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
             new_business_sales AS (
                 SELECT 
                     s.customer_id,
@@ -1544,6 +1648,8 @@ class KPICenterQueries:
                 WHERE s.inv_date BETWEEN :start_date AND :end_date
                 AND s.kpi_center_id IN :kpi_center_ids
                 AND s.product_id IS NOT NULL
+                {kpi_type_filter}
+                {entity_filter}
             )
             
             -- ================================================================
@@ -1575,6 +1681,14 @@ class KPICenterQueries:
             'end_date': end_date,
             'kpi_center_ids': tuple(kpi_center_ids)
         }
+        
+        # Add kpi_types to params if provided - CRITICAL FIX v2.9.0
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        # Add entity_ids to params if provided
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
         
         return self._execute_query(query, params, "new_business_detail")
 
