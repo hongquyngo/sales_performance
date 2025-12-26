@@ -11,8 +11,28 @@ Renders filter UI elements:
 - YoY comparison toggle
 - KPI Type filter (single selection)
 
-VERSION: 2.8.0
+REQUIREMENTS:
+- Streamlit >= 1.33.0 (for @st.fragment support)
+
+VERSION: 2.10.2
 CHANGELOG:
+- v2.10.2: UX improvement - Always reset KPI Center to ['All'] when KPI Type changes:
+          - Previous: Only reset when selection became invalid (inconsistent behavior)
+          - Now: Track KPI Type changes via _prev_kpi_type session state
+          - Switching to ANY new KPI Type → KPI Center resets to ['All']
+          - Provides consistent, predictable UX
+- v2.10.1: BUGFIX - Double-click required to change KPI Type:
+          - Root cause: Mixing `index` param with `key` param in selectbox
+          - Fix: Use widget key directly for session_state management
+          - Removed `index` param from selectbox (let Streamlit manage via key)
+          - Fixed checkbox: Removed `value` param, use key only
+- v2.10.0: ADDED KPI Type → KPI Center dependency (NO PAGE RELOAD):
+          - KPI Type and KPI Center wrapped in @st.fragment (requires Streamlit >= 1.33)
+          - Changing KPI Type ONLY reruns the fragment, not the whole page
+          - KPI Center options filter instantly based on selected KPI Type
+          - Values passed to form via session_state
+          - "Only with KPI" checkbox also in fragment for instant filtering
+          - Form now only contains: Date Range, Entity, Exclude Internal
 - v2.8.0: KPI Type filter changed to SINGLE SELECTION:
           - Removed "All Types" option to prevent double counting
           - Same transaction can be split across multiple KPI Types
@@ -565,7 +585,164 @@ class KPICenterFilters:
                 st.divider()
                 
                 # =================================================================
-                # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
+                # KPI TYPE & KPI CENTER - WRAPPED IN FRAGMENT FOR NO PAGE RERUN
+                # NEW v2.10.0: Using @st.fragment to avoid full page reload
+                # =================================================================
+                
+                @st.fragment
+                def kpi_type_center_fragment():
+                    """
+                    Fragment for KPI Type and KPI Center selection.
+                    Changes here only rerun this fragment, not the whole page.
+                    Values are passed out via session_state.
+                    """
+                    # ---------------------------------------------------------
+                    # KPI TYPE FILTER
+                    # ---------------------------------------------------------
+                    kpi_type_filter_local = 'TERRITORY'  # Default
+                    available_types = []
+                    
+                    if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
+                        all_types = set(kpi_center_df['kpi_type'].dropna().unique().tolist())
+                        
+                        if kpi_types_with_assignment:
+                            available_types = sorted(all_types & kpi_types_with_assignment)
+                        else:
+                            available_types = sorted(all_types)
+                        
+                        if available_types:
+                            # =====================================================
+                            # FIX v2.10.1: Use widget key directly for session_state
+                            # Don't mix index + key - causes double-click bug
+                            # =====================================================
+                            
+                            # Initialize with the SAME key used by selectbox
+                            if 'frag_kpi_type' not in st.session_state:
+                                st.session_state.frag_kpi_type = (
+                                    'TERRITORY' if 'TERRITORY' in available_types 
+                                    else available_types[0]
+                                )
+                            
+                            # Ensure current value is still valid
+                            if st.session_state.frag_kpi_type not in available_types:
+                                st.session_state.frag_kpi_type = available_types[0]
+                            
+                            # NO index parameter! Streamlit manages value via key
+                            selected_type = st.selectbox(
+                                "KPI Type",
+                                options=available_types,
+                                key="frag_kpi_type",
+                                help="Select KPI Type. KPI Center options update instantly."
+                            )
+                            
+                            kpi_type_filter_local = selected_type
+                    
+                    # ---------------------------------------------------------
+                    # ONLY WITH KPI CHECKBOX
+                    # FIX v2.10.1: Use widget key directly
+                    # ---------------------------------------------------------
+                    # Initialize with widget key
+                    if 'frag_only_with_kpi' not in st.session_state:
+                        st.session_state.frag_only_with_kpi = True
+                    
+                    only_with_kpi_local = st.checkbox(
+                        "Only with KPI assignment",
+                        key="frag_only_with_kpi",
+                        help="Show only KPI Centers with KPI targets assigned."
+                    )
+                    
+                    # Get KPI Centers with assignments
+                    kpi_check_years_local = [current_year]
+                    kpi_center_ids_with_kpi = []
+                    if only_with_kpi_local:
+                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years_local)
+                    
+                    # ---------------------------------------------------------
+                    # KPI CENTER FILTER (filtered by KPI Type)
+                    # ---------------------------------------------------------
+                    st.markdown("**🎯 KPI Center**")
+                    
+                    filtered_df = kpi_center_df.copy()
+                    kpi_center_ids_local = []
+                    
+                    if not kpi_center_df.empty:
+                        # Filter by KPI Type
+                        if 'kpi_type' in kpi_center_df.columns and kpi_type_filter_local:
+                            filtered_df = filtered_df[filtered_df['kpi_type'] == kpi_type_filter_local]
+                        
+                        # Filter by KPI assignment
+                        if only_with_kpi_local and kpi_center_ids_with_kpi:
+                            filtered_df = filtered_df[
+                                filtered_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
+                            ]
+                        
+                        # Show info
+                        total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
+                        filtered_count = len(filtered_df)
+                        hidden_count = total_in_type - filtered_count
+                        
+                        if hidden_count > 0:
+                            st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
+                    
+                    if filtered_df.empty:
+                        st.warning(f"No KPI Centers for type '{kpi_type_filter_local}'")
+                    else:
+                        all_kpi_centers = filtered_df['kpi_center_name'].tolist()
+                        id_map = dict(zip(filtered_df['kpi_center_name'], filtered_df['kpi_center_id']))
+                        
+                        options = ['All'] + sorted(all_kpi_centers)
+                        
+                        # =====================================================
+                        # FIX v2.10.2: Always reset to ['All'] when KPI Type changes
+                        # This provides consistent UX across all type switches
+                        # =====================================================
+                        
+                        # Track previous KPI Type to detect changes
+                        prev_kpi_type = st.session_state.get('_prev_kpi_type', None)
+                        
+                        if prev_kpi_type != kpi_type_filter_local:
+                            # KPI Type changed → reset to All
+                            st.session_state.frag_kpi_center = ['All']
+                            st.session_state._prev_kpi_type = kpi_type_filter_local
+                        elif 'frag_kpi_center' not in st.session_state:
+                            # First time → initialize to All
+                            st.session_state.frag_kpi_center = ['All']
+                        
+                        # Don't use default parameter - let key manage state
+                        selected_names = st.multiselect(
+                            "Select KPI Centers",
+                            options=options,
+                            key="frag_kpi_center",
+                            label_visibility="collapsed"
+                        )
+                        
+                        if 'All' in selected_names or not selected_names:
+                            kpi_center_ids_local = list(id_map.values())
+                        else:
+                            kpi_center_ids_local = [id_map[name] for name in selected_names if name in id_map]
+                    
+                    # =========================================================
+                    # Pass values to outer scope via session_state
+                    # We use separate keys for IDs since widgets store names
+                    # =========================================================
+                    st.session_state._frag_kpi_center_ids = kpi_center_ids_local
+                    st.session_state._frag_kpi_check_years = kpi_check_years_local
+                
+                # Execute the fragment
+                kpi_type_center_fragment()
+                
+                # Read values from session_state
+                # Widget values: read directly from widget keys
+                kpi_type_filter = st.session_state.get('frag_kpi_type', 'TERRITORY')
+                only_with_kpi = st.session_state.get('frag_only_with_kpi', True)
+                # Computed values: read from _frag_ keys set by fragment
+                kpi_center_ids = st.session_state.get('_frag_kpi_center_ids', [])
+                kpi_check_years = st.session_state.get('_frag_kpi_check_years', [current_year])
+                
+                st.divider()
+                
+                # =================================================================
+                # REMAINING FILTERS INSIDE FORM
                 # =================================================================
                 with st.form("kpi_center_filter_form", border=False):
                     
@@ -610,122 +787,6 @@ class KPICenterFilters:
                             key="form_end_date",
                             help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
                         )
-                    
-                    st.divider()
-                    
-                    # =============================================================
-                    # KPI FILTER CHECKBOX - UPDATED v2.3.0: Dynamic year check
-                    # =============================================================
-                    only_with_kpi = st.checkbox(
-                        "Only with KPI assignment",
-                        value=True,
-                        key="form_only_with_kpi",
-                        help=(
-                            "Show only KPI Centers that have KPI targets assigned for the selected period. "
-                            "Uncheck to include all KPI Centers."
-                        )
-                    )
-                    
-                    # =====================================================
-                    # DYNAMIC YEAR CHECK - NEW v2.3.0
-                    # Determine which years to check based on period type
-                    # =====================================================
-                    if period_type in ['YTD', 'QTD', 'MTD']:
-                        # Standard periods use current year
-                        kpi_check_years = [current_year]
-                    else:
-                        # Custom mode: check all years in the selected date range
-                        start_year = start_date_input.year
-                        end_year = end_date_input.year
-                        kpi_check_years = list(range(start_year, end_year + 1))
-                    
-                    # Pre-fetch KPI Center IDs for filtering
-                    kpi_center_ids_with_kpi = []
-                    filtered_kpi_center_df = kpi_center_df.copy()
-                    
-                    if only_with_kpi and not kpi_center_df.empty:
-                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years)
-                        if kpi_center_ids_with_kpi:
-                            filtered_kpi_center_df = kpi_center_df[
-                                kpi_center_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
-                            ]
-                            excluded_count = len(kpi_center_df) - len(filtered_kpi_center_df)
-                            if excluded_count > 0:
-                                # Show which years are being checked
-                                years_str = ", ".join(map(str, kpi_check_years))
-                                st.caption(f"📋 {len(filtered_kpi_center_df)} with KPI in {years_str} ({excluded_count} hidden)")
-                    
-                    # =============================================================
-                    # KPI CENTER FILTER
-                    # =============================================================
-                    st.markdown("**🎯 KPI Center**")
-                    
-                    if filtered_kpi_center_df.empty:
-                        kpi_center_ids = []
-                        st.warning("No KPI Centers available")
-                    else:
-                        all_kpi_centers = filtered_kpi_center_df['kpi_center_name'].tolist()
-                        id_map = dict(zip(
-                            filtered_kpi_center_df['kpi_center_name'],
-                            filtered_kpi_center_df['kpi_center_id']
-                        ))
-                        
-                        options = ['All'] + all_kpi_centers
-                        
-                        selected_names = st.multiselect(
-                            "Select KPI Centers",
-                            options=options,
-                            default=['All'],
-                            key="form_kpi_center",
-                            label_visibility="collapsed"
-                        )
-                        
-                        # Convert to IDs
-                        if 'All' in selected_names or not selected_names:
-                            kpi_center_ids = list(id_map.values())
-                        else:
-                            kpi_center_ids = [id_map[name] for name in selected_names if name in id_map]
-                    
-                    # =============================================================
-                    # KPI TYPE FILTER - UPDATED v2.8.0
-                    # Single selection only to avoid double counting
-                    # Each transaction can be split across multiple KPI Types,
-                    # so selecting multiple types would cause double counting.
-                    # Default: TERRITORY
-                    # =============================================================
-                    kpi_type_filter = 'TERRITORY'  # Default value
-                    if not kpi_center_df.empty and 'kpi_type' in kpi_center_df.columns:
-                        # Get all KPI types from KPI Centers with sales data
-                        all_types = set(kpi_center_df['kpi_type'].dropna().unique().tolist())
-                        
-                        # Filter types based on "Only with KPI" checkbox
-                        if only_with_kpi and kpi_types_with_assignment:
-                            # Only show types that have KPI Centers with assignments
-                            available_types = sorted(all_types & kpi_types_with_assignment)
-                            hidden_types = len(all_types) - len(available_types)
-                            if hidden_types > 0:
-                                st.caption(f"📋 {len(available_types)} KPI Types shown ({hidden_types} hidden)")
-                        else:
-                            # Show all types
-                            available_types = sorted(all_types)
-                        
-                        if available_types:
-                            # Find default index (TERRITORY if available, else first option)
-                            default_index = 0
-                            if 'TERRITORY' in available_types:
-                                default_index = available_types.index('TERRITORY')
-                            
-                            selected_type = st.selectbox(
-                                "KPI Type",
-                                options=available_types,
-                                index=default_index,
-                                key="form_kpi_type",
-                                help=(
-                                    "Select ONE KPI Type to view. Single selection required to avoid "
-                                    "double counting (same transaction can be split across multiple types)."
-                                )
-                            )
-                            kpi_type_filter = selected_type
                     
                     st.divider()
                     
@@ -808,6 +869,17 @@ class KPICenterFilters:
                     end_date = start_date
                 # Use start_date's year for KPI matching
                 year = start_date.year
+            
+            # =================================================================
+            # RECALCULATE kpi_check_years based on actual period (v2.10.0)
+            # For YTD/QTD/MTD: current year
+            # For Custom: all years in the selected date range
+            # =================================================================
+            if period_type in ['YTD', 'QTD', 'MTD']:
+                kpi_check_years = [current_year]
+            else:
+                # Custom: include all years in range
+                kpi_check_years = list(range(start_date.year, end_date.year + 1))
             
             # =================================================================
             # EXPAND KPI CENTER IDs WITH CHILDREN - NEW v2.3.0
