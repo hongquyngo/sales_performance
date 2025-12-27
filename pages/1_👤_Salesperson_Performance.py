@@ -10,6 +10,13 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v2.5.1: FIXED Backlog by ETD not filtering by selected salesperson
+          - Root cause: backlog_by_month query aggregates by etd_year/etd_month
+            without sales_id column, so client-side filter cannot work
+          - Fix: Added _prepare_backlog_by_month_from_detail() helper function
+            that aggregates from backlog_detail (which has sales_id and is
+            properly filtered by filter_data_client_side)
+          - backlog_by_etd_fragment now receives correctly filtered data
 - v2.4.0: ADDED Comprehensive Excel Export (Fragment-based)
           - Export button in Overview tab (no page reload!)
           - Uses @st.fragment to run independently
@@ -35,7 +42,7 @@ CHANGELOG:
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 2.4.0
+Version: 2.5.1
 """
 
 import streamlit as st
@@ -158,6 +165,65 @@ def _is_period_expired(period_str: str, today_str: str) -> bool:
         return end.strip() < today_str
     except:
         return False
+
+
+def _prepare_backlog_by_month_from_detail(backlog_detail_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate backlog_detail to backlog_by_month format.
+    
+    ADDED v2.5.0: Fix for Backlog by ETD not filtering by selected salesperson.
+    
+    The original backlog_by_month query aggregates across ALL accessible employees
+    and has no sales_id column, so it cannot be filtered client-side.
+    
+    This function aggregates from backlog_detail which:
+    - Has sales_id column
+    - Is properly filtered by filter_data_client_side()
+    - Respects selected salesperson filter
+    
+    Args:
+        backlog_detail_df: Filtered backlog detail data
+        
+    Returns:
+        DataFrame with columns: etd_year, etd_month, backlog_revenue, backlog_gp, order_count
+    """
+    if backlog_detail_df.empty:
+        return pd.DataFrame(columns=['etd_year', 'etd_month', 'backlog_revenue', 'backlog_gp', 'order_count'])
+    
+    df = backlog_detail_df.copy()
+    
+    # Convert ETD to datetime
+    df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+    
+    # Filter out null ETDs
+    df = df[df['etd'].notna()]
+    
+    if df.empty:
+        return pd.DataFrame(columns=['etd_year', 'etd_month', 'backlog_revenue', 'backlog_gp', 'order_count'])
+    
+    # Extract year and month
+    df['etd_year'] = df['etd'].dt.year.astype(int)
+    df['etd_month'] = df['etd'].dt.strftime('%b')  # Jan, Feb, etc.
+    
+    # Aggregate by year and month
+    result = df.groupby(['etd_year', 'etd_month']).agg({
+        'backlog_sales_by_split_usd': 'sum',
+        'backlog_gp_by_split_usd': 'sum',
+        'oc_number': 'nunique'
+    }).reset_index()
+    
+    result.columns = ['etd_year', 'etd_month', 'backlog_revenue', 'backlog_gp', 'order_count']
+    
+    # Sort by year and month order
+    month_order = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+                   'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12}
+    result['_month_num'] = result['etd_month'].map(month_order)
+    result = result.sort_values(['etd_year', '_month_num'])
+    result = result.drop('_month_num', axis=1).reset_index(drop=True)
+    
+    logger.debug(f"Prepared backlog_by_month from detail: {len(result)} rows")
+    
+    return result
 
 # =============================================================================
 # PAGE CONFIGURATION
@@ -1379,6 +1445,9 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
     # Runs independently - no page reload when generating
     # ==========================================================================
     st.divider()
+    # FIXED v2.5.1: Use prepared_backlog_by_month for consistent filtering
+    prepared_backlog_by_month = _prepare_backlog_by_month_from_detail(data['backlog_detail'])
+    
     export_report_fragment(
         overview_metrics=overview_metrics,
         complex_kpis=complex_kpis,
@@ -1389,7 +1458,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         sales_df=data['sales'],
         total_backlog_df=data['total_backlog'],
         backlog_detail_df=data['backlog_detail'],
-        backlog_by_month_df=data['backlog_by_month'],
+        backlog_by_month_df=prepared_backlog_by_month,
         targets_df=data['targets'],
         metrics_calc=metrics_calc,
         fragment_key="export"
@@ -1506,8 +1575,12 @@ Backlog is a snapshot of ALL pending orders **at current time**.
             # Multi-year view with Timeline/Stacked/Single Year modes
             # Only reruns when view mode changes, not entire page
             # =================================================================
+            # FIXED v2.5.1: Use backlog_detail (which respects salesperson filter)
+            # instead of backlog_by_month (which is aggregated without sales_id)
+            prepared_backlog_by_month = _prepare_backlog_by_month_from_detail(data['backlog_detail'])
+            
             backlog_by_etd_fragment(
-                backlog_by_month_df=data['backlog_by_month'],
+                backlog_by_month_df=prepared_backlog_by_month,
                 metrics_calc=metrics_calc,
                 current_year=active_filters['year'],
                 fragment_key="backlog_etd"
