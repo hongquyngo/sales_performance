@@ -1607,6 +1607,145 @@ def export_report_fragment(
 
 
 # =============================================================================
+# FRAGMENT: TEAM RANKING (NEW v2.6.0)
+# Prevents page rerun when changing ranking dropdown
+# =============================================================================
+
+@st.fragment
+def team_ranking_fragment(
+    salesperson_summary_df: pd.DataFrame,
+    fragment_key: str = "ranking"
+):
+    """
+    Fragment for Team Ranking with dropdown selector.
+    
+    NEW v2.6.0: Prevents full page rerun when changing ranking criteria.
+    
+    Args:
+        salesperson_summary_df: DataFrame from metrics_calc.aggregate_by_salesperson()
+        fragment_key: Unique key prefix for widgets
+    """
+    st.markdown("#### 🏆 Team Ranking")
+    
+    if salesperson_summary_df.empty or len(salesperson_summary_df) <= 1:
+        st.info("Need multiple salespeople to show ranking")
+        return
+    
+    # --- Ranking Criteria Selector ---
+    ranking_options = {
+        'Revenue': 'revenue',
+        'Gross Profit': 'gross_profit',
+        'GP1': 'gp1',
+        'GP %': 'gp_percent',
+        'KPI Achievement %': 'kpi_achievement'
+    }
+    
+    selected_ranking = st.selectbox(
+        "📊 Rank by",
+        options=list(ranking_options.keys()),
+        index=4,  # Default: KPI Achievement %
+        key=f"{fragment_key}_criteria"
+    )
+    
+    sort_col = ranking_options[selected_ranking]
+    
+    # --- Prepare data with GP1% ---
+    ranking_df = salesperson_summary_df.copy()
+    
+    # Calculate GP1%
+    ranking_df['gp1_percent'] = (
+        ranking_df['gp1'] / ranking_df['revenue'] * 100
+    ).round(2).fillna(0)
+    
+    # Calculate KPI Achievement (weighted average of revenue & GP achievement)
+    if 'revenue_achievement' in ranking_df.columns and 'gp_achievement' in ranking_df.columns:
+        ranking_df['kpi_achievement'] = ranking_df.apply(
+            lambda row: (
+                (row['revenue_achievement'] + row['gp_achievement']) / 2
+                if row['revenue_achievement'] > 0 and row['gp_achievement'] > 0
+                else row['revenue_achievement'] if row['revenue_achievement'] > 0
+                else row['gp_achievement'] if row['gp_achievement'] > 0
+                else 0
+            ),
+            axis=1
+        ).round(1)
+    elif 'revenue_achievement' in ranking_df.columns:
+        ranking_df['kpi_achievement'] = ranking_df['revenue_achievement']
+    elif 'gp_achievement' in ranking_df.columns:
+        ranking_df['kpi_achievement'] = ranking_df['gp_achievement']
+    else:
+        ranking_df['kpi_achievement'] = 0
+    
+    # --- Sort by selected criteria ---
+    ranking_df = ranking_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+    ranking_df.index = ranking_df.index + 1  # Start from 1
+    
+    # Add rank emoji
+    def get_rank_emoji(rank):
+        if rank == 1: return "🥇"
+        elif rank == 2: return "🥈"
+        elif rank == 3: return "🥉"
+        else: return f"#{rank}"
+    
+    ranking_df.insert(0, 'Rank', ranking_df.index.map(get_rank_emoji))
+    
+    # --- Select display columns ---
+    display_cols = ['Rank', 'sales_name', 'revenue', 'gross_profit', 'gp1', 'gp_percent', 'gp1_percent', 'customers']
+    
+    # Add KPI Achievement if available
+    if 'kpi_achievement' in ranking_df.columns and ranking_df['kpi_achievement'].sum() > 0:
+        display_cols.append('kpi_achievement')
+    
+    # Filter to available columns only
+    display_cols = [c for c in display_cols if c in ranking_df.columns]
+    ranking_df = ranking_df[display_cols]
+    
+    # Rename columns for display
+    column_rename = {
+        'sales_name': 'Salesperson',
+        'revenue': 'Revenue',
+        'gross_profit': 'Gross Profit',
+        'gp1': 'GP1',
+        'gp_percent': 'GP %',
+        'gp1_percent': 'GP1 %',
+        'customers': 'Customers',
+        'kpi_achievement': 'Achievement %'
+    }
+    ranking_df = ranking_df.rename(columns=column_rename)
+    
+    # --- Format & Display ---
+    format_dict = {
+        'Revenue': '${:,.0f}',
+        'Gross Profit': '${:,.0f}',
+        'GP1': '${:,.0f}',
+        'GP %': '{:.1f}%',
+        'GP1 %': '{:.1f}%',
+    }
+    
+    if 'Achievement %' in ranking_df.columns:
+        format_dict['Achievement %'] = '{:.1f}%'
+    
+    # Highlight the sort column
+    sort_col_display = selected_ranking if selected_ranking != 'KPI Achievement %' else 'Achievement %'
+    
+    def highlight_sort_column(col):
+        if col.name == sort_col_display:
+            return ['background-color: #fff3cd'] * len(col)
+        return [''] * len(col)
+    
+    st.dataframe(
+        ranking_df.style
+            .format(format_dict)
+            .apply(highlight_sort_column),
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    # Show ranking info
+    st.caption(f"📌 Ranked by **{selected_ranking}** (highest first)")
+
+
+# =============================================================================
 # EXPORT ALL FRAGMENTS
 # =============================================================================
 
@@ -1618,4 +1757,5 @@ __all__ = [
     'backlog_list_fragment',
     'export_report_fragment',
     'backlog_by_etd_fragment',
+    'team_ranking_fragment',
 ]
