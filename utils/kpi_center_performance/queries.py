@@ -10,8 +10,23 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.9.0
+VERSION: 2.14.0
 CHANGELOG:
+- v2.14.0: ADDED exclude_internal parameter for consistent business logic:
+          BACKLOG FUNCTIONS (Revenue = 0 for Internal, GP kept):
+          - get_backlog_data(): Added exclude_internal parameter
+          - get_backlog_in_period(): Added exclude_internal parameter
+          - get_backlog_by_month(): Added exclude_internal parameter
+          - get_backlog_risk_analysis(): Added exclude_internal parameter
+          COMPLEX KPIs (Exclude Internal customers entirely):
+          - get_new_customers(): Added exclude_internal to exclude Internal customers
+          - get_new_customers_detail(): Added exclude_internal filter
+          - get_new_products(): Added exclude_internal filter
+          - get_new_products_detail(): Added exclude_internal filter
+          - get_new_business_revenue(): Added exclude_internal filter
+          - get_new_business_detail(): Added exclude_internal filter
+          - calculate_complex_kpi_value(): Pass exclude_internal to sub-queries
+          Business Rule: Internal sales → Revenue = 0, GP/GP1 kept (real profit)
 - v2.9.0: FIXED Complex KPIs not filtering by entity_ids:
           - get_new_customers(): Added entity_ids filter to SQL query
           - get_new_customers_detail(): Added entity_ids filter to SQL query
@@ -365,18 +380,29 @@ class KPICenterQueries:
         return self._execute_query(query, params, "kpi_targets")
     
     # =========================================================================
-    # BACKLOG DATA
+    # BACKLOG DATA - UPDATED v2.14.0: Added exclude_internal parameter
     # =========================================================================
     
     def get_backlog_data(
         self,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        include_children: bool = True
+        include_children: bool = True,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get backlog summary by KPI Center.
         Only includes uninvoiced orders (invoice_completion_percent < 100).
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
+        - GP values are preserved (same business logic as Sales data)
+        
+        Args:
+            kpi_center_ids: Optional list of KPI Center IDs to filter
+            entity_ids: Optional list of entity IDs to filter
+            include_children: Include child KPI Centers
+            exclude_internal: If True, set revenue = 0 for Internal customers (keep GP)
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -395,18 +421,36 @@ class KPICenterQueries:
         if not kpi_center_ids:
             return pd.DataFrame()
         
-        query = """
-            SELECT 
-                kpi_center_id,
-                kpi_center,
-                kpi_type,
-                COUNT(DISTINCT oc_number) AS backlog_orders,
-                SUM(backlog_by_kpi_center_usd) AS total_backlog_usd,
-                SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
-            FROM backlog_by_kpi_center_flat_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-        """
+        # NEW v2.14.0: Use CASE WHEN to set revenue = 0 for Internal customers
+        if exclude_internal:
+            query = """
+                SELECT 
+                    kpi_center_id,
+                    kpi_center,
+                    kpi_type,
+                    COUNT(DISTINCT oc_number) AS backlog_orders,
+                    SUM(CASE 
+                        WHEN customer_type = 'Internal' THEN 0 
+                        ELSE backlog_by_kpi_center_usd 
+                    END) AS total_backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
+        else:
+            query = """
+                SELECT 
+                    kpi_center_id,
+                    kpi_center,
+                    kpi_type,
+                    COUNT(DISTINCT oc_number) AS backlog_orders,
+                    SUM(backlog_by_kpi_center_usd) AS total_backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
         
         params = {'kpi_center_ids': tuple(kpi_center_ids)}
         
@@ -424,11 +468,16 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        include_children: bool = True
+        include_children: bool = True,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get backlog with ETD within specified period.
         Only includes uninvoiced orders.
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
+        - GP values are preserved
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -447,19 +496,38 @@ class KPICenterQueries:
         if not kpi_center_ids:
             return pd.DataFrame()
         
-        query = """
-            SELECT 
-                kpi_center_id,
-                kpi_center,
-                kpi_type,
-                COUNT(DISTINCT oc_number) AS in_period_orders,
-                SUM(backlog_by_kpi_center_usd) AS in_period_backlog_usd,
-                SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
-            FROM backlog_by_kpi_center_flat_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-              AND etd BETWEEN :start_date AND :end_date
-        """
+        # NEW v2.14.0: Use CASE WHEN for exclude_internal
+        if exclude_internal:
+            query = """
+                SELECT 
+                    kpi_center_id,
+                    kpi_center,
+                    kpi_type,
+                    COUNT(DISTINCT oc_number) AS in_period_orders,
+                    SUM(CASE 
+                        WHEN customer_type = 'Internal' THEN 0 
+                        ELSE backlog_by_kpi_center_usd 
+                    END) AS in_period_backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+                  AND etd BETWEEN :start_date AND :end_date
+            """
+        else:
+            query = """
+                SELECT 
+                    kpi_center_id,
+                    kpi_center,
+                    kpi_type,
+                    COUNT(DISTINCT oc_number) AS in_period_orders,
+                    SUM(backlog_by_kpi_center_usd) AS in_period_backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+                  AND etd BETWEEN :start_date AND :end_date
+            """
         
         params = {
             'kpi_center_ids': tuple(kpi_center_ids),
@@ -479,11 +547,16 @@ class KPICenterQueries:
         self,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        include_children: bool = True
+        include_children: bool = True,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get backlog grouped by ETD month/year.
         Only includes uninvoiced orders.
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
+        - GP values are preserved
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
@@ -502,17 +575,34 @@ class KPICenterQueries:
         if not kpi_center_ids:
             return pd.DataFrame()
         
-        query = """
-            SELECT 
-                etd_year,
-                etd_month,
-                COUNT(DISTINCT oc_number) AS backlog_orders,
-                SUM(backlog_by_kpi_center_usd) AS backlog_usd,
-                SUM(backlog_gp_by_kpi_center_usd) AS backlog_gp_usd
-            FROM backlog_by_kpi_center_flat_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-        """
+        # NEW v2.14.0: Use CASE WHEN for exclude_internal
+        if exclude_internal:
+            query = """
+                SELECT 
+                    etd_year,
+                    etd_month,
+                    COUNT(DISTINCT oc_number) AS backlog_orders,
+                    SUM(CASE 
+                        WHEN customer_type = 'Internal' THEN 0 
+                        ELSE backlog_by_kpi_center_usd 
+                    END) AS backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
+        else:
+            query = """
+                SELECT 
+                    etd_year,
+                    etd_month,
+                    COUNT(DISTINCT oc_number) AS backlog_orders,
+                    SUM(backlog_by_kpi_center_usd) AS backlog_usd,
+                    SUM(backlog_gp_by_kpi_center_usd) AS backlog_gp_usd
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
         
         params = {'kpi_center_ids': tuple(kpi_center_ids)}
         
@@ -539,6 +629,10 @@ class KPICenterQueries:
         """
         Get detailed backlog records for drill-down.
         Only includes uninvoiced orders.
+        
+        NOTE: This function returns RAW data with ALL columns including Internal.
+        The exclude_internal logic is NOT applied here because the detail table
+        should show all records. Revenue exclusion is handled in metrics calculation.
         
         Args:
             kpi_center_ids: Optional list of KPI Center IDs to filter
@@ -573,6 +667,7 @@ class KPICenterQueries:
                 etd,
                 customer,
                 customer_id,
+                customer_type,
                 customer_po_number,
                 product_pn,
                 pt_code,
@@ -610,7 +705,7 @@ class KPICenterQueries:
         return self._execute_query(query, params, "backlog_detail")
     
     # =========================================================================
-    # BACKLOG RISK ANALYSIS (NEW v2.0.0)
+    # BACKLOG RISK ANALYSIS - UPDATED v2.14.0: Added exclude_internal
     # =========================================================================
     
     def get_backlog_risk_analysis(
@@ -618,15 +713,19 @@ class KPICenterQueries:
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
         start_date: date = None,
-        end_date: date = None
+        end_date: date = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> Dict:
         """
         Analyze backlog for overdue and risk factors.
         
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Revenue metrics exclude Internal, GP metrics kept
+        
         Returns:
             Dictionary with:
             - overdue_orders: Orders with ETD in the past
-            - overdue_revenue: Total revenue at risk
+            - overdue_revenue: Total revenue at risk (excludes Internal if flag set)
             - at_risk_orders: Orders with ETD within 7 days
             - in_period_overdue: Overdue orders within selected period
         """
@@ -641,19 +740,47 @@ class KPICenterQueries:
         if not kpi_center_ids:
             return {}
         
-        query = """
-            SELECT 
-                COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue,
-                SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
-                COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
-                SUM(CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN backlog_by_kpi_center_usd ELSE 0 END) AS at_risk_revenue,
-                COUNT(DISTINCT oc_number) AS total_orders,
-                SUM(backlog_by_kpi_center_usd) AS total_backlog
-            FROM backlog_by_kpi_center_flat_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-        """
+        # NEW v2.14.0: Use CASE WHEN for revenue metrics when exclude_internal=True
+        if exclude_internal:
+            query = """
+                SELECT 
+                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                    SUM(CASE 
+                        WHEN days_until_etd < 0 AND customer_type != 'Internal' 
+                        THEN backlog_by_kpi_center_usd 
+                        ELSE 0 
+                    END) AS overdue_revenue,
+                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
+                    COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
+                    SUM(CASE 
+                        WHEN days_until_etd BETWEEN 0 AND 7 AND customer_type != 'Internal'
+                        THEN backlog_by_kpi_center_usd 
+                        ELSE 0 
+                    END) AS at_risk_revenue,
+                    COUNT(DISTINCT oc_number) AS total_orders,
+                    SUM(CASE 
+                        WHEN customer_type != 'Internal' 
+                        THEN backlog_by_kpi_center_usd 
+                        ELSE 0 
+                    END) AS total_backlog
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
+        else:
+            query = """
+                SELECT 
+                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue,
+                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
+                    COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
+                    SUM(CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN backlog_by_kpi_center_usd ELSE 0 END) AS at_risk_revenue,
+                    COUNT(DISTINCT oc_number) AS total_orders,
+                    SUM(backlog_by_kpi_center_usd) AS total_backlog
+                FROM backlog_by_kpi_center_flat_looker_view
+                WHERE kpi_center_id IN :kpi_center_ids
+                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+            """
         
         params = {'kpi_center_ids': tuple(kpi_center_ids)}
         
@@ -673,17 +800,36 @@ class KPICenterQueries:
         in_period_overdue_revenue = 0
         
         if start_date and end_date:
-            period_query = """
-                SELECT 
-                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-                  AND etd BETWEEN :start_date AND :end_date
-            """
+            # NEW v2.14.0: Apply same exclude_internal logic to period query
+            if exclude_internal:
+                period_query = """
+                    SELECT 
+                        COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                        SUM(CASE 
+                            WHEN days_until_etd < 0 AND customer_type != 'Internal'
+                            THEN backlog_by_kpi_center_usd 
+                            ELSE 0 
+                        END) AS overdue_revenue
+                    FROM backlog_by_kpi_center_flat_looker_view
+                    WHERE kpi_center_id IN :kpi_center_ids
+                      AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+                      AND etd BETWEEN :start_date AND :end_date
+                """
+            else:
+                period_query = """
+                    SELECT 
+                        COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
+                        SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue
+                    FROM backlog_by_kpi_center_flat_looker_view
+                    WHERE kpi_center_id IN :kpi_center_ids
+                      AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+                      AND etd BETWEEN :start_date AND :end_date
+                """
             params['start_date'] = start_date
             params['end_date'] = end_date
+            
+            if entity_ids:
+                period_query += " AND entity_id IN :entity_ids"
             
             period_df = self._execute_query(period_query, params, "in_period_overdue")
             if not period_df.empty:
@@ -706,9 +852,10 @@ class KPICenterQueries:
     # =========================================================================
     # COMPLEX KPIs (New Customers, Products, Business Revenue)
     # REFACTORED v2.6.1: Use GLOBAL scope for all metrics
+    # UPDATED v2.14.0: Added exclude_internal parameter
     # - New Customer: customer_id only (global, not per KPI Center)
     # - New Product: product_id only (global, not per KPI Center)  
-    # - New Business: customer_id + product_id combo (global)
+    # - New Business: (customer_id, product_id) combo, global scope
     # =========================================================================
     
     def get_new_customers(
@@ -718,7 +865,8 @@ class KPICenterQueries:
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
         include_children: bool = True,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get NEW CUSTOMERS with GLOBAL scope.
@@ -728,6 +876,10 @@ class KPICenterQueries:
         
         Returns individual records with split_rate_percent for weighted counting.
         Weighted count = sum(split_rate_percent) / 100
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Excludes customers with customer_type = 'Internal'
+        - Business rule: Internal customers should not count as "New Customers"
         
         UPDATED v2.7.0:
         - Added `selected_kpi_types` parameter for double-counting prevention
@@ -743,6 +895,7 @@ class KPICenterQueries:
             selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
                                If None or single type → no deduplication across types
                                If multiple types → deduplicate per customer_id
+            exclude_internal: If True, exclude Internal customers entirely
         
         Returns:
             DataFrame with: customer_id, customer_code, customer, kpi_center_id, 
@@ -776,12 +929,18 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        # Applied to BOTH first_sale detection AND record retrieval
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         if dedupe_across_types:
             # MULTIPLE TYPES: Deduplicate per customer_id (count each customer only once)
             query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first invoice date for each customer (GLOBALLY)
+                -- NEW v2.14.0: Exclude Internal customers
                 -- ================================================================
                 customer_first_sale AS (
                     SELECT 
@@ -790,6 +949,7 @@ class KPICenterQueries:
                     FROM unified_sales_by_kpi_center_view
                     WHERE inv_date >= :lookback_start
                       AND customer_id IS NOT NULL
+                      {internal_filter}
                     GROUP BY customer_id
                 ),
                 
@@ -805,6 +965,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
                 -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+                -- NEW v2.14.0: Added internal filter
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -823,6 +984,7 @@ class KPICenterQueries:
                     WHERE s.kpi_center_id IN :kpi_center_ids
                     {kpi_type_filter}
                     {entity_filter}
+                    {internal_filter_s}
                 ),
                 
                 -- ================================================================
@@ -865,6 +1027,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 1: Find first invoice date for each customer (GLOBALLY)
                 -- No kpi_center_id in GROUP BY = company-wide first sale
+                -- NEW v2.14.0: Exclude Internal customers
                 -- ================================================================
                 customer_first_sale AS (
                     SELECT 
@@ -873,6 +1036,7 @@ class KPICenterQueries:
                     FROM unified_sales_by_kpi_center_view
                     WHERE inv_date >= :lookback_start
                       AND customer_id IS NOT NULL
+                      {internal_filter}
                     GROUP BY customer_id
                 ),
                 
@@ -889,6 +1053,7 @@ class KPICenterQueries:
                 -- Step 3: Get all records from first sale date
                 -- Credit ALL KPI Centers that sold on first day
                 -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+                -- NEW v2.14.0: Added internal filter
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -906,6 +1071,7 @@ class KPICenterQueries:
                     WHERE s.kpi_center_id IN :kpi_center_ids
                     {kpi_type_filter}
                     {entity_filter}
+                    {internal_filter_s}
                 ),
                 
                 -- ================================================================
@@ -960,13 +1126,16 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get detailed NEW CUSTOMERS with first sale revenue info.
         Used for popup drill-down.
         
         Same as get_new_customers() but includes first day revenue/GP.
+        
+        NEW v2.14.0: Added exclude_internal parameter
         
         Returns:
             DataFrame with: customer_id, customer_code, customer, kpi_center_id,
@@ -991,9 +1160,14 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         query = f"""
             WITH 
             -- Step 1: Find first invoice date for each customer (GLOBALLY)
+            -- NEW v2.14.0: Exclude Internal customers
             customer_first_sale AS (
                 SELECT 
                     customer_id,
@@ -1001,6 +1175,7 @@ class KPICenterQueries:
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
                   AND customer_id IS NOT NULL
+                  {internal_filter}
                 GROUP BY customer_id
             ),
             
@@ -1013,6 +1188,7 @@ class KPICenterQueries:
             
             -- Step 3: Aggregate first day sales per (customer, kpi_center)
             -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+            -- NEW v2.14.0: Added internal filter
             first_day_sales AS (
                 SELECT 
                     s.customer_id,
@@ -1031,6 +1207,7 @@ class KPICenterQueries:
                 WHERE s.kpi_center_id IN :kpi_center_ids
                 {kpi_type_filter}
                 {entity_filter}
+                {internal_filter_s}
                 GROUP BY s.customer_id, s.kpi_center_id, nc.first_sale_date
             )
             
@@ -1066,7 +1243,7 @@ class KPICenterQueries:
         return self._execute_query(query, params, "new_customers_detail")
     
     # =========================================================================
-    # COMPLEX KPIs - NEW PRODUCTS (REFACTORED v2.6.1)
+    # COMPLEX KPIs - NEW PRODUCTS (REFACTORED v2.6.1, UPDATED v2.14.0)
     # =========================================================================
     
     def get_new_products(
@@ -1076,7 +1253,8 @@ class KPICenterQueries:
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
         include_children: bool = True,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get NEW PRODUCTS with GLOBAL scope.
@@ -1085,6 +1263,10 @@ class KPICenterQueries:
         within the 5-year lookback falls within the selected date range.
         
         Uses only product_id as identifier (no fallback to legacy_code/pt_code).
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Excludes products first sold to Internal customers
+        - Business rule: Products sold internally first should not count as "New Products"
         
         UPDATED v2.7.0:
         - Added `selected_kpi_types` parameter for double-counting prevention
@@ -1100,6 +1282,7 @@ class KPICenterQueries:
             selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
                                If None or single type → no deduplication across types
                                If multiple types → deduplicate per product_id
+            exclude_internal: If True, exclude products first sold to Internal customers
         
         Returns:
             DataFrame with: product_id, product_pn, pt_code, brand, kpi_center_id,
@@ -1132,12 +1315,17 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         if dedupe_across_types:
             # MULTIPLE TYPES: Deduplicate per product_id (count each product only once)
             query = f"""
                 WITH 
                 -- ================================================================
                 -- Step 1: Find first sale date for each product (GLOBALLY)
+                -- NEW v2.14.0: Exclude sales to Internal customers
                 -- ================================================================
                 product_first_sale AS (
                     SELECT 
@@ -1146,6 +1334,7 @@ class KPICenterQueries:
                     FROM unified_sales_by_kpi_center_view
                     WHERE inv_date >= :lookback_start
                       AND product_id IS NOT NULL
+                      {internal_filter}
                     GROUP BY product_id
                 ),
                 
@@ -1161,6 +1350,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 3: Get all records from first sale date
                 -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+                -- NEW v2.14.0: Added internal filter
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -1181,6 +1371,7 @@ class KPICenterQueries:
                       AND s.product_id IS NOT NULL
                       {kpi_type_filter}
                       {entity_filter}
+                      {internal_filter_s}
                 ),
                 
                 -- ================================================================
@@ -1221,6 +1412,7 @@ class KPICenterQueries:
                 -- ================================================================
                 -- Step 1: Find first sale date for each product (GLOBALLY)
                 -- Uses product_id only - no fallback to legacy_code/pt_code
+                -- NEW v2.14.0: Exclude sales to Internal customers
                 -- ================================================================
                 product_first_sale AS (
                     SELECT 
@@ -1229,6 +1421,7 @@ class KPICenterQueries:
                     FROM unified_sales_by_kpi_center_view
                     WHERE inv_date >= :lookback_start
                       AND product_id IS NOT NULL
+                      {internal_filter}
                     GROUP BY product_id
                 ),
                 
@@ -1245,6 +1438,7 @@ class KPICenterQueries:
                 -- Step 3: Get all records from first sale date
                 -- Credit ALL KPI Centers that sold on first day
                 -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+                -- NEW v2.14.0: Added internal filter
                 -- ================================================================
                 first_day_records AS (
                     SELECT 
@@ -1264,6 +1458,7 @@ class KPICenterQueries:
                       AND s.product_id IS NOT NULL
                       {kpi_type_filter}
                       {entity_filter}
+                      {internal_filter_s}
                 ),
                 
                 -- ================================================================
@@ -1319,11 +1514,14 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get detailed NEW PRODUCTS with first sale revenue info.
         Used for popup drill-down.
+        
+        NEW v2.14.0: Added exclude_internal parameter
         
         Returns:
             DataFrame with: product_id, product_pn, pt_code, brand, kpi_center_id,
@@ -1348,9 +1546,14 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         query = f"""
             WITH 
             -- Step 1: Find first sale date for each product (GLOBALLY)
+            -- NEW v2.14.0: Exclude sales to Internal customers
             product_first_sale AS (
                 SELECT 
                     product_id,
@@ -1358,6 +1561,7 @@ class KPICenterQueries:
                 FROM unified_sales_by_kpi_center_view
                 WHERE inv_date >= :lookback_start
                   AND product_id IS NOT NULL
+                  {internal_filter}
                 GROUP BY product_id
             ),
             
@@ -1370,6 +1574,7 @@ class KPICenterQueries:
             
             -- Step 3: Aggregate first day sales per (product, kpi_center)
             -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+            -- NEW v2.14.0: Added internal filter
             first_day_sales AS (
                 SELECT 
                     s.product_id,
@@ -1390,6 +1595,7 @@ class KPICenterQueries:
                   AND s.product_id IS NOT NULL
                   {kpi_type_filter}
                   {entity_filter}
+                  {internal_filter_s}
                 GROUP BY s.product_id, s.kpi_center_id, np.first_sale_date
             )
             
@@ -1426,7 +1632,7 @@ class KPICenterQueries:
         return self._execute_query(query, params, "new_products_detail")
     
     # =========================================================================
-    # COMPLEX KPIs - NEW BUSINESS REVENUE (REFACTORED v2.6.1)
+    # COMPLEX KPIs - NEW BUSINESS REVENUE (REFACTORED v2.6.1, UPDATED v2.14.0)
     # =========================================================================
     
     def get_new_business_revenue(
@@ -1435,10 +1641,14 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get new business revenue - first-time customer-product combinations.
+        
+        NEW v2.14.0: Added exclude_internal parameter
+        - When True (default): Excludes combos involving Internal customers
         
         FIXED v2.7.0:
         - Changed MAX() to SUM() to correctly aggregate all revenue from new combos
@@ -1466,11 +1676,16 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         query = f"""
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each (customer, product) combo
             -- GLOBAL scope: No kpi_center_id in GROUP BY
+            -- NEW v2.14.0: Exclude Internal customers
             -- ================================================================
             combo_first_sale AS (
                 SELECT 
@@ -1481,6 +1696,7 @@ class KPICenterQueries:
                 WHERE inv_date >= :lookback_start
                 AND customer_id IS NOT NULL
                 AND product_id IS NOT NULL
+                {internal_filter}
                 GROUP BY customer_id, product_id
             ),
             
@@ -1497,6 +1713,7 @@ class KPICenterQueries:
             -- Step 3: Get ALL revenue from new combos within period
             -- (not just first day - includes repeat orders of new combos)
             -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+            -- NEW v2.14.0: Added internal filter
             -- ================================================================
             new_business_sales AS (
                 SELECT 
@@ -1516,6 +1733,7 @@ class KPICenterQueries:
                 AND s.product_id IS NOT NULL
                 {kpi_type_filter}
                 {entity_filter}
+                {internal_filter_s}
             ),
             
             -- ================================================================
@@ -1569,11 +1787,14 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> pd.DataFrame:
         """
         Get detailed NEW BUSINESS combos with revenue breakdown.
         Used for popup drill-down.
+        
+        NEW v2.14.0: Added exclude_internal parameter
         
         FIXED v2.7.0:
         - Changed MAX() to SUM() for revenue aggregation
@@ -1602,9 +1823,14 @@ class KPICenterQueries:
         # CRITICAL FIX v2.9.0: Filter by kpi_type!
         kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
         
+        # NEW v2.14.0: Internal customer filter
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
         query = f"""
             WITH 
             -- Step 1: Find first sale date for each (customer, product) combo (GLOBAL)
+            -- NEW v2.14.0: Exclude Internal customers
             combo_first_sale AS (
                 SELECT 
                     customer_id,
@@ -1614,6 +1840,7 @@ class KPICenterQueries:
                 WHERE inv_date >= :lookback_start
                 AND customer_id IS NOT NULL
                 AND product_id IS NOT NULL
+                {internal_filter}
                 GROUP BY customer_id, product_id
             ),
             
@@ -1626,6 +1853,7 @@ class KPICenterQueries:
             
             -- Step 3: Get all sales records for new combos
             -- FIXED v2.9.0: Added entity_ids AND kpi_type filters
+            -- NEW v2.14.0: Added internal filter
             new_business_sales AS (
                 SELECT 
                     s.customer_id,
@@ -1650,6 +1878,7 @@ class KPICenterQueries:
                 AND s.product_id IS NOT NULL
                 {kpi_type_filter}
                 {entity_filter}
+                {internal_filter_s}
             )
             
             -- ================================================================
@@ -1794,7 +2023,7 @@ class KPICenterQueries:
         return self._execute_query(query, params, "kpi_split_data")
     
     # =========================================================================
-    # COMPLEX KPI VALUE CALCULATOR (UPDATED v2.6.1)
+    # COMPLEX KPI VALUE CALCULATOR (UPDATED v2.14.0)
     # =========================================================================
     
     def calculate_complex_kpi_value(
@@ -1804,10 +2033,14 @@ class KPICenterQueries:
         end_date: date,
         kpi_center_ids: List[int] = None,
         entity_ids: List[int] = None,
-        selected_kpi_types: List[str] = None
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True  # NEW v2.14.0
     ) -> dict:
         """
         Calculate value for a complex KPI type.
+        
+        UPDATED v2.14.0: Added exclude_internal parameter
+        - Passed to all Complex KPI queries for consistent business logic
         
         UPDATED v2.7.0: Added selected_kpi_types parameter for double-counting prevention.
         - Single type selected → Full credit for that type
@@ -1820,6 +2053,7 @@ class KPICenterQueries:
             kpi_center_ids: Optional list of KPI Center IDs
             entity_ids: Optional list of entity IDs (for filtering)
             selected_kpi_types: List of selected KPI types (e.g., ['Territory', 'Vertical'])
+            exclude_internal: If True, exclude Internal customers from Complex KPIs
             
         Returns:
             dict with: value, count, detail_available, by_kpi_center
@@ -1831,7 +2065,8 @@ class KPICenterQueries:
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
                     entity_ids=entity_ids,
-                    selected_kpi_types=selected_kpi_types
+                    selected_kpi_types=selected_kpi_types,
+                    exclude_internal=exclude_internal  # NEW v2.14.0
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
@@ -1858,7 +2093,8 @@ class KPICenterQueries:
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
                     entity_ids=entity_ids,
-                    selected_kpi_types=selected_kpi_types
+                    selected_kpi_types=selected_kpi_types,
+                    exclude_internal=exclude_internal  # NEW v2.14.0
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
@@ -1885,7 +2121,8 @@ class KPICenterQueries:
                     end_date=end_date,
                     kpi_center_ids=kpi_center_ids,
                     entity_ids=entity_ids,
-                    selected_kpi_types=selected_kpi_types
+                    selected_kpi_types=selected_kpi_types,
+                    exclude_internal=exclude_internal  # NEW v2.14.0
                 )
                 if df.empty:
                     return {'value': 0, 'count': 0, 'detail_available': False}
@@ -1906,6 +2143,7 @@ class KPICenterQueries:
         except Exception as e:
             logger.error(f"Error calculating complex KPI {kpi_type}: {e}")
             return {'value': 0, 'count': 0, 'detail_available': False}
+
     def get_kpi_center_achievement_summary(
         self,
         year: int,

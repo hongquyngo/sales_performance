@@ -2,8 +2,16 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.10.0
+VERSION: 2.14.0
 CHANGELOG:
+- v2.14.0: ADDED exclude_internal support for Backlog and Complex KPIs:
+          - Business Rule: "Exclude Internal Revenue" checkbox now affects ALL metrics consistently
+          - Backlog queries: Revenue = 0 for Internal customers, GP kept (same as Sales)
+          - Complex KPIs: Internal customers excluded entirely from New Customers, New Products, New Business
+          - Updated load_data_for_year_range() to pass exclude_internal to all relevant queries
+          - Updated _needs_data_reload() to check exclude_internal changes
+          - Updated get_or_load_data() to pass exclude_internal from filter_values
+          - Requires updated queries.py v2.14.0
 - v2.10.0: SYNCED Sales Detail tab with Salesperson page:
           - Added sub-tabs: "📄 Transaction List" and "📊 Pivot Analysis"
           - Each sub-tab is a fragment for better performance
@@ -401,7 +409,8 @@ def load_data_for_year_range(
     entity_ids: list = None,
     display_start: date = None,  # NEW: Display period start for complex KPIs
     display_end: date = None,    # NEW: Display period end for complex KPIs
-    selected_kpi_types: list = None  # NEW v2.7.0: For double-counting prevention
+    selected_kpi_types: list = None,  # NEW v2.7.0: For double-counting prevention
+    exclude_internal: bool = True  # NEW v2.14.0: Exclude internal revenue/customers
 ) -> dict:
     """
     Load data for specified year range.
@@ -415,6 +424,7 @@ def load_data_for_year_range(
         display_start: Actual display period start date (for complex KPIs that can't be filtered client-side)
         display_end: Actual display period end date (for complex KPIs that can't be filtered client-side)
         selected_kpi_types: List of selected KPI types for dedupe logic (NEW v2.7.0)
+        exclude_internal: If True, exclude internal revenue in backlog and internal customers in Complex KPIs (NEW v2.14.0)
     
     Returns:
         dict: Dictionary containing all loaded DataFrames
@@ -424,6 +434,7 @@ def load_data_for_year_range(
         - Complex KPIs (new_customers, new_products, new_business) use display period because 
           they return aggregated data WITHOUT date columns, so they CANNOT be filtered client-side
         - NEW v2.7.0: selected_kpi_types is passed to complex KPI queries for dedupe logic
+        - NEW v2.14.0: exclude_internal is passed to backlog and complex KPI queries for consistent business logic
     """
     # Cache period - for data that CAN be filtered client-side
     cache_start = date(start_year, 1, 1)
@@ -457,21 +468,28 @@ def load_data_for_year_range(
         data['targets_df'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         
         progress_bar.progress(40, text="📦 Loading backlog data...")
+        # =====================================================================
+        # NEW v2.14.0: Pass exclude_internal to backlog queries
+        # When exclude_internal=True: Revenue = 0 for Internal, GP kept
+        # =====================================================================
         data['backlog_summary_df'] = queries.get_backlog_data(
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
+            entity_ids=entity_ids,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         
         data['backlog_in_period_df'] = queries.get_backlog_in_period(
             start_date=cache_start,
             end_date=cache_end,
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
+            entity_ids=entity_ids,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         
         data['backlog_by_month_df'] = queries.get_backlog_by_month(
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
+            entity_ids=entity_ids,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         
         progress_bar.progress(55, text="📋 Loading backlog details...")
@@ -484,45 +502,54 @@ def load_data_for_year_range(
         # =====================================================================
         # FIXED v2.9.0: Complex KPIs now receive entity_ids for proper filtering
         # FIXED v2.7.0: Complex KPIs now receive selected_kpi_types for dedupe
+        # NEW v2.14.0: Complex KPIs now receive exclude_internal to exclude Internal customers
         # - Single type → no dedupe (full credit per KPI Center)
         # - Multiple types → dedupe per entity to avoid double counting
+        # - exclude_internal=True → Internal customers excluded entirely from counts
         # =====================================================================
         data['new_customers_df'] = queries.get_new_customers(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         data['new_customers_detail_df'] = queries.get_new_customers_detail(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         data['new_products_df'] = queries.get_new_products(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         # Use same data for detail (already filtered)
         data['new_products_detail_df'] = queries.get_new_products_detail(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         data['new_business_df'] = queries.get_new_business_revenue(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         data['new_business_detail_df'] = queries.get_new_business_detail(
             kpi_start, kpi_end, kpi_center_ids,
             entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         
         progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
         data['backlog_risk'] = queries.get_backlog_risk_analysis(
             kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
+            entity_ids=entity_ids,
+            exclude_internal=exclude_internal  # NEW v2.14.0
         )
         
         for key in data:
@@ -538,6 +565,8 @@ def load_data_for_year_range(
         data['_kpi_center_ids'] = kpi_center_ids  # CRITICAL: For reload check when KPI Center changes
         # NEW v2.9.0: Store entity_ids for reload check
         data['_entity_ids'] = entity_ids
+        # NEW v2.14.0: Store exclude_internal for reload check
+        data['_exclude_internal'] = exclude_internal
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
         
@@ -558,7 +587,8 @@ def _needs_data_reload(filter_values: dict) -> bool:
     Check if data needs to be reloaded.
     
     FIXED v2.9.0: Added entity_ids check.
-    Complex KPIs are queried with entity_ids parameter, so must reload when changed.
+    NEW v2.14.0: Added exclude_internal check.
+    Complex KPIs and Backlog are queried with these parameters, so must reload when changed.
     """
     if '_kpc_raw_cached_data' not in st.session_state or st.session_state._kpc_raw_cached_data is None:
         return True
@@ -625,6 +655,17 @@ def _needs_data_reload(filter_values: dict) -> bool:
     if cached_set != current_set:
         return True
     
+    # =========================================================================
+    # NEW v2.14.0: Check if exclude_internal changed
+    # Backlog and Complex KPIs are queried with exclude_internal parameter
+    # Must reload when this setting changes!
+    # =========================================================================
+    cached_exclude_internal = cached_data.get('_exclude_internal', True)
+    current_exclude_internal = filter_values.get('exclude_internal_revenue', True)
+    
+    if cached_exclude_internal != current_exclude_internal:
+        return True
+    
     return False
 
 
@@ -675,7 +716,11 @@ def get_or_load_data(queries: KPICenterQueries, filter_values: dict, kpi_center_
             # =========================================================
             # NEW v2.7.0: Pass selected_kpi_types for dedupe logic
             # =========================================================
-            selected_kpi_types=selected_kpi_types
+            selected_kpi_types=selected_kpi_types,
+            # =========================================================
+            # NEW v2.14.0: Pass exclude_internal for consistent business logic
+            # =========================================================
+            exclude_internal=filter_values.get('exclude_internal_revenue', True)
         )
         
         # Store kpi_type_filter for reload check
