@@ -2,8 +2,17 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.0.1
+VERSION: 3.1.0
 CHANGELOG:
+- v3.1.0: SYNCED KPI & Targets tab with Salesperson module:
+          - Tab 5 now has 3 sub-tabs: My KPIs, Progress, Ranking
+          - My KPIs: Improved assignments view with icons, better formatting
+          - Progress: Progress bars with achievement %, prorated targets, color-coded badges
+          - Ranking: Added medals (🥇🥈🥉), sortable dropdown like Salesperson
+          - Added kpi_assignments_fragment, kpi_progress_fragment
+          - Updated kpi_center_ranking_fragment with medals
+          - Added metrics.get_kpi_progress_data(), metrics._get_prorated_target()
+          - Requires updated fragments.py v3.1.0, metrics.py v3.1.0
 - v3.0.1: BUGFIX backlog_by_etd_fragment not filtering by KPI Center:
           - Problem: backlog_by_month_df was pre-aggregated without kpi_center_id,
             client-side filter couldn't work
@@ -109,6 +118,8 @@ from utils.kpi_center_performance import (
     backlog_list_fragment,
     backlog_by_etd_fragment,        # NEW v3.0.0
     backlog_risk_analysis_fragment,  # NEW v3.0.0
+    kpi_assignments_fragment,        # NEW v3.1.0
+    kpi_progress_fragment,           # NEW v3.1.0
     kpi_center_ranking_fragment,
     top_performers_fragment,
     export_report_fragment,
@@ -1575,41 +1586,63 @@ This ensures accurate achievement calculation.
                 )
     
     # ==========================================================================
-    # TAB 5: KPI & TARGETS
+    # TAB 5: KPI & TARGETS - UPDATED v3.1.0 (synced with Salesperson)
     # ==========================================================================
     
     with tab5:
-        st.subheader("🎯 KPI Assignments")
+        st.subheader("🎯 KPI & Targets")
         
         if targets_df.empty:
             st.info("No KPI targets assigned for selected KPI Centers and year")
         else:
-            for kpi_center_id in targets_df['kpi_center_id'].unique():
-                kc_targets = targets_df[targets_df['kpi_center_id'] == kpi_center_id]
-                kc_name = kc_targets['kpi_center_name'].iloc[0]
+            # 3 Sub-tabs (synced with Salesperson page)
+            kpi_tab1, kpi_tab2, kpi_tab3 = st.tabs([
+                "📊 My KPIs", 
+                "📈 Progress", 
+                "🏆 Ranking"
+            ])
+            
+            # =================================================================
+            # SUB-TAB 1: MY KPIs (Assignments View)
+            # =================================================================
+            with kpi_tab1:
+                st.markdown("#### 📊 KPI Assignments")
+                kpi_assignments_fragment(
+                    targets_df=targets_df,
+                    fragment_key="kpc_assignments"
+                )
+            
+            # =================================================================
+            # SUB-TAB 2: KPI PROGRESS (Achievement Bars)
+            # =================================================================
+            with kpi_tab2:
+                st.markdown("#### 📈 KPI Progress")
                 
-                with st.expander(f"📊 {kc_name}", expanded=True):
-                    display_cols = ['kpi_name', 'annual_target_value', 'weight_numeric', 'unit_of_measure']
-                    display_cols = [c for c in display_cols if c in kc_targets.columns]
-                    
-                    st.dataframe(
-                        kc_targets[display_cols],
-                        hide_index=True,
-                        column_config={
-                            'kpi_name': 'KPI',
-                            'annual_target_value': 'Annual Target',
-                            'weight_numeric': st.column_config.NumberColumn('Weight %'),
-                            'unit_of_measure': 'Unit',
-                        }
-                    )
-        
-        st.divider()
-        
-        st.subheader("🏆 KPI Center Ranking")
-        kpi_center_ranking_fragment(
-            ranking_df=kpi_center_summary_df,
-            show_targets=not targets_df.empty
-        )
+                # Get KPI progress data from metrics calculator
+                kpi_progress_data = metrics_calc.get_kpi_progress_data(
+                    period_type=active_filters['period_type'],
+                    year=active_filters['year'],
+                    start_date=active_filters['start_date'],
+                    end_date=active_filters['end_date'],
+                    complex_kpis=complex_kpis
+                )
+                
+                kpi_progress_fragment(
+                    kpi_progress_data=kpi_progress_data,
+                    period_type=active_filters['period_type'],
+                    year=active_filters['year'],
+                    fragment_key="kpc_progress"
+                )
+            
+            # =================================================================
+            # SUB-TAB 3: KPI CENTER RANKING
+            # =================================================================
+            with kpi_tab3:
+                st.markdown("#### 🏆 KPI Center Ranking")
+                kpi_center_ranking_fragment(
+                    ranking_df=kpi_center_summary_df,
+                    show_targets=not targets_df.empty
+                )
     
     # ==========================================================================
     # TAB 6: SETUP

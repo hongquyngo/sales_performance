@@ -2042,7 +2042,175 @@ def backlog_risk_analysis_fragment(
 
 
 # =============================================================================
-# KPI CENTER RANKING FRAGMENT
+# KPI ASSIGNMENTS FRAGMENT (My KPIs Tab) - NEW v3.1.0
+# =============================================================================
+
+@st.fragment
+def kpi_assignments_fragment(
+    targets_df: pd.DataFrame,
+    fragment_key: str = "kpc_assignments"
+):
+    """
+    KPI Assignments fragment with improved UI.
+    
+    NEW v3.1.0: Synced with Salesperson page - improved table formatting.
+    
+    Args:
+        targets_df: KPI targets DataFrame
+        fragment_key: Unique key prefix for widgets
+    """
+    if targets_df.empty:
+        st.info("📋 No KPI assignments found for selected KPI Centers and year")
+        return
+    
+    # KPI icons mapping
+    kpi_icons = {
+        'revenue': '💰',
+        'gross_profit': '📈',
+        'gross_profit_1': '📊',
+        'gp1': '📊',
+        'num_new_customers': '👥',
+        'num_new_products': '📦',
+        'new_business_revenue': '💼',
+    }
+    
+    # Group by KPI Center
+    for kpi_center_id in targets_df['kpi_center_id'].unique():
+        kc_targets = targets_df[targets_df['kpi_center_id'] == kpi_center_id].copy()
+        kc_name = kc_targets['kpi_center_name'].iloc[0] if 'kpi_center_name' in kc_targets.columns else f"KPI Center {kpi_center_id}"
+        
+        with st.expander(f"🎯 {kc_name}", expanded=True):
+            # Prepare display dataframe
+            display_df = kc_targets.copy()
+            
+            # Format KPI name with icon
+            if 'kpi_name' in display_df.columns:
+                display_df['KPI'] = display_df['kpi_name'].apply(
+                    lambda x: f"{kpi_icons.get(str(x).lower(), '📋')} {str(x).replace('_', ' ').title()}" if pd.notna(x) else ''
+                )
+            
+            # Select columns for display
+            display_cols = ['KPI', 'annual_target_value', 'monthly_target_value', 
+                          'quarterly_target_value', 'unit_of_measure', 'weight_numeric']
+            available_cols = [c for c in display_cols if c in display_df.columns]
+            
+            if not available_cols:
+                available_cols = [c for c in display_df.columns if c not in ['kpi_center_id', 'kpi_center_name', 'kpi_type_id']]
+            
+            st.dataframe(
+                display_df[available_cols],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'KPI': st.column_config.TextColumn('KPI', width='medium'),
+                    'annual_target_value': st.column_config.TextColumn('Annual Target', width='small'),
+                    'monthly_target_value': st.column_config.TextColumn('Monthly', width='small'),
+                    'quarterly_target_value': st.column_config.TextColumn('Quarterly', width='small'),
+                    'unit_of_measure': st.column_config.TextColumn('Unit', width='small'),
+                    'weight_numeric': st.column_config.NumberColumn('Weight %', format='%.0f%%', width='small'),
+                }
+            )
+
+
+# =============================================================================
+# KPI PROGRESS FRAGMENT (Progress Tab) - NEW v3.1.0
+# =============================================================================
+
+@st.fragment
+def kpi_progress_fragment(
+    kpi_progress_data: list,
+    period_type: str = 'YTD',
+    year: int = None,
+    fragment_key: str = "kpc_progress"
+):
+    """
+    KPI Progress fragment with progress bars.
+    
+    NEW v3.1.0: Synced with Salesperson page - progress bars with achievement %.
+    
+    Args:
+        kpi_progress_data: List of dicts from metrics.get_kpi_progress_data()
+        period_type: Current period type for display
+        year: Current year
+        fragment_key: Unique key prefix
+    """
+    if not kpi_progress_data:
+        st.info("📊 No KPI progress data available")
+        return
+    
+    # Explanatory Note (collapsible)
+    with st.expander("ℹ️ How KPI Progress is calculated", expanded=False):
+        st.markdown(f"""
+**📐 Calculation Method**
+
+Achievement % is calculated using **Prorated Target** based on the selected period type:
+
+| Period Type | Target Proration |
+|-------------|------------------|
+| **YTD** | Annual Target × (Elapsed Days / 365) |
+| **QTD** | Annual Target / 4 × (Elapsed Days in Quarter / Days in Quarter) |
+| **MTD** | Annual Target / 12 × (Day of Month / Days in Month) |
+| **Custom** | Annual Target × (Days in Period / 365) |
+
+**Current Settings:** {period_type} for {year}
+
+**📊 Why Prorated?**
+
+Using prorated targets allows fair comparison:
+- In June (YTD), achieving 50% of annual target = 100% achievement
+- This is consistent with how **Overall Achievement** is calculated
+
+**🎯 KPI Center Filtering**
+
+Each KPI only counts actuals from KPI Centers who have that specific KPI target assigned.
+This ensures accurate achievement measurement when viewing multiple KPI Centers.
+        """)
+    
+    # Display progress for each KPI
+    for kpi in kpi_progress_data:
+        display_name = kpi['display_name']
+        actual = kpi['actual']
+        prorated_target = kpi['prorated_target']
+        annual_target = kpi['annual_target']
+        achievement = kpi['achievement']
+        is_currency = kpi['is_currency']
+        kpi_center_count = kpi['kpi_center_count']
+        
+        # Format values
+        if is_currency:
+            actual_str = f"${actual:,.0f}"
+            prorated_str = f"${prorated_target:,.0f}"
+            annual_str = f"${annual_target:,.0f}"
+        else:
+            actual_str = f"{actual:.1f}"
+            prorated_str = f"{prorated_target:.1f}"
+            annual_str = f"{annual_target:.0f}"
+        
+        # KPI Header
+        st.markdown(f"**{display_name}**")
+        
+        # Progress bar (cap at 100% for display)
+        progress_value = min(achievement / 100, 1.0)
+        st.progress(progress_value)
+        
+        # Caption with details
+        st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) • {kpi_center_count} KPI Centers")
+        
+        # Achievement badge with color
+        col_badge, col_spacer = st.columns([1, 5])
+        with col_badge:
+            if achievement >= 100:
+                st.success(f"✅ {achievement:.1f}%")
+            elif achievement >= 80:
+                st.warning(f"🟡 {achievement:.1f}%")
+            else:
+                st.error(f"🔴 {achievement:.1f}%")
+        
+        st.markdown("---")
+
+
+# =============================================================================
+# KPI CENTER RANKING FRAGMENT - UPDATED v3.1.0 with medals
 # =============================================================================
 
 @st.fragment
@@ -2051,61 +2219,94 @@ def kpi_center_ranking_fragment(
     show_targets: bool = True,
     fragment_key: str = "kpc_ranking"
 ):
-    """KPI Center performance ranking table."""
+    """
+    KPI Center performance ranking table.
+    
+    UPDATED v3.1.0: Added medals (🥇🥈🥉), sortable dropdown, achievement column with gradient.
+    Synced with Salesperson Team Ranking UI.
+    """
     if ranking_df.empty:
         st.info("No ranking data available")
         return
     
-    # Sort options
-    sort_options = ['Revenue', 'Gross Profit', 'GP1', 'GP %']
-    if show_targets:
-        sort_options.append('Achievement %')
+    # Rank by dropdown with expander style
+    with st.expander("📊 Rank by", expanded=True):
+        sort_options = ['KPI Achievement %', 'Revenue', 'Gross Profit', 'GP1', 'GP %', 'Customers']
+        if not show_targets:
+            sort_options.remove('KPI Achievement %')
+        
+        sort_by = st.selectbox(
+            "Select ranking criteria",
+            sort_options,
+            key=f"{fragment_key}_sort",
+            label_visibility="collapsed"
+        )
     
-    sort_by = st.selectbox("Sort by", sort_options, key=f"{fragment_key}_sort")
-    
-    # Map sort selection - use actual column names from aggregate_by_kpi_center()
+    # Map sort selection
     sort_col_map = {
+        'KPI Achievement %': 'revenue_achievement',
         'Revenue': 'revenue',
         'Gross Profit': 'gross_profit',
         'GP1': 'gp1',
         'GP %': 'gp_percent',
-        'Achievement %': 'revenue_achievement'
+        'Customers': 'customers'
     }
     sort_col = sort_col_map.get(sort_by, 'revenue')
     
     if sort_col not in ranking_df.columns:
         sort_col = 'revenue'
     
-    # Sort and add rank
+    # Sort descending
     sorted_df = ranking_df.sort_values(sort_col, ascending=False).copy()
-    sorted_df.insert(0, 'Rank', range(1, len(sorted_df) + 1))
     
-    # Format - use actual column names from aggregate_by_kpi_center()
+    # Add rank with medals
+    def get_rank_display(rank):
+        if rank == 1:
+            return "🥇"
+        elif rank == 2:
+            return "🥈"
+        elif rank == 3:
+            return "🥉"
+        else:
+            return f"#{rank}"
+    
+    sorted_df.insert(0, 'Rank', [get_rank_display(i) for i in range(1, len(sorted_df) + 1)])
+    
+    # Select display columns
+    display_cols = ['Rank', 'kpi_center', 'revenue', 'gross_profit', 'gp1', 'gp_percent', 'customers']
+    if show_targets and 'revenue_achievement' in sorted_df.columns:
+        display_cols.append('revenue_achievement')
+    
+    available_cols = [c for c in display_cols if c in sorted_df.columns]
+    
+    # Column configuration
     column_config = {
-        'Rank': st.column_config.NumberColumn('Rank', width='small'),
-        'kpi_center': 'KPI Center',
+        'Rank': st.column_config.TextColumn('Rank', width='small'),
+        'kpi_center': st.column_config.TextColumn('KPI Center', width='medium'),
         'revenue': st.column_config.NumberColumn('Revenue', format='$%,.0f'),
-        'gross_profit': st.column_config.NumberColumn('GP', format='$%,.0f'),
+        'gross_profit': st.column_config.NumberColumn('Gross Profit', format='$%,.0f'),
         'gp1': st.column_config.NumberColumn('GP1', format='$%,.0f'),
         'gp_percent': st.column_config.NumberColumn('GP %', format='%.1f%%'),
-        'customers': 'Customers',
-        'invoices': 'Orders',
+        'customers': st.column_config.NumberColumn('Customers', format='%d'),
     }
     
     if show_targets and 'revenue_achievement' in sorted_df.columns:
         column_config['revenue_achievement'] = st.column_config.ProgressColumn(
-            'Achievement',
+            'Achievement %',
             min_value=0,
             max_value=150,
             format='%.1f%%'
         )
     
     st.dataframe(
-        sorted_df,
+        sorted_df[available_cols],
         hide_index=True,
         column_config=column_config,
         use_container_width=True
     )
+    
+    # Footer note
+    st.caption(f"⭐ Ranked by **{sort_by}** (highest first)")
 
 
 # =============================================================================

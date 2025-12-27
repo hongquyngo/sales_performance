@@ -4,8 +4,14 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 3.0.2
+VERSION: 3.1.0
 CHANGELOG:
+- v3.1.0: SYNCED KPI & Targets tab with Salesperson module:
+          - NEW kpi_assignments_fragment(): My KPIs sub-tab with improved UI
+          - NEW kpi_progress_fragment(): Progress sub-tab with progress bars
+          - UPDATED kpi_center_ranking_fragment(): Added medals (🥇🥈🥉), sortable dropdown
+          - metrics.py: Added _get_prorated_target(), get_kpi_progress_data()
+          - 3 sub-tabs: My KPIs, Progress, Ranking (same as Salesperson)
 - v3.0.2: BUGFIX render_multiselect_filter doesn't have placeholder parameter
 - v3.0.1: BUGFIX backlog_by_etd_fragment filter not working:
           - Problem: backlog_by_month_df was pre-aggregated without kpi_center_id
@@ -115,6 +121,8 @@ from .fragments import (
     backlog_list_fragment,
     backlog_by_etd_fragment,        # NEW v3.0.0
     backlog_risk_analysis_fragment,  # NEW v3.0.0
+    kpi_assignments_fragment,        # NEW v3.1.0
+    kpi_progress_fragment,           # NEW v3.1.0
     kpi_center_ranking_fragment,
     top_performers_fragment,  # NEW v2.3.0
     export_report_fragment,
@@ -165,6 +173,8 @@ __all__ = [
     'backlog_list_fragment',
     'backlog_by_etd_fragment',        # NEW v3.0.0
     'backlog_risk_analysis_fragment',  # NEW v3.0.0
+    'kpi_assignments_fragment',        # NEW v3.1.0
+    'kpi_progress_fragment',           # NEW v3.1.0
     'kpi_center_ranking_fragment',
     'top_performers_fragment',
     'export_report_fragment',
@@ -181,4 +191,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '3.0.2'
+__version__ = '3.1.0'

@@ -407,6 +407,167 @@ class KPICenterMetrics:
         return 0
     
     # =========================================================================
+    # PRORATED TARGET HELPER - NEW v3.1.0 (synced with Salesperson)
+    # =========================================================================
+    
+    def _get_prorated_target(
+        self,
+        kpi_name: str,
+        period_type: str,
+        year: int = None,
+        start_date: date = None,
+        end_date: date = None
+    ) -> Optional[float]:
+        """
+        Get prorated target for a specific KPI based on period type.
+        
+        NEW v3.1.0: Helper for KPI Progress tab (synced with Salesperson).
+        
+        Args:
+            kpi_name: KPI name (e.g., 'revenue', 'gross_profit')
+            period_type: 'YTD', 'QTD', 'MTD', or 'Custom'
+            year: Target year
+            start_date: Start date for Custom period
+            end_date: End date for Custom period
+            
+        Returns:
+            Prorated target value or None if no target exists
+        """
+        if self.targets_df.empty:
+            return None
+        
+        # Get annual target for this KPI
+        mask = self.targets_df['kpi_name'].str.lower() == kpi_name.lower()
+        kpi_targets = self.targets_df[mask]
+        
+        if kpi_targets.empty:
+            return None
+        
+        annual_target = kpi_targets['annual_target_value_numeric'].sum()
+        
+        if annual_target <= 0:
+            return None
+        
+        # Calculate proration factor
+        proration = self._calculate_proration(period_type, year, start_date, end_date)
+        
+        return annual_target * proration
+    
+    def get_kpi_progress_data(
+        self,
+        period_type: str,
+        year: int,
+        start_date: date = None,
+        end_date: date = None,
+        complex_kpis: Dict = None
+    ) -> List[Dict]:
+        """
+        Get KPI progress data for all assigned KPIs.
+        
+        NEW v3.1.0: Used by KPI Progress tab (synced with Salesperson).
+        
+        Args:
+            period_type: Period type for proration
+            year: Target year
+            start_date: Start date
+            end_date: End date
+            complex_kpis: Pre-calculated complex KPIs dict
+            
+        Returns:
+            List of dicts with KPI progress data for each KPI type
+        """
+        if self.targets_df.empty:
+            return []
+        
+        # Map KPI names to column names in sales_df
+        kpi_column_map = {
+            'revenue': 'sales_by_kpi_center_usd',
+            'gross_profit': 'gross_profit_by_kpi_center_usd',
+            'gross_profit_1': 'gp1_by_kpi_center_usd',
+            'gp1': 'gp1_by_kpi_center_usd',
+        }
+        
+        # Complex KPIs that need special handling
+        complex_kpi_names = ['num_new_customers', 'num_new_products', 'new_business_revenue']
+        
+        # Display name mapping
+        kpi_display_names = {
+            'revenue': 'Revenue',
+            'gross_profit': 'Gross Profit',
+            'gross_profit_1': 'GP1',
+            'gp1': 'GP1',
+            'num_new_customers': 'New Customers',
+            'num_new_products': 'New Products',
+            'new_business_revenue': 'New Business Revenue',
+        }
+        
+        # KPIs that should show currency format
+        currency_kpis = ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue']
+        
+        kpi_progress = []
+        
+        for kpi_name in self.targets_df['kpi_name'].str.lower().unique():
+            # Get KPI Centers who have this specific KPI target
+            kpi_centers_with_target = self.targets_df[
+                self.targets_df['kpi_name'].str.lower() == kpi_name
+            ]['kpi_center_id'].unique().tolist()
+            
+            # Get total annual target
+            kpi_target = self.targets_df[
+                self.targets_df['kpi_name'].str.lower() == kpi_name
+            ]['annual_target_value_numeric'].sum()
+            
+            if kpi_target <= 0:
+                continue
+            
+            # Calculate actual value - ONLY from KPI Centers who have this KPI target
+            actual = 0
+            if kpi_name in kpi_column_map:
+                col_name = kpi_column_map[kpi_name]
+                if not self.sales_df.empty and col_name in self.sales_df.columns:
+                    filtered_sales = self.sales_df[
+                        self.sales_df['kpi_center_id'].isin(kpi_centers_with_target)
+                    ]
+                    actual = filtered_sales[col_name].sum() if not filtered_sales.empty else 0
+            elif kpi_name in complex_kpi_names and complex_kpis:
+                # Use pre-calculated complex KPIs
+                if kpi_name == 'num_new_customers':
+                    actual = complex_kpis.get('num_new_customers', 0)
+                elif kpi_name == 'num_new_products':
+                    actual = complex_kpis.get('num_new_products', 0)
+                elif kpi_name == 'new_business_revenue':
+                    actual = complex_kpis.get('new_business_revenue', 0)
+            
+            # Get display name
+            display_name = kpi_display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
+            
+            # Get prorated target
+            prorated_target = self._get_prorated_target(
+                kpi_name, period_type, year, start_date, end_date
+            )
+            if prorated_target is None or prorated_target <= 0:
+                prorated_target = kpi_target  # Fallback to annual
+            
+            # Calculate achievement
+            achievement = (actual / prorated_target * 100) if prorated_target > 0 else 0
+            
+            kpi_progress.append({
+                'kpi_name': kpi_name,
+                'display_name': display_name,
+                'actual': actual,
+                'annual_target': kpi_target,
+                'prorated_target': prorated_target,
+                'achievement': achievement,
+                'is_currency': kpi_name in currency_kpis,
+                'kpi_center_count': len(kpi_centers_with_target)
+            })
+        
+        # Sort by display name for consistent ordering
+        kpi_progress.sort(key=lambda x: x['display_name'])
+        
+        return kpi_progress
+    
+    # =========================================================================
     # BACKLOG METRICS
     # =========================================================================
     
