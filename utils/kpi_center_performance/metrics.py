@@ -10,8 +10,13 @@ Handles all metric calculations:
 - Parent KPI Center rollup
 - Data aggregations by KPI Center/period
 
-VERSION: 2.1.0
+VERSION: 3.2.0
 CHANGELOG:
+- v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
+          - calculate_rollup_targets(): Aggregate targets for parent KPI Centers
+          - calculate_per_center_progress(): Per-center KPI progress with overall achievement
+          - Leaf nodes: Direct calculation from actuals vs targets
+          - Parent nodes: Weighted average of children's achievements
 - v2.1.0: Fixed employee_count -> kpi_center_count for consistency
           Added better error handling in pipeline calculations
 
@@ -566,6 +571,399 @@ class KPICenterMetrics:
         kpi_progress.sort(key=lambda x: x['display_name'])
         
         return kpi_progress
+    
+    # =========================================================================
+    # HIERARCHY ROLLUP TARGETS - NEW v3.2.0
+    # =========================================================================
+    
+    def calculate_rollup_targets(
+        self,
+        hierarchy_df: pd.DataFrame,
+        queries_instance = None
+    ) -> Dict[int, Dict]:
+        """
+        Calculate rolled-up targets for all KPI Centers.
+        
+        NEW v3.2.0: Used by My KPIs tab for hierarchy display.
+        
+        Logic:
+        - Leaf nodes: Direct targets only
+        - Parent nodes: Sum of all descendants' targets (+ own direct if any)
+        
+        Args:
+            hierarchy_df: DataFrame with kpi_center_id, level, is_leaf
+            queries_instance: KPICenterQueries instance for descendant lookup
+            
+        Returns:
+            Dict[kpi_center_id] = {
+                'targets': List[{kpi_name, annual, monthly, quarterly, unit, weight}],
+                'source': 'Direct' | 'Rollup' | 'Mixed',
+                'children_count': int,
+                'children_names': List[str]
+            }
+        """
+        if self.targets_df.empty or hierarchy_df.empty:
+            return {}
+        
+        result = {}
+        
+        # KPI display names
+        kpi_display_names = {
+            'revenue': 'Revenue',
+            'gross_profit': 'Gross Profit',
+            'gross_profit_1': 'GP1',
+            'gp1': 'GP1',
+            'num_new_customers': 'Num New Customers',
+            'num_new_products': 'Num New Products',
+            'new_business_revenue': 'New Business Revenue',
+        }
+        
+        # Icons for display
+        kpi_icons = {
+            'revenue': '💰',
+            'gross_profit': '📈',
+            'gross_profit_1': '📊',
+            'gp1': '📊',
+            'num_new_customers': '👥',
+            'num_new_products': '📦',
+            'new_business_revenue': '💼',
+        }
+        
+        for _, row in hierarchy_df.iterrows():
+            kpi_center_id = row['kpi_center_id']
+            kpi_center_name = row['kpi_center_name']
+            is_leaf = row.get('is_leaf', 1) == 1
+            
+            # Get direct targets for this center
+            direct_targets = self.targets_df[
+                self.targets_df['kpi_center_id'] == kpi_center_id
+            ].copy()
+            
+            has_direct = not direct_targets.empty
+            
+            # Get descendant targets
+            descendants_targets = pd.DataFrame()
+            children_names = []
+            
+            if not is_leaf and queries_instance:
+                descendants = queries_instance.get_all_descendants(kpi_center_id)
+                if descendants:
+                    descendants_targets = self.targets_df[
+                        self.targets_df['kpi_center_id'].isin(descendants)
+                    ].copy()
+                    
+                    # Get children names for display
+                    children_with_targets = descendants_targets['kpi_center_name'].unique().tolist()
+                    children_names = children_with_targets
+            
+            has_children = not descendants_targets.empty
+            
+            # Determine source
+            if has_direct and has_children:
+                source = 'Mixed'
+            elif has_direct:
+                source = 'Direct'
+            elif has_children:
+                source = 'Rollup'
+            else:
+                continue  # Skip centers with no targets at all
+            
+            # Merge targets: Direct + Sum(Children)
+            all_targets = pd.concat([direct_targets, descendants_targets], ignore_index=True)
+            
+            # Aggregate by kpi_name
+            merged_targets = []
+            for kpi_name in all_targets['kpi_name'].unique():
+                kpi_rows = all_targets[all_targets['kpi_name'] == kpi_name]
+                
+                # Sum numeric values
+                annual = kpi_rows['annual_target_value_numeric'].sum() if 'annual_target_value_numeric' in kpi_rows.columns else 0
+                
+                # Monthly and quarterly might be strings, try to convert
+                monthly = 0
+                quarterly = 0
+                if 'monthly_target_value' in kpi_rows.columns:
+                    try:
+                        monthly = pd.to_numeric(kpi_rows['monthly_target_value'], errors='coerce').sum()
+                    except:
+                        monthly = annual / 12
+                if 'quarterly_target_value' in kpi_rows.columns:
+                    try:
+                        quarterly = pd.to_numeric(kpi_rows['quarterly_target_value'], errors='coerce').sum()
+                    except:
+                        quarterly = annual / 4
+                
+                # Get unit (should be same for all)
+                unit = kpi_rows['unit_of_measure'].iloc[0] if 'unit_of_measure' in kpi_rows.columns else ''
+                
+                # Weight only applies to direct assignments
+                weight = None
+                if source == 'Direct' and 'weight_numeric' in kpi_rows.columns:
+                    weight = kpi_rows['weight_numeric'].iloc[0]
+                
+                # Get display name and icon
+                kpi_lower = kpi_name.lower() if kpi_name else ''
+                display_name = kpi_display_names.get(kpi_lower, kpi_name.replace('_', ' ').title() if kpi_name else '')
+                icon = kpi_icons.get(kpi_lower, '📋')
+                
+                merged_targets.append({
+                    'kpi_name': kpi_name,
+                    'display_name': f"{icon} {display_name}",
+                    'annual_target': annual,
+                    'monthly_target': monthly if not pd.isna(monthly) else annual / 12,
+                    'quarterly_target': quarterly if not pd.isna(quarterly) else annual / 4,
+                    'unit': unit,
+                    'weight': weight,
+                    'is_currency': kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue']
+                })
+            
+            # Sort by display name
+            merged_targets.sort(key=lambda x: x['display_name'])
+            
+            result[kpi_center_id] = {
+                'kpi_center_id': kpi_center_id,
+                'kpi_center_name': kpi_center_name,
+                'targets': merged_targets,
+                'source': source,
+                'children_count': len(children_names),
+                'children_names': children_names,
+                'level': row.get('level', 0),
+                'is_leaf': is_leaf
+            }
+        
+        return result
+    
+    # =========================================================================
+    # PER-CENTER PROGRESS - NEW v3.2.0
+    # =========================================================================
+    
+    def calculate_per_center_progress(
+        self,
+        hierarchy_df: pd.DataFrame,
+        queries_instance,
+        period_type: str,
+        year: int,
+        start_date: date = None,
+        end_date: date = None,
+        complex_kpis_by_center: Dict = None
+    ) -> Dict[int, Dict]:
+        """
+        Calculate KPI progress for each KPI Center.
+        
+        NEW v3.2.0: Used by Progress tab for per-center breakdown.
+        
+        Logic:
+        - Leaf nodes: Calculate achievement from direct actuals vs targets
+        - Parent nodes: Weighted average of children's overall achievements
+        
+        Args:
+            hierarchy_df: DataFrame with kpi_center_id, level, is_leaf
+            queries_instance: KPICenterQueries for hierarchy lookups
+            period_type: For target proration
+            year: Target year
+            start_date, end_date: For Custom period
+            complex_kpis_by_center: Dict[kpi_center_id] = {kpi_name: actual}
+            
+        Returns:
+            Dict[kpi_center_id] = {
+                'kpi_center_id', 'kpi_center_name', 'level', 'is_leaf',
+                'kpis': List[{kpi_name, actual, target, achievement, weight}],
+                'overall': float (weighted average),
+                'total_weight': float,
+                'source': 'Direct' | 'Rollup'
+            }
+        """
+        if hierarchy_df.empty:
+            return {}
+        
+        # Calculate proration factor
+        proration = self._calculate_proration(period_type, year, start_date, end_date)
+        
+        # KPI column mapping
+        kpi_column_map = {
+            'revenue': 'sales_by_kpi_center_usd',
+            'gross_profit': 'gross_profit_by_kpi_center_usd',
+            'gross_profit_1': 'gp1_by_kpi_center_usd',
+            'gp1': 'gp1_by_kpi_center_usd',
+        }
+        
+        # Display names
+        kpi_display_names = {
+            'revenue': 'Revenue',
+            'gross_profit': 'Gross Profit',
+            'gross_profit_1': 'GP1',
+            'gp1': 'GP1',
+            'num_new_customers': 'New Customers',
+            'num_new_products': 'New Products',
+            'new_business_revenue': 'New Business Revenue',
+        }
+        
+        # Icons
+        kpi_icons = {
+            'revenue': '💰',
+            'gross_profit': '📈',
+            'gross_profit_1': '📊',
+            'gp1': '📊',
+            'num_new_customers': '👥',
+            'num_new_products': '📦',
+            'new_business_revenue': '💼',
+        }
+        
+        # Currency KPIs
+        currency_kpis = ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue']
+        
+        result = {}
+        
+        # First pass: Calculate for all leaf nodes
+        for _, row in hierarchy_df.iterrows():
+            kpi_center_id = row['kpi_center_id']
+            kpi_center_name = row['kpi_center_name']
+            is_leaf = row.get('is_leaf', 1) == 1
+            level = row.get('level', 0)
+            
+            if not is_leaf:
+                continue  # Process parents in second pass
+            
+            # Get targets for this center
+            center_targets = self.targets_df[
+                self.targets_df['kpi_center_id'] == kpi_center_id
+            ]
+            
+            if center_targets.empty:
+                continue  # Skip centers without KPI assignment
+            
+            # Get actuals for this center
+            center_sales = self.sales_df[
+                self.sales_df['kpi_center_id'] == kpi_center_id
+            ] if not self.sales_df.empty else pd.DataFrame()
+            
+            # Calculate per-KPI progress
+            kpis = []
+            total_weighted_achievement = 0
+            total_weight = 0
+            
+            for _, target in center_targets.iterrows():
+                kpi_name = target['kpi_name']
+                kpi_lower = kpi_name.lower() if kpi_name else ''
+                annual_target = target.get('annual_target_value_numeric', 0) or 0
+                weight = target.get('weight_numeric', 100) or 100
+                
+                if annual_target <= 0:
+                    continue
+                
+                # Calculate prorated target
+                prorated_target = annual_target * proration
+                
+                # Get actual value
+                actual = 0
+                if kpi_lower in kpi_column_map:
+                    col = kpi_column_map[kpi_lower]
+                    if not center_sales.empty and col in center_sales.columns:
+                        actual = center_sales[col].sum()
+                elif complex_kpis_by_center and kpi_center_id in complex_kpis_by_center:
+                    actual = complex_kpis_by_center[kpi_center_id].get(kpi_lower, 0)
+                
+                # Calculate achievement
+                achievement = (actual / prorated_target * 100) if prorated_target > 0 else 0
+                
+                # Display name and icon
+                display_name = kpi_display_names.get(kpi_lower, kpi_name.replace('_', ' ').title() if kpi_name else '')
+                icon = kpi_icons.get(kpi_lower, '📋')
+                
+                kpis.append({
+                    'kpi_name': kpi_name,
+                    'display_name': f"{icon} {display_name}",
+                    'actual': actual,
+                    'prorated_target': prorated_target,
+                    'annual_target': annual_target,
+                    'achievement': achievement,
+                    'weight': weight,
+                    'is_currency': kpi_lower in currency_kpis
+                })
+                
+                total_weighted_achievement += achievement * weight
+                total_weight += weight
+            
+            if not kpis:
+                continue
+            
+            # Calculate overall
+            overall = total_weighted_achievement / total_weight if total_weight > 0 else None
+            
+            result[kpi_center_id] = {
+                'kpi_center_id': kpi_center_id,
+                'kpi_center_name': kpi_center_name,
+                'level': level,
+                'is_leaf': True,
+                'kpis': kpis,
+                'overall': overall,
+                'total_weight': total_weight,
+                'source': 'Direct'
+            }
+        
+        # Second pass: Calculate for parent nodes (weighted average of children)
+        # Process from deepest level to root
+        max_level = hierarchy_df['level'].max() if 'level' in hierarchy_df.columns else 0
+        
+        for current_level in range(max_level - 1, -1, -1):
+            level_centers = hierarchy_df[hierarchy_df['level'] == current_level]
+            
+            for _, row in level_centers.iterrows():
+                kpi_center_id = row['kpi_center_id']
+                kpi_center_name = row['kpi_center_name']
+                is_leaf = row.get('is_leaf', 1) == 1
+                
+                if is_leaf:
+                    continue  # Already processed
+                
+                if kpi_center_id in result:
+                    continue  # Already processed
+                
+                # Get leaf descendants
+                leaf_descendants = queries_instance.get_leaf_descendants(kpi_center_id)
+                
+                # Collect children's progress (only those with KPI assignments)
+                children_progress = []
+                children_summary = []
+                
+                for child_id in leaf_descendants:
+                    if child_id in result:
+                        child_data = result[child_id]
+                        if child_data.get('overall') is not None:
+                            children_progress.append({
+                                'kpi_center_id': child_id,
+                                'kpi_center_name': child_data['kpi_center_name'],
+                                'overall': child_data['overall'],
+                                'total_weight': child_data.get('total_weight', 100)
+                            })
+                            children_summary.append({
+                                'name': child_data['kpi_center_name'],
+                                'achievement': child_data['overall'],
+                                'weight': child_data.get('total_weight', 100)
+                            })
+                
+                if not children_progress:
+                    continue  # No children with KPI assignments
+                
+                # Calculate weighted average
+                total_weight = sum(c['total_weight'] for c in children_progress)
+                weighted_sum = sum(c['overall'] * c['total_weight'] for c in children_progress)
+                overall = weighted_sum / total_weight if total_weight > 0 else None
+                
+                result[kpi_center_id] = {
+                    'kpi_center_id': kpi_center_id,
+                    'kpi_center_name': kpi_center_name,
+                    'level': current_level,
+                    'is_leaf': False,
+                    'kpis': [],  # Parents don't have direct KPIs
+                    'overall': overall,
+                    'total_weight': total_weight,
+                    'source': 'Rollup',
+                    'children_count': len(children_progress),
+                    'children_summary': children_summary
+                }
+        
+        return result
     
     # =========================================================================
     # BACKLOG METRICS

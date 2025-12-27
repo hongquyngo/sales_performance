@@ -2,8 +2,25 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.1.0
+VERSION: 3.2.0
 CHANGELOG:
+- v3.2.0: ENHANCED KPI & Targets tab with hierarchy support:
+          - My KPIs: Shows rollup targets for parent KPI Centers
+            * Leaf nodes: Direct assignments with weight
+            * Parent nodes: Aggregated from all descendants (+ own if Mixed)
+            * Level filter, help popover with formula explanation
+          - Progress: Per-center KPI progress with overall achievement
+            * Leaf nodes: Individual KPI progress bars
+            * Parent nodes: Weighted average of children's achievements
+            * View filter (All/Leaf/Parents)
+          - Ranking: Group by hierarchy level for fair comparison
+            * Only shows levels with ≥2 items (to rank)
+            * Medals within each level
+            * Level filter (All grouped/specific level/Leaf)
+          - NEW queries: get_hierarchy_with_levels(), get_all_descendants(),
+            get_leaf_descendants(), get_ancestors()
+          - NEW metrics: calculate_rollup_targets(), calculate_per_center_progress()
+          - Requires: queries.py v3.2.0, metrics.py v3.2.0, fragments.py v3.2.0
 - v3.1.0: SYNCED KPI & Targets tab with Salesperson module:
           - Tab 5 now has 3 sub-tabs: My KPIs, Progress, Ranking
           - My KPIs: Improved assignments view with icons, better formatting
@@ -1595,6 +1612,42 @@ This ensures accurate achievement calculation.
         if targets_df.empty:
             st.info("No KPI targets assigned for selected KPI Centers and year")
         else:
+            # =================================================================
+            # GET HIERARCHY DATA - NEW v3.2.0
+            # =================================================================
+            
+            # Get hierarchy with levels for this KPI type
+            hierarchy_df = queries.get_hierarchy_with_levels(
+                kpi_type=active_filters.get('kpi_type', 'TERRITORY')
+            )
+            
+            # Filter hierarchy to selected KPI Centers (if any)
+            selected_kpc_ids = active_filters.get('kpi_center_ids', [])
+            if selected_kpc_ids:
+                # Include selected + their ancestors + their descendants
+                all_relevant_ids = set(selected_kpc_ids)
+                for kpc_id in selected_kpc_ids:
+                    all_relevant_ids.update(queries.get_ancestors(kpc_id, include_self=True))
+                    all_relevant_ids.update(queries.get_all_descendants(kpc_id, include_self=True))
+                hierarchy_df = hierarchy_df[hierarchy_df['kpi_center_id'].isin(all_relevant_ids)]
+            
+            # Calculate rollup targets
+            rollup_targets = metrics_calc.calculate_rollup_targets(
+                hierarchy_df=hierarchy_df,
+                queries_instance=queries
+            )
+            
+            # Calculate per-center progress
+            progress_data = metrics_calc.calculate_per_center_progress(
+                hierarchy_df=hierarchy_df,
+                queries_instance=queries,
+                period_type=active_filters['period_type'],
+                year=active_filters['year'],
+                start_date=active_filters['start_date'],
+                end_date=active_filters['end_date'],
+                complex_kpis_by_center=None  # TODO: Implement if needed
+            )
+            
             # 3 Sub-tabs (synced with Salesperson page)
             kpi_tab1, kpi_tab2, kpi_tab3 = st.tabs([
                 "📊 My KPIs", 
@@ -1603,44 +1656,38 @@ This ensures accurate achievement calculation.
             ])
             
             # =================================================================
-            # SUB-TAB 1: MY KPIs (Assignments View)
+            # SUB-TAB 1: MY KPIs (Assignments View) - UPDATED v3.2.0
             # =================================================================
             with kpi_tab1:
                 st.markdown("#### 📊 KPI Assignments")
                 kpi_assignments_fragment(
-                    targets_df=targets_df,
+                    rollup_targets=rollup_targets,
+                    hierarchy_df=hierarchy_df,
                     fragment_key="kpc_assignments"
                 )
             
             # =================================================================
-            # SUB-TAB 2: KPI PROGRESS (Achievement Bars)
+            # SUB-TAB 2: KPI PROGRESS (Per-Center) - UPDATED v3.2.0
             # =================================================================
             with kpi_tab2:
                 st.markdown("#### 📈 KPI Progress")
-                
-                # Get KPI progress data from metrics calculator
-                kpi_progress_data = metrics_calc.get_kpi_progress_data(
-                    period_type=active_filters['period_type'],
-                    year=active_filters['year'],
-                    start_date=active_filters['start_date'],
-                    end_date=active_filters['end_date'],
-                    complex_kpis=complex_kpis
-                )
-                
                 kpi_progress_fragment(
-                    kpi_progress_data=kpi_progress_data,
+                    progress_data=progress_data,
+                    hierarchy_df=hierarchy_df,
                     period_type=active_filters['period_type'],
                     year=active_filters['year'],
                     fragment_key="kpc_progress"
                 )
             
             # =================================================================
-            # SUB-TAB 3: KPI CENTER RANKING
+            # SUB-TAB 3: KPI CENTER RANKING - UPDATED v3.2.0
             # =================================================================
             with kpi_tab3:
                 st.markdown("#### 🏆 KPI Center Ranking")
                 kpi_center_ranking_fragment(
                     ranking_df=kpi_center_summary_df,
+                    progress_data=progress_data,
+                    hierarchy_df=hierarchy_df,
                     show_targets=not targets_df.empty
                 )
     

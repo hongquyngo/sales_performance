@@ -4,8 +4,19 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 3.1.0
+VERSION: 3.2.0
 CHANGELOG:
+- v3.2.0: ENHANCED KPI & Targets tab with hierarchy support:
+          - queries.py: Added get_hierarchy_with_levels(), get_all_descendants(),
+            get_leaf_descendants(), get_ancestors() for hierarchy traversal
+          - metrics.py: Added calculate_rollup_targets(), calculate_per_center_progress()
+          - fragments.py: Updated all 3 KPI & Targets fragments:
+            * kpi_assignments_fragment: Rollup targets for parents
+            * kpi_progress_fragment: Per-center progress with weighted overall
+            * kpi_center_ranking_fragment: Group by level with ≥2 items filter
+          - Leaf nodes: Direct calculation from targets/actuals
+          - Parent nodes: Weighted average of children's achievements
+          - Level auto-detection from hierarchy
 - v3.1.0: SYNCED KPI & Targets tab with Salesperson module:
           - NEW kpi_assignments_fragment(): My KPIs sub-tab with improved UI
           - NEW kpi_progress_fragment(): Progress sub-tab with progress bars
@@ -191,4 +202,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '3.1.0'
+__version__ = '3.2.0'

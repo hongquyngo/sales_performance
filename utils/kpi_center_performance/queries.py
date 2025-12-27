@@ -10,8 +10,13 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 2.14.0
+VERSION: 3.2.0
 CHANGELOG:
+- v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
+          - get_hierarchy_with_levels(): Dynamic level calculation with recursive CTE
+          - get_all_descendants(): Get all descendant IDs
+          - get_leaf_descendants(): Get only leaf (no children) descendants
+          - get_ancestors(): Get all ancestor IDs
 - v2.14.0: ADDED exclude_internal parameter for consistent business logic:
           BACKLOG FUNCTIONS (Revenue = 0 for Internal, GP kept):
           - get_backlog_data(): Added exclude_internal parameter
@@ -2221,6 +2226,243 @@ class KPICenterQueries:
         }
         
         return self._execute_query(query, params, "kpi_center_achievement_summary")
+
+    # =========================================================================
+    # HIERARCHY METHODS - NEW v3.2.0
+    # =========================================================================
+    
+    def get_hierarchy_with_levels(
+        self,
+        kpi_type: str = None,
+        include_all_types: bool = False
+    ) -> pd.DataFrame:
+        """
+        Get KPI Center hierarchy with calculated levels.
+        
+        NEW v3.2.0: Dynamic level calculation using recursive CTE.
+        
+        Args:
+            kpi_type: Filter by KPI type (TERRITORY, BRAND, etc.)
+            include_all_types: If True, include all types
+            
+        Returns:
+            DataFrame with columns:
+            - kpi_center_id, kpi_center_name, kpi_type
+            - parent_center_id, level, is_leaf
+            - path (for sorting/display)
+        """
+        query = """
+            WITH RECURSIVE hierarchy AS (
+                -- Base case: root nodes (no parent)
+                SELECT 
+                    kc.id as kpi_center_id,
+                    kc.name as kpi_center_name,
+                    kc.type as kpi_type,
+                    kc.parent_center_id,
+                    0 as level,
+                    CAST(kc.name AS CHAR(1000)) as path
+                FROM prostechvn.kpi_centers kc
+                WHERE kc.parent_center_id IS NULL
+                  AND kc.delete_flag = 0
+                
+                UNION ALL
+                
+                -- Recursive case: children
+                SELECT 
+                    kc.id,
+                    kc.name,
+                    kc.type,
+                    kc.parent_center_id,
+                    h.level + 1,
+                    CONCAT(h.path, ' > ', kc.name)
+                FROM prostechvn.kpi_centers kc
+                INNER JOIN hierarchy h ON kc.parent_center_id = h.kpi_center_id
+                WHERE kc.delete_flag = 0
+            ),
+            children_count AS (
+                SELECT 
+                    parent_center_id,
+                    COUNT(*) as child_count
+                FROM prostechvn.kpi_centers
+                WHERE delete_flag = 0 AND parent_center_id IS NOT NULL
+                GROUP BY parent_center_id
+            )
+            SELECT 
+                h.kpi_center_id,
+                h.kpi_center_name,
+                h.kpi_type,
+                h.parent_center_id,
+                h.level,
+                h.path,
+                CASE WHEN cc.child_count IS NULL OR cc.child_count = 0 THEN 1 ELSE 0 END as is_leaf,
+                COALESCE(cc.child_count, 0) as direct_children_count
+            FROM hierarchy h
+            LEFT JOIN children_count cc ON h.kpi_center_id = cc.parent_center_id
+            WHERE 1=1
+        """
+        
+        if kpi_type and not include_all_types:
+            query += " AND h.kpi_type = :kpi_type"
+        
+        query += " ORDER BY h.level, h.path"
+        
+        params = {'kpi_type': kpi_type} if kpi_type else {}
+        
+        return self._execute_query(query, params, "hierarchy_with_levels")
+    
+    def get_all_descendants(
+        self,
+        kpi_center_id: int,
+        include_self: bool = False
+    ) -> List[int]:
+        """
+        Get all descendant KPI Center IDs for a given parent.
+        
+        NEW v3.2.0: Recursive descendant lookup.
+        
+        Args:
+            kpi_center_id: Parent KPI Center ID
+            include_self: Whether to include the parent itself
+            
+        Returns:
+            List of descendant KPI Center IDs
+        """
+        query = """
+            WITH RECURSIVE descendants AS (
+                -- Start with direct children
+                SELECT id as kpi_center_id
+                FROM prostechvn.kpi_centers
+                WHERE parent_center_id = :parent_id
+                  AND delete_flag = 0
+                
+                UNION ALL
+                
+                -- Recursive: get children of children
+                SELECT kc.id
+                FROM prostechvn.kpi_centers kc
+                INNER JOIN descendants d ON kc.parent_center_id = d.kpi_center_id
+                WHERE kc.delete_flag = 0
+            )
+            SELECT kpi_center_id FROM descendants
+        """
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), {'parent_id': kpi_center_id})
+                descendants = [row[0] for row in result]
+                
+                if include_self:
+                    descendants.insert(0, kpi_center_id)
+                
+                return descendants
+        except Exception as e:
+            logger.error(f"Error getting descendants for {kpi_center_id}: {e}")
+            return [kpi_center_id] if include_self else []
+    
+    def get_leaf_descendants(
+        self,
+        kpi_center_id: int
+    ) -> List[int]:
+        """
+        Get only leaf (no children) descendants for a KPI Center.
+        
+        NEW v3.2.0: Used for parent progress calculation.
+        
+        Args:
+            kpi_center_id: Parent KPI Center ID
+            
+        Returns:
+            List of leaf descendant KPI Center IDs
+        """
+        query = """
+            WITH RECURSIVE descendants AS (
+                -- Start with the center itself
+                SELECT 
+                    id as kpi_center_id,
+                    id as original_id
+                FROM prostechvn.kpi_centers
+                WHERE id = :parent_id
+                  AND delete_flag = 0
+                
+                UNION ALL
+                
+                -- Recursive: get all descendants
+                SELECT kc.id, d.original_id
+                FROM prostechvn.kpi_centers kc
+                INNER JOIN descendants d ON kc.parent_center_id = d.kpi_center_id
+                WHERE kc.delete_flag = 0
+            ),
+            leaf_nodes AS (
+                SELECT d.kpi_center_id
+                FROM descendants d
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM prostechvn.kpi_centers kc
+                    WHERE kc.parent_center_id = d.kpi_center_id
+                      AND kc.delete_flag = 0
+                )
+                AND d.kpi_center_id != :parent_id  -- Exclude parent itself
+            )
+            SELECT kpi_center_id FROM leaf_nodes
+        """
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), {'parent_id': kpi_center_id})
+                return [row[0] for row in result]
+        except Exception as e:
+            logger.error(f"Error getting leaf descendants for {kpi_center_id}: {e}")
+            return []
+    
+    def get_ancestors(
+        self,
+        kpi_center_id: int,
+        include_self: bool = False
+    ) -> List[int]:
+        """
+        Get all ancestor KPI Center IDs for a given center.
+        
+        NEW v3.2.0: For hierarchy traversal.
+        
+        Args:
+            kpi_center_id: KPI Center ID
+            include_self: Whether to include the center itself
+            
+        Returns:
+            List of ancestor KPI Center IDs (from immediate parent to root)
+        """
+        query = """
+            WITH RECURSIVE ancestors AS (
+                -- Start with immediate parent
+                SELECT parent_center_id as kpi_center_id, 1 as depth
+                FROM prostechvn.kpi_centers
+                WHERE id = :center_id
+                  AND parent_center_id IS NOT NULL
+                  AND delete_flag = 0
+                
+                UNION ALL
+                
+                -- Recursive: get parent of parent
+                SELECT kc.parent_center_id, a.depth + 1
+                FROM prostechvn.kpi_centers kc
+                INNER JOIN ancestors a ON kc.id = a.kpi_center_id
+                WHERE kc.parent_center_id IS NOT NULL
+                  AND kc.delete_flag = 0
+            )
+            SELECT kpi_center_id FROM ancestors ORDER BY depth
+        """
+        
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), {'center_id': kpi_center_id})
+                ancestors = [row[0] for row in result]
+                
+                if include_self:
+                    ancestors.insert(0, kpi_center_id)
+                
+                return ancestors
+        except Exception as e:
+            logger.error(f"Error getting ancestors for {kpi_center_id}: {e}")
+            return [kpi_center_id] if include_self else []
 
     # =========================================================================
     # HELPER METHODS
