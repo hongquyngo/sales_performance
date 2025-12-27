@@ -4,8 +4,18 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 2.13.0
+VERSION: 3.0.2
 CHANGELOG:
+- v3.0.2: BUGFIX render_multiselect_filter doesn't have placeholder parameter
+- v3.0.1: BUGFIX backlog_by_etd_fragment filter not working:
+          - Problem: backlog_by_month_df was pre-aggregated without kpi_center_id
+          - Solution: Use backlog_detail_df (already filtered) and aggregate in fragment
+- v3.0.0: SYNCED Backlog tab with Salesperson module:
+          - backlog_list_fragment(): 7 summary cards, 5 filters with Excl option
+          - NEW backlog_by_etd_fragment(): 3 view modes (Timeline/Stacked/Single Year)
+          - NEW backlog_risk_analysis_fragment(): Risk categorization + Overdue table
+          - metrics.py: Added analyze_in_period_backlog()
+          - charts.py: Added backlog chart methods
 - v2.13.0: SYNCED sales_detail_fragment with Salesperson page:
           - filters.py: Added TextSearchResult, render_text_search_filter(),
                         apply_text_search_filter(), render_number_filter alias
@@ -103,6 +113,8 @@ from .fragments import (
     sales_detail_fragment,
     pivot_analysis_fragment,
     backlog_list_fragment,
+    backlog_by_etd_fragment,        # NEW v3.0.0
+    backlog_risk_analysis_fragment,  # NEW v3.0.0
     kpi_center_ranking_fragment,
     top_performers_fragment,  # NEW v2.3.0
     export_report_fragment,
@@ -151,6 +163,8 @@ __all__ = [
     'sales_detail_fragment',
     'pivot_analysis_fragment',
     'backlog_list_fragment',
+    'backlog_by_etd_fragment',        # NEW v3.0.0
+    'backlog_risk_analysis_fragment',  # NEW v3.0.0
     'kpi_center_ranking_fragment',
     'top_performers_fragment',
     'export_report_fragment',
@@ -167,4 +181,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '2.13.0'
+__version__ = '3.0.2'

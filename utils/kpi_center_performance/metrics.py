@@ -958,3 +958,129 @@ class KPICenterMetrics:
             top_brands = brand_data.copy()
         
         return top_brands
+    
+    # =========================================================================
+    # IN-PERIOD BACKLOG ANALYSIS - NEW v3.0.0 (synced with Salesperson)
+    # =========================================================================
+    
+    @staticmethod
+    def analyze_in_period_backlog(
+        backlog_detail_df: pd.DataFrame,
+        start_date,
+        end_date
+    ) -> Dict:
+        """
+        Analyze backlog with ETD within the selected period.
+        Provides detailed breakdown of overdue vs on-track orders.
+        
+        SYNCED v3.0.0 with Salesperson module.
+        
+        Args:
+            backlog_detail_df: Detailed backlog records
+            start_date: Period start date
+            end_date: Period end date
+            
+        Returns:
+            Dict with:
+            - total_value, total_gp, total_count
+            - overdue_value, overdue_gp, overdue_count
+            - on_track_value, on_track_gp, on_track_count
+            - status: 'empty', 'historical', 'has_overdue', 'healthy'
+            - overdue_warning: str (if applicable)
+        """
+        from datetime import date
+        
+        today = date.today()
+        result = {
+            'total_value': 0,
+            'total_gp': 0,
+            'total_count': 0,
+            'overdue_value': 0,
+            'overdue_gp': 0,
+            'overdue_count': 0,
+            'on_track_value': 0,
+            'on_track_gp': 0,
+            'on_track_count': 0,
+            'status': 'empty',
+            'overdue_warning': None
+        }
+        
+        if backlog_detail_df.empty:
+            return result
+        
+        df = backlog_detail_df.copy()
+        
+        # Ensure ETD is datetime
+        if 'etd' in df.columns:
+            df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+        else:
+            return result
+        
+        # Filter to in-period (ETD within date range)
+        in_period = df[
+            (df['etd'].dt.date >= start_date) & 
+            (df['etd'].dt.date <= end_date)
+        ]
+        
+        if in_period.empty:
+            return result
+        
+        # Detect column names (KPI Center uses different names)
+        value_col = None
+        gp_col = None
+        
+        for col_name in ['backlog_by_kpi_center_usd', 'backlog_usd', 'backlog_revenue']:
+            if col_name in in_period.columns:
+                value_col = col_name
+                break
+        
+        for col_name in ['backlog_gp_by_kpi_center_usd', 'backlog_gp_usd', 'backlog_gp']:
+            if col_name in in_period.columns:
+                gp_col = col_name
+                break
+        
+        # Total in-period
+        result['total_count'] = len(in_period)
+        if value_col:
+            result['total_value'] = in_period[value_col].sum()
+        if gp_col:
+            result['total_gp'] = in_period[gp_col].sum()
+        
+        # Split: Overdue (ETD < today) vs On-track (ETD >= today)
+        overdue = in_period[in_period['etd'].dt.date < today]
+        on_track = in_period[in_period['etd'].dt.date >= today]
+        
+        # Overdue metrics
+        result['overdue_count'] = len(overdue)
+        if value_col and not overdue.empty:
+            result['overdue_value'] = overdue[value_col].sum()
+        if gp_col and not overdue.empty:
+            result['overdue_gp'] = overdue[gp_col].sum()
+        
+        # On-track metrics
+        result['on_track_count'] = len(on_track)
+        if value_col and not on_track.empty:
+            result['on_track_value'] = on_track[value_col].sum()
+        if gp_col and not on_track.empty:
+            result['on_track_gp'] = on_track[gp_col].sum()
+        
+        # Determine status
+        is_historical_period = end_date < today
+        
+        if is_historical_period:
+            result['status'] = 'historical'
+            if result['overdue_count'] > 0:
+                result['overdue_warning'] = (
+                    f"⚠️ {result['overdue_count']} orders with ETD in period are overdue. "
+                    f"Total value: ${result['overdue_value']:,.0f}. Please review and update."
+                )
+        elif result['overdue_count'] > 0:
+            result['status'] = 'has_overdue'
+            result['overdue_warning'] = (
+                f"⚠️ {result['overdue_count']} orders are past ETD. "
+                f"Value: ${result['overdue_value']:,.0f}"
+            )
+        else:
+            result['status'] = 'healthy'
+        
+        return result

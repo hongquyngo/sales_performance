@@ -2,8 +2,21 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 2.14.0
+VERSION: 3.0.1
 CHANGELOG:
+- v3.0.1: BUGFIX backlog_by_etd_fragment not filtering by KPI Center:
+          - Problem: backlog_by_month_df was pre-aggregated without kpi_center_id,
+            client-side filter couldn't work
+          - Solution: Pass backlog_detail_df (already filtered) to fragment,
+            fragment aggregates data itself
+- v3.0.0: SYNCED Backlog tab with Salesperson module:
+          - Tab 4 now has 3 sub-tabs: Backlog List, By ETD, Risk Analysis
+          - Backlog List: 7 summary cards, 5 filters with Excl option
+          - By ETD: 3 view modes (Timeline/Stacked/Single Year) with charts
+          - Risk Analysis: 4 risk cards (Overdue/This Week/This Month/On Track) + Overdue table
+          - Warning banner shows when overdue orders exist
+          - Full parity with Salesperson Backlog Analysis
+          - Requires updated fragments.py v3.0.0, metrics.py, charts.py
 - v2.14.0: ADDED exclude_internal support for Backlog and Complex KPIs:
           - Business Rule: "Exclude Internal Revenue" checkbox now affects ALL metrics consistently
           - Backlog queries: Revenue = 0 for Internal customers, GP kept (same as Sales)
@@ -94,6 +107,8 @@ from utils.kpi_center_performance import (
     sales_detail_fragment,
     pivot_analysis_fragment,
     backlog_list_fragment,
+    backlog_by_etd_fragment,        # NEW v3.0.0
+    backlog_risk_analysis_fragment,  # NEW v3.0.0
     kpi_center_ranking_fragment,
     top_performers_fragment,
     export_report_fragment,
@@ -1485,65 +1500,79 @@ This ensures accurate achievement calculation.
         )
     
     # ==========================================================================
-    # TAB 4: BACKLOG
+    # TAB 4: BACKLOG - SYNCED v3.0.0 with Salesperson module
     # ==========================================================================
     
     with tab4:
-        backlog_metrics = KPICenterCharts.convert_pipeline_to_backlog_metrics(pipeline_metrics)
+        # Header with Help
+        col_bl_header, col_bl_help = st.columns([6, 1])
+        with col_bl_header:
+            st.subheader("📦 Backlog Analysis")
+        with col_bl_help:
+            with st.popover("ℹ️ Help"):
+                st.markdown("""
+**📦 Backlog Analysis**
+
+| Metric | Description |
+|--------|-------------|
+| **Total Backlog** | All pending orders (not yet invoiced) |
+| **In-Period** | Orders with ETD within selected date range |
+| **On Track** | In-period orders with ETD ≥ today |
+| **Overdue** | In-period orders with ETD < today |
+
+**Risk Categories:**
+- 🔴 **Overdue**: ETD has passed
+- 🟠 **This Week**: ETD within 7 days
+- 🟡 **This Month**: ETD within 30 days
+- 🟢 **On Track**: ETD > 30 days
+                """)
         
-        col1, col2, col3, col4 = st.columns(4)
+        backlog_df = data.get('backlog_detail_df', pd.DataFrame())
         
-        with col1:
-            st.metric(
-                label="Total Backlog",
-                value=f"${backlog_metrics.get('total_backlog_revenue', 0):,.0f}",
-                help="All uninvoiced orders"
+        if backlog_df.empty:
+            st.info("📦 No backlog data available")
+        else:
+            # Show overdue warning at top if applicable
+            in_period_analysis = KPICenterMetrics.analyze_in_period_backlog(
+                backlog_detail_df=backlog_df,
+                start_date=active_filters.get('start_date', date.today()),
+                end_date=active_filters.get('end_date', date.today())
             )
-        
-        with col2:
-            st.metric(
-                label="Total Backlog GP",
-                value=f"${backlog_metrics.get('total_backlog_gp', 0):,.0f}"
-            )
-        
-        with col3:
-            st.metric(
-                label="In-Period Backlog",
-                value=f"${backlog_metrics.get('in_period_backlog_revenue', 0):,.0f}",
-                help="Backlog with ETD in selected period"
-            )
-        
-        with col4:
-            st.metric(
-                label="Backlog Orders",
-                value=f"{backlog_metrics.get('backlog_orders', 0):,}"
-            )
-        
-        st.divider()
-        
-        backlog_list_fragment(
-            backlog_df=data.get('backlog_detail_df', pd.DataFrame()),
-            filter_values=active_filters,
-            total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())
-        )
-        
-        backlog_by_month = data.get('backlog_by_month_df', pd.DataFrame())
-        if not backlog_by_month.empty:
-            st.divider()
-            st.subheader("📅 Backlog by ETD Month")
             
-            st.dataframe(
-                backlog_by_month,
-                hide_index=True,
-                column_config={
-                    'etd_year': 'Year',
-                    'etd_month': 'Month',
-                    'backlog_orders': 'Orders',
-                    'backlog_usd': st.column_config.NumberColumn('Backlog', format="$%,.0f"),
-                    'backlog_gp_usd': st.column_config.NumberColumn('Backlog GP', format="$%,.0f"),
-                },
-                use_container_width=True
-            )
+            if in_period_analysis.get('overdue_warning'):
+                st.warning(in_period_analysis['overdue_warning'])
+            
+            # Sub-tabs (synced with Salesperson)
+            backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs([
+                "📋 Backlog List", 
+                "📅 By ETD", 
+                "⚠️ Risk Analysis"
+            ])
+            
+            with backlog_tab1:
+                # BACKLOG LIST - FRAGMENT with 7 cards, 5 filters
+                backlog_list_fragment(
+                    backlog_df=backlog_df,
+                    filter_values=active_filters,
+                    total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())
+                )
+            
+            with backlog_tab2:
+                # BACKLOG BY ETD - FRAGMENT with 3 view modes
+                # FIX v3.0.1: Pass backlog_detail_df instead of backlog_by_month_df
+                # backlog_detail_df is already filtered by KPI Center selection
+                backlog_by_etd_fragment(
+                    backlog_detail_df=backlog_df,  # Use detail data (already filtered)
+                    current_year=active_filters.get('year', date.today().year),
+                    fragment_key="kpc_backlog_etd"
+                )
+            
+            with backlog_tab3:
+                # RISK ANALYSIS - FRAGMENT
+                backlog_risk_analysis_fragment(
+                    backlog_df=backlog_df,
+                    fragment_key="kpc_backlog_risk"
+                )
     
     # ==========================================================================
     # TAB 5: KPI & TARGETS
