@@ -252,7 +252,8 @@ class SalespersonQueries:
         self,
         start_date: date,
         end_date: date,
-        employee_ids: List[int] = None
+        employee_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get customers with first invoice to COMPANY in period (vs 5-year lookback).
@@ -269,6 +270,7 @@ class SalespersonQueries:
         
         UPDATED v1.1.0: Changed from "new to salesperson" to "new to company"
         UPDATED v1.6.0: Added customer_code for display in popover
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         """
         if employee_ids:
             employee_ids = self.access.validate_selected_employees(employee_ids)
@@ -281,15 +283,21 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # UPDATED v1.6.0: Added customer_code to all CTEs and final SELECT
-        query = """
+        # UPDATED v1.8.0: Added exclude_internal filter
+        query = f"""
             WITH first_customer_date AS (
                 -- Step 1: Find first invoice date for each customer (globally)
+                -- Exclude internal customers from the start if requested
                 SELECT 
                     customer_id,
                     MIN(inv_date) as first_invoice_date
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
+                {internal_filter}
                 GROUP BY customer_id
             ),
             first_day_records AS (
@@ -307,6 +315,7 @@ class SalespersonQueries:
                 JOIN unified_sales_by_salesperson_view u 
                     ON fcd.customer_id = u.customer_id 
                     AND u.inv_date = fcd.first_invoice_date
+                WHERE 1=1 {internal_filter}
             ),
             deduplicated AS (
                 -- Step 3: Deduplicate per customer + salesperson (count each combo once)
@@ -353,7 +362,8 @@ class SalespersonQueries:
         self,
         start_date: date,
         end_date: date,
-        employee_ids: List[int] = None
+        employee_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get products with first invoice ever in period (any customer).
@@ -367,6 +377,8 @@ class SalespersonQueries:
         - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
         - Reason: legacy_code in REALTIME can contain multiple comma-separated values
         - product_id is always consistent and unique across systems
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Logic:
         1. Create unified product key using COALESCE(product_id, legacy_code)
@@ -391,8 +403,12 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
-        query = """
+        # UPDATED v1.8.0: Added exclude_internal filter
+        query = f"""
             WITH 
             -- ================================================================
             -- Step 1: Create unified product key and find first sale date
@@ -407,6 +423,7 @@ class SalespersonQueries:
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
                 AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                {internal_filter}
                 GROUP BY COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
@@ -440,6 +457,7 @@ class SalespersonQueries:
                 JOIN unified_sales_by_salesperson_view u 
                     ON COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = np.product_key
                     AND u.inv_date = np.first_sale_date
+                WHERE 1=1 {internal_filter}
             ),
             
             -- ================================================================
@@ -505,7 +523,8 @@ class SalespersonQueries:
         self,
         start_date: date,
         end_date: date,
-        employee_ids: List[int] = None
+        employee_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get revenue from first product sale to each customer.
@@ -515,6 +534,8 @@ class SalespersonQueries:
         
         FIXED v1.7.0: Changed product_key from COALESCE(legacy_code, product_id) 
         to COALESCE(product_id, legacy_code) for consistent combo identification.
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Returns DataFrame with: sales_id, sales_name, new_business_revenue, new_business_gp, new_combos_count
         """
@@ -529,8 +550,12 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
-        query = """
+        # UPDATED v1.8.0: Added exclude_internal filter
+        query = f"""
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each customer-product combo
@@ -544,6 +569,7 @@ class SalespersonQueries:
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
                 AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                {internal_filter}
                 GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
@@ -574,6 +600,7 @@ class SalespersonQueries:
                     ON nc.customer_id = u.customer_id 
                     AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
                 WHERE u.inv_date BETWEEN :start_date AND :end_date
+                {internal_filter}
             )
             
             -- ================================================================
@@ -605,7 +632,8 @@ class SalespersonQueries:
         self,
         start_date: date,
         end_date: date,
-        employee_ids: List[int] = None
+        employee_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get detailed line items for new business (first customer-product combos).
@@ -615,6 +643,8 @@ class SalespersonQueries:
         FIXED v1.7.0: 
         - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
         - Added customer_code for display in popover
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Returns DataFrame with: customer, customer_code, product info (pt_code, product_pn, package_size),
                             brand, salesperson, revenue, GP, first_combo_date
@@ -630,8 +660,12 @@ class SalespersonQueries:
         # Lookback: 5 years from start of end_date's year
         lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # FIXED v1.7.0: Changed product_key priority + Added customer_code
-        query = """
+        # UPDATED v1.8.0: Added exclude_internal filter
+        query = f"""
             WITH 
             -- ================================================================
             -- Step 1: Find first sale date for each customer-product combo
@@ -645,6 +679,7 @@ class SalespersonQueries:
                 FROM unified_sales_by_salesperson_view
                 WHERE inv_date >= :lookback_start
                 AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
+                {internal_filter}
                 GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
             ),
             
@@ -684,6 +719,7 @@ class SalespersonQueries:
                     AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
                 WHERE u.inv_date BETWEEN :start_date AND :end_date
                 AND u.sales_id IN :employee_ids
+                {internal_filter}
                 GROUP BY 
                     u.customer_id, 
                     u.customer,
@@ -1019,10 +1055,13 @@ class SalespersonQueries:
     def get_backlog_data(
         self,
         employee_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get total backlog/outstanding data by salesperson.
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Returns DataFrame with total backlog revenue and GP by salesperson.
         """
@@ -1034,9 +1073,12 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # UPDATED: Backlog = Uninvoiced value only
         # Filter out rows where invoice_completion_percent = 100
-        query = """
+        query = f"""
             SELECT 
                 sales_id,
                 sales_name,
@@ -1047,6 +1089,7 @@ class SalespersonQueries:
             FROM backlog_by_salesperson_looker_view
             WHERE sales_id IN :employee_ids
               AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+              {internal_filter}
         """
         
         params = {'employee_ids': tuple(employee_ids)}
@@ -1064,17 +1107,21 @@ class SalespersonQueries:
         start_date: date,
         end_date: date,
         employee_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get backlog with ETD falling within the specified period.
         This represents backlog expected to convert to invoice in the period.
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Args:
             start_date: Period start date
             end_date: Period end date
             employee_ids: Optional employee filter
             entity_ids: Optional entity filter
+            exclude_internal: If True, exclude internal customers from revenue calculation
             
         Returns DataFrame with in-period backlog by salesperson.
         """
@@ -1086,8 +1133,11 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # UPDATED: Backlog = Uninvoiced value only
-        query = """
+        query = f"""
             SELECT 
                 sales_id,
                 sales_name,
@@ -1099,6 +1149,7 @@ class SalespersonQueries:
             WHERE sales_id IN :employee_ids
               AND etd BETWEEN :start_date AND :end_date
               AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+              {internal_filter}
         """
         
         params = {
@@ -1118,10 +1169,13 @@ class SalespersonQueries:
     def get_backlog_by_month(
         self,
         employee_ids: List[int] = None,
-        entity_ids: List[int] = None
+        entity_ids: List[int] = None,
+        exclude_internal: bool = False
     ) -> pd.DataFrame:
         """
         Get backlog grouped by ETD month for forecasting.
+        
+        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
         
         Returns DataFrame with backlog by ETD month.
         """
@@ -1133,8 +1187,11 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
+        # Build internal filter clause
+        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
+        
         # UPDATED: Backlog = Uninvoiced value only
-        query = """
+        query = f"""
             SELECT 
                 etd_year,
                 etd_month,
@@ -1145,6 +1202,7 @@ class SalespersonQueries:
             WHERE sales_id IN :employee_ids
               AND etd IS NOT NULL
               AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+              {internal_filter}
         """
         
         params = {'employee_ids': tuple(employee_ids)}

@@ -231,13 +231,15 @@ if not is_valid:
 # LOAD ALL DATA WITH SMART CACHING (Client-Side Filtering)
 # =============================================================================
 
-def load_data_for_year_range(start_year: int, end_year: int) -> dict:
+def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: bool = True) -> dict:
     """
     Load data for specified year range based on user's access control.
     
     REFACTORED v2.1.0:
     - Accepts start_year and end_year parameters instead of hardcoded 3 years
     - Supports smart caching: only reload when year range expands
+    
+    UPDATED v1.8.0: Added exclude_internal parameter for Complex KPIs
     
     OPTIMIZED v2.0:
     - Full access (admin/GM/MD): Load all data
@@ -299,10 +301,11 @@ def load_data_for_year_range(start_year: int, end_year: int) -> dict:
         data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         
         # Step 3: Complex KPIs - FILTERED by access control
+        # UPDATED v1.8.0: Pass exclude_internal parameter
         progress_bar.progress(40, text="🆕 Loading new business metrics...")
-        data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids)
-        data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids)
-        data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids)
+        data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
+        data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
+        data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
         
         # Step 4: Backlog data - FILTERED by access control
         progress_bar.progress(60, text="📦 Loading backlog data...")
@@ -371,6 +374,10 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     - Uses customer_type column from unified_sales_by_salesperson_view
     - When True: Sets revenue to 0 for Internal customers, keeps GP intact
     - Purpose: Evaluate sales performance with real (external) customers only
+    
+    UPDATED v1.8.0: Extended exclude_internal_revenue to backlog data
+    - Backlog detail still shows internal orders (for display)
+    - Backlog aggregates (total_backlog, in_period_backlog) zero internal revenue
     """
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
@@ -454,6 +461,29 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 # This allows evaluation of sales performance with real customers
                 df_filtered.loc[is_internal, 'sales_by_split_usd'] = 0
         
+        # =====================================================================
+        # NEW v1.8.0: Exclude Internal Revenue from Backlog (for Pipeline & Forecast)
+        # Backlog detail shows all orders (including internal) for display
+        # But aggregates (total_backlog, in_period_backlog) exclude internal revenue
+        # =====================================================================
+        if exclude_internal_revenue and key == 'backlog_detail':
+            if 'customer_type' in df_filtered.columns and 'backlog_sales_by_split_usd' in df_filtered.columns:
+                # Create mask for internal customers
+                is_internal = df_filtered['customer_type'].str.lower() == 'internal'
+                
+                # Log for debugging
+                internal_count = is_internal.sum()
+                if internal_count > 0:
+                    internal_backlog = df_filtered.loc[is_internal, 'backlog_sales_by_split_usd'].sum()
+                    logger.info(
+                        f"Excluding internal backlog revenue: {internal_count} rows, "
+                        f"${internal_backlog:,.0f} backlog revenue zeroed (GP kept intact)"
+                    )
+                
+                # Zero out ONLY revenue for internal customers
+                # GP columns (backlog_gp_by_split_usd) are kept intact
+                df_filtered.loc[is_internal, 'backlog_sales_by_split_usd'] = 0
+        
         filtered[key] = df_filtered
     
     return filtered
@@ -493,6 +523,8 @@ def _needs_data_reload(filter_values: dict) -> bool:
     Returns True if:
     - No cached data exists
     - Requested year range expands beyond cached range
+    
+    UPDATED v1.8.0: exclude_internal is handled separately for Complex KPIs only
     """
     if 'raw_cached_data' not in st.session_state or st.session_state.raw_cached_data is None:
         return True
@@ -508,10 +540,77 @@ def _needs_data_reload(filter_values: dict) -> bool:
     return required_start < cached_start or required_end > cached_end
 
 
+def _needs_complex_kpi_reload(filter_values: dict) -> bool:
+    """
+    Check if we need to reload Complex KPIs data.
+    
+    NEW v1.8.0: Complex KPIs are reloaded when exclude_internal changes
+    because they are aggregated server-side and can't be filtered client-side.
+    
+    Returns True if:
+    - No cached exclude_internal value
+    - exclude_internal value changed
+    """
+    cached_exclude_internal = st.session_state.get('_cached_exclude_internal')
+    current_exclude_internal = filter_values.get('exclude_internal_revenue', True)
+    
+    if cached_exclude_internal is None:
+        return True
+    
+    return cached_exclude_internal != current_exclude_internal
+
+
+def _reload_complex_kpis(filter_values: dict):
+    """
+    Reload only Complex KPIs data when exclude_internal changes.
+    
+    NEW v1.8.0: This is more efficient than reloading all data.
+    """
+    # Get access control (using classes already imported at top)
+    access = AccessControl(
+        st.session_state.get('user_role', 'viewer'),
+        st.session_state.get('employee_id')
+    )
+    q = SalespersonQueries(access)
+    
+    # Get parameters
+    start_date = filter_values['start_date']
+    end_date = filter_values['end_date']
+    employee_ids = filter_values.get('employee_ids')
+    exclude_internal = filter_values.get('exclude_internal_revenue', True)
+    
+    # Get accessible employee IDs
+    if employee_ids:
+        filter_employee_ids = access.validate_selected_employees(employee_ids)
+    else:
+        filter_employee_ids = access.get_accessible_employee_ids()
+        # For full access, use None for efficiency
+        if access.get_access_level() == 'full':
+            filter_employee_ids = None
+    
+    # Reload Complex KPIs with exclude_internal parameter
+    logger.info(f"Reloading Complex KPIs with exclude_internal={exclude_internal}")
+    
+    new_customers = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
+    new_products = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
+    new_business = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
+    
+    # Update cached data
+    if 'raw_cached_data' in st.session_state and st.session_state.raw_cached_data:
+        st.session_state.raw_cached_data['new_customers'] = new_customers
+        st.session_state.raw_cached_data['new_products'] = new_products
+        st.session_state.raw_cached_data['new_business'] = new_business
+    
+    # Store current exclude_internal value
+    st.session_state['_cached_exclude_internal'] = exclude_internal
+
+
 def get_or_load_data(filter_values: dict) -> dict:
     """
     Smart data loading with session-based caching.
     Only reloads if requested year range expands beyond cached range.
+    
+    UPDATED v1.8.0: Also handles Complex KPIs reload when exclude_internal changes
     
     Args:
         filter_values: Current filter values
@@ -521,6 +620,7 @@ def get_or_load_data(filter_values: dict) -> dict:
     """
     required_start = filter_values['start_date'].year
     required_end = filter_values['end_date'].year
+    exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
     cached_start, cached_end = _get_cached_year_range()
     
@@ -537,14 +637,21 @@ def get_or_load_data(filter_values: dict) -> dict:
             new_start = min(required_start, current_year - 2)
             new_end = max(required_end, current_year)
         
-        # Load data for expanded range
-        data = load_data_for_year_range(new_start, new_end)
+        # Load data for expanded range (with exclude_internal for Complex KPIs)
+        data = load_data_for_year_range(new_start, new_end, exclude_internal)
         
         # Cache data and year range
         st.session_state.raw_cached_data = data
         _set_cached_year_range(new_start, new_end)
         
+        # Store current exclude_internal value
+        st.session_state['_cached_exclude_internal'] = exclude_internal
+        
         return data
+    
+    # Check if Complex KPIs need reload due to exclude_internal change
+    if _needs_complex_kpi_reload(filter_values):
+        _reload_complex_kpis(filter_values)
     
     return st.session_state.raw_cached_data
 
@@ -575,6 +682,8 @@ with st.sidebar:
                 del st.session_state['_cached_start_year']
             if '_cached_end_year' in st.session_state:
                 del st.session_state['_cached_end_year']
+            if '_cached_exclude_internal' in st.session_state:
+                del st.session_state['_cached_exclude_internal']
             st.rerun()
     with col_r2:
         cached_start, cached_end = _get_cached_year_range()
