@@ -2,8 +2,12 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 3.3.0
+VERSION: 3.3.1
 CHANGELOG:
+- v3.3.1: Updated help popover and caption display:
+          - Help popover: Explain why only centers with target contribute
+          - Caption: Show "From X of Y centers with this target" when applicable
+          - Better transparency on which children contribute to each KPI
 - v3.3.0: ENHANCED Parent KPI Center display in Progress tab:
           - kpi_progress_fragment(): Parents now show aggregated KPIs
             * OLD: Only showed children summary table
@@ -2273,12 +2277,16 @@ Each KPI has its own target and weight assigned.
 
 **📁 Parent KPI Centers (Aggregated)**
 
-**Step 1:** Aggregate all descendants' targets & actuals by KPI type
+**Step 1:** Aggregate targets & actuals by KPI type
+
+⚠️ **Important:** Only children with target for each specific KPI contribute to that KPI's calculation.
 
 | KPI | Target | Actual |
 |-----|--------|--------|
-| Revenue | Sum of all children | Sum of all children |
-| Gross Profit | Sum of all children | Sum of all children |
+| Revenue | Sum from centers with Revenue target | Sum from same centers |
+| New Business | Sum from centers with NB target | Sum from same centers |
+
+*Example: If A has Revenue target but not New Business, A's actual only counts for Revenue, not New Business.*
 
 **Step 2:** Calculate Achievement per KPI
 
@@ -2307,6 +2315,12 @@ Weight = Equal split of remaining 20%
 - Larger business units have proportional impact
 - Fair comparison regardless of team size
 - Consistent with financial reporting standards
+
+**Why Only Include Centers With Target?**
+
+- Centers without a KPI target are not evaluated on that KPI
+- Prevents unfair inclusion of actuals from unassigned centers
+- More accurate performance measurement
 
 ---
 
@@ -2411,6 +2425,7 @@ Weight = Equal split of remaining 20%
                 weight = kpi.get('weight', 100)
                 is_currency = kpi.get('is_currency', False)
                 weight_source = kpi.get('weight_source', 'assigned')
+                contributing_centers = kpi.get('contributing_centers', 0)  # NEW v3.3.1
                 
                 # Format values
                 if is_currency:
@@ -2432,9 +2447,14 @@ Weight = Equal split of remaining 20%
                 progress_value = min(achievement / 100, 1.0) if achievement > 0 else 0
                 st.progress(progress_value)
                 
-                # Details
+                # Details - UPDATED v3.3.1: Show contributing centers count
                 if not is_leaf:
-                    st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — Aggregated from children")
+                    children_count = center_data.get('children_count', 0)
+                    if contributing_centers > 0 and contributing_centers < children_count:
+                        # Not all children have this KPI target
+                        st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — From {contributing_centers} of {children_count} centers with this target")
+                    else:
+                        st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — From {contributing_centers} centers")
                 else:
                     st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual)")
                 

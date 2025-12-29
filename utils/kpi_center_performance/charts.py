@@ -2,8 +2,12 @@
 """
 Altair Chart Builders for KPI Center Performance
 
-VERSION: 2.7.0
+VERSION: 3.3.2
 CHANGELOG:
+- v3.3.2: UPDATED Overall Achievement tooltip in render_kpi_cards():
+          - Shows "target-weighted avg of X KPIs" instead of "weighted avg"
+          - Detailed help text explaining target-proportion weight calculation
+          - Note about only including actuals from centers with that target
 - v2.7.0: UPDATED Popovers to merge rows with same entity:
           - New Customers Detail: Group by customer_id, concatenate KPI Centers
           - New Products Detail: Group by product_id, concatenate KPI Centers
@@ -117,12 +121,29 @@ class KPICenterCharts:
                     achievement = overall_achievement['overall_achievement']
                     delta_color = "normal" if achievement >= 100 else "inverse"
                     kpi_count = overall_achievement.get('kpi_count', 0)
+                    calc_method = overall_achievement.get('calculation_method', '')
+                    
+                    # UPDATED v3.3.1: More descriptive delta and help text
+                    if calc_method == 'target_proportion':
+                        delta_text = f"target-weighted avg of {kpi_count} KPIs"
+                        help_text = (
+                            "**Overall KPI Achievement**\n\n"
+                            "Formula: Σ(KPI Achievement × Derived Weight)\n\n"
+                            "**Weight Derivation:**\n"
+                            "- Currency KPIs (Revenue, GP, New Business): Weight = Target Proportion × 80%\n"
+                            "- Count KPIs (New Customers, New Products): Equal split of 20%\n\n"
+                            "**Note:** Only actuals from KPI Centers WITH that specific target are included."
+                        )
+                    else:
+                        delta_text = f"weighted avg of {kpi_count} KPIs"
+                        help_text = "Weighted average of all KPI achievements"
+                    
                     st.metric(
                         label="Overall Achievement",
                         value=f"{achievement:.1f}%",
-                        delta=f"weighted avg of {kpi_count} KPIs",
+                        delta=delta_text,
                         delta_color=delta_color,
-                        help="Weighted average of all KPI achievements"
+                        help=help_text
                     )
                 else:
                     st.metric(

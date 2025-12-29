@@ -2,8 +2,13 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.3.0
+VERSION: 3.3.2
 CHANGELOG:
+- v3.3.2: SYNCED Overall Achievement in Overview tab:
+          - Now uses target-proportion weights (same as Progress tab)
+          - complex_kpis_by_center built once, shared between tabs
+          - Updated tooltip to explain calculation method
+          - Removed duplicate code from KPI & Targets tab
 - v3.3.0: FIXED New Business Revenue = 0 in KPI Progress tab:
           - Root Cause: complex_kpis_by_center was always None
           - Solution: Build complex_kpis_by_center dict from new queries:
@@ -1041,6 +1046,64 @@ def main():
         'new_business_revenue': new_business_df['new_business_revenue'].sum() if not new_business_df.empty else 0,
     }
     
+    # =========================================================================
+    # NEW v3.3.1: Build complex_kpis_by_center for Overall Achievement
+    # Used by both Overview tab and KPI & Targets tab
+    # =========================================================================
+    complex_kpis_by_center = {}
+    selected_kpi_types = get_selected_kpi_types(active_filters, kpi_center_df)
+    
+    # Get New Business Revenue per KPI Center
+    new_business_by_center_df = queries.get_new_business_by_kpi_center(
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        kpi_center_ids=active_filters.get('kpi_center_ids', []),
+        entity_ids=active_filters.get('entity_ids', []),
+        selected_kpi_types=selected_kpi_types,
+        exclude_internal=active_filters.get('exclude_internal_revenue', True)
+    )
+    
+    if not new_business_by_center_df.empty:
+        for _, row in new_business_by_center_df.iterrows():
+            kpc_id = row['kpi_center_id']
+            if kpc_id not in complex_kpis_by_center:
+                complex_kpis_by_center[kpc_id] = {}
+            complex_kpis_by_center[kpc_id]['new_business_revenue'] = row.get('new_business_revenue', 0) or 0
+    
+    # Get New Customers per KPI Center
+    new_customers_by_center_df = queries.get_new_customers_by_kpi_center(
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        kpi_center_ids=active_filters.get('kpi_center_ids', []),
+        entity_ids=active_filters.get('entity_ids', []),
+        selected_kpi_types=selected_kpi_types,
+        exclude_internal=active_filters.get('exclude_internal_revenue', True)
+    )
+    
+    if not new_customers_by_center_df.empty:
+        for _, row in new_customers_by_center_df.iterrows():
+            kpc_id = row['kpi_center_id']
+            if kpc_id not in complex_kpis_by_center:
+                complex_kpis_by_center[kpc_id] = {}
+            complex_kpis_by_center[kpc_id]['num_new_customers'] = row.get('weighted_count', 0) or 0
+    
+    # Get New Products per KPI Center
+    new_products_by_center_df = queries.get_new_products_by_kpi_center(
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        kpi_center_ids=active_filters.get('kpi_center_ids', []),
+        entity_ids=active_filters.get('entity_ids', []),
+        selected_kpi_types=selected_kpi_types,
+        exclude_internal=active_filters.get('exclude_internal_revenue', True)
+    )
+    
+    if not new_products_by_center_df.empty:
+        for _, row in new_products_by_center_df.iterrows():
+            kpc_id = row['kpi_center_id']
+            if kpc_id not in complex_kpis_by_center:
+                complex_kpis_by_center[kpc_id] = {}
+            complex_kpis_by_center[kpc_id]['num_new_products'] = row.get('weighted_count', 0) or 0
+    
     pipeline_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
         total_backlog_df=data.get('backlog_summary_df', pd.DataFrame()),
         in_period_backlog_df=data.get('backlog_in_period_df', pd.DataFrame()),
@@ -1050,11 +1113,13 @@ def main():
         end_date=active_filters['end_date']
     )
     
+    # UPDATED v3.3.1: Pass complex_kpis_by_center for accurate calculation
     overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
         period_type=active_filters['period_type'],
         year=active_filters['year'],
         start_date=active_filters['start_date'],
-        end_date=active_filters['end_date']
+        end_date=active_filters['end_date'],
+        complex_kpis_by_center=complex_kpis_by_center
     )
     
     yoy_metrics = None
@@ -1646,69 +1711,10 @@ This ensures accurate achievement calculation.
                 queries_instance=queries
             )
             
-            # =================================================================
-            # NEW v3.3.0: Build complex_kpis_by_center for Progress tab
-            # FIX: New Business Revenue was always 0 because this was None
-            # =================================================================
-            complex_kpis_by_center = {}
+            # NOTE v3.3.1: complex_kpis_by_center is now built in CALCULATE METRICS section
+            # and shared between Overview tab and KPI & Targets tab
             
-            # Get selected KPI types for query filters
-            selected_kpi_types = get_selected_kpi_types(active_filters, kpi_center_df)
-            
-            # Get New Business Revenue per KPI Center
-            new_business_by_center_df = queries.get_new_business_by_kpi_center(
-                start_date=active_filters['start_date'],
-                end_date=active_filters['end_date'],
-                kpi_center_ids=active_filters.get('kpi_center_ids', []),
-                entity_ids=active_filters.get('entity_ids', []),
-                selected_kpi_types=selected_kpi_types,
-                exclude_internal=active_filters.get('exclude_internal_revenue', True)
-            )
-            
-            if not new_business_by_center_df.empty:
-                for _, row in new_business_by_center_df.iterrows():
-                    kpc_id = row['kpi_center_id']
-                    if kpc_id not in complex_kpis_by_center:
-                        complex_kpis_by_center[kpc_id] = {}
-                    complex_kpis_by_center[kpc_id]['new_business_revenue'] = row.get('new_business_revenue', 0) or 0
-            
-            # Get New Customers per KPI Center
-            new_customers_by_center_df = queries.get_new_customers_by_kpi_center(
-                start_date=active_filters['start_date'],
-                end_date=active_filters['end_date'],
-                kpi_center_ids=active_filters.get('kpi_center_ids', []),
-                entity_ids=active_filters.get('entity_ids', []),
-                selected_kpi_types=selected_kpi_types,
-                exclude_internal=active_filters.get('exclude_internal_revenue', True)
-            )
-            
-            if not new_customers_by_center_df.empty:
-                for _, row in new_customers_by_center_df.iterrows():
-                    kpc_id = row['kpi_center_id']
-                    if kpc_id not in complex_kpis_by_center:
-                        complex_kpis_by_center[kpc_id] = {}
-                    # Use weighted_count for proper credit allocation
-                    complex_kpis_by_center[kpc_id]['num_new_customers'] = row.get('weighted_count', 0) or 0
-            
-            # Get New Products per KPI Center
-            new_products_by_center_df = queries.get_new_products_by_kpi_center(
-                start_date=active_filters['start_date'],
-                end_date=active_filters['end_date'],
-                kpi_center_ids=active_filters.get('kpi_center_ids', []),
-                entity_ids=active_filters.get('entity_ids', []),
-                selected_kpi_types=selected_kpi_types,
-                exclude_internal=active_filters.get('exclude_internal_revenue', True)
-            )
-            
-            if not new_products_by_center_df.empty:
-                for _, row in new_products_by_center_df.iterrows():
-                    kpc_id = row['kpi_center_id']
-                    if kpc_id not in complex_kpis_by_center:
-                        complex_kpis_by_center[kpc_id] = {}
-                    # Use weighted_count for proper credit allocation
-                    complex_kpis_by_center[kpc_id]['num_new_products'] = row.get('weighted_count', 0) or 0
-            
-            # Calculate per-center progress - NOW WITH complex_kpis_by_center!
+            # Calculate per-center progress using shared complex_kpis_by_center
             progress_data = metrics_calc.calculate_per_center_progress(
                 hierarchy_df=hierarchy_df,
                 queries_instance=queries,
@@ -1716,7 +1722,7 @@ This ensures accurate achievement calculation.
                 year=active_filters['year'],
                 start_date=active_filters['start_date'],
                 end_date=active_filters['end_date'],
-                complex_kpis_by_center=complex_kpis_by_center  # FIXED v3.3.0: Was None before
+                complex_kpis_by_center=complex_kpis_by_center  # From CALCULATE METRICS section
             )
             
             # 3 Sub-tabs (synced with Salesperson page)

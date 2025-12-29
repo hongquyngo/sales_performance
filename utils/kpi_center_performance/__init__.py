@@ -4,8 +4,18 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 3.3.0
+VERSION: 3.3.2
 CHANGELOG:
+- v3.3.2: SYNCED Overall Achievement in Overview tab with Progress tab:
+          - metrics.py: calculate_overall_kpi_achievement() uses target-proportion weights
+          - Main page: complex_kpis_by_center built once, shared between tabs
+          - charts.py: Updated tooltip with calculation method explanation
+- v3.3.1: FIX Parent KPI aggregation accuracy:
+          - Only aggregate actual from children WITH TARGET for that KPI
+          - Example: A has Revenue target, B has Revenue + New Business targets
+            Parent C for New Business = only B's actual (not A's)
+          - UI shows "From X of Y centers with this target"
+          - Updated help popover with explanation
 - v3.3.0: FIXED New Business Revenue = 0 in KPI Progress tab:
           - Root Cause: complex_kpis_by_center was always None
           - queries.py: Added get_new_business_by_kpi_center(),
@@ -216,4 +226,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '3.3.0'
+__version__ = '3.3.2'
