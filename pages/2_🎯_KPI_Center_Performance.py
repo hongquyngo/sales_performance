@@ -2,118 +2,6 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.3.2
-CHANGELOG:
-- v3.3.2: SYNCED Overall Achievement in Overview tab:
-          - Now uses target-proportion weights (same as Progress tab)
-          - complex_kpis_by_center built once, shared between tabs
-          - Updated tooltip to explain calculation method
-          - Removed duplicate code from KPI & Targets tab
-- v3.3.0: FIXED New Business Revenue = 0 in KPI Progress tab:
-          - Root Cause: complex_kpis_by_center was always None
-          - Solution: Build complex_kpis_by_center dict from new queries:
-            * get_new_business_by_kpi_center()
-            * get_new_customers_by_kpi_center()
-            * get_new_products_by_kpi_center()
-          - Now Complex KPIs (New Business, New Customers, New Products)
-            show correct values per KPI Center in Progress tab
-          - Requires: queries.py v3.3.0
-- v3.2.0: ENHANCED KPI & Targets tab with hierarchy support:
-          - My KPIs: Shows rollup targets for parent KPI Centers
-            * Leaf nodes: Direct assignments with weight
-            * Parent nodes: Aggregated from all descendants (+ own if Mixed)
-            * Level filter, help popover with formula explanation
-          - Progress: Per-center KPI progress with overall achievement
-            * Leaf nodes: Individual KPI progress bars
-            * Parent nodes: Weighted average of children's achievements
-            * View filter (All/Leaf/Parents)
-          - Ranking: Group by hierarchy level for fair comparison
-            * Only shows levels with ≥2 items (to rank)
-            * Medals within each level
-            * Level filter (All grouped/specific level/Leaf)
-          - NEW queries: get_hierarchy_with_levels(), get_all_descendants(),
-            get_leaf_descendants(), get_ancestors()
-          - NEW metrics: calculate_rollup_targets(), calculate_per_center_progress()
-          - Requires: queries.py v3.2.0, metrics.py v3.2.0, fragments.py v3.2.0
-- v3.1.0: SYNCED KPI & Targets tab with Salesperson module:
-          - Tab 5 now has 3 sub-tabs: My KPIs, Progress, Ranking
-          - My KPIs: Improved assignments view with icons, better formatting
-          - Progress: Progress bars with achievement %, prorated targets, color-coded badges
-          - Ranking: Added medals (🥇🥈🥉), sortable dropdown like Salesperson
-          - Added kpi_assignments_fragment, kpi_progress_fragment
-          - Updated kpi_center_ranking_fragment with medals
-          - Added metrics.get_kpi_progress_data(), metrics._get_prorated_target()
-          - Requires updated fragments.py v3.1.0, metrics.py v3.1.0
-- v3.0.1: BUGFIX backlog_by_etd_fragment not filtering by KPI Center:
-          - Problem: backlog_by_month_df was pre-aggregated without kpi_center_id,
-            client-side filter couldn't work
-          - Solution: Pass backlog_detail_df (already filtered) to fragment,
-            fragment aggregates data itself
-- v3.0.0: SYNCED Backlog tab with Salesperson module:
-          - Tab 4 now has 3 sub-tabs: Backlog List, By ETD, Risk Analysis
-          - Backlog List: 7 summary cards, 5 filters with Excl option
-          - By ETD: 3 view modes (Timeline/Stacked/Single Year) with charts
-          - Risk Analysis: 4 risk cards (Overdue/This Week/This Month/On Track) + Overdue table
-          - Warning banner shows when overdue orders exist
-          - Full parity with Salesperson Backlog Analysis
-          - Requires updated fragments.py v3.0.0, metrics.py, charts.py
-- v2.14.0: ADDED exclude_internal support for Backlog and Complex KPIs:
-          - Business Rule: "Exclude Internal Revenue" checkbox now affects ALL metrics consistently
-          - Backlog queries: Revenue = 0 for Internal customers, GP kept (same as Sales)
-          - Complex KPIs: Internal customers excluded entirely from New Customers, New Products, New Business
-          - Updated load_data_for_year_range() to pass exclude_internal to all relevant queries
-          - Updated _needs_data_reload() to check exclude_internal changes
-          - Updated get_or_load_data() to pass exclude_internal from filter_values
-          - Requires updated queries.py v2.14.0
-- v2.10.0: SYNCED Sales Detail tab with Salesperson page:
-          - Added sub-tabs: "📄 Transaction List" and "📊 Pivot Analysis"
-          - Each sub-tab is a fragment for better performance
-          - Transaction List: 7 summary cards, 5 filters with Excl, original values
-          - Pivot Analysis: Default to Gross Profit, same styling as SP
-- v2.9.1: FIXED Exclude Internal Revenue logic in load_yoy_data():
-          - Business rule: Internal sales → Revenue = 0, GP/GP1 kept (real profit)
-          - Previous: Filtered out rows entirely (lost GP/GP1 for YoY comparison)
-          - Now: Set revenue = 0, keep rows for GP/GP1 calculation
-          - Consistent with filter_data_client_side() logic
-- v2.9.0: FIXED Complex KPIs (New Business) not reflecting filter changes:
-          - Issue: New Customers/Products/Business Revenue not updating when 
-            KPI Center, KPI Type, or Legal Entity filters changed
-          - Root cause 1: _needs_data_reload() didn't check entity_ids changes
-          - Root cause 2: load_data_for_year_range() didn't pass entity_ids to complex KPIs
-          - Fix: Added entity_ids check in _needs_data_reload()
-          - Fix: Pass entity_ids to all complex KPI queries
-          - Fix: Store _entity_ids in cached data for reload comparison
-- v2.8.0: KPI Type filter changed to SINGLE SELECTION:
-          - Removed "All Types" option (filters.py v2.8.0)
-          - Always single type → no double counting, no dedupe needed
-          - Default: TERRITORY
-          - Simplified get_selected_kpi_types() - always returns single type
-- v2.7.0: FIXED Double Counting & New Business Revenue:
-          - Issue #1: Added get_selected_kpi_types() helper to detect single vs multiple types
-            * Single type selected → Full credit for that type (no dedupe)
-            * Multiple types selected → Dedupe per entity to avoid double counting
-          - Issue #2: queries.py now uses SUM() instead of MAX() for New Business Revenue
-          - Updated load_data_for_year_range() to pass selected_kpi_types
-          - Updated _needs_data_reload() to check kpi_type changes
-          - Requires updated queries.py v2.7.0
-- v2.6.0: REFACTORED Complex KPIs to match Salesperson page logic:
-          - Added calculate_weighted_count() helper function
-          - complex_kpis now uses weighted counting: sum(split_rate_percent) / 100
-          - Requires updated queries.py and charts.py v2.6.0
-- v2.5.1: BUGFIX - kpi_type_filter now works in filter_data_client_side()
-          - Removed debug print statements from fragments.py
-- v2.4.0: SYNCED UI with Salesperson Performance page:
-          - Overview tab now matches SP page layout exactly
-          - Monthly Trend & Cumulative: 2 charts side-by-side with Customer/Brand/Product Excl filters
-          - Year-over-Year Comparison: Tabs (Revenue/GP/GP1), summary metrics, 2 charts
-          - Backlog & Forecast: Inline section with 3 tabs (Revenue/GP/GP1), 
-            5 metrics each + 2 charts per tab (waterfall + gap analysis)
-          - Removed separate PIPELINE & FORECAST and BACKLOG RISK ANALYSIS sections
-          - New Business popover widened to match SP page
-- v2.3.1: BUGFIX - KPI Center filter not working
-- v2.3.0: Phase 3 - Added Analysis tab with Pareto analysis
-- v2.2.0: Phase 2 enhancements
-- v2.0.0: Complex KPIs popup, backlog risk, smart caching
 """
 
 import logging
@@ -163,6 +51,9 @@ from utils.kpi_center_performance.filters import (
     _set_applied_filters,
     clear_data_cache,
 )
+
+# NEW v3.4.0: Setup tab module
+from utils.kpi_center_performance.setup import setup_tab_fragment
 
 logger = logging.getLogger(__name__)
 
@@ -1769,90 +1660,15 @@ This ensures accurate achievement calculation.
                 )
     
     # ==========================================================================
-    # TAB 6: SETUP
+    # TAB 6: SETUP - REFACTORED v3.4.0
     # ==========================================================================
     
     with tab6:
-        st.subheader("⚙️ KPI Center Configuration")
-        
-        st.markdown("### 📋 KPI Center Split Assignments")
-        
-        kpi_split_df = queries.get_kpi_split_data(
-            kpi_center_ids=active_filters.get('kpi_center_ids', [])
+        # Delegated to setup module for easier maintenance
+        setup_tab_fragment(
+            kpi_center_ids=active_filters.get('kpi_center_ids', []),
+            active_filters=active_filters
         )
-        
-        if kpi_split_df.empty:
-            st.info("No split assignments found for selected KPI Centers")
-        else:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                customers = ['All'] + sorted(kpi_split_df['customer_name'].dropna().unique().tolist())
-                selected_customer = st.selectbox(
-                    "Filter by Customer",
-                    customers,
-                    key="setup_customer_filter"
-                )
-            
-            with col2:
-                search = st.text_input(
-                    "Search Product",
-                    placeholder="Product name or code...",
-                    key="setup_product_search"
-                )
-            
-            filtered_split = kpi_split_df.copy()
-            
-            if selected_customer != 'All':
-                filtered_split = filtered_split[filtered_split['customer_name'] == selected_customer]
-            
-            if search:
-                mask = (
-                    filtered_split['product_pn'].fillna('').str.lower().str.contains(search.lower()) |
-                    filtered_split['pt_code'].fillna('').str.lower().str.contains(search.lower())
-                )
-                filtered_split = filtered_split[mask]
-            
-            st.caption(f"Showing {len(filtered_split):,} split assignments")
-            
-            display_cols = ['kpi_center_name', 'customer_name', 'product_pn', 'brand', 
-                          'split_percentage', 'effective_period', 'kpi_split_status']
-            display_cols = [c for c in display_cols if c in filtered_split.columns]
-            
-            st.dataframe(
-                filtered_split[display_cols].head(500),
-                hide_index=True,
-                column_config={
-                    'kpi_center_name': 'KPI Center',
-                    'customer_name': 'Customer',
-                    'product_pn': 'Product',
-                    'brand': 'Brand',
-                    'split_percentage': st.column_config.NumberColumn('Split %'),
-                    'effective_period': 'Period',
-                    'kpi_split_status': 'Status',
-                },
-                use_container_width=True
-            )
-        
-        st.divider()
-        st.markdown("### 🌳 KPI Center Hierarchy")
-        
-        hierarchy_df = queries.get_kpi_center_hierarchy()
-        
-        if hierarchy_df.empty:
-            st.info("No hierarchy data available")
-        else:
-            st.dataframe(
-                hierarchy_df,
-                hide_index=True,
-                column_config={
-                    'kpi_center_id': 'ID',
-                    'kpi_center_name': 'KPI Center',
-                    'kpi_type': 'Type',
-                    'parent_center_id': 'Parent ID',
-                    'level': 'Level',
-                }
-            )
 
 
 # =============================================================================

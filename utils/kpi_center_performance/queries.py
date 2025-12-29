@@ -2,73 +2,6 @@
 """
 SQL Queries and Data Loading for KPI Center Performance
 
-Handles all database interactions:
-- Sales data from unified_sales_by_kpi_center_view
-- KPI targets from sales_kpi_center_assignments_view
-- Backlog from backlog_by_kpi_center_flat_looker_view
-- KPI Center split configuration
-- Complex KPIs (new customers, products, business revenue)
-- Parent-Child rollup for KPI Center hierarchy
-
-VERSION: 3.3.0
-CHANGELOG:
-- v3.3.0: NEW Complex KPIs BY KPI CENTER for Progress tab:
-          - get_new_business_by_kpi_center(): New Business Revenue per KPI Center
-          - get_new_customers_by_kpi_center(): New Customers count per KPI Center
-          - get_new_products_by_kpi_center(): New Products count per KPI Center
-          - FIX: New Business Revenue was always 0 in Progress tab because
-            complex_kpis_by_center was not being built and passed
-- v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
-          - get_hierarchy_with_levels(): Dynamic level calculation with recursive CTE
-          - get_all_descendants(): Get all descendant IDs
-          - get_leaf_descendants(): Get only leaf (no children) descendants
-          - get_ancestors(): Get all ancestor IDs
-- v2.14.0: ADDED exclude_internal parameter for consistent business logic:
-          BACKLOG FUNCTIONS (Revenue = 0 for Internal, GP kept):
-          - get_backlog_data(): Added exclude_internal parameter
-          - get_backlog_in_period(): Added exclude_internal parameter
-          - get_backlog_by_month(): Added exclude_internal parameter
-          - get_backlog_risk_analysis(): Added exclude_internal parameter
-          COMPLEX KPIs (Exclude Internal customers entirely):
-          - get_new_customers(): Added exclude_internal to exclude Internal customers
-          - get_new_customers_detail(): Added exclude_internal filter
-          - get_new_products(): Added exclude_internal filter
-          - get_new_products_detail(): Added exclude_internal filter
-          - get_new_business_revenue(): Added exclude_internal filter
-          - get_new_business_detail(): Added exclude_internal filter
-          - calculate_complex_kpi_value(): Pass exclude_internal to sub-queries
-          Business Rule: Internal sales → Revenue = 0, GP/GP1 kept (real profit)
-- v2.9.0: FIXED Complex KPIs not filtering by entity_ids:
-          - get_new_customers(): Added entity_ids filter to SQL query
-          - get_new_customers_detail(): Added entity_ids filter to SQL query
-          - get_new_products(): Added entity_ids filter to SQL query
-          - get_new_products_detail(): Added entity_ids filter to SQL query
-          - get_new_business_revenue(): Added entity_ids filter to SQL query
-          - get_new_business_detail(): Added entity_ids filter to SQL query
-          - Now Complex KPIs properly reflect Legal Entity filter changes
-- v2.7.0: FIXED Double Counting & New Business Revenue calculation:
-          - Issue #1: Added `selected_kpi_types` parameter to detect single vs multiple types
-            * Single type selected → Full credit for that type
-            * Multiple types selected → Deduplicate per entity to avoid double counting
-          - Issue #2: Changed MAX() to SUM() in get_new_business_revenue()
-            * Now correctly sums all revenue from new combos within period
-            * Fixed get_new_business_detail() similarly
-- v2.6.1: REFACTORED Complex KPIs with GLOBAL scope (Option B):
-          - New Customer: customer_id only, global across all KPI Centers
-          - New Product: product_id only, global across all KPI Centers
-          - New Business: (customer_id, product_id) combo, global scope
-          - Returns individual records with split_rate_percent for weighted counting
-          - Weighted count formula: sum(split_rate_percent) / 100
-          - Matches Salesperson page logic exactly
-- v2.2.0: Added helper methods for Phase 2:
-          - calculate_complex_kpi_value(): Single complex KPI calculator
-          - get_kpi_center_achievement_summary(): Achievement comparison data
-- v2.0.0: Added detail queries for complex KPIs (popup support)
-          - get_new_customers_detail()
-          - get_new_products_detail()
-          - get_new_business_detail()
-          Added backlog risk analysis query
-          - get_backlog_risk_analysis()
 """
 
 import logging
@@ -2320,6 +2253,10 @@ class KPICenterQueries:
         
         return df['invoice_year'].tolist()
     
+    # =========================================================================
+    # KPI SPLIT DATA - DEPRECATED v3.4.0
+    # =========================================================================
+    
     def get_kpi_split_data(
         self,
         kpi_center_ids: List[int] = None
@@ -2327,8 +2264,25 @@ class KPICenterQueries:
         """
         Get KPI Center split assignments.
         
+        DEPRECATED v3.4.0: Use SetupQueries.get_kpi_split_data() from 
+        utils.kpi_center_performance.setup module instead.
+        This method is kept for backward compatibility.
+        
+        The new SetupQueries class provides:
+        - Enhanced filtering (status, approval, date range)
+        - Validation summaries
+        - CRUD operations (future)
+        
         Returns DataFrame with split assignments including customer, product, percentage.
         """
+        import warnings
+        warnings.warn(
+            "get_kpi_split_data() is deprecated. Use SetupQueries.get_kpi_split_data() "
+            "from utils.kpi_center_performance.setup module instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         if not self.access.can_access_page():
             return pd.DataFrame()
         
