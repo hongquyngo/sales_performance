@@ -2,8 +2,18 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 3.2.0
+VERSION: 3.3.0
 CHANGELOG:
+- v3.3.0: ENHANCED Parent KPI Center display in Progress tab:
+          - kpi_progress_fragment(): Parents now show aggregated KPIs
+            * OLD: Only showed children summary table
+            * NEW: Shows per-KPI progress bars like leaf nodes
+            * Weights derived from target proportion (displayed as "X% derived")
+            * Children summary moved to expander for optional detail
+          - Updated help popover with detailed calculation explanation:
+            * Step-by-step breakdown of parent calculation
+            * Target proportion weight formula
+            * Currency (80%) vs Count (20%) weight split
 - v3.2.0: UPDATED KPI & Targets tab with hierarchy support:
           - kpi_assignments_fragment(): Now shows rollup targets for parent KPI Centers
             * Leaf nodes: Direct assignments with weight
@@ -2213,7 +2223,7 @@ Targets shown are: `Direct + Sum(Children)`
 
 
 # =============================================================================
-# KPI PROGRESS FRAGMENT (Progress Tab) - UPDATED v3.2.0
+# KPI PROGRESS FRAGMENT (Progress Tab) - UPDATED v3.3.0
 # =============================================================================
 
 @st.fragment
@@ -2227,9 +2237,9 @@ def kpi_progress_fragment(
     """
     KPI Progress fragment with per-center breakdown.
     
-    UPDATED v3.2.0: Shows progress for each KPI Center individually.
+    UPDATED v3.3.0: Parents now show aggregated KPIs with target-proportion weights.
     - Leaf nodes: Direct KPI progress with individual metrics
-    - Parent nodes: Weighted average of children's achievements
+    - Parent nodes: Aggregated KPIs from all descendants with derived weights
     
     Args:
         progress_data: Dict from metrics.calculate_per_center_progress()
@@ -2242,14 +2252,66 @@ def kpi_progress_fragment(
         st.info("📊 No KPI progress data available")
         return
     
-    # Help popover
+    # Help popover - UPDATED v3.3.0
     col_title, col_help = st.columns([6, 1])
     with col_help:
-        with st.popover("ℹ️"):
+        with st.popover("ℹ️ How it works"):
             st.markdown(f"""
-**📈 KPI Progress Explained**
+**📈 KPI Progress Calculation**
 
-**Prorated Target** is based on period type:
+---
+
+**🎯 Leaf KPI Centers (Direct)**
+
+Each KPI has its own target and weight assigned.
+
+`Achievement = Actual / Prorated Target × 100`
+
+`Overall = Σ(KPI Achievement × Assigned Weight) / Σ(Weights)`
+
+---
+
+**📁 Parent KPI Centers (Aggregated)**
+
+**Step 1:** Aggregate all descendants' targets & actuals by KPI type
+
+| KPI | Target | Actual |
+|-----|--------|--------|
+| Revenue | Sum of all children | Sum of all children |
+| Gross Profit | Sum of all children | Sum of all children |
+
+**Step 2:** Calculate Achievement per KPI
+
+`KPI Achievement = Total Actual / Total Prorated Target × 100`
+
+**Step 3:** Derive Weight from Target Proportion
+
+For **currency KPIs** (Revenue, GP, New Business):
+```
+Weight = KPI Target / Total Currency Targets × 80%
+```
+
+For **count KPIs** (New Customers, New Products):
+```
+Weight = Equal split of remaining 20%
+```
+
+**Step 4:** Calculate Overall
+
+`Overall = Σ(KPI Achievement × Derived Weight) / 100`
+
+---
+
+**Why Target-Proportion Weights?**
+
+- Larger business units have proportional impact
+- Fair comparison regardless of team size
+- Consistent with financial reporting standards
+
+---
+
+**Prorated Target** ({period_type} {year}):
+
 | Period | Formula |
 |--------|---------|
 | YTD | Annual × (Days Elapsed / 365) |
@@ -2257,18 +2319,12 @@ def kpi_progress_fragment(
 | MTD | Annual / 12 |
 | Custom | Annual × (Days in Range / 365) |
 
-**Current:** {period_type} for {year}
+---
 
 **Achievement Colors:**
 - ✅ Green: ≥ 100%
 - 🟡 Yellow: 80-99%
 - 🔴 Red: < 80%
-
-**Leaf Centers:** Direct calculation
-`Achievement = Actual / Prorated Target × 100`
-
-**Parent Centers:** Weighted average of children
-`Overall = Σ(Child Achievement × Weight) / Σ(Weights)`
             """)
     
     # View filter
@@ -2338,8 +2394,14 @@ def kpi_progress_fragment(
             else:
                 st.info(f"⭐ Overall: {overall_badge}")
         
-        # For leaf nodes: show individual KPI progress
-        if is_leaf and kpis:
+        # Show source indicator for parents
+        if not is_leaf:
+            children_count = center_data.get('children_count', 0)
+            calculation_method = center_data.get('calculation_method', 'target_proportion')
+            st.caption(f"📊 Aggregated from {children_count} child KPI Centers | Weight: Target Proportion")
+        
+        # Show KPI progress for BOTH leaf and parent nodes (NEW v3.3.0)
+        if kpis:
             for kpi in kpis:
                 display_name = kpi.get('display_name', '')
                 actual = kpi.get('actual', 0)
@@ -2348,6 +2410,7 @@ def kpi_progress_fragment(
                 achievement = kpi.get('achievement', 0)
                 weight = kpi.get('weight', 100)
                 is_currency = kpi.get('is_currency', False)
+                weight_source = kpi.get('weight_source', 'assigned')
                 
                 # Format values
                 if is_currency:
@@ -2359,15 +2422,21 @@ def kpi_progress_fragment(
                     prorated_str = f"{prorated_target:,.1f}" if prorated_target < 10 else f"{prorated_target:,.0f}"
                     annual_str = f"{annual_target:,.0f}"
                 
-                # KPI name with weight
-                st.markdown(f"**{display_name}** ({weight:.0f}%)")
+                # KPI name with weight - show weight source for parents
+                if not is_leaf and weight_source == 'target_proportion':
+                    st.markdown(f"**{display_name}** ({weight:.1f}% derived)")
+                else:
+                    st.markdown(f"**{display_name}** ({weight:.0f}%)")
                 
                 # Progress bar
                 progress_value = min(achievement / 100, 1.0) if achievement > 0 else 0
                 st.progress(progress_value)
                 
                 # Details
-                st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual)")
+                if not is_leaf:
+                    st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — Aggregated from children")
+                else:
+                    st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual)")
                 
                 # Achievement badge
                 col_badge, _ = st.columns([1, 5])
@@ -2379,30 +2448,29 @@ def kpi_progress_fragment(
                     else:
                         st.error(f"🔴 {achievement:.1f}%")
         
-        # For parent nodes: show children summary
-        elif not is_leaf:
+        # For parent nodes: show children summary in expander (optional detail)
+        if not is_leaf:
             children_summary = center_data.get('children_summary', [])
-            children_count = center_data.get('children_count', 0)
-            
-            st.caption(f"Weighted average of {children_count} child KPI Centers")
             
             if children_summary:
-                # Create summary table
-                summary_data = []
-                for child in children_summary:
-                    summary_data.append({
-                        'KPI Center': child.get('name', ''),
-                        'Achievement': f"{child.get('achievement', 0):.1f}%",
-                        'Weight': f"{child.get('weight', 100):.0f}"
-                    })
-                
-                summary_df = pd.DataFrame(summary_data)
-                st.dataframe(
-                    summary_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(200, len(summary_data) * 35 + 40)
-                )
+                with st.expander(f"👥 View {len(children_summary)} Child KPI Centers"):
+                    # Create summary table
+                    summary_data = []
+                    for child in children_summary:
+                        ach = child.get('achievement')
+                        ach_str = f"{ach:.1f}%" if ach is not None else "N/A"
+                        summary_data.append({
+                            'KPI Center': child.get('name', ''),
+                            'Overall Achievement': ach_str,
+                        })
+                    
+                    summary_df = pd.DataFrame(summary_data)
+                    st.dataframe(
+                        summary_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(200, len(summary_data) * 35 + 40)
+                    )
         
         st.markdown("---")
 

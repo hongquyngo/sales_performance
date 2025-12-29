@@ -10,8 +10,19 @@ Handles all metric calculations:
 - Parent KPI Center rollup
 - Data aggregations by KPI Center/period
 
-VERSION: 3.2.0
+VERSION: 3.3.0
 CHANGELOG:
+- v3.3.0: ENHANCED Parent KPI Center calculation in Progress tab:
+          - OLD: Weighted average of children's overall achievements
+          - NEW: Aggregate KPIs with Target-Proportion Weights:
+            * Step 1: Aggregate targets & actuals by KPI type from all descendants
+            * Step 2: Calculate achievement per KPI = total_actual / total_target
+            * Step 3: Derive weight from target proportion (currency KPIs)
+            * Step 4: Currency KPIs = 80% weight, Count KPIs = 20% weight
+            * Step 5: Calculate weighted overall
+          - Parents now show per-KPI progress bars like leaf nodes
+          - More accurate: Large target teams have proportional impact
+          - Added 'calculation_method' and 'weight_source' fields for UI display
 - v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
           - calculate_rollup_targets(): Aggregate targets for parent KPI Centers
           - calculate_per_center_progress(): Per-center KPI progress with overall achievement
@@ -901,8 +912,15 @@ class KPICenterMetrics:
                 'source': 'Direct'
             }
         
-        # Second pass: Calculate for parent nodes (weighted average of children)
-        # Process from deepest level to root
+        # =====================================================================
+        # Second pass: Calculate for parent nodes
+        # NEW v3.3.0: Aggregate KPIs with Target-Proportion Weights
+        # Instead of averaging children's overall, we:
+        # 1. Aggregate targets & actuals by KPI type from all descendants
+        # 2. Calculate achievement per KPI
+        # 3. Derive weight from target proportion (currency KPIs)
+        # 4. Calculate weighted overall
+        # =====================================================================
         max_level = hierarchy_df['level'].max() if 'level' in hierarchy_df.columns else 0
         
         for current_level in range(max_level - 1, -1, -1):
@@ -922,45 +940,183 @@ class KPICenterMetrics:
                 # Get leaf descendants
                 leaf_descendants = queries_instance.get_leaf_descendants(kpi_center_id)
                 
-                # Collect children's progress (only those with KPI assignments)
-                children_progress = []
-                children_summary = []
+                if not leaf_descendants:
+                    continue
                 
+                # =========================================================
+                # Step 1: Aggregate targets by KPI type from all descendants
+                # =========================================================
+                descendants_targets = self.targets_df[
+                    self.targets_df['kpi_center_id'].isin(leaf_descendants)
+                ]
+                
+                if descendants_targets.empty:
+                    continue
+                
+                # Get descendants' sales data
+                descendants_sales = self.sales_df[
+                    self.sales_df['kpi_center_id'].isin(leaf_descendants)
+                ] if not self.sales_df.empty else pd.DataFrame()
+                
+                # =========================================================
+                # Step 2: Calculate per-KPI aggregated metrics
+                # =========================================================
+                kpi_aggregates = {}  # {kpi_name: {target, actual, achievement}}
+                
+                for kpi_name in descendants_targets['kpi_name'].unique():
+                    kpi_lower = kpi_name.lower() if kpi_name else ''
+                    
+                    # Sum targets for this KPI across all descendants
+                    kpi_targets = descendants_targets[
+                        descendants_targets['kpi_name'] == kpi_name
+                    ]
+                    total_annual_target = kpi_targets['annual_target_value_numeric'].sum()
+                    
+                    if total_annual_target <= 0:
+                        continue
+                    
+                    # Prorated target
+                    total_prorated_target = total_annual_target * proration
+                    
+                    # Sum actuals for this KPI across all descendants
+                    total_actual = 0
+                    if kpi_lower in kpi_column_map:
+                        col = kpi_column_map[kpi_lower]
+                        if not descendants_sales.empty and col in descendants_sales.columns:
+                            total_actual = descendants_sales[col].sum()
+                    elif kpi_lower in ['new_business_revenue', 'num_new_customers', 'num_new_products']:
+                        # Sum complex KPIs from all descendants
+                        if complex_kpis_by_center:
+                            for child_id in leaf_descendants:
+                                if child_id in complex_kpis_by_center:
+                                    total_actual += complex_kpis_by_center[child_id].get(kpi_lower, 0)
+                    
+                    # Achievement
+                    achievement = (total_actual / total_prorated_target * 100) if total_prorated_target > 0 else 0
+                    
+                    kpi_aggregates[kpi_name] = {
+                        'kpi_name': kpi_name,
+                        'kpi_lower': kpi_lower,
+                        'annual_target': total_annual_target,
+                        'prorated_target': total_prorated_target,
+                        'actual': total_actual,
+                        'achievement': achievement,
+                        'is_currency': kpi_lower in currency_kpis
+                    }
+                
+                if not kpi_aggregates:
+                    continue
+                
+                # =========================================================
+                # Step 3: Derive weights from Target Proportion
+                # Currency KPIs: weight = target / total_currency_targets
+                # Count KPIs: equal weight, combined at fixed ratio
+                # =========================================================
+                
+                # Separate currency vs count KPIs
+                currency_kpi_data = {k: v for k, v in kpi_aggregates.items() if v['is_currency']}
+                count_kpi_data = {k: v for k, v in kpi_aggregates.items() if not v['is_currency']}
+                
+                # Total currency targets for proportion calculation
+                total_currency_target = sum(v['prorated_target'] for v in currency_kpi_data.values())
+                
+                # Build KPIs list with derived weights
+                kpis = []
+                total_weighted_achievement = 0
+                total_derived_weight = 0
+                
+                # Process currency KPIs (weight = target proportion)
+                for kpi_name, data in currency_kpi_data.items():
+                    if total_currency_target > 0:
+                        derived_weight = (data['prorated_target'] / total_currency_target) * 100
+                    else:
+                        derived_weight = 100 / len(currency_kpi_data) if currency_kpi_data else 0
+                    
+                    display_name = kpi_display_names.get(data['kpi_lower'], kpi_name.replace('_', ' ').title())
+                    icon = kpi_icons.get(data['kpi_lower'], '📋')
+                    
+                    kpis.append({
+                        'kpi_name': kpi_name,
+                        'display_name': f"{icon} {display_name}",
+                        'actual': data['actual'],
+                        'prorated_target': data['prorated_target'],
+                        'annual_target': data['annual_target'],
+                        'achievement': data['achievement'],
+                        'weight': derived_weight,
+                        'weight_source': 'target_proportion',
+                        'is_currency': True
+                    })
+                    
+                    total_weighted_achievement += data['achievement'] * derived_weight
+                    total_derived_weight += derived_weight
+                
+                # Process count KPIs (equal weight among themselves)
+                # Count KPIs contribute 20% of total if there are currency KPIs, 100% otherwise
+                if count_kpi_data:
+                    count_kpi_total_weight = 20 if currency_kpi_data else 100
+                    per_count_kpi_weight = count_kpi_total_weight / len(count_kpi_data)
+                    
+                    for kpi_name, data in count_kpi_data.items():
+                        display_name = kpi_display_names.get(data['kpi_lower'], kpi_name.replace('_', ' ').title())
+                        icon = kpi_icons.get(data['kpi_lower'], '📋')
+                        
+                        kpis.append({
+                            'kpi_name': kpi_name,
+                            'display_name': f"{icon} {display_name}",
+                            'actual': data['actual'],
+                            'prorated_target': data['prorated_target'],
+                            'annual_target': data['annual_target'],
+                            'achievement': data['achievement'],
+                            'weight': per_count_kpi_weight,
+                            'weight_source': 'equal_split',
+                            'is_currency': False
+                        })
+                        
+                        total_weighted_achievement += data['achievement'] * per_count_kpi_weight
+                        total_derived_weight += per_count_kpi_weight
+                
+                # Normalize weights if currency KPIs exist (they should sum to 80%, count to 20%)
+                if currency_kpi_data and count_kpi_data:
+                    # Rescale currency weights to sum to 80%
+                    currency_weight_sum = sum(k['weight'] for k in kpis if k['is_currency'])
+                    if currency_weight_sum > 0:
+                        for kpi in kpis:
+                            if kpi['is_currency']:
+                                kpi['weight'] = (kpi['weight'] / currency_weight_sum) * 80
+                    
+                    # Recalculate weighted achievement
+                    total_weighted_achievement = sum(k['achievement'] * k['weight'] for k in kpis)
+                    total_derived_weight = sum(k['weight'] for k in kpis)
+                
+                # Calculate overall
+                overall = total_weighted_achievement / total_derived_weight if total_derived_weight > 0 else None
+                
+                # Sort KPIs by display name
+                kpis.sort(key=lambda x: x['display_name'])
+                
+                # Collect children summary for display
+                children_summary = []
                 for child_id in leaf_descendants:
                     if child_id in result:
                         child_data = result[child_id]
-                        if child_data.get('overall') is not None:
-                            children_progress.append({
-                                'kpi_center_id': child_id,
-                                'kpi_center_name': child_data['kpi_center_name'],
-                                'overall': child_data['overall'],
-                                'total_weight': child_data.get('total_weight', 100)
-                            })
-                            children_summary.append({
-                                'name': child_data['kpi_center_name'],
-                                'achievement': child_data['overall'],
-                                'weight': child_data.get('total_weight', 100)
-                            })
-                
-                if not children_progress:
-                    continue  # No children with KPI assignments
-                
-                # Calculate weighted average
-                total_weight = sum(c['total_weight'] for c in children_progress)
-                weighted_sum = sum(c['overall'] * c['total_weight'] for c in children_progress)
-                overall = weighted_sum / total_weight if total_weight > 0 else None
+                        children_summary.append({
+                            'name': child_data['kpi_center_name'],
+                            'achievement': child_data.get('overall'),
+                            'weight': child_data.get('total_weight', 100)
+                        })
                 
                 result[kpi_center_id] = {
                     'kpi_center_id': kpi_center_id,
                     'kpi_center_name': kpi_center_name,
                     'level': current_level,
                     'is_leaf': False,
-                    'kpis': [],  # Parents don't have direct KPIs
+                    'kpis': kpis,  # NEW: Parents now have aggregated KPIs
                     'overall': overall,
-                    'total_weight': total_weight,
-                    'source': 'Rollup',
-                    'children_count': len(children_progress),
-                    'children_summary': children_summary
+                    'total_weight': total_derived_weight,
+                    'source': 'Aggregated',  # Changed from 'Rollup'
+                    'children_count': len(leaf_descendants),
+                    'children_summary': children_summary,
+                    'calculation_method': 'target_proportion'  # NEW: For help tooltip
                 }
         
         return result

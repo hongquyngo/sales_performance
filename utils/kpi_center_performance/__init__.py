@@ -12,6 +12,14 @@ CHANGELOG:
             get_new_customers_by_kpi_center(), get_new_products_by_kpi_center()
           - Main page: Build complex_kpis_by_center dict and pass to progress calc
           - Now Complex KPIs show correct values per KPI Center in Progress tab
+          ENHANCED Parent KPI Center calculation:
+          - metrics.py: Parents now aggregate KPIs with target-proportion weights
+            * OLD: Weighted average of children's overall achievements
+            * NEW: Aggregate targets & actuals by KPI, derive weights from proportion
+            * Currency KPIs = 80% weight, Count KPIs = 20% weight
+          - fragments.py: Parents now show per-KPI progress bars
+            * Help popover with detailed calculation explanation
+            * Children summary in expander for optional detail
 - v3.2.0: ENHANCED KPI & Targets tab with hierarchy support:
           - queries.py: Added get_hierarchy_with_levels(), get_all_descendants(),
             get_leaf_descendants(), get_ancestors() for hierarchy traversal
