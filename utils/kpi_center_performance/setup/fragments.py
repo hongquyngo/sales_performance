@@ -8,13 +8,15 @@ Full management console with 4 sub-tabs:
 3. Hierarchy - Tree view of kpi_centers
 4. Validation - Health check dashboard
 
-VERSION: 2.0.0
+VERSION: 2.1.0
 CHANGELOG:
-- v2.0.0: Full implementation per proposal v3.4.0
-          - 4 sub-tabs with complete CRUD functionality
-          - Enhanced filters and bulk operations
-          - Interactive tree view for hierarchy
-          - Validation dashboard with issue tracking
+- v2.1.0: Refined UI to match KPI & Targets tab patterns
+          - Product display: "PT Code | Name" format
+          - KPI Assignments with progress-like cards
+          - Consistent st.metric() usage with help tooltips
+          - Better card layouts using st.container(border=True)
+          - Streamlined forms with better validation
+- v2.0.0: Full CRUD implementation
 - v1.0.0: Initial read-only version
 """
 
@@ -27,17 +29,10 @@ from .queries import SetupQueries
 
 
 # =============================================================================
-# CONSTANTS
+# CONSTANTS - Synced with main KPI Center Performance page
 # =============================================================================
 
 KPI_TYPES = ['TERRITORY', 'VERTICAL', 'BRAND', 'INTERNAL']
-
-KPI_TYPE_COLORS = {
-    'TERRITORY': '#3498db',  # Blue
-    'VERTICAL': '#2ecc71',   # Green
-    'BRAND': '#e74c3c',      # Red
-    'INTERNAL': '#9b59b6'    # Purple
-}
 
 KPI_TYPE_ICONS = {
     'TERRITORY': '🌍',
@@ -46,13 +41,79 @@ KPI_TYPE_ICONS = {
     'INTERNAL': '🏢'
 }
 
-STATUS_BADGES = {
-    'ok': ('✅', 'green'),
-    'incomplete_split': ('⚠️', 'orange'),
-    'over_100_split': ('🔴', 'red'),
-    'approved': ('✅', 'green'),
-    'pending': ('⏳', 'gray')
+KPI_ICONS = {
+    'revenue': '💰',
+    'gross_profit': '📈',
+    'gross_profit_1': '📊',
+    'gp1': '📊',
+    'num_new_customers': '👥',
+    'num_new_products': '📦',
+    'new_business_revenue': '💼',
 }
+
+
+# =============================================================================
+# HELPER FUNCTIONS - Consistent with main page formatting
+# =============================================================================
+
+def format_currency(value: float, decimals: int = 0) -> str:
+    """Format value as USD currency - same pattern as main page."""
+    if pd.isna(value) or value == 0:
+        return "$0"
+    if decimals > 0:
+        return f"${value:,.{decimals}f}"
+    return f"${value:,.0f}"
+
+
+def format_product_display(product_name: str, pt_code: str = None) -> str:
+    """
+    Format product for display: "PT Code | Name" or just "Name".
+    Consistent with product display in other tabs.
+    """
+    if pt_code and str(pt_code).strip() and str(pt_code).strip() != 'None':
+        return f"{pt_code} | {product_name}"
+    return product_name or "N/A"
+
+
+def format_percentage(value: float, decimals: int = 0) -> str:
+    """Format as percentage."""
+    if pd.isna(value):
+        return "0%"
+    return f"{value:.{decimals}f}%"
+
+
+def get_status_display(status: str) -> tuple:
+    """Get status badge with icon and color."""
+    status_map = {
+        'ok': ('✅ OK', 'green'),
+        'incomplete_split': ('⚠️ Under 100%', 'orange'),
+        'over_100_split': ('🔴 Over 100%', 'red')
+    }
+    return status_map.get(status, (status, 'gray'))
+
+
+def get_period_warning(valid_to) -> tuple:
+    """
+    Get period status: (icon, text, delta_color for st.metric).
+    Returns tuple for use with st.metric delta_color.
+    """
+    if pd.isna(valid_to):
+        return ("🟢", "No End Date", "off")
+    
+    try:
+        valid_to_dt = pd.to_datetime(valid_to)
+        days_until = (valid_to_dt - pd.Timestamp.now()).days
+        
+        if days_until < 0:
+            return ("⚫", "EXPIRED", "inverse")
+        elif days_until <= 7:
+            return ("🔴", f"{days_until}d left", "inverse")
+        elif days_until <= 30:
+            return ("🟠", f"{days_until}d left", "off")
+        else:
+            return ("🟢", "Active", "normal")
+    except:
+        return ("❓", "Unknown", "off")
 
 
 # =============================================================================
@@ -68,7 +129,7 @@ def setup_tab_fragment(
     Main fragment for Setup tab with 4 sub-tabs.
     
     Args:
-        kpi_center_ids: List of selected KPI Center IDs
+        kpi_center_ids: List of selected KPI Center IDs from sidebar
         active_filters: Dict of active filters from sidebar
     """
     st.subheader("⚙️ KPI Center Configuration")
@@ -81,6 +142,9 @@ def setup_tab_fragment(
     user_role = st.session_state.get('user_role', 'Manager')
     can_edit = user_role in ['Admin', 'GM', 'MD']
     can_approve = user_role == 'Admin'
+    
+    # Get year from filters
+    current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
     
     # Create 4 sub-tabs
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -102,7 +166,8 @@ def setup_tab_fragment(
         kpi_assignments_section(
             setup_queries=setup_queries,
             kpi_center_ids=kpi_center_ids,
-            can_edit=can_edit
+            can_edit=can_edit,
+            current_year=current_year
         )
     
     with tab3:
@@ -113,7 +178,8 @@ def setup_tab_fragment(
     
     with tab4:
         validation_section(
-            setup_queries=setup_queries
+            setup_queries=setup_queries,
+            current_year=current_year
         )
 
 
@@ -128,169 +194,138 @@ def split_rules_section(
     can_edit: bool = False,
     can_approve: bool = False
 ):
-    """
-    Split Rules sub-tab with CRUD operations.
-    """
-    # =========================================================================
-    # SUMMARY CARDS
-    # =========================================================================
+    """Split Rules sub-tab with CRUD operations."""
+    
+    # -------------------------------------------------------------------------
+    # SUMMARY METRICS - Using st.metric like Overview tab
+    # -------------------------------------------------------------------------
     stats = setup_queries.get_split_summary_stats()
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric("Total Rules", f"{stats['total_rules']:,}")
+        st.metric(
+            label="Total Rules",
+            value=f"{stats['total_rules']:,}",
+            help="Total active split rules in system"
+        )
     with col2:
-        st.metric("✅ OK", f"{stats['ok_count']:,}", 
-                  delta=None, delta_color="off")
+        st.metric(
+            label="✅ OK",
+            value=f"{stats['ok_count']:,}",
+            delta=f"{stats['ok_count']/max(stats['total_rules'],1)*100:.0f}%" if stats['total_rules'] > 0 else None,
+            delta_color="off",
+            help="Rules where total split = 100%"
+        )
     with col3:
-        st.metric("⚠️ Under 100%", f"{stats['incomplete_count']:,}",
-                  delta=None, delta_color="off")
+        st.metric(
+            label="⚠️ Under 100%",
+            value=f"{stats['incomplete_count']:,}",
+            delta_color="off",
+            help="Rules where total split < 100%"
+        )
     with col4:
-        st.metric("🔴 Over 100%", f"{stats['over_100_count']:,}",
-                  delta=None, delta_color="off")
+        st.metric(
+            label="🔴 Over 100%",
+            value=f"{stats['over_100_count']:,}",
+            delta_color="off",
+            help="Rules where total split > 100% - needs fix!"
+        )
     with col5:
-        st.metric("⏳ Pending", f"{stats['pending_count']:,}",
-                  delta=None, delta_color="off")
+        st.metric(
+            label="⏳ Pending",
+            value=f"{stats['pending_count']:,}",
+            help="Rules awaiting approval"
+        )
     
     st.divider()
     
-    # =========================================================================
-    # ADD BUTTON & FILTERS
-    # =========================================================================
-    col_add, col_filter = st.columns([1, 5])
+    # -------------------------------------------------------------------------
+    # TOOLBAR
+    # -------------------------------------------------------------------------
+    if can_edit:
+        if st.button("➕ Add Split Rule", type="primary"):
+            st.session_state['show_add_split_form'] = True
     
-    with col_add:
-        if can_edit:
-            if st.button("➕ Add Split Rule", type="primary", key="add_split_btn"):
-                st.session_state['show_add_split_form'] = True
-    
-    # Show Add Form Dialog
+    # -------------------------------------------------------------------------
+    # ADD/EDIT FORMS
+    # -------------------------------------------------------------------------
     if st.session_state.get('show_add_split_form', False):
-        _render_add_split_form(setup_queries, can_approve)
+        _render_split_form(setup_queries, can_approve, mode='add')
     
-    # Show Edit Form Dialog
     if st.session_state.get('edit_split_id'):
-        _render_edit_split_form(setup_queries, st.session_state['edit_split_id'])
+        _render_split_form(setup_queries, can_approve, mode='edit', 
+                          rule_id=st.session_state['edit_split_id'])
     
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # FILTERS
-    # =========================================================================
-    with st.expander("🔍 Filters", expanded=True):
-        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+    # -------------------------------------------------------------------------
+    with st.expander("🔍 Filters", expanded=False):
+        f_col1, f_col2, f_col3, f_col4 = st.columns(4)
         
-        with filter_col1:
-            # Customer filter
-            customers_df = setup_queries.get_customers_for_dropdown(limit=500)
-            customer_options = ['All'] + customers_df['customer_name'].tolist() if not customers_df.empty else ['All']
-            selected_customer = st.selectbox(
-                "Customer",
-                customer_options,
-                key="split_customer_filter"
-            )
-        
-        with filter_col2:
-            # KPI Type filter
+        with f_col1:
             kpi_type_filter = st.selectbox(
                 "KPI Type",
                 ['All'] + KPI_TYPES,
                 key="split_kpi_type_filter"
             )
         
-        with filter_col3:
-            # Status filter
+        with f_col2:
+            status_options = {
+                'All': 'All Status',
+                'ok': '✅ OK',
+                'incomplete_split': '⚠️ Under 100%',
+                'over_100_split': '🔴 Over 100%'
+            }
             status_filter = st.selectbox(
                 "Status",
-                ['All', 'ok', 'incomplete_split', 'over_100_split'],
-                format_func=lambda x: {
-                    'All': 'All Status',
-                    'ok': '✅ OK',
-                    'incomplete_split': '⚠️ Under 100%',
-                    'over_100_split': '🔴 Over 100%'
-                }.get(x, x),
+                list(status_options.keys()),
+                format_func=lambda x: status_options[x],
                 key="split_status_filter"
             )
         
-        with filter_col4:
-            # Approval filter
+        with f_col3:
+            approval_options = {
+                'all': 'All',
+                'approved': '✅ Approved',
+                'pending': '⏳ Pending'
+            }
             approval_filter = st.selectbox(
                 "Approval",
-                ['all', 'approved', 'pending'],
-                format_func=lambda x: {
-                    'all': 'All',
-                    'approved': '✅ Approved',
-                    'pending': '⏳ Pending'
-                }.get(x, x),
+                list(approval_options.keys()),
+                format_func=lambda x: approval_options[x],
                 key="split_approval_filter"
             )
         
-        # Second row of filters
-        filter_col5, filter_col6, filter_col7, filter_col8 = st.columns(4)
-        
-        with filter_col5:
+        with f_col4:
             product_search = st.text_input(
                 "Search Product",
-                placeholder="Product name or code...",
+                placeholder="PT code or name...",
                 key="split_product_search"
             )
-        
-        with filter_col6:
-            # Brand filter
-            brands_df = setup_queries.get_brands_for_dropdown()
-            brand_options = ['All'] + brands_df['brand_name'].tolist() if not brands_df.empty else ['All']
-            selected_brand = st.selectbox(
-                "Brand",
-                brand_options,
-                key="split_brand_filter"
-            )
-        
-        with filter_col7:
-            active_only = st.checkbox("Active Only", value=True, key="split_active_only")
-        
-        with filter_col8:
-            expiring_soon = st.checkbox("Expiring in 30 days", value=False, key="split_expiring")
     
-    # =========================================================================
-    # BUILD QUERY PARAMETERS
-    # =========================================================================
-    query_params = {
-        'active_only': active_only,
-        'limit': 1000
-    }
+    # -------------------------------------------------------------------------
+    # GET DATA
+    # -------------------------------------------------------------------------
+    query_params = {'active_only': True, 'limit': 500}
     
     if kpi_center_ids:
         query_params['kpi_center_ids'] = kpi_center_ids
-    
-    if selected_customer != 'All':
-        customer_id = customers_df[customers_df['customer_name'] == selected_customer]['customer_id'].iloc[0]
-        query_params['customer_ids'] = [customer_id]
-    
     if kpi_type_filter != 'All':
         query_params['kpi_type'] = kpi_type_filter
-    
     if status_filter != 'All':
         query_params['status_filter'] = status_filter
-    
     if approval_filter != 'all':
         query_params['approval_filter'] = approval_filter
     
-    if selected_brand != 'All':
-        brand_id = brands_df[brands_df['brand_name'] == selected_brand]['brand_id'].iloc[0]
-        query_params['brand_ids'] = [brand_id]
-    
-    if expiring_soon:
-        query_params['expiring_days'] = 30
-    
-    # =========================================================================
-    # GET DATA
-    # =========================================================================
     split_df = setup_queries.get_kpi_split_data(**query_params)
     
-    # Apply product search client-side
+    # Client-side product search
     if product_search and not split_df.empty:
+        search_lower = product_search.lower()
         mask = (
-            split_df['product_pn'].fillna('').str.lower().str.contains(product_search.lower()) |
-            split_df['pt_code'].fillna('').str.lower().str.contains(product_search.lower())
+            split_df['product_pn'].fillna('').str.lower().str.contains(search_lower) |
+            split_df['pt_code'].fillna('').str.lower().str.contains(search_lower)
         )
         split_df = split_df[mask]
     
@@ -298,457 +333,308 @@ def split_rules_section(
         st.info("No split rules found matching the filters")
         return
     
-    st.caption(f"Showing {len(split_df):,} split rules")
+    st.caption(f"Showing {len(split_df):,} rules")
     
-    # =========================================================================
-    # BULK ACTIONS
-    # =========================================================================
-    if can_edit:
-        with st.expander("📦 Bulk Actions"):
-            bulk_col1, bulk_col2, bulk_col3 = st.columns(3)
-            
-            with bulk_col1:
-                if can_approve:
-                    if st.button("✅ Approve Selected", key="bulk_approve"):
-                        selected_ids = st.session_state.get('selected_split_ids', [])
-                        if selected_ids:
-                            result = setup_queries.approve_split_rules(
-                                selected_ids, 
-                                approved_by=st.session_state.get('user_employee_id')
-                            )
-                            if result['success']:
-                                st.success(f"Approved {result['count']} rules")
-                                st.rerun()
-                            else:
-                                st.error(result['message'])
-                        else:
-                            st.warning("No rules selected")
-            
-            with bulk_col2:
-                if st.button("📋 Copy to New Period", key="bulk_copy"):
-                    st.session_state['show_copy_period_form'] = True
-            
-            with bulk_col3:
-                if st.button("🗑️ Delete Selected", key="bulk_delete"):
-                    selected_ids = st.session_state.get('selected_split_ids', [])
-                    if selected_ids:
-                        result = setup_queries.delete_split_rules_bulk(selected_ids)
-                        if result['success']:
-                            st.success(f"Deleted {result['count']} rules")
-                            st.rerun()
-                        else:
-                            st.error(result['message'])
-                    else:
-                        st.warning("No rules selected")
-    
-    # Copy to Period Form
-    if st.session_state.get('show_copy_period_form', False):
-        _render_copy_period_form(setup_queries)
-    
-    # =========================================================================
-    # DATA TABLE
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # DATA TABLE - Formatted like other tabs
+    # -------------------------------------------------------------------------
     display_df = split_df.copy()
     
-    # Add status badge column
-    display_df['status_display'] = display_df['kpi_split_status'].apply(
-        lambda x: STATUS_BADGES.get(x, ('❓', 'gray'))[0] + ' ' + x.replace('_', ' ').title()
-    )
-    
-    # Add approval badge
-    display_df['approval_display'] = display_df['approval_status'].apply(
-        lambda x: '✅ Approved' if x == 'approved' else '⏳ Pending'
-    )
-    
-    # Add expiring warning
-    display_df['period_display'] = display_df.apply(
-        lambda row: _format_period_with_warning(row['effective_from'], row['effective_to']),
+    # Format product display
+    display_df['Product'] = display_df.apply(
+        lambda r: format_product_display(r['product_pn'], r.get('pt_code')), 
         axis=1
     )
     
-    # Display columns
-    display_cols = [
-        'kpi_center_name', 'customer_name', 'product_pn', 'brand',
-        'split_percentage', 'period_display', 'status_display', 'approval_display'
-    ]
+    # Format split percentage
+    display_df['Split'] = display_df['split_percentage'].apply(lambda x: f"{x:.0f}%")
     
-    # Configure column display
-    column_config = {
-        'kpi_center_name': st.column_config.TextColumn('KPI Center', width='medium'),
-        'customer_name': st.column_config.TextColumn('Customer', width='medium'),
-        'product_pn': st.column_config.TextColumn('Product', width='medium'),
-        'brand': st.column_config.TextColumn('Brand', width='small'),
-        'split_percentage': st.column_config.NumberColumn('Split %', format="%.1f%%"),
-        'period_display': st.column_config.TextColumn('Period', width='medium'),
-        'status_display': st.column_config.TextColumn('Status', width='small'),
-        'approval_display': st.column_config.TextColumn('Approval', width='small'),
-    }
-    
-    # Add selection column if can edit
-    if can_edit:
-        display_df['select'] = False
-        display_cols = ['select'] + display_cols
-        column_config['select'] = st.column_config.CheckboxColumn('Select', default=False)
-    
-    # Show data editor
-    edited_df = st.data_editor(
-        display_df[display_cols].head(500),
-        hide_index=True,
-        column_config=column_config,
-        use_container_width=True,
-        disabled=[c for c in display_cols if c != 'select'],
-        key="split_data_editor"
+    # Format status
+    display_df['Status'] = display_df['kpi_split_status'].apply(
+        lambda x: get_status_display(x)[0]
     )
     
-    # Track selected IDs
-    if can_edit and 'select' in edited_df.columns:
-        selected_mask = edited_df['select'] == True
-        selected_ids = display_df.loc[selected_mask.index[selected_mask], 'kpi_center_split_id'].tolist()
-        st.session_state['selected_split_ids'] = selected_ids
+    # Format approval
+    display_df['Approved'] = display_df['is_approved'].apply(
+        lambda x: '✅' if x else '⏳'
+    )
     
-    # =========================================================================
+    # Display table
+    st.dataframe(
+        display_df[[
+            'kpi_center_name', 'customer_name', 'Product', 'brand',
+            'Split', 'effective_period', 'Status', 'Approved'
+        ]],
+        hide_index=True,
+        column_config={
+            'kpi_center_name': st.column_config.TextColumn('KPI Center', width='medium'),
+            'customer_name': st.column_config.TextColumn('Customer', width='medium'),
+            'Product': st.column_config.TextColumn('Product', width='large'),
+            'brand': st.column_config.TextColumn('Brand', width='small'),
+            'Split': st.column_config.TextColumn('Split %', width='small'),
+            'effective_period': st.column_config.TextColumn('Period', width='medium'),
+            'Status': st.column_config.TextColumn('Status', width='small'),
+            'Approved': st.column_config.TextColumn('✓', width='small'),
+        },
+        use_container_width=True
+    )
+    
+    # -------------------------------------------------------------------------
     # ROW ACTIONS
-    # =========================================================================
-    if can_edit:
-        st.caption("Click on a row to edit or delete")
-        
-        action_col1, action_col2, action_col3 = st.columns([2, 1, 1])
-        
-        with action_col1:
-            selected_row_id = st.selectbox(
-                "Select Rule to Edit/Delete",
-                options=[None] + split_df['kpi_center_split_id'].tolist(),
-                format_func=lambda x: "Select a rule..." if x is None else f"Rule #{x}",
-                key="select_rule_action"
-            )
-        
-        with action_col2:
-            if selected_row_id and st.button("✏️ Edit", key="edit_single"):
-                st.session_state['edit_split_id'] = selected_row_id
-                st.rerun()
-        
-        with action_col3:
-            if selected_row_id and st.button("🗑️ Delete", key="delete_single"):
-                result = setup_queries.delete_split_rule(selected_row_id)
-                if result['success']:
-                    st.success("Rule deleted")
-                    st.rerun()
-                else:
-                    st.error(result['message'])
-
-
-def _format_period_with_warning(valid_from, valid_to) -> str:
-    """Format period with expiring warning."""
-    if pd.isna(valid_to):
-        return f"{valid_from} → No End"
-    
-    days_until = (pd.to_datetime(valid_to) - pd.Timestamp.now()).days
-    
-    if days_until < 0:
-        return f"⚫ EXPIRED"
-    elif days_until <= 30:
-        return f"⚠️ {valid_from} → {valid_to}"
-    else:
-        return f"{valid_from} → {valid_to}"
-
-
-def _render_add_split_form(setup_queries: SetupQueries, can_approve: bool):
-    """Render the Add Split Rule form."""
-    with st.expander("➕ Add New Split Rule", expanded=True):
-        with st.form("add_split_form"):
-            st.markdown("### Add Split Rule")
-            
-            col1, col2 = st.columns(2)
+    # -------------------------------------------------------------------------
+    if can_edit and not split_df.empty:
+        with st.expander("✏️ Edit / Delete Rule"):
+            col1, col2, col3 = st.columns([3, 1, 1])
             
             with col1:
-                # Customer search
-                customer_search = st.text_input("Search Customer", key="add_customer_search")
-                customers_df = setup_queries.get_customers_for_dropdown(search=customer_search, limit=50)
+                rule_options = split_df.head(100).apply(
+                    lambda r: (
+                        r['kpi_center_split_id'],
+                        f"#{r['kpi_center_split_id']} | {r['customer_name'][:15]}... | {format_product_display(r['product_pn'], r.get('pt_code'))[:20]}..."
+                    ),
+                    axis=1
+                ).tolist()
+                rule_options = [(None, "Select a rule...")] + rule_options
                 
-                if not customers_df.empty:
-                    customer_id = st.selectbox(
-                        "Customer *",
-                        options=customers_df['customer_id'].tolist(),
-                        format_func=lambda x: customers_df[customers_df['customer_id'] == x]['customer_name'].iloc[0],
-                        key="add_customer_id"
-                    )
-                else:
-                    st.warning("No customers found")
-                    customer_id = None
+                selected_rule = st.selectbox(
+                    "Rule",
+                    options=[r[0] for r in rule_options],
+                    format_func=lambda x: next((r[1] for r in rule_options if r[0] == x), ""),
+                    key="select_split_rule"
+                )
             
             with col2:
-                # Product search
-                product_search = st.text_input("Search Product", key="add_product_search")
-                products_df = setup_queries.get_products_for_dropdown(search=product_search, limit=50)
-                
-                if not products_df.empty:
-                    product_id = st.selectbox(
-                        "Product *",
-                        options=products_df['product_id'].tolist(),
-                        format_func=lambda x: products_df[products_df['product_id'] == x]['product_name'].iloc[0],
-                        key="add_product_id"
-                    )
-                else:
-                    st.warning("No products found")
-                    product_id = None
-            
-            col3, col4 = st.columns(2)
-            
-            with col3:
-                # KPI Center
-                centers_df = setup_queries.get_kpi_centers_for_dropdown()
-                if not centers_df.empty:
-                    kpi_center_id = st.selectbox(
-                        "KPI Center *",
-                        options=centers_df['kpi_center_id'].tolist(),
-                        format_func=lambda x: f"{centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]} ({centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0]})",
-                        key="add_kpi_center_id"
-                    )
-                else:
-                    kpi_center_id = None
-            
-            with col4:
-                split_percentage = st.number_input(
-                    "Split % *",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=100.0,
-                    step=5.0,
-                    key="add_split_pct"
-                )
-            
-            # Show current splits if customer and product selected
-            if customer_id and product_id:
-                # Get selected center's type
-                selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0] if kpi_center_id else None
-                
-                existing_df = setup_queries.get_split_by_customer_product(
-                    customer_id=customer_id,
-                    product_id=product_id,
-                    kpi_type=selected_type
-                )
-                
-                if not existing_df.empty:
-                    current_total = existing_df['split_percentage'].sum()
-                    st.info(f"📊 Current splits for this combo ({selected_type}): {current_total}%")
-                    
-                    for _, row in existing_df.iterrows():
-                        st.caption(f"  • {row['kpi_center_name']}: {row['split_percentage']}%")
-                    
-                    new_total = current_total + split_percentage
-                    if new_total > 100:
-                        st.error(f"⚠️ Adding {split_percentage}% will result in {new_total}% (over limit)")
-                    elif new_total == 100:
-                        st.success(f"✅ Total will be exactly 100%")
-                    else:
-                        st.warning(f"Total will be {new_total}% ({100 - new_total}% remaining)")
-            
-            col5, col6 = st.columns(2)
-            
-            with col5:
-                valid_from = st.date_input(
-                    "Valid From *",
-                    value=date.today(),
-                    key="add_valid_from"
-                )
-            
-            with col6:
-                valid_to = st.date_input(
-                    "Valid To *",
-                    value=date(date.today().year, 12, 31),
-                    key="add_valid_to"
-                )
-            
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                submitted = st.form_submit_button("Save", type="primary")
-            
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['show_add_split_form'] = False
+                if selected_rule and st.button("✏️ Edit", use_container_width=True):
+                    st.session_state['edit_split_id'] = selected_rule
                     st.rerun()
             
-            if submitted:
-                if not all([customer_id, product_id, kpi_center_id]):
-                    st.error("Please fill all required fields")
-                else:
-                    result = setup_queries.create_split_rule(
-                        customer_id=customer_id,
-                        product_id=product_id,
-                        kpi_center_id=kpi_center_id,
-                        split_percentage=split_percentage,
-                        valid_from=valid_from,
-                        valid_to=valid_to,
-                        is_approved=can_approve
-                    )
-                    
+            with col3:
+                if selected_rule and st.button("🗑️ Delete", use_container_width=True):
+                    result = setup_queries.delete_split_rule(selected_rule)
                     if result['success']:
-                        st.success(f"Split rule created (ID: {result['id']})")
-                        st.session_state['show_add_split_form'] = False
+                        st.success("Rule deleted")
                         st.rerun()
                     else:
                         st.error(result['message'])
 
 
-def _render_edit_split_form(setup_queries: SetupQueries, rule_id: int):
-    """Render the Edit Split Rule form."""
-    # Get current rule data
-    rule_df = setup_queries.get_kpi_split_data(limit=1)
-    rule_df = rule_df[rule_df['kpi_center_split_id'] == rule_id]
+def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
+                       mode: str = 'add', rule_id: int = None):
+    """Render Add/Edit split rule form."""
     
-    if rule_df.empty:
-        st.error("Rule not found")
-        st.session_state['edit_split_id'] = None
-        return
+    existing = None
+    if mode == 'edit' and rule_id:
+        df = setup_queries.get_kpi_split_data(limit=5000)
+        df = df[df['kpi_center_split_id'] == rule_id]
+        if not df.empty:
+            existing = df.iloc[0]
+        else:
+            st.error("Rule not found")
+            st.session_state['edit_split_id'] = None
+            return
     
-    rule = rule_df.iloc[0]
+    title = "✏️ Edit Split Rule" if mode == 'edit' else "➕ Add Split Rule"
     
-    with st.expander(f"✏️ Edit Split Rule #{rule_id}", expanded=True):
-        with st.form("edit_split_form"):
-            st.markdown(f"**Customer:** {rule['customer_name']}")
-            st.markdown(f"**Product:** {rule['product_pn']}")
-            st.markdown(f"**KPI Center:** {rule['kpi_center_name']}")
-            
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        
+        if mode == 'edit' and existing is not None:
+            st.caption(f"Rule ID: {rule_id}")
+            col_info1, col_info2 = st.columns(2)
+            with col_info1:
+                st.markdown(f"**Customer:** {existing['customer_name']}")
+            with col_info2:
+                st.markdown(f"**Product:** {format_product_display(existing['product_pn'], existing.get('pt_code'))}")
+        
+        with st.form(f"{mode}_split_form", clear_on_submit=False):
             col1, col2 = st.columns(2)
             
             with col1:
-                new_split_pct = st.number_input(
-                    "Split %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=float(rule['split_percentage']),
-                    step=5.0,
-                    key="edit_split_pct"
-                )
+                if mode == 'add':
+                    # Customer search
+                    customer_search = st.text_input("🔍 Search Customer", key=f"{mode}_cust_search")
+                    customers_df = setup_queries.get_customers_for_dropdown(
+                        search=customer_search if customer_search else None, 
+                        limit=50
+                    )
+                    
+                    if not customers_df.empty:
+                        customer_id = st.selectbox(
+                            "Customer *",
+                            options=customers_df['customer_id'].tolist(),
+                            format_func=lambda x: f"{customers_df[customers_df['customer_id'] == x]['customer_name'].iloc[0]} ({customers_df[customers_df['customer_id'] == x]['company_code'].iloc[0]})",
+                            key=f"{mode}_customer_id"
+                        )
+                    else:
+                        customer_id = None
+                        st.caption("No customers found")
+                else:
+                    customer_id = existing['customer_id']
+                
+                # KPI Center selection
+                centers_df = setup_queries.get_kpi_centers_for_dropdown()
+                if not centers_df.empty:
+                    default_idx = 0
+                    if existing is not None and 'kpi_center_id' in existing:
+                        matches = centers_df[centers_df['kpi_center_id'] == existing['kpi_center_id']]
+                        if not matches.empty:
+                            default_idx = centers_df.index.tolist().index(matches.index[0])
+                    
+                    kpi_center_id = st.selectbox(
+                        "KPI Center *",
+                        options=centers_df['kpi_center_id'].tolist(),
+                        index=default_idx,
+                        format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
+                        key=f"{mode}_kpi_center_id"
+                    )
+                else:
+                    kpi_center_id = None
             
             with col2:
-                # Validate new percentage
+                if mode == 'add':
+                    # Product search
+                    product_search = st.text_input("🔍 Search Product", key=f"{mode}_prod_search")
+                    products_df = setup_queries.get_products_for_dropdown(
+                        search=product_search if product_search else None,
+                        limit=50
+                    )
+                    
+                    if not products_df.empty:
+                        product_id = st.selectbox(
+                            "Product *",
+                            options=products_df['product_id'].tolist(),
+                            format_func=lambda x: format_product_display(
+                                products_df[products_df['product_id'] == x]['product_name'].iloc[0],
+                                products_df[products_df['product_id'] == x]['pt_code'].iloc[0]
+                            ),
+                            key=f"{mode}_product_id"
+                        )
+                    else:
+                        product_id = None
+                        st.caption("No products found")
+                else:
+                    product_id = existing['product_id']
+                
+                # Split percentage
+                default_split = float(existing['split_percentage']) if existing is not None else 100.0
+                split_pct = st.number_input(
+                    "Split % *",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=default_split,
+                    step=5.0,
+                    key=f"{mode}_split_pct"
+                )
+            
+            # Validation display
+            if customer_id and product_id and kpi_center_id and not centers_df.empty:
+                selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
                 validation = setup_queries.validate_split_percentage(
-                    customer_id=rule['customer_id'],
-                    product_id=rule['product_id'],
-                    kpi_type=rule['kpi_type'],
-                    new_percentage=new_split_pct,
-                    exclude_rule_id=rule_id
+                    customer_id=customer_id,
+                    product_id=product_id,
+                    kpi_type=selected_type,
+                    new_percentage=split_pct,
+                    exclude_rule_id=rule_id if mode == 'edit' else None
                 )
                 
-                if validation['valid']:
-                    st.success(validation['message'])
-                else:
-                    st.error(validation['message'])
+                # Show validation result like metric display
+                if validation['current_total'] > 0 or mode == 'edit':
+                    val_col1, val_col2, val_col3 = st.columns(3)
+                    with val_col1:
+                        st.metric("Current Total", f"{validation['current_total']:.0f}%")
+                    with val_col2:
+                        st.metric("After Save", f"{validation['new_total']:.0f}%",
+                                 delta=f"+{split_pct:.0f}%", delta_color="off")
+                    with val_col3:
+                        if validation['new_total'] == 100:
+                            st.success("✅ Perfect!")
+                        elif validation['new_total'] > 100:
+                            st.error(f"🔴 Over by {validation['new_total'] - 100:.0f}%")
+                        else:
+                            st.warning(f"⚠️ {validation['remaining']:.0f}% remaining")
             
+            # Period inputs
             col3, col4 = st.columns(2)
-            
             with col3:
-                new_valid_from = st.date_input(
-                    "Valid From",
-                    value=pd.to_datetime(rule['effective_from']).date() if pd.notna(rule['effective_from']) else date.today(),
-                    key="edit_valid_from"
-                )
+                default_from = pd.to_datetime(existing['effective_from']).date() if existing is not None and pd.notna(existing.get('effective_from')) else date.today()
+                valid_from = st.date_input("Valid From *", value=default_from, key=f"{mode}_valid_from")
             
             with col4:
-                new_valid_to = st.date_input(
-                    "Valid To",
-                    value=pd.to_datetime(rule['effective_to']).date() if pd.notna(rule['effective_to']) else date(date.today().year, 12, 31),
-                    key="edit_valid_to"
-                )
+                default_to = pd.to_datetime(existing['effective_to']).date() if existing is not None and pd.notna(existing.get('effective_to')) else date(date.today().year, 12, 31)
+                valid_to = st.date_input("Valid To *", value=default_to, key=f"{mode}_valid_to")
             
+            # Form buttons
             col_submit, col_cancel = st.columns(2)
             
             with col_submit:
-                if st.form_submit_button("Save Changes", type="primary"):
-                    result = setup_queries.update_split_rule(
-                        rule_id=rule_id,
-                        split_percentage=new_split_pct,
-                        valid_from=new_valid_from,
-                        valid_to=new_valid_to
-                    )
+                submitted = st.form_submit_button(
+                    "💾 Save" if mode == 'add' else "💾 Update",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+            with col_cancel:
+                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            
+            if submitted:
+                if mode == 'add' and not all([customer_id, product_id, kpi_center_id]):
+                    st.error("Please fill all required fields")
+                else:
+                    if mode == 'add':
+                        result = setup_queries.create_split_rule(
+                            customer_id=customer_id,
+                            product_id=product_id,
+                            kpi_center_id=kpi_center_id,
+                            split_percentage=split_pct,
+                            valid_from=valid_from,
+                            valid_to=valid_to,
+                            is_approved=can_approve
+                        )
+                    else:
+                        result = setup_queries.update_split_rule(
+                            rule_id=rule_id,
+                            split_percentage=split_pct,
+                            valid_from=valid_from,
+                            valid_to=valid_to,
+                            kpi_center_id=kpi_center_id
+                        )
                     
                     if result['success']:
-                        st.success("Rule updated")
+                        st.success(f"{'Created' if mode == 'add' else 'Updated'} successfully!")
+                        st.session_state['show_add_split_form'] = False
                         st.session_state['edit_split_id'] = None
                         st.rerun()
                     else:
                         st.error(result['message'])
             
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['edit_split_id'] = None
-                    st.rerun()
-
-
-def _render_copy_period_form(setup_queries: SetupQueries):
-    """Render the Copy to Period form."""
-    with st.expander("📋 Copy Rules to New Period", expanded=True):
-        with st.form("copy_period_form"):
-            st.markdown("Copy selected rules to a new validity period")
-            
-            selected_ids = st.session_state.get('selected_split_ids', [])
-            st.info(f"{len(selected_ids)} rules selected")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_valid_from = st.date_input(
-                    "New Valid From",
-                    value=date(date.today().year + 1, 1, 1),
-                    key="copy_valid_from"
-                )
-            
-            with col2:
-                new_valid_to = st.date_input(
-                    "New Valid To",
-                    value=date(date.today().year + 1, 12, 31),
-                    key="copy_valid_to"
-                )
-            
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                if st.form_submit_button("Copy Rules", type="primary"):
-                    if not selected_ids:
-                        st.error("No rules selected")
-                    else:
-                        result = setup_queries.copy_splits_to_period(
-                            rule_ids=selected_ids,
-                            new_valid_from=new_valid_from,
-                            new_valid_to=new_valid_to
-                        )
-                        
-                        if result['success']:
-                            st.success(f"Copied {len(selected_ids)} rules to new period")
-                            st.session_state['show_copy_period_form'] = False
-                            st.rerun()
-                        else:
-                            st.error(result['message'])
-            
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['show_copy_period_form'] = False
-                    st.rerun()
+            if cancelled:
+                st.session_state['show_add_split_form'] = False
+                st.session_state['edit_split_id'] = None
+                st.rerun()
 
 
 # =============================================================================
-# KPI ASSIGNMENTS SECTION
+# KPI ASSIGNMENTS SECTION - Styled like KPI & Targets > Progress tab
 # =============================================================================
 
 @st.fragment
 def kpi_assignments_section(
     setup_queries: SetupQueries,
     kpi_center_ids: List[int] = None,
-    can_edit: bool = False
+    can_edit: bool = False,
+    current_year: int = None
 ):
-    """
-    KPI Assignments sub-tab with CRUD operations.
-    """
-    # =========================================================================
+    """KPI Assignments sub-tab - styled like KPI & Targets tab."""
+    
+    current_year = current_year or date.today().year
+    
+    # -------------------------------------------------------------------------
     # FILTER BAR
-    # =========================================================================
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    # -------------------------------------------------------------------------
+    col1, col2, col3 = st.columns([1, 2, 1])
     
     with col1:
         available_years = setup_queries.get_available_years()
-        current_year = date.today().year
         if current_year not in available_years:
             available_years.append(current_year)
         available_years.sort(reverse=True)
@@ -756,93 +642,80 @@ def kpi_assignments_section(
         selected_year = st.selectbox(
             "Year",
             options=available_years,
-            index=0,
-            key="assignment_year"
+            index=available_years.index(current_year) if current_year in available_years else 0,
+            key="assign_year_filter"
         )
     
     with col2:
         centers_df = setup_queries.get_kpi_centers_for_dropdown()
-        center_options = [('All', None)] + [(row['kpi_center_name'], row['kpi_center_id']) 
-                                             for _, row in centers_df.iterrows()]
-        selected_center = st.selectbox(
+        center_options = [(-1, "All KPI Centers")] + [
+            (row['kpi_center_id'], f"{KPI_TYPE_ICONS.get(row['kpi_type'], '📁')} {row['kpi_center_name']}") 
+            for _, row in centers_df.iterrows()
+        ]
+        selected_center_id = st.selectbox(
             "KPI Center",
-            options=center_options,
-            format_func=lambda x: x[0],
-            key="assignment_center"
+            options=[c[0] for c in center_options],
+            format_func=lambda x: next((c[1] for c in center_options if c[0] == x), ""),
+            key="assign_center_filter"
         )
     
     with col3:
-        kpi_types_df = setup_queries.get_kpi_types()
-        kpi_type_options = [('All', None)] + [(row['kpi_name'], row['kpi_type_id']) 
-                                               for _, row in kpi_types_df.iterrows()]
-        selected_kpi_type = st.selectbox(
-            "KPI Type",
-            options=kpi_type_options,
-            format_func=lambda x: x[0],
-            key="assignment_kpi_type"
-        )
-    
-    with col4:
         if can_edit:
             st.write("")  # Spacer
-            st.write("")
-            if st.button("➕ Add Assignment", type="primary", key="add_assignment_btn"):
+            if st.button("➕ Add Assignment", type="primary", use_container_width=True):
                 st.session_state['show_add_assignment_form'] = True
     
     st.divider()
     
-    # =========================================================================
-    # SUMMARY BY KPI TYPE
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # ADD/EDIT FORMS
+    # -------------------------------------------------------------------------
+    if st.session_state.get('show_add_assignment_form', False):
+        _render_assignment_form(setup_queries, selected_year, mode='add')
+    
+    if st.session_state.get('edit_assignment_id'):
+        _render_assignment_form(setup_queries, selected_year, mode='edit',
+                               assignment_id=st.session_state['edit_assignment_id'])
+    
+    # -------------------------------------------------------------------------
+    # KPI TYPE SUMMARY - Like Overview tab metrics
+    # -------------------------------------------------------------------------
     summary_df = setup_queries.get_assignment_summary_by_type(selected_year)
     
     if not summary_df.empty:
-        st.markdown(f"### {selected_year} KPI Targets Overview")
+        st.markdown(f"#### 📊 {selected_year} Targets Overview")
         
-        summary_cols = st.columns(len(summary_df) if len(summary_df) <= 4 else 4)
+        num_cols = min(len(summary_df), 4)
+        cols = st.columns(num_cols)
         
         for idx, (_, row) in enumerate(summary_df.iterrows()):
-            with summary_cols[idx % 4]:
-                icon = '💰' if 'revenue' in row['kpi_name'].lower() else (
-                    '📈' if 'profit' in row['kpi_name'].lower() else (
-                        '👥' if 'customer' in row['kpi_name'].lower() else '📊'
-                    )
-                )
+            with cols[idx % num_cols]:
+                kpi_lower = row['kpi_name'].lower().replace(' ', '_')
+                icon = KPI_ICONS.get(kpi_lower, '📋')
                 
                 if row['unit_of_measure'] == 'USD':
-                    value_display = f"${row['total_target']:,.0f}"
+                    value = format_currency(row['total_target'])
                 else:
-                    value_display = f"{row['total_target']:,.0f}"
+                    value = f"{row['total_target']:,.0f}"
                 
                 st.metric(
-                    f"{icon} {row['kpi_name']}",
-                    value_display,
+                    label=f"{icon} {row['kpi_name']}",
+                    value=value,
                     delta=f"{row['center_count']} centers",
-                    delta_color="off"
+                    delta_color="off",
+                    help=f"Total {selected_year} target for {row['kpi_name']}"
                 )
+        
+        st.divider()
     
-    st.divider()
-    
-    # Show Add Form
-    if st.session_state.get('show_add_assignment_form', False):
-        _render_add_assignment_form(setup_queries, selected_year)
-    
-    # Show Edit Form
-    if st.session_state.get('edit_assignment_id'):
-        _render_edit_assignment_form(setup_queries, st.session_state['edit_assignment_id'])
-    
-    # =========================================================================
-    # ASSIGNMENTS BY KPI CENTER
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # ASSIGNMENTS BY KPI CENTER - Card layout like Progress tab
+    # -------------------------------------------------------------------------
     query_params = {'year': selected_year}
-    
-    if selected_center[1]:
-        query_params['kpi_center_ids'] = [selected_center[1]]
+    if selected_center_id > 0:
+        query_params['kpi_center_ids'] = [selected_center_id]
     elif kpi_center_ids:
         query_params['kpi_center_ids'] = kpi_center_ids
-    
-    if selected_kpi_type[1]:
-        query_params['kpi_type_id'] = selected_kpi_type[1]
     
     assignments_df = setup_queries.get_kpi_assignments(**query_params)
     weight_summary_df = setup_queries.get_assignment_weight_summary(selected_year)
@@ -853,159 +726,238 @@ def kpi_assignments_section(
     
     # Group by KPI Center
     for center_id in assignments_df['kpi_center_id'].unique():
-        center_assignments = assignments_df[assignments_df['kpi_center_id'] == center_id]
-        center_name = center_assignments.iloc[0]['kpi_center_name']
-        center_type = center_assignments.iloc[0]['kpi_center_type']
+        center_data = assignments_df[assignments_df['kpi_center_id'] == center_id]
+        center_name = center_data.iloc[0]['kpi_center_name']
+        center_type = center_data.iloc[0]['kpi_center_type']
         
         # Get weight sum
         weight_row = weight_summary_df[weight_summary_df['kpi_center_id'] == center_id]
         total_weight = int(weight_row['total_weight'].iloc[0]) if not weight_row.empty else 0
+        kpi_count = len(center_data)
         
-        weight_status = "✅" if total_weight == 100 else "⚠️"
+        # Determine weight status
+        if total_weight == 100:
+            weight_badge = "✅"
+            weight_color = "normal"
+        elif total_weight < 100:
+            weight_badge = "⚠️"
+            weight_color = "off"
+        else:
+            weight_badge = "🔴"
+            weight_color = "inverse"
         
-        with st.expander(f"📁 {center_name} ({center_type}) - Weight: {total_weight}% {weight_status}", expanded=True):
-            # Table header
-            cols = st.columns([3, 2, 1.5, 1, 1, 1])
-            with cols[0]:
-                st.markdown("**KPI Type**")
-            with cols[1]:
-                st.markdown("**Annual Target**")
-            with cols[2]:
-                st.markdown("**Monthly**")
-            with cols[3]:
-                st.markdown("**Weight**")
-            with cols[4]:
-                st.markdown("**Actions**")
+        icon = KPI_TYPE_ICONS.get(center_type, '📁')
+        
+        # Card container - like Progress tab
+        with st.container(border=True):
+            # Header
+            header_col1, header_col2 = st.columns([4, 1])
             
-            # Assignment rows
-            for _, assignment in center_assignments.iterrows():
-                cols = st.columns([3, 2, 1.5, 1, 1, 1])
-                
-                with cols[0]:
-                    st.text(assignment['kpi_name'])
-                
-                with cols[1]:
-                    if assignment['unit_of_measure'] == 'USD':
-                        st.text(f"${assignment['annual_target_value_numeric']:,.0f}")
-                    else:
-                        st.text(f"{assignment['annual_target_value_numeric']:,.0f}")
-                
-                with cols[2]:
-                    if assignment['unit_of_measure'] == 'USD':
-                        st.text(f"${assignment['monthly_target_value']:,.0f}")
-                    else:
-                        st.text(f"{assignment['monthly_target_value']:,.1f}")
-                
-                with cols[3]:
-                    st.text(f"{assignment['weight_numeric']}%")
-                
-                with cols[4]:
-                    if can_edit:
-                        col_edit, col_delete = st.columns(2)
-                        with col_edit:
-                            if st.button("✏️", key=f"edit_assign_{assignment['assignment_id']}"):
-                                st.session_state['edit_assignment_id'] = assignment['assignment_id']
-                                st.rerun()
-                        with col_delete:
-                            if st.button("🗑️", key=f"del_assign_{assignment['assignment_id']}"):
-                                result = setup_queries.delete_assignment(assignment['assignment_id'])
-                                if result['success']:
-                                    st.rerun()
+            with header_col1:
+                st.markdown(f"### {icon} {center_name}")
+                st.caption(f"{center_type} • {kpi_count} KPI{'s' if kpi_count > 1 else ''}")
+            
+            with header_col2:
+                st.metric(
+                    label="Weight Sum",
+                    value=f"{total_weight}%",
+                    delta=weight_badge,
+                    delta_color=weight_color,
+                    help="Total weight should equal 100%"
+                )
+            
+            # KPI rows
+            for _, kpi in center_data.iterrows():
+                _render_kpi_assignment_row(kpi, can_edit, setup_queries)
             
             # Add KPI button
             if can_edit:
-                if st.button(f"➕ Add KPI to {center_name}", key=f"add_kpi_{center_id}"):
+                if st.button(
+                    f"➕ Add KPI to {center_name}", 
+                    key=f"add_kpi_btn_{center_id}",
+                    use_container_width=True
+                ):
                     st.session_state['add_assignment_center_id'] = center_id
                     st.session_state['show_add_assignment_form'] = True
                     st.rerun()
 
 
-def _render_add_assignment_form(setup_queries: SetupQueries, year: int):
-    """Render the Add Assignment form."""
-    with st.expander("➕ Add KPI Assignment", expanded=True):
-        with st.form("add_assignment_form"):
-            st.markdown("### Add KPI Assignment")
-            
+def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SetupQueries):
+    """Render a single KPI assignment row."""
+    
+    kpi_lower = kpi['kpi_name'].lower().replace(' ', '_')
+    icon = KPI_ICONS.get(kpi_lower, '📋')
+    
+    col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
+    
+    with col1:
+        st.markdown(f"**{icon} {kpi['kpi_name']}**")
+    
+    with col2:
+        if kpi['unit_of_measure'] == 'USD':
+            annual = format_currency(kpi['annual_target_value_numeric'])
+            monthly = format_currency(kpi['monthly_target_value'])
+        else:
+            annual = f"{kpi['annual_target_value_numeric']:,.0f}"
+            monthly = f"{kpi['monthly_target_value']:,.1f}"
+        
+        st.caption(f"Annual: {annual} • Monthly: {monthly}")
+    
+    with col3:
+        st.markdown(f"**{kpi['weight_numeric']:.0f}%** weight")
+    
+    with col4:
+        if can_edit:
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("✏️", key=f"edit_assign_{kpi['assignment_id']}", help="Edit"):
+                    st.session_state['edit_assignment_id'] = kpi['assignment_id']
+                    st.rerun()
+            with btn_col2:
+                if st.button("🗑️", key=f"del_assign_{kpi['assignment_id']}", help="Delete"):
+                    result = setup_queries.delete_assignment(kpi['assignment_id'])
+                    if result['success']:
+                        st.rerun()
+
+
+def _render_assignment_form(setup_queries: SetupQueries, year: int,
+                           mode: str = 'add', assignment_id: int = None):
+    """Render Add/Edit assignment form."""
+    
+    existing = None
+    if mode == 'edit' and assignment_id:
+        df = setup_queries.get_kpi_assignments()
+        df = df[df['assignment_id'] == assignment_id]
+        if not df.empty:
+            existing = df.iloc[0]
+        else:
+            st.error("Assignment not found")
+            st.session_state['edit_assignment_id'] = None
+            return
+    
+    title = "✏️ Edit KPI Assignment" if mode == 'edit' else "➕ Add KPI Assignment"
+    
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        
+        with st.form(f"{mode}_assignment_form"):
             col1, col2 = st.columns(2)
             
             with col1:
                 # KPI Center
                 centers_df = setup_queries.get_kpi_centers_for_dropdown()
                 
-                # Pre-select if coming from center card
                 default_center = st.session_state.get('add_assignment_center_id')
+                if existing is not None:
+                    default_center = existing['kpi_center_id']
+                
                 default_idx = 0
-                if default_center and default_center in centers_df['kpi_center_id'].values:
-                    default_idx = centers_df[centers_df['kpi_center_id'] == default_center].index[0]
+                if default_center and not centers_df.empty:
+                    matches = centers_df[centers_df['kpi_center_id'] == default_center]
+                    if not matches.empty:
+                        default_idx = centers_df.index.tolist().index(matches.index[0])
                 
                 kpi_center_id = st.selectbox(
                     "KPI Center *",
                     options=centers_df['kpi_center_id'].tolist(),
                     index=default_idx,
-                    format_func=lambda x: f"{centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]} ({centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0]})",
-                    key="add_assign_center"
+                    format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
+                    key=f"{mode}_assign_center",
+                    disabled=(mode == 'edit')
                 )
-            
-            with col2:
+                
                 # KPI Type
                 kpi_types_df = setup_queries.get_kpi_types()
+                
+                default_type_idx = 0
+                if existing is not None:
+                    matches = kpi_types_df[kpi_types_df['kpi_type_id'] == existing['kpi_type_id']]
+                    if not matches.empty:
+                        default_type_idx = kpi_types_df.index.tolist().index(matches.index[0])
+                
                 kpi_type_id = st.selectbox(
                     "KPI Type *",
                     options=kpi_types_df['kpi_type_id'].tolist(),
-                    format_func=lambda x: kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0],
-                    key="add_assign_type"
+                    index=default_type_idx,
+                    format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
+                    key=f"{mode}_assign_type",
+                    disabled=(mode == 'edit')
                 )
             
-            # Get unit of measure for display
-            selected_uom = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id]['unit_of_measure'].iloc[0]
-            
-            col3, col4 = st.columns(2)
-            
-            with col3:
+            with col2:
+                # Get UOM
+                selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
+                selected_uom = selected_kpi['unit_of_measure']
+                
+                # Annual target
+                default_target = int(existing['annual_target_value_numeric']) if existing is not None else 0
                 annual_target = st.number_input(
                     f"Annual Target ({selected_uom}) *",
                     min_value=0,
-                    value=0,
-                    step=1000 if selected_uom == 'USD' else 1,
-                    key="add_assign_target"
+                    value=default_target,
+                    step=10000 if selected_uom == 'USD' else 1,
+                    key=f"{mode}_assign_target"
                 )
                 
-                if selected_uom == 'USD':
-                    st.caption(f"Monthly: ${annual_target / 12:,.0f}")
-            
-            with col4:
+                if selected_uom == 'USD' and annual_target > 0:
+                    st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+                
+                # Weight
+                default_weight = int(existing['weight_numeric']) if existing is not None else 0
                 weight = st.number_input(
                     "Weight % *",
                     min_value=0,
                     max_value=100,
-                    value=0,
+                    value=default_weight,
                     step=5,
-                    key="add_assign_weight"
+                    key=f"{mode}_assign_weight"
                 )
-                
-                # Validate weight
-                validation = setup_queries.validate_assignment_weight(
-                    kpi_center_id=kpi_center_id,
-                    year=year,
-                    new_weight=weight
-                )
-                
-                if validation['valid']:
-                    st.success(validation['message'])
+            
+            # Weight validation
+            validation = setup_queries.validate_assignment_weight(
+                kpi_center_id=kpi_center_id,
+                year=year,
+                new_weight=weight,
+                exclude_assignment_id=assignment_id if mode == 'edit' else None
+            )
+            
+            val_col1, val_col2 = st.columns(2)
+            with val_col1:
+                st.metric("Current Weight Sum", f"{validation['current_total']}%")
+            with val_col2:
+                if validation['new_total'] == 100:
+                    st.success(f"✅ After save: {validation['new_total']}%")
+                elif validation['new_total'] > 100:
+                    st.error(f"🔴 After save: {validation['new_total']}% (over limit!)")
                 else:
-                    st.error(validation['message'])
+                    st.warning(f"⚠️ After save: {validation['new_total']}% ({100 - validation['new_total']}% remaining)")
             
-            notes = st.text_input("Notes (optional)", key="add_assign_notes")
+            notes = st.text_input(
+                "Notes (optional)",
+                value=existing['notes'] if existing is not None and pd.notna(existing.get('notes')) else "",
+                key=f"{mode}_assign_notes"
+            )
             
+            # Buttons
             col_submit, col_cancel = st.columns(2)
             
             with col_submit:
-                if st.form_submit_button("Save Assignment", type="primary"):
-                    if annual_target <= 0:
-                        st.error("Annual target must be greater than 0")
-                    elif weight <= 0:
-                        st.error("Weight must be greater than 0")
-                    else:
+                submitted = st.form_submit_button(
+                    "💾 Save" if mode == 'add' else "💾 Update",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+            with col_cancel:
+                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            
+            if submitted:
+                if annual_target <= 0:
+                    st.error("Annual target must be > 0")
+                elif weight <= 0:
+                    st.error("Weight must be > 0")
+                else:
+                    if mode == 'add':
                         result = setup_queries.create_assignment(
                             kpi_center_id=kpi_center_id,
                             kpi_type_id=kpi_type_id,
@@ -1014,103 +966,28 @@ def _render_add_assignment_form(setup_queries: SetupQueries, year: int):
                             weight=weight,
                             notes=notes if notes else None
                         )
-                        
-                        if result['success']:
-                            st.success(f"Assignment created (ID: {result['id']})")
-                            st.session_state['show_add_assignment_form'] = False
-                            st.session_state['add_assignment_center_id'] = None
-                            st.rerun()
-                        else:
-                            st.error(result['message'])
-            
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['show_add_assignment_form'] = False
-                    st.session_state['add_assignment_center_id'] = None
-                    st.rerun()
-
-
-def _render_edit_assignment_form(setup_queries: SetupQueries, assignment_id: int):
-    """Render the Edit Assignment form."""
-    # Get current assignment data
-    assignments_df = setup_queries.get_kpi_assignments()
-    assignment_df = assignments_df[assignments_df['assignment_id'] == assignment_id]
-    
-    if assignment_df.empty:
-        st.error("Assignment not found")
-        st.session_state['edit_assignment_id'] = None
-        return
-    
-    assignment = assignment_df.iloc[0]
-    
-    with st.expander(f"✏️ Edit Assignment #{assignment_id}", expanded=True):
-        with st.form("edit_assignment_form"):
-            st.markdown(f"**KPI Center:** {assignment['kpi_center_name']}")
-            st.markdown(f"**KPI Type:** {assignment['kpi_name']}")
-            st.markdown(f"**Year:** {assignment['year']}")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_target = st.number_input(
-                    f"Annual Target ({assignment['unit_of_measure']})",
-                    min_value=0,
-                    value=int(assignment['annual_target_value_numeric']),
-                    step=1000 if assignment['unit_of_measure'] == 'USD' else 1,
-                    key="edit_assign_target"
-                )
-            
-            with col2:
-                new_weight = st.number_input(
-                    "Weight %",
-                    min_value=0,
-                    max_value=100,
-                    value=int(assignment['weight_numeric']),
-                    step=5,
-                    key="edit_assign_weight"
-                )
-                
-                # Validate weight
-                validation = setup_queries.validate_assignment_weight(
-                    kpi_center_id=assignment['kpi_center_id'],
-                    year=assignment['year'],
-                    new_weight=new_weight,
-                    exclude_assignment_id=assignment_id
-                )
-                
-                if validation['valid']:
-                    st.success(validation['message'])
-                else:
-                    st.error(validation['message'])
-            
-            new_notes = st.text_input(
-                "Notes",
-                value=assignment['notes'] if pd.notna(assignment['notes']) else "",
-                key="edit_assign_notes"
-            )
-            
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                if st.form_submit_button("Save Changes", type="primary"):
-                    result = setup_queries.update_assignment(
-                        assignment_id=assignment_id,
-                        annual_target_value=new_target,
-                        weight=new_weight,
-                        notes=new_notes if new_notes else None
-                    )
+                    else:
+                        result = setup_queries.update_assignment(
+                            assignment_id=assignment_id,
+                            annual_target_value=annual_target,
+                            weight=weight,
+                            notes=notes if notes else None
+                        )
                     
                     if result['success']:
-                        st.success("Assignment updated")
+                        st.success("Saved!")
+                        st.session_state['show_add_assignment_form'] = False
                         st.session_state['edit_assignment_id'] = None
+                        st.session_state['add_assignment_center_id'] = None
                         st.rerun()
                     else:
                         st.error(result['message'])
             
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['edit_assignment_id'] = None
-                    st.rerun()
+            if cancelled:
+                st.session_state['show_add_assignment_form'] = False
+                st.session_state['edit_assignment_id'] = None
+                st.session_state['add_assignment_center_id'] = None
+                st.rerun()
 
 
 # =============================================================================
@@ -1122,324 +999,190 @@ def hierarchy_section(
     setup_queries: SetupQueries,
     can_edit: bool = False
 ):
-    """
-    Hierarchy sub-tab with tree view.
-    """
-    # =========================================================================
-    # TOOLBAR
-    # =========================================================================
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
+    """Hierarchy sub-tab with tree view."""
+    
+    # Toolbar
+    col1, col2 = st.columns([1, 5])
     
     with col1:
         if can_edit:
-            if st.button("➕ Add Center", type="primary", key="add_center_btn"):
+            if st.button("➕ Add Center", type="primary"):
                 st.session_state['show_add_center_form'] = True
     
     with col2:
-        if st.button("📂 Expand All", key="expand_all"):
-            st.session_state['hierarchy_expanded'] = True
+        expand_all = st.checkbox("Expand All", value=True, key="hier_expand_all")
     
-    with col3:
-        if st.button("📁 Collapse All", key="collapse_all"):
-            st.session_state['hierarchy_expanded'] = False
-    
-    # Show Add Form
+    # Forms
     if st.session_state.get('show_add_center_form', False):
-        _render_add_center_form(setup_queries)
+        _render_center_form(setup_queries, mode='add')
     
-    # Show Edit Form
     if st.session_state.get('edit_center_id'):
-        _render_edit_center_form(setup_queries, st.session_state['edit_center_id'])
-    
-    # Show Detail Panel
-    if st.session_state.get('view_center_id'):
-        _render_center_detail_panel(setup_queries, st.session_state['view_center_id'])
+        _render_center_form(setup_queries, mode='edit',
+                           center_id=st.session_state['edit_center_id'])
     
     st.divider()
     
-    # =========================================================================
-    # TREE VIEW
-    # =========================================================================
+    # Get hierarchy
     hierarchy_df = setup_queries.get_kpi_center_hierarchy(include_stats=True)
     
     if hierarchy_df.empty:
         st.info("No KPI Centers found")
         return
     
-    expanded = st.session_state.get('hierarchy_expanded', True)
-    
     # Group by KPI Type
-    for kpi_type in hierarchy_df['kpi_type'].unique():
+    for kpi_type in hierarchy_df['kpi_type'].dropna().unique():
         type_df = hierarchy_df[hierarchy_df['kpi_type'] == kpi_type]
         icon = KPI_TYPE_ICONS.get(kpi_type, '📁')
         
-        with st.expander(f"{icon} {kpi_type}", expanded=expanded):
-            # Build tree structure
-            _render_tree_level(
-                df=type_df,
-                parent_id=None,
-                level=0,
-                setup_queries=setup_queries,
-                can_edit=can_edit
-            )
-
-
-def _render_tree_level(
-    df: pd.DataFrame,
-    parent_id: int,
-    level: int,
-    setup_queries: SetupQueries,
-    can_edit: bool
-):
-    """Recursively render tree levels."""
-    # Get nodes at this level with this parent
-    if parent_id is None:
-        level_nodes = df[(df['parent_center_id'].isna()) & (df['level'] == level)]
-    else:
-        level_nodes = df[df['parent_center_id'] == parent_id]
-    
-    for _, node in level_nodes.iterrows():
-        indent = "│   " * level
-        
-        # Determine icon based on whether it has children
-        has_children = node['children_count'] > 0
-        node_icon = "📁" if has_children else "📄"
-        
-        # Build stats string
-        stats = []
-        if node.get('assignment_count', 0) > 0:
-            stats.append(f"{node['assignment_count']} KPIs")
-        if node.get('split_count', 0) > 0:
-            stats.append(f"{node['split_count']} splits")
-        stats_str = " | ".join(stats) if stats else ""
-        
-        # Render node
-        col1, col2, col3 = st.columns([4, 2, 1])
-        
-        with col1:
-            if has_children:
-                label = f"{indent}├── {node_icon} **{node['kpi_center_name']}** ({node['children_count']} children)"
-            else:
-                label = f"{indent}├── {node_icon} {node['kpi_center_name']}"
+        with st.expander(f"{icon} {kpi_type} ({len(type_df)} centers)", expanded=expand_all):
+            # Sort by level and name
+            type_df_sorted = type_df.sort_values(['level', 'kpi_center_name'])
             
-            # Make clickable
-            if st.button(label, key=f"node_{node['kpi_center_id']}", use_container_width=True):
-                st.session_state['view_center_id'] = node['kpi_center_id']
-                st.rerun()
-        
-        with col2:
-            if stats_str:
-                st.caption(stats_str)
-        
-        with col3:
-            if can_edit:
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if st.button("✏️", key=f"edit_node_{node['kpi_center_id']}"):
-                        st.session_state['edit_center_id'] = node['kpi_center_id']
-                        st.rerun()
-                with btn_col2:
-                    if node['children_count'] == 0:  # Only show delete for leaf nodes
-                        if st.button("🗑️", key=f"del_node_{node['kpi_center_id']}"):
-                            deps = setup_queries.check_kpi_center_dependencies(node['kpi_center_id'])
-                            if deps['can_delete']:
-                                result = setup_queries.delete_kpi_center(node['kpi_center_id'])
-                                if result['success']:
-                                    st.rerun()
-                            else:
-                                st.error(deps['message'])
-        
-        # Render children recursively
+            for _, row in type_df_sorted.iterrows():
+                _render_hierarchy_node(row, can_edit, setup_queries)
+
+
+def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQueries):
+    """Render a single hierarchy node."""
+    
+    indent = "　　" * row['level']  # Em space for indent
+    has_children = row['children_count'] > 0
+    node_icon = "📁" if has_children else "📄"
+    
+    col1, col2, col3 = st.columns([4, 2, 1])
+    
+    with col1:
         if has_children:
-            _render_tree_level(
-                df=df,
-                parent_id=node['kpi_center_id'],
-                level=level + 1,
-                setup_queries=setup_queries,
-                can_edit=can_edit
-            )
+            st.markdown(f"{indent}{node_icon} **{row['kpi_center_name']}** ({row['children_count']} children)")
+        else:
+            st.markdown(f"{indent}{node_icon} {row['kpi_center_name']}")
+    
+    with col2:
+        stats_parts = []
+        if row.get('assignment_count', 0) > 0:
+            stats_parts.append(f"{int(row['assignment_count'])} KPIs")
+        if row.get('split_count', 0) > 0:
+            stats_parts.append(f"{int(row['split_count'])} splits")
+        
+        if stats_parts:
+            st.caption(" | ".join(stats_parts))
+        else:
+            st.caption("No data")
+    
+    with col3:
+        if can_edit:
+            if st.button("✏️", key=f"edit_hier_{row['kpi_center_id']}", help="Edit"):
+                st.session_state['edit_center_id'] = row['kpi_center_id']
+                st.rerun()
 
 
-def _render_add_center_form(setup_queries: SetupQueries):
-    """Render the Add KPI Center form."""
-    with st.expander("➕ Add KPI Center", expanded=True):
-        with st.form("add_center_form"):
+def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_id: int = None):
+    """Render Add/Edit KPI Center form."""
+    
+    existing = None
+    if mode == 'edit' and center_id:
+        existing = setup_queries.get_kpi_center_detail(center_id)
+        if not existing:
+            st.error("Center not found")
+            st.session_state['edit_center_id'] = None
+            return
+    
+    title = "✏️ Edit KPI Center" if mode == 'edit' else "➕ Add KPI Center"
+    
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        
+        with st.form(f"{mode}_center_form"):
             col1, col2 = st.columns(2)
             
             with col1:
-                name = st.text_input("Name *", key="add_center_name")
-            
-            with col2:
-                kpi_type = st.selectbox(
-                    "Type *",
-                    options=KPI_TYPES,
-                    key="add_center_type"
+                name = st.text_input(
+                    "Name *",
+                    value=existing['kpi_center_name'] if existing else "",
+                    key=f"{mode}_center_name"
                 )
             
-            description = st.text_input("Description", key="add_center_desc")
+            with col2:
+                if mode == 'add':
+                    kpi_type = st.selectbox(
+                        "Type *",
+                        options=KPI_TYPES,
+                        format_func=lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}",
+                        key=f"{mode}_center_type"
+                    )
+                else:
+                    kpi_type = existing['kpi_type']
+                    st.text_input("Type", value=f"{KPI_TYPE_ICONS.get(kpi_type, '📁')} {kpi_type}", disabled=True)
             
-            # Parent selection - filter by same type
-            centers_df = setup_queries.get_kpi_centers_for_dropdown(kpi_type=kpi_type)
-            parent_options = [(None, "No Parent (Root)")] + [
-                (row['kpi_center_id'], row['kpi_center_name']) 
+            description = st.text_input(
+                "Description",
+                value=existing.get('description', '') if existing else "",
+                key=f"{mode}_center_desc"
+            )
+            
+            # Parent selection
+            current_type = kpi_type if mode == 'add' else existing['kpi_type']
+            centers_df = setup_queries.get_kpi_centers_for_dropdown(
+                kpi_type=current_type,
+                exclude_ids=[center_id] if center_id else None
+            )
+            
+            parent_options = [(0, "No Parent (Root)")] + [
+                (row['kpi_center_id'], f"└ {row['kpi_center_name']}")
                 for _, row in centers_df.iterrows()
             ]
+            
+            current_parent = existing.get('parent_center_id', 0) if existing else 0
+            current_parent = current_parent if current_parent else 0
+            default_idx = next((i for i, p in enumerate(parent_options) if p[0] == current_parent), 0)
             
             parent_id = st.selectbox(
                 "Parent Center",
                 options=[p[0] for p in parent_options],
-                format_func=lambda x: next(p[1] for p in parent_options if p[0] == x),
-                key="add_center_parent"
+                index=default_idx,
+                format_func=lambda x: next((p[1] for p in parent_options if p[0] == x), ""),
+                key=f"{mode}_center_parent"
             )
             
+            # Buttons
             col_submit, col_cancel = st.columns(2)
             
             with col_submit:
-                if st.form_submit_button("Create Center", type="primary"):
-                    if not name:
-                        st.error("Name is required")
-                    else:
+                submitted = st.form_submit_button("💾 Save", type="primary", use_container_width=True)
+            
+            with col_cancel:
+                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            
+            if submitted:
+                if not name:
+                    st.error("Name is required")
+                else:
+                    if mode == 'add':
                         result = setup_queries.create_kpi_center(
                             name=name,
                             kpi_type=kpi_type,
                             description=description if description else None,
+                            parent_center_id=parent_id if parent_id > 0 else None
+                        )
+                    else:
+                        result = setup_queries.update_kpi_center(
+                            kpi_center_id=center_id,
+                            name=name,
+                            description=description if description else None,
                             parent_center_id=parent_id
                         )
-                        
-                        if result['success']:
-                            st.success(f"KPI Center created (ID: {result['id']})")
-                            st.session_state['show_add_center_form'] = False
-                            st.rerun()
-                        else:
-                            st.error(result['message'])
-            
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['show_add_center_form'] = False
-                    st.rerun()
-
-
-def _render_edit_center_form(setup_queries: SetupQueries, center_id: int):
-    """Render the Edit KPI Center form."""
-    detail = setup_queries.get_kpi_center_detail(center_id)
-    
-    if not detail:
-        st.error("Center not found")
-        st.session_state['edit_center_id'] = None
-        return
-    
-    with st.expander(f"✏️ Edit KPI Center: {detail['kpi_center_name']}", expanded=True):
-        with st.form("edit_center_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_name = st.text_input(
-                    "Name",
-                    value=detail['kpi_center_name'],
-                    key="edit_center_name"
-                )
-            
-            with col2:
-                st.text_input(
-                    "Type",
-                    value=detail['kpi_type'],
-                    disabled=True,
-                    key="edit_center_type"
-                )
-            
-            new_description = st.text_input(
-                "Description",
-                value=detail['description'] if detail['description'] else "",
-                key="edit_center_desc"
-            )
-            
-            # Parent selection
-            centers_df = setup_queries.get_kpi_centers_for_dropdown(
-                kpi_type=detail['kpi_type'],
-                exclude_ids=[center_id]  # Exclude self
-            )
-            parent_options = [(0, "No Parent (Root)")] + [
-                (row['kpi_center_id'], row['kpi_center_name']) 
-                for _, row in centers_df.iterrows()
-            ]
-            
-            current_parent = detail['parent_center_id'] if detail['parent_center_id'] else 0
-            
-            new_parent_id = st.selectbox(
-                "Parent Center",
-                options=[p[0] for p in parent_options],
-                index=next((i for i, p in enumerate(parent_options) if p[0] == current_parent), 0),
-                format_func=lambda x: next(p[1] for p in parent_options if p[0] == x),
-                key="edit_center_parent"
-            )
-            
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                if st.form_submit_button("Save Changes", type="primary"):
-                    result = setup_queries.update_kpi_center(
-                        kpi_center_id=center_id,
-                        name=new_name,
-                        description=new_description if new_description else None,
-                        parent_center_id=new_parent_id if new_parent_id > 0 else 0
-                    )
                     
                     if result['success']:
-                        st.success("Center updated")
+                        st.success("Saved!")
+                        st.session_state['show_add_center_form'] = False
                         st.session_state['edit_center_id'] = None
                         st.rerun()
                     else:
                         st.error(result['message'])
             
-            with col_cancel:
-                if st.form_submit_button("Cancel"):
-                    st.session_state['edit_center_id'] = None
-                    st.rerun()
-
-
-def _render_center_detail_panel(setup_queries: SetupQueries, center_id: int):
-    """Render the center detail panel."""
-    detail = setup_queries.get_kpi_center_detail(center_id)
-    
-    if not detail:
-        st.session_state['view_center_id'] = None
-        return
-    
-    with st.expander(f"📄 {detail['kpi_center_name']}", expanded=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown(f"**Type:** {detail['kpi_type']}")
-            st.markdown(f"**Parent:** {detail.get('parent_name', 'None')}")
-            st.markdown(f"**Created:** {detail['created_date']}")
-        
-        with col2:
-            st.markdown(f"**Active Splits:** {detail.get('active_splits', 0)}")
-            st.markdown(f"**{date.today().year} Assignments:** {detail.get('current_year_assignments', 0)}")
-            st.markdown(f"**Children:** {detail.get('children_count', 0)}")
-        
-        if detail.get('description'):
-            st.markdown(f"**Description:** {detail['description']}")
-        
-        col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
-        
-        with col_btn1:
-            if st.button("View Splits", key="detail_view_splits"):
-                # Navigate to splits tab with filter
-                st.session_state['split_center_filter'] = center_id
-        
-        with col_btn2:
-            if st.button("View Assignments", key="detail_view_assign"):
-                st.session_state['assignment_center'] = (detail['kpi_center_name'], center_id)
-        
-        with col_btn3:
-            if st.button("View Performance", key="detail_view_perf"):
-                # Could navigate to Overview tab
-                pass
-        
-        with col_btn4:
-            if st.button("Close", key="close_detail"):
-                st.session_state['view_center_id'] = None
+            if cancelled:
+                st.session_state['show_add_center_form'] = False
+                st.session_state['edit_center_id'] = None
                 st.rerun()
 
 
@@ -1448,149 +1191,135 @@ def _render_center_detail_panel(setup_queries: SetupQueries, center_id: int):
 # =============================================================================
 
 @st.fragment
-def validation_section(setup_queries: SetupQueries):
-    """
-    Validation sub-tab with health dashboard.
-    """
-    current_year = date.today().year
+def validation_section(setup_queries: SetupQueries, current_year: int = None):
+    """Validation dashboard - health check for configurations."""
     
-    col_header, col_refresh = st.columns([5, 1])
+    current_year = current_year or date.today().year
     
-    with col_header:
+    # Header
+    col_title, col_refresh = st.columns([5, 1])
+    with col_title:
         st.markdown("### 🏥 Configuration Health Check")
-    
     with col_refresh:
-        if st.button("🔄 Refresh", key="refresh_validation"):
+        if st.button("🔄 Refresh"):
             st.rerun()
     
-    # Get all validation issues
+    # Get issues
     issues = setup_queries.get_all_validation_issues(year=current_year)
     
-    # =========================================================================
-    # HEALTH SCORE CARDS
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # HEALTH SUMMARY CARDS
+    # -------------------------------------------------------------------------
     col1, col2, col3 = st.columns(3)
     
+    split_summary = issues['summary'].get('split', {})
+    split_critical = split_summary.get('over_100_count', 0)
+    split_warning = split_summary.get('incomplete_count', 0)
+    
+    assign_summary = issues['summary'].get('assignment', {})
+    assign_issues = assign_summary.get('weight_issues', 0) + assign_summary.get('no_assignment', 0)
+    
+    hier_summary = issues['summary'].get('hierarchy', {})
+    
     with col1:
-        split_summary = issues['summary'].get('split', {})
-        split_issues = split_summary.get('over_100_count', 0) + split_summary.get('incomplete_count', 0)
-        
-        if split_issues == 0:
-            st.success("### ✅ Split Rules\n\nNo issues found")
+        if split_critical == 0 and split_warning == 0:
+            st.success(f"### ✅ Split Rules\n\n{split_summary.get('total_rules', 0):,} rules OK")
+        elif split_critical > 0:
+            st.error(f"### 🔴 Split Rules\n\n{split_critical} critical issues")
         else:
-            st.warning(f"### ⚠️ Split Rules\n\n{split_issues} issues")
+            st.warning(f"### ⚠️ Split Rules\n\n{split_warning} warnings")
     
     with col2:
-        assign_summary = issues['summary'].get('assignment', {})
-        assign_issues = assign_summary.get('weight_issues', 0) + assign_summary.get('no_assignment', 0)
-        
         if assign_issues == 0:
-            st.success("### ✅ Assignments\n\nNo issues found")
+            st.success(f"### ✅ Assignments\n\n{current_year} configured")
         else:
             st.warning(f"### ⚠️ Assignments\n\n{assign_issues} issues")
     
     with col3:
-        hierarchy_summary = issues['summary'].get('hierarchy', {})
-        hierarchy_issues = hierarchy_summary.get('issues', 0)
-        
-        if hierarchy_issues == 0:
-            st.success(f"### ✅ Hierarchy\n\n{hierarchy_summary.get('total_centers', 0)} centers")
-        else:
-            st.warning(f"### ⚠️ Hierarchy\n\n{hierarchy_issues} issues")
+        hier_count = hier_summary.get('total_centers', 0)
+        st.info(f"### 🌳 Hierarchy\n\n{hier_count} centers")
     
     st.divider()
     
-    # =========================================================================
-    # ISSUE TABLES
-    # =========================================================================
-    
-    # Split Rule Issues
+    # -------------------------------------------------------------------------
+    # ISSUE DETAILS
+    # -------------------------------------------------------------------------
     if issues['split_issues']:
-        st.markdown("### 📋 Split Rule Issues")
+        st.markdown("#### 📋 Split Rule Issues")
         
         for issue in issues['split_issues']:
-            severity_icon = {
-                'critical': '🔴',
-                'warning': '⚠️',
-                'info': 'ℹ️'
-            }.get(issue['severity'], '❓')
+            severity_icons = {'critical': '🔴', 'warning': '⚠️', 'info': 'ℹ️'}
+            icon = severity_icons.get(issue['severity'], '❓')
             
-            col_issue, col_count, col_action = st.columns([4, 1, 1])
-            
-            with col_issue:
-                st.markdown(f"{severity_icon} **{issue['type'].replace('_', ' ').title()}**: {issue['message']}")
-            
-            with col_count:
-                st.metric("Count", issue['count'])
-            
-            with col_action:
-                if issue['type'] == 'over_100_split':
-                    if st.button("View & Fix", key=f"fix_{issue['type']}"):
-                        st.session_state['split_status_filter'] = 'over_100_split'
-                elif issue['type'] == 'incomplete_split':
-                    if st.button("View & Fix", key=f"fix_{issue['type']}"):
-                        st.session_state['split_status_filter'] = 'incomplete_split'
-                elif issue['type'] == 'pending_approval':
-                    if st.button("Review", key=f"fix_{issue['type']}"):
-                        st.session_state['split_approval_filter'] = 'pending'
-                elif issue['type'] == 'expiring_soon':
-                    if st.button("Extend", key=f"fix_{issue['type']}"):
-                        st.session_state['split_expiring'] = True
+            with st.container(border=True):
+                col_desc, col_count = st.columns([4, 1])
+                with col_desc:
+                    st.markdown(f"{icon} **{issue['type'].replace('_', ' ').title()}**")
+                    st.caption(issue['message'])
+                with col_count:
+                    st.metric("Count", issue['count'])
     
-    # Assignment Issues
     if issues['assignment_issues']:
-        st.markdown("### 🎯 Assignment Issues")
+        st.markdown("#### 🎯 Assignment Issues")
         
         for issue in issues['assignment_issues']:
-            severity_icon = {
-                'critical': '🔴',
-                'warning': '⚠️',
-                'info': 'ℹ️'
-            }.get(issue['severity'], '❓')
+            severity_icons = {'critical': '🔴', 'warning': '⚠️', 'info': 'ℹ️'}
+            icon = severity_icons.get(issue['severity'], '❓')
             
-            col_issue, col_count, col_action = st.columns([4, 1, 1])
-            
-            with col_issue:
-                st.markdown(f"{severity_icon} **{issue['type'].replace('_', ' ').title()}**: {issue['message']}")
-            
-            with col_count:
-                st.metric("Count", issue['count'])
-            
-            with col_action:
-                if st.button("View & Fix", key=f"fix_assign_{issue['type']}"):
-                    # Navigate to assignments tab
-                    pass
-            
-            # Show details if available
-            if issue.get('details'):
-                with st.expander("View Details"):
-                    details_df = pd.DataFrame(issue['details'])
-                    st.dataframe(details_df, hide_index=True, use_container_width=True)
+            with st.container(border=True):
+                col_desc, col_count = st.columns([4, 1])
+                with col_desc:
+                    st.markdown(f"{icon} **{issue['type'].replace('_', ' ').title()}**")
+                    st.caption(issue['message'])
+                with col_count:
+                    st.metric("Count", issue['count'])
+                
+                if issue.get('details'):
+                    with st.expander("View Details"):
+                        st.dataframe(
+                            pd.DataFrame(issue['details']),
+                            hide_index=True,
+                            use_container_width=True
+                        )
     
-    # No issues message
     if not issues['split_issues'] and not issues['assignment_issues']:
-        st.success("🎉 No configuration issues found! All systems healthy.")
+        st.success("🎉 All configurations are healthy! No issues found.")
     
-    st.divider()
-    
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # QUICK STATS
-    # =========================================================================
-    st.markdown("### 📊 Quick Statistics")
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.markdown("#### 📊 Quick Statistics")
     
-    col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+    stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
     
-    split_stats = issues['summary'].get('split', {})
+    with stat_col1:
+        st.metric(
+            "Total Split Rules",
+            f"{split_summary.get('total_rules', 0):,}",
+            help="Total active split rules"
+        )
     
-    with col_stat1:
-        st.metric("Total Split Rules", f"{split_stats.get('total_rules', 0):,}")
+    with stat_col2:
+        total = split_summary.get('total_rules', 0)
+        ok = split_summary.get('ok_count', 0)
+        pct = (ok / total * 100) if total > 0 else 0
+        st.metric(
+            "OK Rate",
+            f"{pct:.0f}%",
+            help="Percentage of rules with exactly 100% split"
+        )
     
-    with col_stat2:
-        ok_pct = (split_stats.get('ok_count', 0) / split_stats.get('total_rules', 1)) * 100
-        st.metric("OK Rules", f"{ok_pct:.1f}%")
+    with stat_col3:
+        st.metric(
+            "Pending Approval",
+            f"{split_summary.get('pending_count', 0):,}",
+            help="Rules awaiting approval"
+        )
     
-    with col_stat3:
-        st.metric("Pending Approval", f"{split_stats.get('pending_count', 0):,}")
-    
-    with col_stat4:
-        st.metric("Expiring Soon", f"{split_stats.get('expiring_soon_count', 0):,}")
+    with stat_col4:
+        st.metric(
+            "Expiring Soon",
+            f"{split_summary.get('expiring_soon_count', 0):,}",
+            help="Rules expiring within 30 days"
+        )

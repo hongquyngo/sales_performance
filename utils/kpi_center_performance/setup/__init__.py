@@ -36,9 +36,8 @@ from .fragments import (
     
     # Constants
     KPI_TYPES,
-    KPI_TYPE_COLORS,
     KPI_TYPE_ICONS,
-    STATUS_BADGES,
+    KPI_ICONS,
 )
 
 __all__ = [
@@ -56,9 +55,8 @@ __all__ = [
     
     # Constants
     'KPI_TYPES',
-    'KPI_TYPE_COLORS',
     'KPI_TYPE_ICONS',
-    'STATUS_BADGES',
+    'KPI_ICONS',
 ]
 
 __version__ = '2.0.0'
