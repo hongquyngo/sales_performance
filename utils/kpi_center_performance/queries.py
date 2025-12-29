@@ -1,7 +1,6 @@
 # utils/kpi_center_performance/queries.py
 """
-SQL Queries and Data Loading for KPI Center Performance
-
+KPI Center Performance Data Queries
 """
 
 import logging
@@ -48,48 +47,9 @@ class KPICenterQueries:
         return self._engine
     
     # =========================================================================
-    # KPI CENTER HIERARCHY
+    # KPI CENTER HIERARCHY HELPERS
+    # Note: get_kpi_center_hierarchy() moved to setup/queries.py (v3.4.0)
     # =========================================================================
-    
-    def get_kpi_center_hierarchy(self) -> pd.DataFrame:
-        """
-        Get KPI Center hierarchy with parent-child relationships.
-        
-        Returns:
-            DataFrame with columns: kpi_center_id, kpi_center_name, kpi_type, 
-                                   parent_center_id, level
-        """
-        query = """
-            WITH RECURSIVE kpi_hierarchy AS (
-                -- Base case: root KPI centers (no parent)
-                SELECT 
-                    id AS kpi_center_id,
-                    name AS kpi_center_name,
-                    type AS kpi_type,
-                    parent_center_id,
-                    0 AS level
-                FROM kpi_centers
-                WHERE parent_center_id IS NULL
-                  AND delete_flag = 0
-                
-                UNION ALL
-                
-                -- Recursive case: child KPI centers
-                SELECT 
-                    kc.id,
-                    kc.name,
-                    kc.type,
-                    kc.parent_center_id,
-                    kh.level + 1
-                FROM kpi_centers kc
-                INNER JOIN kpi_hierarchy kh ON kc.parent_center_id = kh.kpi_center_id
-                WHERE kc.delete_flag = 0
-            )
-            SELECT * FROM kpi_hierarchy
-            ORDER BY level, kpi_center_name
-        """
-        
-        return self._execute_query(query, {}, "kpi_center_hierarchy")
     
     def get_child_kpi_center_ids(self, parent_id: int) -> List[int]:
         """
@@ -2254,74 +2214,8 @@ class KPICenterQueries:
         return df['invoice_year'].tolist()
     
     # =========================================================================
-    # KPI SPLIT DATA - DEPRECATED v3.4.0
-    # =========================================================================
-    
-    def get_kpi_split_data(
-        self,
-        kpi_center_ids: List[int] = None
-    ) -> pd.DataFrame:
-        """
-        Get KPI Center split assignments.
-        
-        DEPRECATED v3.4.0: Use SetupQueries.get_kpi_split_data() from 
-        utils.kpi_center_performance.setup module instead.
-        This method is kept for backward compatibility.
-        
-        The new SetupQueries class provides:
-        - Enhanced filtering (status, approval, date range)
-        - Validation summaries
-        - CRUD operations (future)
-        
-        Returns DataFrame with split assignments including customer, product, percentage.
-        """
-        import warnings
-        warnings.warn(
-            "get_kpi_split_data() is deprecated. Use SetupQueries.get_kpi_split_data() "
-            "from utils.kpi_center_performance.setup module instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        
-        if not self.access.can_access_page():
-            return pd.DataFrame()
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return pd.DataFrame()
-        
-        query = """
-            SELECT 
-                kpi_center_id,
-                kpi_center_name,
-                kpi_type,
-                customer_name,
-                customer_id,
-                product_pn,
-                product_id,
-                pt_code,
-                brand,
-                split_percentage,
-                effective_period,
-                approval_status,
-                total_split_percentage_by_type,
-                kpi_split_status
-            FROM kpi_center_split_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND approval_status = 'approved'
-            ORDER BY kpi_center_name, customer_name
-        """
-        
-        params = {'kpi_center_ids': tuple(kpi_center_ids)}
-        
-        return self._execute_query(query, params, "kpi_split_data")
-    
-    # =========================================================================
     # COMPLEX KPI VALUE CALCULATOR (UPDATED v2.14.0)
+    # Note: get_kpi_split_data() removed in v3.4.0 - use SetupQueries instead
     # =========================================================================
     
     def calculate_complex_kpi_value(
