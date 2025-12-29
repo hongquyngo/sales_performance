@@ -10,8 +10,14 @@ Handles all database interactions:
 - Complex KPIs (new customers, products, business revenue)
 - Parent-Child rollup for KPI Center hierarchy
 
-VERSION: 3.2.0
+VERSION: 3.3.0
 CHANGELOG:
+- v3.3.0: NEW Complex KPIs BY KPI CENTER for Progress tab:
+          - get_new_business_by_kpi_center(): New Business Revenue per KPI Center
+          - get_new_customers_by_kpi_center(): New Customers count per KPI Center
+          - get_new_products_by_kpi_center(): New Products count per KPI Center
+          - FIX: New Business Revenue was always 0 in Progress tab because
+            complex_kpis_by_center was not being built and passed
 - v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
           - get_hierarchy_with_levels(): Dynamic level calculation with recursive CTE
           - get_all_descendants(): Get all descendant IDs
@@ -1926,6 +1932,339 @@ class KPICenterQueries:
         
         return self._execute_query(query, params, "new_business_detail")
 
+    # =========================================================================
+    # NEW v3.3.0: COMPLEX KPIs BY KPI CENTER (for Progress tab)
+    # =========================================================================
+    
+    def get_new_business_by_kpi_center(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True
+    ) -> pd.DataFrame:
+        """
+        Get NEW BUSINESS revenue aggregated BY KPI CENTER.
+        
+        NEW v3.3.0: For KPI Progress tab per-center achievement calculation.
+        
+        Returns:
+            DataFrame with columns:
+            - kpi_center_id
+            - kpi_center
+            - new_business_revenue
+            - new_business_gp
+            - num_new_combos
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        # Build filter conditions
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
+        query = f"""
+            WITH 
+            -- Step 1: Find first sale date for each (customer, product) combo (GLOBAL)
+            combo_first_sale AS (
+                SELECT 
+                    customer_id,
+                    product_id,
+                    MIN(inv_date) AS first_combo_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                AND customer_id IS NOT NULL
+                AND product_id IS NOT NULL
+                {internal_filter}
+                GROUP BY customer_id, product_id
+            ),
+            
+            -- Step 2: Identify combos that are "new" (first sale within period)
+            new_combos AS (
+                SELECT customer_id, product_id, first_combo_date
+                FROM combo_first_sale
+                WHERE first_combo_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- Step 3: Get all sales records for new combos with KPI Center info
+            new_business_sales AS (
+                SELECT 
+                    s.kpi_center_id,
+                    s.kpi_center,
+                    s.customer_id,
+                    s.product_id,
+                    s.sales_by_kpi_center_usd,
+                    s.gross_profit_by_kpi_center_usd
+                FROM new_combos nc
+                JOIN unified_sales_by_kpi_center_view s
+                    ON nc.customer_id = s.customer_id
+                    AND nc.product_id = s.product_id
+                WHERE s.inv_date BETWEEN :start_date AND :end_date
+                AND s.kpi_center_id IN :kpi_center_ids
+                AND s.product_id IS NOT NULL
+                {kpi_type_filter}
+                {entity_filter}
+                {internal_filter_s}
+            )
+            
+            -- Step 4: Aggregate BY KPI CENTER
+            SELECT 
+                kpi_center_id,
+                MAX(kpi_center) AS kpi_center,
+                COUNT(DISTINCT CONCAT(customer_id, '-', product_id)) AS num_new_combos,
+                SUM(sales_by_kpi_center_usd) AS new_business_revenue,
+                SUM(gross_profit_by_kpi_center_usd) AS new_business_gp
+            FROM new_business_sales
+            GROUP BY kpi_center_id
+            ORDER BY new_business_revenue DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
+        
+        return self._execute_query(query, params, "new_business_by_kpi_center")
+
+    def get_new_customers_by_kpi_center(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True
+    ) -> pd.DataFrame:
+        """
+        Get NEW CUSTOMERS count BY KPI CENTER using weighted counting.
+        
+        NEW v3.3.0: For KPI Progress tab.
+        
+        Returns:
+            DataFrame with: kpi_center_id, kpi_center, num_new_customers, weighted_count
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
+        query = f"""
+            WITH 
+            -- Step 1: Find first sale date for each customer (GLOBAL)
+            customer_first_sale AS (
+                SELECT 
+                    customer_id,
+                    MIN(inv_date) AS first_sale_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                AND customer_id IS NOT NULL
+                {internal_filter}
+                GROUP BY customer_id
+            ),
+            
+            -- Step 2: Identify customers that are "new"
+            new_customers AS (
+                SELECT customer_id, first_sale_date
+                FROM customer_first_sale
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- Step 3: Get first-day sales records with KPI Center attribution
+            first_day_records AS (
+                SELECT 
+                    s.kpi_center_id,
+                    s.kpi_center,
+                    nc.customer_id,
+                    s.split_rate_percent
+                FROM new_customers nc
+                JOIN unified_sales_by_kpi_center_view s
+                    ON nc.customer_id = s.customer_id
+                    AND s.inv_date = nc.first_sale_date
+                WHERE s.kpi_center_id IN :kpi_center_ids
+                {kpi_type_filter}
+                {entity_filter}
+                {internal_filter_s}
+            ),
+            
+            -- Step 4: Deduplicate per customer per KPI Center
+            deduplicated AS (
+                SELECT DISTINCT
+                    kpi_center_id,
+                    kpi_center,
+                    customer_id,
+                    split_rate_percent
+                FROM first_day_records
+            )
+            
+            -- Step 5: Aggregate BY KPI CENTER with weighted count
+            SELECT 
+                kpi_center_id,
+                MAX(kpi_center) AS kpi_center,
+                COUNT(DISTINCT customer_id) AS num_new_customers,
+                SUM(COALESCE(split_rate_percent, 100)) / 100 AS weighted_count
+            FROM deduplicated
+            GROUP BY kpi_center_id
+            ORDER BY num_new_customers DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
+        
+        return self._execute_query(query, params, "new_customers_by_kpi_center")
+
+    def get_new_products_by_kpi_center(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        selected_kpi_types: List[str] = None,
+        exclude_internal: bool = True
+    ) -> pd.DataFrame:
+        """
+        Get NEW PRODUCTS count BY KPI CENTER using weighted counting.
+        
+        NEW v3.3.0: For KPI Progress tab.
+        
+        Returns:
+            DataFrame with: kpi_center_id, kpi_center, num_new_products, weighted_count
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
+        
+        entity_filter = "AND s.legal_entity_id IN :entity_ids" if entity_ids else ""
+        kpi_type_filter = "AND s.kpi_type IN :kpi_types" if selected_kpi_types else ""
+        internal_filter = "AND customer_type != 'Internal'" if exclude_internal else ""
+        internal_filter_s = "AND s.customer_type != 'Internal'" if exclude_internal else ""
+        
+        query = f"""
+            WITH 
+            -- Step 1: Find first sale date for each product (GLOBAL)
+            product_first_sale AS (
+                SELECT 
+                    product_id,
+                    MIN(inv_date) AS first_sale_date
+                FROM unified_sales_by_kpi_center_view
+                WHERE inv_date >= :lookback_start
+                AND product_id IS NOT NULL
+                {internal_filter}
+                GROUP BY product_id
+            ),
+            
+            -- Step 2: Identify products that are "new"
+            new_products AS (
+                SELECT product_id, first_sale_date
+                FROM product_first_sale
+                WHERE first_sale_date BETWEEN :start_date AND :end_date
+            ),
+            
+            -- Step 3: Get first-day sales records with KPI Center attribution
+            first_day_records AS (
+                SELECT 
+                    s.kpi_center_id,
+                    s.kpi_center,
+                    np.product_id,
+                    s.split_rate_percent
+                FROM new_products np
+                JOIN unified_sales_by_kpi_center_view s
+                    ON np.product_id = s.product_id
+                    AND s.inv_date = np.first_sale_date
+                WHERE s.kpi_center_id IN :kpi_center_ids
+                {kpi_type_filter}
+                {entity_filter}
+                {internal_filter_s}
+            ),
+            
+            -- Step 4: Deduplicate per product per KPI Center
+            deduplicated AS (
+                SELECT DISTINCT
+                    kpi_center_id,
+                    kpi_center,
+                    product_id,
+                    split_rate_percent
+                FROM first_day_records
+            )
+            
+            -- Step 5: Aggregate BY KPI CENTER with weighted count
+            SELECT 
+                kpi_center_id,
+                MAX(kpi_center) AS kpi_center,
+                COUNT(DISTINCT product_id) AS num_new_products,
+                SUM(COALESCE(split_rate_percent, 100)) / 100 AS weighted_count
+            FROM deduplicated
+            GROUP BY kpi_center_id
+            ORDER BY num_new_products DESC
+        """
+        
+        params = {
+            'lookback_start': lookback_start,
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids)
+        }
+        
+        if selected_kpi_types:
+            params['kpi_types'] = tuple(selected_kpi_types)
+        
+        if entity_ids:
+            params['entity_ids'] = tuple(entity_ids)
+        
+        return self._execute_query(query, params, "new_products_by_kpi_center")
 
     # =========================================================================
     # LOOKUP DATA METHODS

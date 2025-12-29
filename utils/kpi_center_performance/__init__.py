@@ -4,8 +4,14 @@ KPI Center Performance Module
 
 A comprehensive module for tracking KPI Center performance metrics.
 
-VERSION: 3.2.0
+VERSION: 3.3.0
 CHANGELOG:
+- v3.3.0: FIXED New Business Revenue = 0 in KPI Progress tab:
+          - Root Cause: complex_kpis_by_center was always None
+          - queries.py: Added get_new_business_by_kpi_center(),
+            get_new_customers_by_kpi_center(), get_new_products_by_kpi_center()
+          - Main page: Build complex_kpis_by_center dict and pass to progress calc
+          - Now Complex KPIs show correct values per KPI Center in Progress tab
 - v3.2.0: ENHANCED KPI & Targets tab with hierarchy support:
           - queries.py: Added get_hierarchy_with_levels(), get_all_descendants(),
             get_leaf_descendants(), get_ancestors() for hierarchy traversal
@@ -202,4 +208,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '3.2.0'
+__version__ = '3.3.0'
