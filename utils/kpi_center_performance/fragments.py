@@ -2,8 +2,13 @@
 """
 Streamlit Fragments for KPI Center Performance
 
-VERSION: 3.3.1
+VERSION: 3.3.2
 CHANGELOG:
+- v3.3.2: BUGFIX Total Backlog = $0 in Backlog tab:
+          - Root Cause: Column name mismatch between query and fragment
+          - Query returns: total_backlog_usd, total_backlog_gp_usd
+          - Fragment was looking for: total_backlog_revenue, backlog_revenue, etc.
+          - FIX: Added 'total_backlog_usd' and 'total_backlog_gp_usd' to lookup lists
 - v3.3.1: Updated help popover and caption display:
           - Help popover: Explain why only centers with target contribute
           - Caption: Show "From X of Y centers with this target" when applicable
@@ -1311,12 +1316,14 @@ def backlog_list_fragment(
         total_orders = 0
         total_customers = 0
         
-        for col in ['total_backlog_revenue', 'backlog_revenue', 'backlog_usd']:
+        # FIX v3.3.2: Added 'total_backlog_usd' - the actual column name from get_backlog_data()
+        for col in ['total_backlog_usd', 'total_backlog_revenue', 'backlog_revenue', 'backlog_usd']:
             if col in total_backlog_df.columns:
                 total_backlog_value = total_backlog_df[col].sum()
                 break
         
-        for col in ['total_backlog_gp', 'backlog_gp', 'backlog_gp_usd']:
+        # FIX v3.3.2: Added 'total_backlog_gp_usd' - the actual column name from get_backlog_data()
+        for col in ['total_backlog_gp_usd', 'total_backlog_gp', 'backlog_gp', 'backlog_gp_usd']:
             if col in total_backlog_df.columns:
                 total_backlog_gp = total_backlog_df[col].sum()
                 break
