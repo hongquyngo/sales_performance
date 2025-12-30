@@ -407,14 +407,20 @@ def split_rules_section(
             col1, col2, col3 = st.columns([3, 1, 1])
             
             with col1:
-                # Build rule options with ID and formatted display
-                rule_options = split_df.head(100).apply(
-                    lambda r: (
-                        r['kpi_center_split_id'],
-                        f"#{r['kpi_center_split_id']} | {r.get('company_code', '')[:8]} | {r.get('pt_code', r.get('product_name', ''))[:15]}"
-                    ),
-                    axis=1
-                ).tolist()
+                # Build rule options with user-friendly display
+                # Format: "#ID | Customer Name | Product Name (Split%) → KPI Center"
+                def format_rule_option(r):
+                    rule_id = r['kpi_center_split_id']
+                    customer = r.get('customer_name', r.get('company_code', ''))
+                    product = r.get('product_name', r.get('pt_code', ''))
+                    split = r.get('split_percentage', 0)
+                    kpi_center = r.get('kpi_center_name', '')
+                    return (
+                        rule_id,
+                        f"#{rule_id} | {customer} | {product} ({split:.0f}%) → {kpi_center}"
+                    )
+                
+                rule_options = split_df.head(100).apply(format_rule_option, axis=1).tolist()
                 rule_options = [(None, "Select a rule...")] + rule_options
                 
                 selected_rule = st.selectbox(
