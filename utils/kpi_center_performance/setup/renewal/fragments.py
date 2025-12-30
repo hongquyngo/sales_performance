@@ -8,14 +8,14 @@ Provides:
 3. Proper fragment handling to avoid full page reruns
 
 Usage in split_rules_section:
-    from .renewal import renewal_trigger_button, renewal_dialog_fragment
+    from .renewal import renewal_section
     
-    # In toolbar area
-    renewal_trigger_button(setup_queries, can_edit)
-    
-    # Dialog renders automatically when triggered
-    if st.session_state.get('show_renewal_dialog'):
-        renewal_dialog_fragment(setup_queries, can_approve)
+    # In toolbar area - single component handles both button and dialog
+    renewal_section(
+        user_id=setup_queries.user_id,
+        can_approve=can_approve,
+        threshold_days=30
+    )
 """
 
 import streamlit as st
@@ -97,78 +97,21 @@ def get_default_new_valid_to() -> date:
 
 
 # =============================================================================
-# TRIGGER BUTTON - Call this from split_rules_section
-# =============================================================================
-
-@st.fragment
-def renewal_trigger_button(
-    user_id: int = None,
-    threshold_days: int = DEFAULT_THRESHOLD_DAYS
-):
-    """
-    Render the renewal trigger button with badge showing count.
-    
-    This is a fragment to avoid rerunning the whole page when
-    checking for renewal suggestions.
-    
-    Args:
-        user_id: Current user ID for queries
-        threshold_days: Days threshold for expiring rules
-    """
-    # Initialize renewal queries
-    renewal_queries = RenewalQueries(user_id=user_id)
-    
-    # Get summary stats
-    stats = renewal_queries.get_renewal_summary_stats(threshold_days)
-    total_count = stats['total_count']
-    critical_count = stats['critical_count']
-    
-    # Build button label with badge
-    if total_count > 0:
-        if critical_count > 0:
-            label = f"🔄 Renew Expiring ({total_count}) 🔴"
-        else:
-            label = f"🔄 Renew Expiring ({total_count})"
-        button_type = "primary" if critical_count > 0 else "secondary"
-    else:
-        label = "🔄 Renew Expiring"
-        button_type = "secondary"
-    
-    # Render button
-    if st.button(
-        label,
-        type=button_type,
-        help=f"{total_count} rules expiring within {threshold_days} days with recent sales",
-        key="renewal_trigger_btn"
-    ):
-        st.session_state['show_renewal_dialog'] = True
-        st.session_state['renewal_threshold_days'] = threshold_days
-        st.rerun()
-
-
-# =============================================================================
-# MAIN RENEWAL DIALOG
+# RENEWAL DIALOG - Using @st.dialog decorator
 # =============================================================================
 
 @st.dialog("🔄 Renew Expiring Split Rules", width="large")
-def renewal_dialog_fragment(
-    user_id: int = None,
-    can_approve: bool = False
+def _renewal_dialog_impl(
+    user_id: int,
+    can_approve: bool,
+    initial_threshold: int = DEFAULT_THRESHOLD_DAYS
 ):
     """
-    Main renewal dialog with suggestions, selection, and execution.
-    
-    Uses @st.dialog decorator for popup behavior.
-    
-    Args:
-        user_id: Current user ID for queries and audit
-        can_approve: Whether user can auto-approve renewals
+    Internal dialog implementation.
+    Called directly from button click - no session state needed.
     """
     # Initialize
     renewal_queries = RenewalQueries(user_id=user_id)
-    
-    # Get threshold from session or use default
-    threshold_days = st.session_state.get('renewal_threshold_days', DEFAULT_THRESHOLD_DAYS)
     
     # -------------------------------------------------------------------------
     # CONFIGURATION BAR
@@ -179,7 +122,7 @@ def renewal_dialog_fragment(
         threshold_days = st.selectbox(
             "Expiring within",
             options=list(THRESHOLD_OPTIONS.keys()),
-            index=list(THRESHOLD_OPTIONS.keys()).index(threshold_days) if threshold_days in THRESHOLD_OPTIONS else 1,
+            index=list(THRESHOLD_OPTIONS.keys()).index(initial_threshold) if initial_threshold in THRESHOLD_OPTIONS else 1,
             format_func=lambda x: THRESHOLD_OPTIONS[x],
             key="renewal_threshold_select"
         )
@@ -220,8 +163,7 @@ def renewal_dialog_fragment(
             "All your active split rules are good!"
         )
         
-        if st.button("Close", key="renewal_close_empty"):
-            st.session_state['show_renewal_dialog'] = False
+        if st.button("Close", key="renewal_close_empty", use_container_width=True):
             st.rerun()
         return
     
@@ -258,7 +200,7 @@ def renewal_dialog_fragment(
     # -------------------------------------------------------------------------
     st.markdown("### Select Rules to Renew")
     
-    # Initialize selection in session state
+    # Initialize selection in session state (for this dialog session)
     if 'renewal_selected_ids' not in st.session_state:
         # Default: select all critical and warning
         default_selected = suggestions_df[
@@ -272,12 +214,12 @@ def renewal_dialog_fragment(
     with sel_col1:
         if st.button("☑️ Select All", key="renewal_select_all", use_container_width=True):
             st.session_state['renewal_selected_ids'] = suggestions_df['kpi_center_split_id'].tolist()
-            st.rerun(scope="fragment")
+            st.rerun()
     
     with sel_col2:
         if st.button("☐ Deselect All", key="renewal_deselect_all", use_container_width=True):
             st.session_state['renewal_selected_ids'] = []
-            st.rerun(scope="fragment")
+            st.rerun()
     
     with sel_col3:
         selected_count = len(st.session_state.get('renewal_selected_ids', []))
@@ -400,26 +342,11 @@ def renewal_dialog_fragment(
     # -------------------------------------------------------------------------
     # ACTION BUTTONS
     # -------------------------------------------------------------------------
-    action_col1, action_col2, action_col3 = st.columns([2, 2, 2])
-    
     selected_ids = st.session_state.get('renewal_selected_ids', [])
     
-    with action_col1:
-        # Preview button
-        if st.button(
-            "👁️ Preview",
-            disabled=len(selected_ids) == 0,
-            use_container_width=True,
-            key="renewal_preview_btn"
-        ):
-            preview = renewal_queries.preview_renewal(
-                rule_ids=selected_ids,
-                new_valid_to=new_valid_to,
-                new_valid_from=new_valid_from
-            )
-            st.session_state['renewal_preview'] = preview
+    action_col1, action_col2 = st.columns([3, 1])
     
-    with action_col2:
+    with action_col1:
         # Execute renewal button
         if st.button(
             f"🔄 Renew {len(selected_ids)} Rules",
@@ -445,64 +372,108 @@ def renewal_dialog_fragment(
             
             if result['success']:
                 st.success(f"✅ {result['message']}")
-                # Clear selection and close dialog after short delay
+                # Clear selection
                 st.session_state['renewal_selected_ids'] = []
-                st.session_state['show_renewal_dialog'] = False
-                st.session_state['renewal_success'] = True
+                st.session_state['renewal_just_completed'] = True
                 st.rerun()
             else:
                 st.error(f"❌ Error: {result['message']}")
     
-    with action_col3:
-        # Cancel button
+    with action_col2:
+        # Cancel button - just close dialog
         if st.button(
             "❌ Cancel",
             use_container_width=True,
             key="renewal_cancel_btn"
         ):
-            # Clear state and close
             st.session_state['renewal_selected_ids'] = []
-            st.session_state['show_renewal_dialog'] = False
             st.rerun()
-    
-    # -------------------------------------------------------------------------
-    # PREVIEW PANEL (if requested)
-    # -------------------------------------------------------------------------
-    if 'renewal_preview' in st.session_state and st.session_state['renewal_preview']:
-        preview = st.session_state['renewal_preview']
-        
-        with st.expander("📋 Preview Details", expanded=True):
-            st.markdown(f"""
-            **Summary:**
-            - Rules to renew: **{preview['count']}**
-            - Total sales coverage (12m): **{format_currency(preview['total_sales_covered'])}**
-            - New end date: **{preview.get('new_valid_to', 'N/A')}**
-            """)
-            
-            if preview.get('new_valid_from'):
-                st.markdown(f"- New start date: **{preview['new_valid_from']}**")
-            
-            st.caption("Click 'Renew' to proceed or 'Cancel' to abort.")
 
 
 # =============================================================================
-# UTILITY: Check for pending dialog on page load
+# MAIN ENTRY POINT - Combined button and dialog in one fragment
 # =============================================================================
 
-def check_and_show_renewal_dialog(user_id: int = None, can_approve: bool = False):
+@st.fragment
+def renewal_section(
+    user_id: int = None,
+    can_approve: bool = False,
+    threshold_days: int = DEFAULT_THRESHOLD_DAYS
+):
     """
-    Check if renewal dialog should be shown and render it.
+    Combined renewal trigger button and dialog handler.
     
-    Call this at the end of split_rules_section to handle dialog display.
+    This is a fragment that:
+    1. Shows the renewal button with badge
+    2. When clicked, opens the dialog directly (no page rerun)
     
     Args:
-        user_id: Current user ID
-        can_approve: Whether user can approve
+        user_id: Current user ID for queries and audit
+        can_approve: Whether user can auto-approve renewals
+        threshold_days: Days threshold for expiring rules
     """
-    if st.session_state.get('show_renewal_dialog', False):
-        renewal_dialog_fragment(user_id=user_id, can_approve=can_approve)
+    # Initialize renewal queries
+    renewal_queries = RenewalQueries(user_id=user_id)
+    
+    # Get summary stats for button badge
+    stats = renewal_queries.get_renewal_summary_stats(threshold_days)
+    total_count = stats['total_count']
+    critical_count = stats['critical_count']
+    
+    # Build button label with badge
+    if total_count > 0:
+        if critical_count > 0:
+            label = f"🔄 Renew Expiring ({total_count}) 🔴"
+        else:
+            label = f"🔄 Renew Expiring ({total_count})"
+        button_type = "primary" if critical_count > 0 else "secondary"
+    else:
+        label = "🔄 Renew Expiring"
+        button_type = "secondary"
     
     # Show success toast if just completed renewal
-    if st.session_state.get('renewal_success', False):
+    if st.session_state.get('renewal_just_completed', False):
         st.toast("✅ Rules renewed successfully!", icon="🎉")
-        st.session_state['renewal_success'] = False
+        st.session_state['renewal_just_completed'] = False
+    
+    # Render button - when clicked, directly open dialog (no st.rerun needed)
+    if st.button(
+        label,
+        type=button_type,
+        help=f"{total_count} rules expiring within {threshold_days} days with recent sales",
+        key="renewal_trigger_btn"
+    ):
+        # Open dialog directly - this is the key fix!
+        # No session state manipulation, no st.rerun()
+        _renewal_dialog_impl(
+            user_id=user_id,
+            can_approve=can_approve,
+            initial_threshold=threshold_days
+        )
+
+
+# =============================================================================
+# BACKWARD COMPATIBILITY - Keep old function names
+# =============================================================================
+
+def renewal_trigger_button(user_id: int = None, threshold_days: int = DEFAULT_THRESHOLD_DAYS):
+    """
+    DEPRECATED: Use renewal_section() instead.
+    
+    Kept for backward compatibility.
+    """
+    import warnings
+    warnings.warn(
+        "renewal_trigger_button is deprecated. Use renewal_section() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    # Can't call renewal_section here because it needs can_approve
+    # Just show button without dialog capability
+    renewal_queries = RenewalQueries(user_id=user_id)
+    stats = renewal_queries.get_renewal_summary_stats(threshold_days)
+    total_count = stats['total_count']
+    
+    if st.button(f"🔄 Renew Expiring ({total_count})", key="renewal_trigger_btn_deprecated"):
+        st.warning("Please update code to use renewal_section() for full functionality")
+

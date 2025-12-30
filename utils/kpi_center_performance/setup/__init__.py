@@ -37,9 +37,7 @@ from .fragments import (
 # Renewal sub-module
 from .renewal import (
     RenewalQueries,
-    renewal_dialog_fragment,
-    renewal_trigger_button,
-    check_and_show_renewal_dialog,
+    renewal_section,  # Main entry point - handles button + dialog
     RENEWAL_STRATEGIES,
     DEFAULT_THRESHOLD_DAYS,
 )
@@ -59,9 +57,7 @@ __all__ = [
     
     # Renewal
     'RenewalQueries',
-    'renewal_dialog_fragment',
-    'renewal_trigger_button',
-    'check_and_show_renewal_dialog',
+    'renewal_section',
     'RENEWAL_STRATEGIES',
     'DEFAULT_THRESHOLD_DAYS',
     

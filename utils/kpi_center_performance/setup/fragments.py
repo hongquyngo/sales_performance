@@ -18,8 +18,8 @@ from typing import Dict, List, Optional, Any
 
 from .queries import SetupQueries
 
-# Renewal module imports
-from .renewal import renewal_trigger_button, check_and_show_renewal_dialog
+# Renewal module - single component handles button + dialog
+from .renewal import renewal_section
 
 
 # =============================================================================
@@ -295,9 +295,10 @@ def split_rules_section(
                 st.session_state['show_add_split_form'] = True
         
         with toolbar_col2:
-            # Renewal button - shows count of expiring rules with sales activity
-            renewal_trigger_button(
+            # Renewal section - handles both button and dialog
+            renewal_section(
                 user_id=setup_queries.user_id,
+                can_approve=can_approve,
                 threshold_days=30
             )
     
@@ -515,14 +516,6 @@ def split_rules_section(
                         st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
-    
-    # -------------------------------------------------------------------------
-    # RENEWAL DIALOG (renders as popup when triggered)
-    # -------------------------------------------------------------------------
-    check_and_show_renewal_dialog(
-        user_id=setup_queries.user_id,
-        can_approve=can_approve
-    )
 
 
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 

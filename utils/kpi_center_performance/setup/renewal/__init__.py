@@ -8,40 +8,49 @@ Provides functionality to:
 3. Preview and confirm renewal operations
 
 Usage:
-    from utils.kpi_center_performance.setup.renewal import (
-        RenewalQueries,
-        renewal_dialog_fragment,
-        renewal_trigger_button,
-    )
+    from utils.kpi_center_performance.setup.renewal import renewal_section
     
-    # Or from parent setup module:
-    from .renewal import renewal_trigger_button, check_and_show_renewal_dialog
+    # In toolbar - single component handles button + dialog
+    renewal_section(
+        user_id=setup_queries.user_id,
+        can_approve=can_approve,
+        threshold_days=30
+    )
 """
 
 from .queries import RenewalQueries
 from .fragments import (
-    renewal_dialog_fragment,
-    renewal_trigger_button,
-    check_and_show_renewal_dialog,
+    # Main entry point (recommended)
+    renewal_section,
+    
+    # Constants
     RENEWAL_STRATEGIES,
     DEFAULT_THRESHOLD_DAYS,
+    
+    # Deprecated - kept for backward compatibility
+    renewal_trigger_button,
+    check_and_show_renewal_dialog,
+    renewal_dialog_fragment,
 )
 
 __all__ = [
     # Queries
     'RenewalQueries',
     
-    # Fragments
-    'renewal_dialog_fragment',
-    'renewal_trigger_button',
-    'check_and_show_renewal_dialog',
+    # Main entry point (recommended)
+    'renewal_section',
     
     # Constants
     'RENEWAL_STRATEGIES',
     'DEFAULT_THRESHOLD_DAYS',
+    
+    # Deprecated
+    'renewal_trigger_button',
+    'check_and_show_renewal_dialog',
+    'renewal_dialog_fragment',
 ]
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
 __all__ = [
     # Queries
