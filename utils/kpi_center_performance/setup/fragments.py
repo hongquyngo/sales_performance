@@ -2,12 +2,13 @@
 """
 UI Fragments for Setup Tab - KPI Center Performance
 
-Full management console with 4 sub-tabs:
-1. Split Rules - CRUD for kpi_center_split_by_customer_product
+Full management console with 3 sub-tabs:
+1. Split Rules - CRUD for kpi_center_split_by_customer_product (with renewal feature)
 2. KPI Assignments - CRUD for sales_kpi_center_assignments
 3. Hierarchy - Tree view of kpi_centers
-4. Validation - Health check dashboard
 
+Note: Validation has been merged into Split Rules and KPI Assignments tabs.
+      Renewal feature added in v2.5.0 for bulk-renewing expiring rules.
 """
 
 import streamlit as st
@@ -16,6 +17,9 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 from .queries import SetupQueries
+
+# Renewal module imports
+from .renewal import renewal_trigger_button, check_and_show_renewal_dialog
 
 
 # =============================================================================
@@ -284,8 +288,18 @@ def split_rules_section(
     # TOOLBAR
     # -------------------------------------------------------------------------
     if can_edit:
-        if st.button("➕ Add Split Rule", type="primary"):
-            st.session_state['show_add_split_form'] = True
+        toolbar_col1, toolbar_col2 = st.columns([1, 1])
+        
+        with toolbar_col1:
+            if st.button("➕ Add Split Rule", type="primary"):
+                st.session_state['show_add_split_form'] = True
+        
+        with toolbar_col2:
+            # Renewal button - shows count of expiring rules with sales activity
+            renewal_trigger_button(
+                user_id=setup_queries.user_id,
+                threshold_days=30
+            )
     
     # -------------------------------------------------------------------------
     # ADD/EDIT FORMS
@@ -501,6 +515,14 @@ def split_rules_section(
                         st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
+    
+    # -------------------------------------------------------------------------
+    # RENEWAL DIALOG (renders as popup when triggered)
+    # -------------------------------------------------------------------------
+    check_and_show_renewal_dialog(
+        user_id=setup_queries.user_id,
+        can_approve=can_approve
+    )
 
 
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
