@@ -450,30 +450,3 @@ def renewal_section(
             can_approve=can_approve,
             initial_threshold=threshold_days
         )
-
-
-# =============================================================================
-# BACKWARD COMPATIBILITY - Keep old function names
-# =============================================================================
-
-def renewal_trigger_button(user_id: int = None, threshold_days: int = DEFAULT_THRESHOLD_DAYS):
-    """
-    DEPRECATED: Use renewal_section() instead.
-    
-    Kept for backward compatibility.
-    """
-    import warnings
-    warnings.warn(
-        "renewal_trigger_button is deprecated. Use renewal_section() instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    # Can't call renewal_section here because it needs can_approve
-    # Just show button without dialog capability
-    renewal_queries = RenewalQueries(user_id=user_id)
-    stats = renewal_queries.get_renewal_summary_stats(threshold_days)
-    total_count = stats['total_count']
-    
-    if st.button(f"🔄 Renew Expiring ({total_count})", key="renewal_trigger_btn_deprecated"):
-        st.warning("Please update code to use renewal_section() for full functionality")
-

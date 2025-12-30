@@ -20,34 +20,16 @@ Usage:
 
 from .queries import RenewalQueries
 from .fragments import (
-    # Main entry point (recommended)
     renewal_section,
-    
-    # Constants
     RENEWAL_STRATEGIES,
     DEFAULT_THRESHOLD_DAYS,
-    
-    # Deprecated - kept for backward compatibility
-    renewal_trigger_button,
-    check_and_show_renewal_dialog,
-    renewal_dialog_fragment,
 )
 
 __all__ = [
-    # Queries
     'RenewalQueries',
-    
-    # Main entry point (recommended)
     'renewal_section',
-    
-    # Constants
     'RENEWAL_STRATEGIES',
     'DEFAULT_THRESHOLD_DAYS',
-    
-    # Deprecated
-    'renewal_trigger_button',
-    'check_and_show_renewal_dialog',
-    'renewal_dialog_fragment',
 ]
 
 __version__ = '1.1.0'

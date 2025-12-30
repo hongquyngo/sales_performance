@@ -9,9 +9,7 @@ Full management console with 3 sub-tabs:
 
 Features:
 - Renewal: Bulk renew expiring split rules with sales activity (v2.5.0)
-- Validation: Merged into Split Rules and KPI Assignments tabs for better UX
-
-Note: validation_section is kept for backward compatibility but deprecated.
+- Validation: Integrated into Split Rules and KPI Assignments tabs for better UX
 """
 
 # Queries
@@ -26,7 +24,6 @@ from .fragments import (
     split_rules_section,
     kpi_assignments_section,
     hierarchy_section,
-    validation_section,  # Deprecated: kept for backward compatibility
     
     # Constants
     KPI_TYPES,
@@ -37,7 +34,7 @@ from .fragments import (
 # Renewal sub-module
 from .renewal import (
     RenewalQueries,
-    renewal_section,  # Main entry point - handles button + dialog
+    renewal_section,
     RENEWAL_STRATEGIES,
     DEFAULT_THRESHOLD_DAYS,
 )
@@ -53,7 +50,6 @@ __all__ = [
     'split_rules_section',
     'kpi_assignments_section',
     'hierarchy_section',
-    'validation_section',  # Deprecated
     
     # Renewal
     'RenewalQueries',
