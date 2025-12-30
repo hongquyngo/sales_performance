@@ -370,6 +370,276 @@ class SetupQueries:
         
         return result
     
+    def get_assignment_issues_summary_v2(self, year: int) -> Dict:
+        """
+        Enhanced assignment issues summary with leaf/parent distinction.
+        
+        NEW v2.4.0: Distinguishes between:
+        - Leaf centers without assignments (CRITICAL - needs direct assignment)
+        - Parent centers with children coverage (INFO - shows rollup from children)
+        - Parent centers without any coverage (WARNING - no assignments anywhere in subtree)
+        
+        Args:
+            year: Year to check
+            
+        Returns:
+            Dict with:
+            - leaf_missing_count, leaf_missing_details: Leaf centers needing assignment
+            - parent_with_rollup_count, parent_with_rollup_details: Parents with children assignments
+            - parent_no_coverage_count, parent_no_coverage_details: Parents with no coverage at all
+            - weight_issues_count, weight_issues_details: Weight sum != 100%
+        """
+        result = {
+            # Leaf centers without direct assignment (CRITICAL)
+            'leaf_missing_count': 0,
+            'leaf_missing_details': [],
+            
+            # Parent centers with rollup from children (INFO)
+            'parent_with_rollup_count': 0,
+            'parent_with_rollup_details': [],
+            
+            # Parent centers with no coverage anywhere (WARNING)
+            'parent_no_coverage_count': 0,
+            'parent_no_coverage_details': [],
+            
+            # Weight issues (same as before)
+            'weight_issues_count': 0,
+            'weight_issues_details': [],
+            
+            # Legacy compatibility
+            'no_assignment_count': 0,
+            'no_assignment_details': []
+        }
+        
+        # Query to get all centers with splits but no direct assignments,
+        # including hierarchy info (is_leaf, children with assignments)
+        # FIXED v2.4.1: Proper recursive CTE to get ALL descendants (not just direct children)
+        issues_query = """
+            WITH RECURSIVE 
+            -- Get ALL descendants for each center (recursive to leaf level)
+            center_descendants AS (
+                -- Base case: direct children of each parent
+                SELECT 
+                    kc.parent_center_id as center_id,
+                    kc.id as descendant_id,
+                    1 as depth
+                FROM kpi_centers kc
+                WHERE kc.delete_flag = 0
+                  AND kc.parent_center_id IS NOT NULL
+                
+                UNION ALL
+                
+                -- Recursive case: children of children (keep original ancestor as center_id)
+                SELECT 
+                    cd.center_id,
+                    kc.id as descendant_id,
+                    cd.depth + 1
+                FROM kpi_centers kc
+                INNER JOIN center_descendants cd ON kc.parent_center_id = cd.descendant_id
+                WHERE kc.delete_flag = 0
+            ),
+            
+            -- Count direct children for each center (to determine is_leaf)
+            children_count AS (
+                SELECT 
+                    parent_center_id,
+                    COUNT(*) as child_count
+                FROM kpi_centers
+                WHERE delete_flag = 0 AND parent_center_id IS NOT NULL
+                GROUP BY parent_center_id
+            ),
+            
+            -- Centers with splits but no direct assignments
+            centers_without_direct AS (
+                SELECT 
+                    kc.id,
+                    kc.name,
+                    kc.type,
+                    kc.parent_center_id,
+                    COALESCE(cc.child_count, 0) as children_count,
+                    CASE WHEN COALESCE(cc.child_count, 0) = 0 THEN 1 ELSE 0 END as is_leaf
+                FROM kpi_centers kc
+                LEFT JOIN children_count cc ON kc.id = cc.parent_center_id
+                WHERE kc.delete_flag = 0
+                  AND kc.id NOT IN (
+                      SELECT DISTINCT kpi_center_id 
+                      FROM sales_kpi_center_assignments 
+                      WHERE year = :year AND delete_flag = 0
+                  )
+                  AND kc.id IN (
+                      SELECT DISTINCT kpi_center_id 
+                      FROM kpi_center_split_by_customer_product 
+                      WHERE delete_flag = 0 AND (valid_to >= CURDATE() OR valid_to IS NULL)
+                  )
+            ),
+            
+            -- Check which centers have ANY descendants (at any level) with assignments
+            descendant_assignments AS (
+                SELECT 
+                    cd.center_id,
+                    COUNT(DISTINCT ska.kpi_center_id) as descendants_with_assignments,
+                    GROUP_CONCAT(DISTINCT kc.name ORDER BY kc.name SEPARATOR ', ') as descendant_names
+                FROM center_descendants cd
+                INNER JOIN sales_kpi_center_assignments ska 
+                    ON cd.descendant_id = ska.kpi_center_id 
+                    AND ska.year = :year 
+                    AND ska.delete_flag = 0
+                INNER JOIN kpi_centers kc ON ska.kpi_center_id = kc.id
+                GROUP BY cd.center_id
+            )
+            
+            SELECT 
+                cwd.id,
+                cwd.name,
+                cwd.type,
+                cwd.is_leaf,
+                cwd.children_count,
+                COALESCE(da.descendants_with_assignments, 0) as descendants_with_assignments,
+                da.descendant_names
+            FROM centers_without_direct cwd
+            LEFT JOIN descendant_assignments da ON cwd.id = da.center_id
+            ORDER BY cwd.is_leaf DESC, cwd.type, cwd.name
+        """
+        
+        issues_df = self._execute_query(issues_query, {'year': year}, "assignment_issues_v2")
+        
+        if not issues_df.empty:
+            for _, row in issues_df.iterrows():
+                center_info = {
+                    'id': row['id'],
+                    'name': row['name'],
+                    'type': row['type'],
+                    'is_leaf': row['is_leaf'] == 1,
+                    'children_count': int(row['children_count']),
+                    'descendants_with_assignments': int(row['descendants_with_assignments']),
+                    'descendant_names': row['descendant_names']
+                }
+                
+                if row['is_leaf'] == 1:
+                    # Leaf without assignment - CRITICAL
+                    result['leaf_missing_details'].append(center_info)
+                elif row['descendants_with_assignments'] > 0:
+                    # Parent with children assignments - INFO (has rollup)
+                    result['parent_with_rollup_details'].append(center_info)
+                else:
+                    # Parent with no coverage - WARNING
+                    result['parent_no_coverage_details'].append(center_info)
+            
+            result['leaf_missing_count'] = len(result['leaf_missing_details'])
+            result['parent_with_rollup_count'] = len(result['parent_with_rollup_details'])
+            result['parent_no_coverage_count'] = len(result['parent_no_coverage_details'])
+            
+            # Legacy compatibility
+            result['no_assignment_count'] = result['leaf_missing_count'] + result['parent_no_coverage_count']
+            result['no_assignment_details'] = result['leaf_missing_details'] + result['parent_no_coverage_details']
+        
+        # Weight issues (same logic as before)
+        weight_query = """
+            SELECT 
+                kpi_center_id,
+                kpi_center_name,
+                SUM(weight_numeric) as total_weight
+            FROM sales_kpi_center_assignments_view
+            WHERE year = :year
+            GROUP BY kpi_center_id, kpi_center_name
+            HAVING total_weight != 100
+            ORDER BY kpi_center_name
+        """
+        weight_df = self._execute_query(weight_query, {'year': year}, "weight_issues")
+        
+        if not weight_df.empty:
+            result['weight_issues_count'] = len(weight_df)
+            result['weight_issues_details'] = weight_df.to_dict('records')
+        
+        return result
+    
+    def get_rollup_targets_for_center(self, kpi_center_id: int, year: int) -> Dict:
+        """
+        Get aggregated (rollup) KPI targets from all descendants.
+        
+        NEW v2.4.0: For displaying rollup targets in Setup tab.
+        
+        Args:
+            kpi_center_id: Parent KPI Center ID
+            year: Year to get targets for
+            
+        Returns:
+            Dict with:
+            - has_rollup: bool
+            - targets: List of {kpi_name, annual_target, monthly_target, unit, source_count}
+            - source_centers: List of center names contributing
+            - total_source_count: Total number of centers contributing
+        """
+        query = """
+            WITH RECURSIVE descendants AS (
+                -- Get all descendants (excluding self)
+                SELECT id as kpi_center_id
+                FROM kpi_centers
+                WHERE parent_center_id = :center_id
+                  AND delete_flag = 0
+                
+                UNION ALL
+                
+                SELECT kc.id
+                FROM kpi_centers kc
+                INNER JOIN descendants d ON kc.parent_center_id = d.kpi_center_id
+                WHERE kc.delete_flag = 0
+            )
+            SELECT 
+                kt.name as kpi_name,
+                kt.uom as unit_of_measure,
+                SUM(ska.annual_target_value) as annual_target,
+                COUNT(DISTINCT ska.kpi_center_id) as source_count,
+                GROUP_CONCAT(DISTINCT kc.name ORDER BY kc.name SEPARATOR ', ') as source_centers
+            FROM descendants d
+            INNER JOIN sales_kpi_center_assignments ska 
+                ON d.kpi_center_id = ska.kpi_center_id
+                AND ska.year = :year
+                AND ska.delete_flag = 0
+            INNER JOIN kpi_types kt ON ska.kpi_type_id = kt.id
+            INNER JOIN kpi_centers kc ON ska.kpi_center_id = kc.id
+            GROUP BY kt.id, kt.name, kt.uom
+            ORDER BY kt.name
+        """
+        
+        df = self._execute_query(query, {
+            'center_id': kpi_center_id,
+            'year': year
+        }, "rollup_targets")
+        
+        if df.empty:
+            return {
+                'has_rollup': False,
+                'targets': [],
+                'source_centers': [],
+                'total_source_count': 0
+            }
+        
+        targets = []
+        all_sources = set()
+        
+        for _, row in df.iterrows():
+            annual = float(row['annual_target']) if row['annual_target'] else 0
+            targets.append({
+                'kpi_name': row['kpi_name'],
+                'annual_target': annual,
+                'monthly_target': annual / 12,
+                'quarterly_target': annual / 4,
+                'unit_of_measure': row['unit_of_measure'],
+                'source_count': int(row['source_count']),
+                'is_currency': row['unit_of_measure'] == 'USD'
+            })
+            
+            if row['source_centers']:
+                all_sources.update(row['source_centers'].split(', '))
+        
+        return {
+            'has_rollup': True,
+            'targets': targets,
+            'source_centers': sorted(list(all_sources)),
+            'total_source_count': len(all_sources)
+        }
+    
     def get_split_by_customer_product(
         self,
         customer_id: int,

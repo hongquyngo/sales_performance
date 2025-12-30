@@ -756,64 +756,171 @@ def kpi_assignments_section(
                 st.session_state['show_add_assignment_form'] = True
     
     # -------------------------------------------------------------------------
-    # ISSUES SECTION (Merged from Validation tab)
+    # ISSUES SECTION (Enhanced v2.4.0 - Leaf/Parent distinction with rollup)
     # -------------------------------------------------------------------------
-    issues = setup_queries.get_assignment_issues_summary(selected_year)
-    has_issues = issues['no_assignment_count'] > 0 or issues['weight_issues_count'] > 0
+    issues = setup_queries.get_assignment_issues_summary_v2(selected_year)
     
-    if has_issues:
-        issues_count = issues['no_assignment_count'] + issues['weight_issues_count']
+    # Count actual issues (exclude parent_with_rollup as they're INFO not issues)
+    critical_count = issues['leaf_missing_count'] + issues['parent_no_coverage_count']
+    warning_count = issues['weight_issues_count']
+    info_count = issues['parent_with_rollup_count']
+    
+    has_issues = critical_count > 0 or warning_count > 0
+    has_info = info_count > 0
+    
+    if has_issues or has_info:
+        # Determine expander title based on severity
+        if critical_count > 0:
+            expander_title = f"🔴 {critical_count} Issues Found"
+            if info_count > 0:
+                expander_title += f" • 📁 {info_count} Parents with Rollup"
+        elif warning_count > 0:
+            expander_title = f"⚠️ {warning_count} Weight Issues"
+            if info_count > 0:
+                expander_title += f" • 📁 {info_count} Parents with Rollup"
+        else:
+            expander_title = f"📁 {info_count} Parent Centers (Rollup from Children)"
         
-        with st.expander(f"⚠️ {issues_count} Issues Found", expanded=True):
-            # Critical: No assignment for active centers
-            if issues['no_assignment_count'] > 0:
-                st.markdown("##### 🔴 Missing Assignments")
-                st.caption(f"{issues['no_assignment_count']} active KPI Centers have no {selected_year} assignments")
+        with st.expander(expander_title, expanded=(critical_count > 0)):
+            
+            # =================================================================
+            # CRITICAL: Leaf centers without direct assignment
+            # =================================================================
+            if issues['leaf_missing_count'] > 0:
+                st.markdown("##### 🔴 Missing Assignments (Leaf Centers)")
+                st.caption(f"{issues['leaf_missing_count']} leaf KPI Centers need direct {selected_year} assignments")
                 
-                if issues.get('no_assignment_details'):
-                    with st.container(border=True):
-                        for center in issues['no_assignment_details']:
-                            col_info, col_action = st.columns([4, 1])
-                            with col_info:
-                                center_type = center.get('type', 'UNKNOWN')
-                                icon = KPI_TYPE_ICONS.get(center_type, '📁')
-                                st.markdown(f"{icon} **{center['name']}**")
-                                st.caption(f"{center_type}")
-                            with col_action:
-                                if can_edit and st.button(
-                                    "➕ Add", 
-                                    key=f"add_assign_{center['id']}", 
-                                    use_container_width=True
-                                ):
-                                    st.session_state['add_assignment_center_id'] = center['id']
-                                    st.session_state['show_add_assignment_form'] = True
-                                    st.rerun(scope="fragment")
+                with st.container(border=True):
+                    for center in issues['leaf_missing_details']:
+                        col_info, col_action = st.columns([4, 1])
+                        with col_info:
+                            center_type = center.get('type', 'UNKNOWN')
+                            icon = KPI_TYPE_ICONS.get(center_type, '📁')
+                            st.markdown(f"🎯 {icon} **{center['name']}**")
+                            st.caption(f"{center_type} • Leaf (no children)")
+                        with col_action:
+                            if can_edit and st.button(
+                                "➕ Add", 
+                                key=f"add_assign_leaf_{center['id']}", 
+                                use_container_width=True
+                            ):
+                                st.session_state['add_assignment_center_id'] = center['id']
+                                st.session_state['show_add_assignment_form'] = True
+                                st.rerun(scope="fragment")
                 
                 st.divider()
             
-            # Warning: Weight not 100%
+            # =================================================================
+            # WARNING: Parent centers with no coverage anywhere
+            # =================================================================
+            if issues['parent_no_coverage_count'] > 0:
+                st.markdown("##### ⚠️ No Coverage (Parent Centers)")
+                st.caption(f"{issues['parent_no_coverage_count']} parent centers have no assignments in entire subtree")
+                
+                with st.container(border=True):
+                    for center in issues['parent_no_coverage_details']:
+                        col_info, col_action = st.columns([4, 1])
+                        with col_info:
+                            center_type = center.get('type', 'UNKNOWN')
+                            icon = KPI_TYPE_ICONS.get(center_type, '📁')
+                            children_count = center.get('children_count', 0)
+                            st.markdown(f"📁 {icon} **{center['name']}**")
+                            st.caption(f"{center_type} • Parent ({children_count} children) • ⚠️ No assignments in subtree")
+                        with col_action:
+                            if can_edit and st.button(
+                                "➕ Add", 
+                                key=f"add_assign_parent_{center['id']}", 
+                                use_container_width=True
+                            ):
+                                st.session_state['add_assignment_center_id'] = center['id']
+                                st.session_state['show_add_assignment_form'] = True
+                                st.rerun(scope="fragment")
+                
+                st.divider()
+            
+            # =================================================================
+            # INFO: Parent centers with rollup from children (NOT an issue)
+            # =================================================================
+            if issues['parent_with_rollup_count'] > 0:
+                st.markdown("##### 📁 Parent Centers (Rollup from Children)")
+                st.caption(f"{issues['parent_with_rollup_count']} parent centers auto-aggregate targets from children")
+                
+                with st.container(border=True):
+                    for center in issues['parent_with_rollup_details']:
+                        center_type = center.get('type', 'UNKNOWN')
+                        icon = KPI_TYPE_ICONS.get(center_type, '📁')
+                        desc_count = center.get('descendants_with_assignments', 0)
+                        desc_names = center.get('descendant_names', '')
+                        
+                        # Header row
+                        col_info, col_action = st.columns([4, 1])
+                        with col_info:
+                            st.markdown(f"📁 {icon} **{center['name']}**")
+                            st.caption(f"{center_type} • Rollup from {desc_count} children")
+                        with col_action:
+                            if can_edit and st.button(
+                                "➕ Override", 
+                                key=f"add_assign_override_{center['id']}", 
+                                use_container_width=True,
+                                help="Add direct assignment to override rollup"
+                            ):
+                                st.session_state['add_assignment_center_id'] = center['id']
+                                st.session_state['show_add_assignment_form'] = True
+                                st.rerun(scope="fragment")
+                        
+                        # Show rollup targets
+                        rollup_data = setup_queries.get_rollup_targets_for_center(center['id'], selected_year)
+                        if rollup_data['has_rollup'] and rollup_data['targets']:
+                            # Format targets as compact summary
+                            target_parts = []
+                            for t in rollup_data['targets']:
+                                if t['is_currency']:
+                                    target_parts.append(f"{t['kpi_name']}: ${t['annual_target']:,.0f}")
+                                else:
+                                    target_parts.append(f"{t['kpi_name']}: {t['annual_target']:,.0f}")
+                            
+                            st.markdown(f"<div style='margin-left: 24px; color: #666; font-size: 0.85em;'>📊 {' | '.join(target_parts)}</div>", unsafe_allow_html=True)
+                            
+                            # Show source centers (truncated)
+                            sources = rollup_data['source_centers']
+                            if sources:
+                                sources_str = ', '.join(sources[:3])
+                                if len(sources) > 3:
+                                    sources_str += f" +{len(sources) - 3} more"
+                                st.markdown(f"<div style='margin-left: 24px; color: #888; font-size: 0.8em;'>↳ From: {sources_str}</div>", unsafe_allow_html=True)
+                        
+                        st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+                
+                st.info("ℹ️ Parent centers auto-aggregate KPI targets from their children. Add a direct assignment to override the rollup calculation.", icon="💡")
+            
+            # =================================================================
+            # WARNING: Weight not 100%
+            # =================================================================
             if issues['weight_issues_count'] > 0:
+                if critical_count > 0 or info_count > 0:
+                    st.divider()
+                
                 st.markdown("##### ⚠️ Weight Sum ≠ 100%")
                 st.caption(f"{issues['weight_issues_count']} KPI Centers have weights not summing to 100%")
                 
-                if issues.get('weight_issues_details'):
-                    with st.container(border=True):
-                        for center in issues['weight_issues_details']:
-                            col_info, col_weight, col_action = st.columns([3, 1, 1])
-                            with col_info:
-                                st.markdown(f"**{center['kpi_center_name']}**")
-                            with col_weight:
-                                weight = center['total_weight']
-                                if weight < 100:
-                                    st.warning(f"{weight}%")
-                                else:
-                                    st.error(f"{weight}%")
-                            with col_action:
-                                gap = 100 - weight
-                                if gap > 0:
-                                    st.caption(f"+{gap}% needed")
-                                else:
-                                    st.caption(f"{abs(gap)}% over")
+                with st.container(border=True):
+                    for center in issues['weight_issues_details']:
+                        col_info, col_weight, col_action = st.columns([3, 1, 1])
+                        with col_info:
+                            st.markdown(f"**{center['kpi_center_name']}**")
+                        with col_weight:
+                            weight = center['total_weight']
+                            if weight < 100:
+                                st.warning(f"{weight:.0f}%")
+                            else:
+                                st.error(f"{weight:.0f}%")
+                        with col_action:
+                            gap = 100 - weight
+                            if gap > 0:
+                                st.caption(f"+{gap:.0f}% needed")
+                            else:
+                                st.caption(f"{abs(gap):.0f}% over")
+    
     else:
         st.success(f"✅ All {selected_year} assignments are healthy!")
     
