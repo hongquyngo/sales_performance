@@ -220,7 +220,7 @@ class SetupQueries:
             query += " AND effective_to BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL :expiring_days DAY)"
             params['expiring_days'] = expiring_days
         
-        query += " ORDER BY kpi_center_name, customer_name, product_pn"
+        query += " ORDER BY kpi_center_name, customer_name, product_name"
         
         if limit:
             query += f" LIMIT {limit}"

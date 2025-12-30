@@ -318,7 +318,7 @@ def split_rules_section(
     if product_search and not split_df.empty:
         search_lower = product_search.lower()
         mask = (
-            split_df['product_pn'].fillna('').str.lower().str.contains(search_lower) |
+            split_df['product_name'].fillna('').str.lower().str.contains(search_lower) |
             split_df['pt_code'].fillna('').str.lower().str.contains(search_lower)
         )
         split_df = split_df[mask]
@@ -465,7 +465,7 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
             with col_info1:
                 st.markdown(f"**Customer:** {existing['customer_name']}")
             with col_info2:
-                st.markdown(f"**Product:** {format_product_display(existing['product_pn'], existing.get('pt_code'))}")
+                st.markdown(f"**Product:** {format_product_display(existing['product_name'], existing.get('pt_code'))}")
         
         with st.form(f"{mode}_split_form", clear_on_submit=False):
             col1, col2 = st.columns(2)
