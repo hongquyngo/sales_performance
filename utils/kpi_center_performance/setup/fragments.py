@@ -408,14 +408,14 @@ def split_rules_section(
             with col2:
                 if selected_rule and st.button("✏️ Edit", use_container_width=True):
                     st.session_state['edit_split_id'] = selected_rule
-                    st.rerun()
+                    st.rerun(scope="fragment")
             
             with col3:
                 if selected_rule and st.button("🗑️ Delete", use_container_width=True):
                     result = setup_queries.delete_split_rule(selected_rule)
                     if result['success']:
                         st.success("Rule deleted")
-                        st.rerun()
+                        st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
 
@@ -605,14 +605,14 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
                         st.success(f"{'Created' if mode == 'add' else 'Updated'} successfully!")
                         st.session_state['show_add_split_form'] = False
                         st.session_state['edit_split_id'] = None
-                        st.rerun()
+                        st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
             
             if cancelled:
                 st.session_state['show_add_split_form'] = False
                 st.session_state['edit_split_id'] = None
-                st.rerun()
+                st.rerun(scope="fragment")
 
 
 # =============================================================================
@@ -781,7 +781,7 @@ def kpi_assignments_section(
                 ):
                     st.session_state['add_assignment_center_id'] = center_id
                     st.session_state['show_add_assignment_form'] = True
-                    st.rerun()
+                    st.rerun(scope="fragment")
 
 
 def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SetupQueries):
@@ -814,12 +814,12 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Se
             with btn_col1:
                 if st.button("✏️", key=f"edit_assign_{kpi['assignment_id']}", help="Edit"):
                     st.session_state['edit_assignment_id'] = kpi['assignment_id']
-                    st.rerun()
+                    st.rerun(scope="fragment")
             with btn_col2:
                 if st.button("🗑️", key=f"del_assign_{kpi['assignment_id']}", help="Delete"):
                     result = setup_queries.delete_assignment(kpi['assignment_id'])
                     if result['success']:
-                        st.rerun()
+                        st.rerun(scope="fragment")
 
 
 def _render_assignment_form(setup_queries: SetupQueries, year: int,
@@ -981,7 +981,7 @@ def _render_assignment_form(setup_queries: SetupQueries, year: int,
                         st.session_state['show_add_assignment_form'] = False
                         st.session_state['edit_assignment_id'] = None
                         st.session_state['add_assignment_center_id'] = None
-                        st.rerun()
+                        st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
             
@@ -989,7 +989,7 @@ def _render_assignment_form(setup_queries: SetupQueries, year: int,
                 st.session_state['show_add_assignment_form'] = False
                 st.session_state['edit_assignment_id'] = None
                 st.session_state['add_assignment_center_id'] = None
-                st.rerun()
+                st.rerun(scope="fragment")
 
 
 # =============================================================================
@@ -1075,7 +1075,7 @@ def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQ
         if can_edit:
             if st.button("✏️", key=f"edit_hier_{row['kpi_center_id']}", help="Edit"):
                 st.session_state['edit_center_id'] = row['kpi_center_id']
-                st.rerun()
+                st.rerun(scope="fragment")
 
 
 def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_id: int = None):
@@ -1178,14 +1178,14 @@ def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_i
                         st.success("Saved!")
                         st.session_state['show_add_center_form'] = False
                         st.session_state['edit_center_id'] = None
-                        st.rerun()
+                        st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
             
             if cancelled:
                 st.session_state['show_add_center_form'] = False
                 st.session_state['edit_center_id'] = None
-                st.rerun()
+                st.rerun(scope="fragment")
 
 
 # =============================================================================
@@ -1204,7 +1204,7 @@ def validation_section(setup_queries: SetupQueries, current_year: int = None):
         st.markdown("### 🏥 Configuration Health Check")
     with col_refresh:
         if st.button("🔄 Refresh"):
-            st.rerun()
+            st.rerun(scope="fragment")
     
     # Get issues
     issues = setup_queries.get_all_validation_issues(year=current_year)
