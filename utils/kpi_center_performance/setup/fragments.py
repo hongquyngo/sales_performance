@@ -139,9 +139,11 @@ def setup_tab_fragment(
     setup_queries = SetupQueries(user_id=user_id)
     
     # Get user role for permission check
-    user_role = st.session_state.get('user_role', 'Manager')
-    can_edit = user_role in ['Admin', 'GM', 'MD']
-    can_approve = user_role == 'Admin'
+    # FIX: Case-insensitive check to match auth.py which stores lowercase role from DB
+    user_role = st.session_state.get('user_role', 'viewer')
+    user_role_lower = str(user_role).lower() if user_role else ''
+    can_edit = user_role_lower in ['admin', 'gm', 'md', 'director']
+    can_approve = user_role_lower == 'admin'
     
     # Get year from filters
     current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
