@@ -1129,49 +1129,95 @@ def hierarchy_section(
     
     # Group by KPI Type
     for kpi_type in hierarchy_df['kpi_type'].dropna().unique():
-        type_df = hierarchy_df[hierarchy_df['kpi_type'] == kpi_type]
+        type_df = hierarchy_df[hierarchy_df['kpi_type'] == kpi_type].copy()
         icon = KPI_TYPE_ICONS.get(kpi_type, '📁')
         
         with st.expander(f"{icon} {kpi_type} ({len(type_df)} centers)", expanded=expand_all):
-            # Sort by level and name
-            type_df_sorted = type_df.sort_values(['level', 'kpi_center_name'])
-            
-            for _, row in type_df_sorted.iterrows():
-                _render_hierarchy_node(row, can_edit, setup_queries)
+            # Build tree structure: render parents first, then their children
+            _render_hierarchy_tree(type_df, can_edit, setup_queries, parent_id=None, level=0)
 
 
-def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQueries):
-    """Render a single hierarchy node."""
+def _render_hierarchy_tree(df: pd.DataFrame, can_edit: bool, setup_queries: SetupQueries, 
+                           parent_id: int = None, level: int = 0):
+    """
+    Recursively render hierarchy tree with proper parent-child grouping.
     
-    indent = "　　" * row['level']  # Em space for indent
-    has_children = row['children_count'] > 0
-    node_icon = "📁" if has_children else "📄"
+    Args:
+        df: DataFrame containing all centers for this KPI type
+        can_edit: Whether user can edit
+        setup_queries: Query handler
+        parent_id: Current parent ID (None for root level)
+        level: Current indentation level
+    """
+    # Get nodes at this level (matching parent_id)
+    if parent_id is None:
+        # Root level: get nodes with no parent or parent_center_id is NULL
+        current_level = df[df['parent_center_id'].isna() | (df['parent_center_id'] == 0)]
+    else:
+        current_level = df[df['parent_center_id'] == parent_id]
     
-    col1, col2, col3 = st.columns([4, 2, 1])
+    # Sort by name
+    current_level = current_level.sort_values('kpi_center_name')
     
-    with col1:
-        if has_children:
-            st.markdown(f"{indent}{node_icon} **{row['kpi_center_name']}** ({row['children_count']} children)")
-        else:
-            st.markdown(f"{indent}{node_icon} {row['kpi_center_name']}")
-    
-    with col2:
-        stats_parts = []
-        if row.get('assignment_count', 0) > 0:
-            stats_parts.append(f"{int(row['assignment_count'])} KPIs")
-        if row.get('split_count', 0) > 0:
-            stats_parts.append(f"{int(row['split_count'])} splits")
+    for _, row in current_level.iterrows():
+        # Render this node
+        _render_hierarchy_node(row, can_edit, setup_queries, level)
         
-        if stats_parts:
-            st.caption(" | ".join(stats_parts))
-        else:
-            st.caption("No data")
+        # Recursively render children
+        children = df[df['parent_center_id'] == row['kpi_center_id']]
+        if not children.empty:
+            _render_hierarchy_tree(df, can_edit, setup_queries, 
+                                  parent_id=row['kpi_center_id'], level=level + 1)
+
+
+def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQueries, level: int = 0):
+    """Render a single hierarchy node with proper indentation."""
     
-    with col3:
-        if can_edit:
-            if st.button("✏️", key=f"edit_hier_{row['kpi_center_id']}", help="Edit"):
-                st.session_state['edit_center_id'] = row['kpi_center_id']
-                st.rerun(scope="fragment")
+    # Visual indent using CSS margin
+    indent_px = level * 24
+    has_children = row['children_count'] > 0
+    
+    # Icons based on level and children
+    if level == 0:
+        node_icon = "📁" if has_children else "📄"
+    else:
+        node_icon = "┗━ 📁" if has_children else "┗━ 📄"
+    
+    # Container with indent
+    with st.container():
+        col1, col2, col3 = st.columns([4, 2, 1])
+        
+        with col1:
+            # Apply indentation
+            name_display = row['kpi_center_name']
+            if has_children:
+                name_display = f"**{name_display}** ({row['children_count']} children)"
+            
+            if level > 0:
+                st.markdown(
+                    f"<div style='margin-left: {indent_px}px;'>{node_icon} {name_display}</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(f"{node_icon} {name_display}")
+        
+        with col2:
+            stats_parts = []
+            if row.get('assignment_count', 0) > 0:
+                stats_parts.append(f"{int(row['assignment_count'])} KPIs")
+            if row.get('split_count', 0) > 0:
+                stats_parts.append(f"{int(row['split_count'])} splits")
+            
+            if stats_parts:
+                st.caption(" | ".join(stats_parts))
+            else:
+                st.caption("No data")
+        
+        with col3:
+            if can_edit:
+                if st.button("✏️", key=f"edit_hier_{row['kpi_center_id']}", help="Edit"):
+                    st.session_state['edit_center_id'] = row['kpi_center_id']
+                    st.rerun(scope="fragment")
 
 
 def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_id: int = None):
