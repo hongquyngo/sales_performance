@@ -1562,6 +1562,7 @@ class SetupQueries:
                 p.id as product_id,
                 p.name as product_name,
                 p.pt_code,
+                p.package_size,
                 b.brand_name
             FROM products p
             LEFT JOIN brands b ON p.brand_id = b.id

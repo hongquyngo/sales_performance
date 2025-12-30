@@ -55,14 +55,56 @@ def format_currency(value: float, decimals: int = 0) -> str:
     return f"${value:,.0f}"
 
 
-def format_product_display(product_name: str, pt_code: str = None) -> str:
+def format_product_display(product_name: str, pt_code: str = None, package_size: str = None, brand: str = None, include_brand: bool = False) -> str:
     """
-    Format product for display: "PT Code | Name" or just "Name".
-    Consistent with product display in other tabs.
+    Format product for display.
+    
+    For DataTable fallback: "code | name (package_size)" - matches SQL view format
+    For Form Header (include_brand=True): "code | name | package_size (brand)"
+    
+    Args:
+        product_name: Product name
+        pt_code: Product code
+        package_size: Package size
+        brand: Brand name
+        include_brand: If True, append brand at end. Default False to match SQL view.
     """
+    parts = []
     if pt_code and str(pt_code).strip() and str(pt_code).strip() != 'None':
-        return f"{pt_code} | {product_name}"
-    return product_name or "N/A"
+        parts.append(str(pt_code).strip())
+    if product_name and str(product_name).strip():
+        parts.append(str(product_name).strip())
+    
+    # Package size format depends on include_brand
+    pkg = str(package_size).strip() if package_size and str(package_size).strip() and str(package_size).strip() != 'None' else None
+    
+    if include_brand:
+        # Form Header format: "code | name | package_size (brand)"
+        if pkg:
+            parts.append(pkg)
+        result = " | ".join(parts) if parts else "N/A"
+        if brand and str(brand).strip() and str(brand).strip() != 'None':
+            result = f"{result} ({brand})"
+    else:
+        # SQL View format: "code | name (package_size)"
+        result = " | ".join(parts) if parts else "N/A"
+        if pkg:
+            result = f"{result} ({pkg})"
+    
+    return result
+
+
+def format_customer_display(customer_name: str, company_code: str = None) -> str:
+    """
+    Format customer for display: "code | english_name".
+    """
+    parts = []
+    if company_code and str(company_code).strip() and str(company_code).strip() != 'None':
+        parts.append(str(company_code).strip())
+    if customer_name and str(customer_name).strip():
+        parts.append(str(customer_name).strip())
+    
+    return " | ".join(parts) if parts else "N/A"
 
 
 def format_percentage(value: float, decimals: int = 0) -> str:
@@ -347,7 +389,7 @@ def split_rules_section(
         display_df['Customer'] = display_df['customer_display']
     else:
         display_df['Customer'] = display_df.apply(
-            lambda r: f"{r.get('company_code', '')} | {r.get('customer_name', '')}", 
+            lambda r: format_customer_display(r.get('customer_name', ''), r.get('company_code', '')), 
             axis=1
         )
     
@@ -355,7 +397,7 @@ def split_rules_section(
         display_df['Product'] = display_df['product_display']
     else:
         display_df['Product'] = display_df.apply(
-            lambda r: format_product_display(r['product_name'], r.get('pt_code')), 
+            lambda r: format_product_display(r['product_name'], r.get('pt_code'), r.get('package_size'), r.get('brand')), 
             axis=1
         )
     
@@ -408,16 +450,28 @@ def split_rules_section(
             
             with col1:
                 # Build rule options with user-friendly display
-                # Format: "#ID | Customer Name | Product Name (Split%) → KPI Center"
+                # Format: "#ID | customer english name (code) | product name (code | package size) (Split%) → KPI_TYPE"
                 def format_rule_option(r):
                     rule_id = r['kpi_center_split_id']
-                    customer = r.get('customer_name', r.get('company_code', ''))
-                    product = r.get('product_name', r.get('pt_code', ''))
+                    
+                    # Customer: english_name (code)
+                    customer_name = r.get('customer_name', '')
+                    company_code = r.get('company_code', '')
+                    customer = f"{customer_name} ({company_code})" if company_code else customer_name
+                    
+                    # Product: name (code | package_size)
+                    product_name = r.get('product_name', '')
+                    pt_code = r.get('pt_code', '')
+                    package_size = r.get('package_size', '')
+                    product_detail = " | ".join(filter(None, [pt_code, package_size]))
+                    product = f"{product_name} ({product_detail})" if product_detail else product_name
+                    
                     split = r.get('split_percentage', 0)
-                    kpi_center = r.get('kpi_center_name', '')
+                    kpi_type = r.get('kpi_type', '')
+                    
                     return (
                         rule_id,
-                        f"#{rule_id} | {customer} | {product} ({split:.0f}%) → {kpi_center}"
+                        f"#{rule_id} | {customer} | {product} ({split:.0f}%) → {kpi_type}"
                     )
                 
                 rule_options = split_df.head(100).apply(format_rule_option, axis=1).tolist()
@@ -469,9 +523,9 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
             st.caption(f"Rule ID: {rule_id}")
             col_info1, col_info2 = st.columns(2)
             with col_info1:
-                st.markdown(f"**Customer:** {existing['customer_name']}")
+                st.markdown(f"**Customer:** {format_customer_display(existing['customer_name'], existing.get('company_code'))}")
             with col_info2:
-                st.markdown(f"**Product:** {format_product_display(existing['product_name'], existing.get('pt_code'))}")
+                st.markdown(f"**Product:** {format_product_display(existing['product_name'], existing.get('pt_code'), existing.get('package_size'), existing.get('brand'), include_brand=True)}")
         
         with st.form(f"{mode}_split_form", clear_on_submit=False):
             col1, col2 = st.columns(2)
@@ -527,13 +581,18 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
                     )
                     
                     if not products_df.empty:
+                        # Format: "name (code | package_size)" - consistent with customer dropdown
+                        def format_product_option(row):
+                            name = row['product_name'] or ''
+                            code = row['pt_code'] or ''
+                            pkg = row.get('package_size', '') or ''
+                            detail = " | ".join(filter(None, [code, pkg]))
+                            return f"{name} ({detail})" if detail else name
+                        
                         product_id = st.selectbox(
                             "Product *",
                             options=products_df['product_id'].tolist(),
-                            format_func=lambda x: format_product_display(
-                                products_df[products_df['product_id'] == x]['product_name'].iloc[0],
-                                products_df[products_df['product_id'] == x]['pt_code'].iloc[0]
-                            ),
+                            format_func=lambda x: format_product_option(products_df[products_df['product_id'] == x].iloc[0]),
                             key=f"{mode}_product_id"
                         )
                     else:
