@@ -416,34 +416,68 @@ class SetupQueries:
         }
         
         # =====================================================================
-        # STEP 1: Get all centers with splits but no direct assignments
+        # STEP 1: Get all centers without direct assignments that are RELEVANT
+        # A center is relevant if:
+        # - It has direct splits, OR
+        # - Any of its descendants has splits (parent of active centers)
         # =====================================================================
         centers_query = """
+            WITH RECURSIVE 
+            -- All centers with active splits
+            centers_with_splits AS (
+                SELECT DISTINCT kpi_center_id
+                FROM kpi_center_split_by_customer_product 
+                WHERE delete_flag = 0 AND (valid_to >= CURDATE() OR valid_to IS NULL)
+            ),
+            
+            -- Get all ancestors of centers with splits (parents should be included too)
+            ancestors AS (
+                -- Base: centers with splits
+                SELECT id as kpi_center_id, id as original_id
+                FROM kpi_centers
+                WHERE id IN (SELECT kpi_center_id FROM centers_with_splits)
+                  AND delete_flag = 0
+                
+                UNION
+                
+                -- Recursive: parents of those centers
+                SELECT kc.parent_center_id as kpi_center_id, a.original_id
+                FROM kpi_centers kc
+                INNER JOIN ancestors a ON kc.id = a.kpi_center_id
+                WHERE kc.parent_center_id IS NOT NULL
+                  AND kc.delete_flag = 0
+            ),
+            
+            -- All relevant centers (have splits OR are ancestors of centers with splits)
+            relevant_centers AS (
+                SELECT DISTINCT kpi_center_id FROM ancestors
+            ),
+            
+            -- Children count for is_leaf detection
+            children_count AS (
+                SELECT parent_center_id, COUNT(*) as child_count
+                FROM kpi_centers
+                WHERE delete_flag = 0 AND parent_center_id IS NOT NULL
+                GROUP BY parent_center_id
+            )
+            
             SELECT 
                 kc.id,
                 kc.name,
                 kc.type,
                 COALESCE(cc.child_count, 0) as children_count,
-                CASE WHEN COALESCE(cc.child_count, 0) = 0 THEN 1 ELSE 0 END as is_leaf
+                CASE WHEN COALESCE(cc.child_count, 0) = 0 THEN 1 ELSE 0 END as is_leaf,
+                CASE WHEN cws.kpi_center_id IS NOT NULL THEN 1 ELSE 0 END as has_direct_splits
             FROM kpi_centers kc
-            LEFT JOIN (
-                SELECT parent_center_id, COUNT(*) as child_count
-                FROM kpi_centers
-                WHERE delete_flag = 0 AND parent_center_id IS NOT NULL
-                GROUP BY parent_center_id
-            ) cc ON kc.id = cc.parent_center_id
+            INNER JOIN relevant_centers rc ON kc.id = rc.kpi_center_id
+            LEFT JOIN children_count cc ON kc.id = cc.parent_center_id
+            LEFT JOIN centers_with_splits cws ON kc.id = cws.kpi_center_id
             WHERE kc.delete_flag = 0
               -- No direct assignment for this year
               AND kc.id NOT IN (
                   SELECT DISTINCT kpi_center_id 
                   FROM sales_kpi_center_assignments 
                   WHERE year = :year AND delete_flag = 0
-              )
-              -- Has active splits (so we care about this center)
-              AND kc.id IN (
-                  SELECT DISTINCT kpi_center_id 
-                  FROM kpi_center_split_by_customer_product 
-                  WHERE delete_flag = 0 AND (valid_to >= CURDATE() OR valid_to IS NULL)
               )
             ORDER BY 
                 CASE WHEN COALESCE(cc.child_count, 0) = 0 THEN 0 ELSE 1 END,  -- Leaves first
