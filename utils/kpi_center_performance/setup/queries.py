@@ -8,14 +8,6 @@ Full CRUD operations for:
 - Hierarchy Management
 - Validation Dashboard
 
-VERSION: 2.0.0
-CHANGELOG:
-- v2.0.0: Full CRUD implementation per proposal v3.4.0
-          - Split Rules: create, update, delete, approve, bulk ops
-          - KPI Assignments: create, update, delete
-          - Hierarchy: create, update, delete with dependency check
-          - Validation: comprehensive health checks
-- v1.0.0: Initial read-only version
 """
 
 import logging
@@ -104,30 +96,76 @@ class SetupQueries:
             limit: Limit number of results
             
         Returns:
-            DataFrame with split assignments
+            DataFrame with split assignments (all columns from view v2.0)
         """
         query = """
             SELECT 
+                -- Primary ID
                 kpi_center_split_id,
+                
+                -- KPI Center
                 kpi_center_id,
                 kpi_center_name,
                 kpi_type,
+                kpi_center_description,
+                parent_center_id,
+                
+                -- Customer
                 customer_id,
-                customer_name,
                 company_code,
+                customer_name,
+                customer_display,
+                
+                -- Product
                 product_id,
-                product_pn,
                 pt_code,
+                product_name,
+                package_size,
+                product_display,
+                
+                -- Brand
+                brand_id,
                 brand,
+                
+                -- Split
                 split_percentage,
+                split_percentage_display,
+                
+                -- Period
                 effective_from,
                 effective_to,
                 effective_period,
+                days_until_expiry,
+                
+                -- Approval
                 is_approved,
                 approval_status,
+                
+                -- Creator
+                created_by_user_id,
+                created_by_username,
+                created_by_name,
+                created_date,
+                
+                -- Approver
+                approved_by_user_id,
+                approved_by_username,
+                approved_by_name,
+                
+                -- Modifier
+                modified_by_user_id,
+                modified_by_username,
+                modified_by_name,
+                modified_date,
+                
+                -- Version
+                version,
+                
+                -- Validation
                 total_split_percentage_by_type,
                 kpi_split_status,
                 existing_kpi_split_structure
+                
             FROM kpi_center_split_looker_view
             WHERE 1=1
         """
@@ -370,20 +408,24 @@ class SetupQueries:
             valid_from: Start date
             valid_to: End date
             is_approved: Whether rule is approved
-            approved_by: Employee ID who approved
+            approved_by: User ID who approved (FK -> users.id)
             
         Returns:
             Dict with 'success': bool, 'id': int, 'message': str
+            
+        Note:
+            - created_by: uses self.user_id (FK -> users.id)
+            - approved_by: users.id (not employees.id)
         """
         query = """
             INSERT INTO kpi_center_split_by_customer_product (
                 customer_id, product_id, kpi_center_id, split_percentage,
                 valid_from, valid_to, isApproved, approved_by,
-                created_date, modified_date, created_by, delete_flag, version
+                created_date, modified_date, created_by, modified_by, delete_flag, version
             ) VALUES (
                 :customer_id, :product_id, :kpi_center_id, :split_percentage,
                 :valid_from, :valid_to, :is_approved, :approved_by,
-                NOW(), NOW(), :created_by, 0, 0
+                NOW(), NOW(), :created_by, :created_by, 0, 0
             )
         """
         
@@ -396,7 +438,7 @@ class SetupQueries:
             'valid_to': valid_to,
             'is_approved': 1 if is_approved else 0,
             'approved_by': approved_by,
-            'created_by': self.user_id
+            'created_by': self.user_id  # Should be users.id (INT)
         }
         
         return self._execute_insert(query, params, "create_split_rule")
@@ -425,9 +467,12 @@ class SetupQueries:
             
         Returns:
             Dict with 'success': bool, 'message': str
+            
+        Note:
+            - modified_by: uses self.user_id (FK -> users.id)
         """
         updates = []
-        params = {'rule_id': rule_id}
+        params = {'rule_id': rule_id, 'modified_by': self.user_id}
         
         if split_percentage is not None:
             updates.append("split_percentage = :split_percentage")
@@ -449,6 +494,7 @@ class SetupQueries:
             return {'success': False, 'message': 'No fields to update'}
         
         updates.append("modified_date = NOW()")
+        updates.append("modified_by = :modified_by")
         updates.append("version = version + 1")
         
         query = f"""
@@ -465,7 +511,7 @@ class SetupQueries:
         
         Args:
             rule_ids: List of rule IDs to approve
-            approved_by: Employee ID who approved
+            approved_by: User ID who approved (FK -> users.id)
             
         Returns:
             Dict with 'success': bool, 'count': int, 'message': str
@@ -477,6 +523,7 @@ class SetupQueries:
             UPDATE kpi_center_split_by_customer_product
             SET isApproved = 1,
                 approved_by = :approved_by,
+                modified_by = :approved_by,
                 modified_date = NOW(),
                 version = version + 1
             WHERE id IN :rule_ids AND delete_flag = 0
@@ -1049,51 +1096,82 @@ class SetupQueries:
             kpi_type_id: Filter by KPI type ID
             
         Returns:
-            DataFrame with assignment details
+            DataFrame with assignment details (all columns from view v2.0)
         """
-        # Query from base table with joins to get assignment_id
+        # Query from view to get all fields including creator/modifier
         query = """
             SELECT 
-                a.id as assignment_id,
-                a.kpi_center_id,
-                kc.name as kpi_center_name,
-                kc.type as kpi_center_type,
-                kc.parent_center_id,
-                a.year,
-                a.kpi_type_id,
-                kt.name as kpi_name,
-                kt.description as kpi_description,
-                kt.uom as unit_of_measure,
-                FORMAT(a.annual_target_value, 0) AS annual_target_value,
-                CONCAT(a.weight, '%') AS weight,
-                a.annual_target_value AS annual_target_value_numeric,
-                a.weight AS weight_numeric,
-                a.annual_target_value / 12 AS monthly_target_value,
-                a.annual_target_value / 4 AS quarterly_target_value,
-                a.notes
-            FROM sales_kpi_center_assignments a
-            JOIN kpi_centers kc ON a.kpi_center_id = kc.id
-            JOIN kpi_types kt ON a.kpi_type_id = kt.id
-            WHERE a.delete_flag = 0
-              AND kc.delete_flag = 0
-              AND kt.delete_flag = 0
+                -- Primary ID
+                assignment_id,
+                
+                -- KPI Center
+                kpi_center_id,
+                kpi_center_name,
+                kpi_center_description,
+                kpi_center_type,
+                parent_center_id,
+                parent_center_name,
+                
+                -- Year
+                year,
+                
+                -- KPI Type
+                kpi_type_id,
+                kpi_name,
+                kpi_description,
+                unit_of_measure,
+                
+                -- Targets (formatted)
+                annual_target_value,
+                weight,
+                
+                -- Targets (numeric)
+                annual_target_value_numeric,
+                weight_numeric,
+                monthly_target_value,
+                quarterly_target_value,
+                
+                -- Notes
+                notes,
+                
+                -- Creator
+                created_by_user_id,
+                created_by_username,
+                created_by_name,
+                created_at,
+                
+                -- Modifier
+                modified_by_user_id,
+                modified_by_username,
+                modified_by_name,
+                updated_at,
+                
+                -- Version
+                version,
+                
+                -- Flags
+                is_current_year,
+                year_status
+                
+            FROM sales_kpi_center_assignments_view
+            WHERE 1=1
         """
         
         params = {}
         
         if year:
-            query += " AND a.year = :year"
+            query += " AND year = :year"
             params['year'] = year
         
         if kpi_center_ids:
-            query += " AND a.kpi_center_id IN :kpi_center_ids"
+            query += " AND kpi_center_id IN :kpi_center_ids"
             params['kpi_center_ids'] = tuple(kpi_center_ids)
         
         if kpi_type_id:
-            query += " AND a.kpi_type_id = :kpi_type_id"
+            query += " AND kpi_type_id = :kpi_type_id"
             params['kpi_type_id'] = kpi_type_id
         
-        query += " ORDER BY kc.name, kt.name"
+        query += " ORDER BY kpi_center_type, kpi_center_name, kpi_name"
         
         return self._execute_query(query, params, "kpi_assignments")
     
@@ -1277,6 +1355,10 @@ class SetupQueries:
             
         Returns:
             Dict with 'success': bool, 'id': int, 'message': str
+            
+        Note:
+            - created_by: uses self.user_id (FK -> users.id)
+            - modified_by: same as created_by on creation
         """
         # Check for duplicate
         if self.check_duplicate_assignment(kpi_center_id, kpi_type_id, year):
@@ -1288,10 +1370,10 @@ class SetupQueries:
         query = """
             INSERT INTO sales_kpi_center_assignments (
                 kpi_center_id, kpi_type_id, year, annual_target_value, weight, notes,
-                created_at, updated_at, created_by, delete_flag, version
+                created_at, updated_at, created_by, modified_by, delete_flag, version
             ) VALUES (
                 :kpi_center_id, :kpi_type_id, :year, :annual_target_value, :weight, :notes,
-                NOW(), NOW(), :created_by, 0, 0
+                NOW(), NOW(), :created_by, :created_by, 0, 0
             )
         """
         
@@ -1302,7 +1384,7 @@ class SetupQueries:
             'annual_target_value': annual_target_value,
             'weight': weight,
             'notes': notes,
-            'created_by': self.user_id
+            'created_by': self.user_id  # Should be users.id (INT)
         }
         
         return self._execute_insert(query, params, "create_assignment")
@@ -1325,9 +1407,12 @@ class SetupQueries:
             
         Returns:
             Dict with 'success': bool, 'message': str
+            
+        Note:
+            - modified_by: uses self.user_id (FK -> users.id)
         """
         updates = []
-        params = {'assignment_id': assignment_id}
+        params = {'assignment_id': assignment_id, 'modified_by': self.user_id}
         
         if annual_target_value is not None:
             updates.append("annual_target_value = :annual_target_value")
@@ -1345,6 +1430,7 @@ class SetupQueries:
             return {'success': False, 'message': 'No fields to update'}
         
         updates.append("updated_at = NOW()")
+        updates.append("modified_by = :modified_by")
         updates.append("version = version + 1")
         
         query = f"""

@@ -8,16 +8,6 @@ Full management console with 4 sub-tabs:
 3. Hierarchy - Tree view of kpi_centers
 4. Validation - Health check dashboard
 
-VERSION: 2.1.0
-CHANGELOG:
-- v2.1.0: Refined UI to match KPI & Targets tab patterns
-          - Product display: "PT Code | Name" format
-          - KPI Assignments with progress-like cards
-          - Consistent st.metric() usage with help tooltips
-          - Better card layouts using st.container(border=True)
-          - Streamlined forms with better validation
-- v2.0.0: Full CRUD implementation
-- v1.0.0: Initial read-only version
 """
 
 import streamlit as st
@@ -135,7 +125,9 @@ def setup_tab_fragment(
     st.subheader("⚙️ KPI Center Configuration")
     
     # Initialize queries with user context
-    user_id = st.session_state.get('user_uuid')
+    # Note: user_id should be users.id (INT), not UUID
+    # The auth system should store this in session_state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
     setup_queries = SetupQueries(user_id=user_id)
     
     # Get user role for permission check
@@ -338,15 +330,34 @@ def split_rules_section(
     st.caption(f"Showing {len(split_df):,} rules")
     
     # -------------------------------------------------------------------------
-    # DATA TABLE - Formatted like other tabs
+    # DATA TABLE - Updated with new view columns (v2.0)
     # -------------------------------------------------------------------------
     display_df = split_df.copy()
     
-    # Format product display
-    display_df['Product'] = display_df.apply(
-        lambda r: format_product_display(r['product_pn'], r.get('pt_code')), 
-        axis=1
+    # Format ID for display
+    display_df['ID'] = display_df['kpi_center_split_id'].apply(lambda x: f"#{x}")
+    
+    # Format KPI Type with icon
+    display_df['Type'] = display_df['kpi_type'].apply(
+        lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}" if pd.notna(x) else ''
     )
+    
+    # Use pre-formatted columns from view (or fallback to manual format)
+    if 'customer_display' in display_df.columns:
+        display_df['Customer'] = display_df['customer_display']
+    else:
+        display_df['Customer'] = display_df.apply(
+            lambda r: f"{r.get('company_code', '')} | {r.get('customer_name', '')}", 
+            axis=1
+        )
+    
+    if 'product_display' in display_df.columns:
+        display_df['Product'] = display_df['product_display']
+    else:
+        display_df['Product'] = display_df.apply(
+            lambda r: format_product_display(r['product_name'], r.get('pt_code')), 
+            axis=1
+        )
     
     # Format split percentage
     display_df['Split'] = display_df['split_percentage'].apply(lambda x: f"{x:.0f}%")
@@ -356,43 +367,51 @@ def split_rules_section(
         lambda x: get_status_display(x)[0]
     )
     
-    # Format approval
-    display_df['Approved'] = display_df['is_approved'].apply(
-        lambda x: '✅' if x else '⏳'
+    # Format approval with approver name
+    display_df['Approved'] = display_df.apply(
+        lambda r: f"✅ {r.get('approved_by_name', '').strip()}" if r.get('is_approved') else '⏳ Pending',
+        axis=1
     )
     
-    # Display table
+    # Format creator name
+    display_df['Created By'] = display_df['created_by_name'].fillna('').apply(lambda x: x.strip() if x else '-')
+    
+    # Display table with all columns
     st.dataframe(
         display_df[[
-            'kpi_center_name', 'customer_name', 'Product', 'brand',
-            'Split', 'effective_period', 'Status', 'Approved'
+            'ID', 'kpi_center_name', 'Type', 'Customer', 'Product', 'brand',
+            'Split', 'effective_period', 'Status', 'Approved', 'Created By'
         ]],
         hide_index=True,
         column_config={
+            'ID': st.column_config.TextColumn('ID', width='small'),
             'kpi_center_name': st.column_config.TextColumn('KPI Center', width='medium'),
-            'customer_name': st.column_config.TextColumn('Customer', width='medium'),
+            'Type': st.column_config.TextColumn('Type', width='small'),
+            'Customer': st.column_config.TextColumn('Customer', width='large'),
             'Product': st.column_config.TextColumn('Product', width='large'),
             'brand': st.column_config.TextColumn('Brand', width='small'),
             'Split': st.column_config.TextColumn('Split %', width='small'),
             'effective_period': st.column_config.TextColumn('Period', width='medium'),
             'Status': st.column_config.TextColumn('Status', width='small'),
-            'Approved': st.column_config.TextColumn('✓', width='small'),
+            'Approved': st.column_config.TextColumn('Approved', width='medium'),
+            'Created By': st.column_config.TextColumn('Created By', width='medium'),
         },
         use_container_width=True
     )
     
     # -------------------------------------------------------------------------
-    # ROW ACTIONS
+    # ROW ACTIONS - Updated with ID reference
     # -------------------------------------------------------------------------
     if can_edit and not split_df.empty:
         with st.expander("✏️ Edit / Delete Rule"):
             col1, col2, col3 = st.columns([3, 1, 1])
             
             with col1:
+                # Build rule options with ID and formatted display
                 rule_options = split_df.head(100).apply(
                     lambda r: (
                         r['kpi_center_split_id'],
-                        f"#{r['kpi_center_split_id']} | {r['customer_name'][:15]}... | {format_product_display(r['product_pn'], r.get('pt_code'))[:20]}..."
+                        f"#{r['kpi_center_split_id']} | {r.get('company_code', '')[:8]} | {r.get('pt_code', r.get('product_name', ''))[:15]}"
                     ),
                     axis=1
                 ).tolist()
@@ -785,15 +804,17 @@ def kpi_assignments_section(
 
 
 def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SetupQueries):
-    """Render a single KPI assignment row."""
+    """Render a single KPI assignment row - Updated with creator/modifier info."""
     
     kpi_lower = kpi['kpi_name'].lower().replace(' ', '_')
     icon = KPI_ICONS.get(kpi_lower, '📋')
     
-    col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([2, 3, 1, 2, 1])
     
     with col1:
         st.markdown(f"**{icon} {kpi['kpi_name']}**")
+        # Show assignment ID for reference
+        st.caption(f"ID: {kpi['assignment_id']}")
     
     with col2:
         if kpi['unit_of_measure'] == 'USD':
@@ -809,6 +830,16 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Se
         st.markdown(f"**{kpi['weight_numeric']:.0f}%** weight")
     
     with col4:
+        # Show creator and modifier info
+        created_by = kpi.get('created_by_name', '').strip() if pd.notna(kpi.get('created_by_name')) else '-'
+        modified_by = kpi.get('modified_by_name', '').strip() if pd.notna(kpi.get('modified_by_name')) else None
+        
+        if modified_by and modified_by != created_by:
+            st.caption(f"👤 {created_by} • ✏️ {modified_by}")
+        else:
+            st.caption(f"👤 {created_by}")
+    
+    with col5:
         if can_edit:
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:

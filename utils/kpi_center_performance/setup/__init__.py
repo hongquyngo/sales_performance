@@ -8,16 +8,6 @@ Full management console with 4 sub-tabs:
 3. Hierarchy - Tree view of kpi_centers
 4. Validation - Health check dashboard
 
-VERSION: 2.0.0
-CHANGELOG:
-- v2.0.0: Full CRUD implementation per proposal v3.4.0
-          - Complete CRUD operations for Split Rules
-          - Complete CRUD operations for KPI Assignments
-          - Interactive hierarchy tree with CRUD
-          - Validation dashboard with issue tracking
-          - Bulk operations support
-          - Permission-based access control
-- v1.0.0: Initial read-only version
 """
 
 # Queries
@@ -59,4 +49,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.0.0'
+__version__ = '2.2.0'
