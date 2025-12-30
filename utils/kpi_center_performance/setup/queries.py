@@ -271,6 +271,105 @@ class SetupQueries:
             'expiring_soon_count': int(row.get('expiring_soon_count', 0) or 0)
         }
     
+    def get_split_issues_detail(
+        self,
+        issue_type: str = 'over_100',
+        limit: int = 50
+    ) -> pd.DataFrame:
+        """
+        Get detailed list of split issues for display in issues panel.
+        
+        Args:
+            issue_type: 'over_100' or 'incomplete'
+            limit: Maximum number of records to return
+            
+        Returns:
+            DataFrame with customer, product, kpi_type, total_split grouped
+        """
+        if issue_type == 'over_100':
+            status_filter = 'over_100_split'
+        else:
+            status_filter = 'incomplete_split'
+        
+        query = f"""
+            SELECT 
+                customer_id,
+                customer_display,
+                product_id,
+                product_display,
+                kpi_type,
+                SUM(split_percentage) as total_split,
+                COUNT(*) as rule_count
+            FROM kpi_center_split_looker_view
+            WHERE kpi_split_status = :status_filter
+              AND (effective_to >= CURDATE() OR effective_to IS NULL)
+            GROUP BY customer_id, customer_display, product_id, product_display, kpi_type
+            ORDER BY total_split DESC
+            LIMIT {limit}
+        """
+        
+        return self._execute_query(query, {'status_filter': status_filter}, f"split_issues_{issue_type}")
+    
+    def get_assignment_issues_summary(self, year: int) -> Dict:
+        """
+        Get assignment issues summary for display in issues panel.
+        
+        Args:
+            year: Year to check
+            
+        Returns:
+            Dict with no_assignment_count, weight_issues_count, and details
+        """
+        result = {
+            'no_assignment_count': 0,
+            'no_assignment_details': [],
+            'weight_issues_count': 0,
+            'weight_issues_details': []
+        }
+        
+        # Centers with splits but no assignments
+        no_assign_query = """
+            SELECT kc.id, kc.name, kc.type
+            FROM kpi_centers kc
+            WHERE kc.delete_flag = 0
+              AND kc.id NOT IN (
+                  SELECT DISTINCT kpi_center_id 
+                  FROM sales_kpi_center_assignments 
+                  WHERE year = :year AND delete_flag = 0
+              )
+              AND kc.id IN (
+                  SELECT DISTINCT kpi_center_id 
+                  FROM kpi_center_split_by_customer_product 
+                  WHERE delete_flag = 0 AND (valid_to >= CURDATE() OR valid_to IS NULL)
+              )
+            ORDER BY kc.type, kc.name
+        """
+        no_assign_df = self._execute_query(no_assign_query, {'year': year}, "centers_without_assignment")
+        
+        if not no_assign_df.empty:
+            result['no_assignment_count'] = len(no_assign_df)
+            result['no_assignment_details'] = no_assign_df.to_dict('records')
+        
+        # Weight issues
+        weight_query = """
+            SELECT 
+                kpi_center_id,
+                kpi_center_name,
+                SUM(weight_numeric) as total_weight
+            FROM sales_kpi_center_assignments_view
+            WHERE year = :year
+            GROUP BY kpi_center_id, kpi_center_name
+            HAVING total_weight != 100
+            ORDER BY kpi_center_name
+        """
+        weight_df = self._execute_query(weight_query, {'year': year}, "weight_issues")
+        
+        if not weight_df.empty:
+            result['weight_issues_count'] = len(weight_df)
+            result['weight_issues_details'] = weight_df.to_dict('records')
+        
+        return result
+    
     def get_split_by_customer_product(
         self,
         customer_id: int,

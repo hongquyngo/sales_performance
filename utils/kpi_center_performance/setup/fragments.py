@@ -182,12 +182,22 @@ def setup_tab_fragment(
     # Get year from filters
     current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
     
-    # Create 4 sub-tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Split Rules",
-        "🎯 KPI Assignments", 
-        "🌳 Hierarchy",
-        "📊 Validation"
+    # Get issue counts for tab badges
+    split_stats = setup_queries.get_split_summary_stats()
+    split_critical = split_stats.get('over_100_count', 0)
+    
+    assignment_issues = setup_queries.get_assignment_issues_summary(current_year)
+    assign_critical = assignment_issues.get('no_assignment_count', 0) + assignment_issues.get('weight_issues_count', 0)
+    
+    # Dynamic tab names with badges
+    split_tab_name = f"📋 Split Rules{' 🔴' if split_critical > 0 else ''}"
+    assign_tab_name = f"🎯 KPI Assignments{' ⚠️' if assign_critical > 0 else ''}"
+    
+    # Create 3 sub-tabs (Validation merged into Split Rules & Assignments)
+    tab1, tab2, tab3 = st.tabs([
+        split_tab_name,
+        assign_tab_name, 
+        "🌳 Hierarchy"
     ])
     
     with tab1:
@@ -210,12 +220,6 @@ def setup_tab_fragment(
         hierarchy_section(
             setup_queries=setup_queries,
             can_edit=can_edit
-        )
-    
-    with tab4:
-        validation_section(
-            setup_queries=setup_queries,
-            current_year=current_year
         )
 
 
@@ -273,6 +277,74 @@ def split_rules_section(
             value=f"{stats['pending_count']:,}",
             help="Rules awaiting approval"
         )
+    
+    # -------------------------------------------------------------------------
+    # ISSUES SECTION (Merged from Validation tab)
+    # -------------------------------------------------------------------------
+    has_issues = stats['over_100_count'] > 0 or stats['incomplete_count'] > 0
+    has_info = stats['pending_count'] > 0 or stats['expiring_soon_count'] > 0
+    
+    if has_issues or has_info:
+        issues_label = f"⚠️ {stats['over_100_count'] + stats['incomplete_count']} Issues" if has_issues else "ℹ️ Notifications"
+        
+        with st.expander(issues_label, expanded=has_issues):
+            # Critical: Over 100%
+            if stats['over_100_count'] > 0:
+                st.markdown("##### 🔴 Over 100% Split")
+                st.caption(f"{stats['over_100_count']} customer-product combos have over 100% split")
+                
+                # Get detailed issues
+                over_100_df = setup_queries.get_split_issues_detail(issue_type='over_100')
+                if not over_100_df.empty:
+                    with st.container(border=True):
+                        for idx, row in over_100_df.head(10).iterrows():
+                            col_info, col_action = st.columns([5, 1])
+                            with col_info:
+                                st.markdown(f"**{row.get('customer_display', 'N/A')}** | {row.get('product_display', 'N/A')}")
+                                st.caption(f"{row['kpi_type']} → Total: {row['total_split']:.0f}%")
+                            with col_action:
+                                if can_edit and st.button("Fix →", key=f"fix_over_{idx}", use_container_width=True):
+                                    st.session_state['split_filter_customer'] = row.get('customer_id')
+                                    st.session_state['split_filter_product'] = row.get('product_id')
+                                    st.rerun(scope="fragment")
+                        
+                        if len(over_100_df) > 10:
+                            st.caption(f"... and {len(over_100_df) - 10} more")
+                
+                st.divider()
+            
+            # Warning: Incomplete
+            if stats['incomplete_count'] > 0:
+                st.markdown("##### ⚠️ Incomplete Split (<100%)")
+                st.caption(f"{stats['incomplete_count']} customer-product combos have under 100% split")
+                
+                incomplete_df = setup_queries.get_split_issues_detail(issue_type='incomplete')
+                if not incomplete_df.empty:
+                    with st.container(border=True):
+                        for idx, row in incomplete_df.head(10).iterrows():
+                            col_info, col_pct = st.columns([5, 1])
+                            with col_info:
+                                st.markdown(f"**{row.get('customer_display', 'N/A')}** | {row.get('product_display', 'N/A')}")
+                                st.caption(f"{row['kpi_type']} → Total: {row['total_split']:.0f}% ({100 - row['total_split']:.0f}% missing)")
+                            with col_pct:
+                                st.metric("Gap", f"{100 - row['total_split']:.0f}%", label_visibility="collapsed")
+                        
+                        if len(incomplete_df) > 10:
+                            st.caption(f"... and {len(incomplete_df) - 10} more")
+                
+                st.divider()
+            
+            # Info: Pending approval
+            if stats['pending_count'] > 0:
+                st.markdown("##### ⏳ Pending Approval")
+                st.caption(f"{stats['pending_count']} rules awaiting approval")
+            
+            # Info: Expiring soon
+            if stats['expiring_soon_count'] > 0:
+                st.markdown("##### 📅 Expiring Soon")
+                st.caption(f"{stats['expiring_soon_count']} rules expiring within 30 days")
+    else:
+        st.success("✅ All split rules are healthy!")
     
     st.divider()
     
@@ -750,6 +822,68 @@ def kpi_assignments_section(
             st.write("")  # Spacer
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
                 st.session_state['show_add_assignment_form'] = True
+    
+    # -------------------------------------------------------------------------
+    # ISSUES SECTION (Merged from Validation tab)
+    # -------------------------------------------------------------------------
+    issues = setup_queries.get_assignment_issues_summary(selected_year)
+    has_issues = issues['no_assignment_count'] > 0 or issues['weight_issues_count'] > 0
+    
+    if has_issues:
+        issues_count = issues['no_assignment_count'] + issues['weight_issues_count']
+        
+        with st.expander(f"⚠️ {issues_count} Issues Found", expanded=True):
+            # Critical: No assignment for active centers
+            if issues['no_assignment_count'] > 0:
+                st.markdown("##### 🔴 Missing Assignments")
+                st.caption(f"{issues['no_assignment_count']} active KPI Centers have no {selected_year} assignments")
+                
+                if issues.get('no_assignment_details'):
+                    with st.container(border=True):
+                        for center in issues['no_assignment_details']:
+                            col_info, col_action = st.columns([4, 1])
+                            with col_info:
+                                center_type = center.get('type', 'UNKNOWN')
+                                icon = KPI_TYPE_ICONS.get(center_type, '📁')
+                                st.markdown(f"{icon} **{center['name']}**")
+                                st.caption(f"{center_type}")
+                            with col_action:
+                                if can_edit and st.button(
+                                    "➕ Add", 
+                                    key=f"add_assign_{center['id']}", 
+                                    use_container_width=True
+                                ):
+                                    st.session_state['add_assignment_center_id'] = center['id']
+                                    st.session_state['show_add_assignment_form'] = True
+                                    st.rerun(scope="fragment")
+                
+                st.divider()
+            
+            # Warning: Weight not 100%
+            if issues['weight_issues_count'] > 0:
+                st.markdown("##### ⚠️ Weight Sum ≠ 100%")
+                st.caption(f"{issues['weight_issues_count']} KPI Centers have weights not summing to 100%")
+                
+                if issues.get('weight_issues_details'):
+                    with st.container(border=True):
+                        for center in issues['weight_issues_details']:
+                            col_info, col_weight, col_action = st.columns([3, 1, 1])
+                            with col_info:
+                                st.markdown(f"**{center['kpi_center_name']}**")
+                            with col_weight:
+                                weight = center['total_weight']
+                                if weight < 100:
+                                    st.warning(f"{weight}%")
+                                else:
+                                    st.error(f"{weight}%")
+                            with col_action:
+                                gap = 100 - weight
+                                if gap > 0:
+                                    st.caption(f"+{gap}% needed")
+                                else:
+                                    st.caption(f"{abs(gap)}% over")
+    else:
+        st.success(f"✅ All {selected_year} assignments are healthy!")
     
     st.divider()
     
@@ -1331,12 +1465,25 @@ def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_i
 
 
 # =============================================================================
-# VALIDATION SECTION
+# VALIDATION SECTION (DEPRECATED - Kept for backward compatibility)
 # =============================================================================
 
 @st.fragment
 def validation_section(setup_queries: SetupQueries, current_year: int = None):
-    """Validation dashboard - health check for configurations."""
+    """
+    Validation dashboard - health check for configurations.
+    
+    DEPRECATED in v2.3.0: Validation has been merged into Split Rules and 
+    KPI Assignments tabs for better UX. This function is kept for backward 
+    compatibility but is no longer used in the main setup_tab_fragment.
+    """
+    import warnings
+    warnings.warn(
+        "validation_section is deprecated since v2.3.0. "
+        "Validation is now integrated into split_rules_section and kpi_assignments_section.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     
     current_year = current_year or date.today().year
     
