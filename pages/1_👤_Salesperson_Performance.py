@@ -487,7 +487,9 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     data = {}
     
     try:
-        # Step 1: Sales data - FILTERED by access control
+        # =====================================================================
+        # PHASE 1: Sequential - Sales data & KPI targets (needed first)
+        # =====================================================================
         progress_bar.progress(10, text=f"📊 Loading sales data ({load_msg})...")
         with timer("DB: get_sales_data"):
             data['sales'] = q.get_sales_data(
@@ -498,8 +500,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             )
         print(f"   → Sales rows: {len(data['sales']):,}")
         
-        # Step 2: KPI targets - FILTERED by access control
-        progress_bar.progress(25, text="🎯 Loading KPI targets...")
+        progress_bar.progress(20, text="🎯 Loading KPI targets...")
         with timer("DB: get_kpi_targets (all years)"):
             targets_list = []
             for yr in range(start_year, end_year + 1):
@@ -509,9 +510,12 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         print(f"   → Targets rows: {len(data['targets']):,}")
         
-        # Step 3: Complex KPIs - FILTERED by access control
+        # =====================================================================
+        # PHASE 2: Complex KPIs - FILTERED by access control
         # UPDATED v1.8.0: Pass exclude_internal parameter
-        progress_bar.progress(40, text="🆕 Loading new business metrics...")
+        # =====================================================================
+        progress_bar.progress(30, text="🆕 Loading new business metrics...")
+        
         with timer("DB: get_new_customers"):
             data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
         print(f"   → New customers rows: {len(data['new_customers']):,}")
@@ -535,8 +539,11 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             )
         print(f"   → New business detail rows: {len(data['new_business_detail']):,}")
         
-        # Step 4: Backlog data - FILTERED by access control
+        # =====================================================================
+        # PHASE 3: Backlog data - FILTERED by access control
+        # =====================================================================
         progress_bar.progress(60, text="📦 Loading backlog data...")
+        
         with timer("DB: get_backlog_data (total)"):
             data['total_backlog'] = q.get_backlog_data(
                 employee_ids=filter_employee_ids,
@@ -560,19 +567,20 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             )
         print(f"   → Backlog by month rows: {len(data['backlog_by_month']):,}")
         
-        # Step 5: Backlog detail - FILTERED by access control
+        # Backlog detail - FILTERED by access control
         # UPDATED v2.2.0: Removed limit to get ALL backlog records for accurate totals
         progress_bar.progress(80, text="📋 Loading backlog details...")
         with timer("DB: get_backlog_detail"):
             data['backlog_detail'] = q.get_backlog_detail(
                 employee_ids=filter_employee_ids,
                 entity_ids=None
-                # limit removed - now returns all records (default: None)
             )
         print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
         
-        # Step 6: Sales split data - FILTERED by access control
-        progress_bar.progress(95, text="👥 Loading sales split data...")
+        # =====================================================================
+        # PHASE 4: Sequential - Sales split data
+        # =====================================================================
+        progress_bar.progress(90, text="👥 Loading sales split data...")
         with timer("DB: get_sales_split_data"):
             data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
         print(f"   → Sales split rows: {len(data['sales_split']):,}")
