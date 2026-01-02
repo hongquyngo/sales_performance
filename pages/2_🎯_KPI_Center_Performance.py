@@ -2,13 +2,22 @@
 """
 KPI Center Performance Dashboard
 
+VERSION: 3.5.0
+CHANGELOG:
+- v3.5.0: Added timing debug output to terminal for performance analysis
 """
 
 import logging
 from datetime import date, datetime
 import time
+from contextlib import contextmanager
 import pandas as pd
 import streamlit as st
+
+# =============================================================================
+# DEBUG TIMING FLAG - Set to True to see timing output in terminal
+# =============================================================================
+DEBUG_TIMING = True
 
 # Page config
 st.set_page_config(
@@ -16,6 +25,72 @@ st.set_page_config(
     page_icon="🎯",
     layout="wide"
 )
+
+# =============================================================================
+# TIMING UTILITIES
+# =============================================================================
+
+# Initialize timing storage
+if '_kpc_timing_data' not in st.session_state:
+    st.session_state['_kpc_timing_data'] = []
+
+
+@contextmanager
+def timer(name: str):
+    """
+    Context manager to time code blocks.
+    Prints to terminal and stores for summary.
+    
+    Usage:
+        with timer("DB: get_sales_data"):
+            data = queries.get_sales_data(...)
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - start
+        if DEBUG_TIMING:
+            print(f"⏱️ [{name}] {elapsed:.3f}s")
+        st.session_state['_kpc_timing_data'].append({
+            'name': name,
+            'time': elapsed
+        })
+
+
+def print_timing_summary():
+    """Print formatted timing summary at end of page load."""
+    if not DEBUG_TIMING:
+        return
+    
+    timing_data = st.session_state.get('_kpc_timing_data', [])
+    if not timing_data:
+        return
+    
+    total_time = sum(t['time'] for t in timing_data)
+    
+    print(f"\n{'='*60}")
+    print(f"📊 TIMING SUMMARY")
+    print(f"{'='*60}")
+    
+    sorted_data = sorted(timing_data, key=lambda x: x['time'], reverse=True)
+    
+    for item in sorted_data:
+        pct = (item['time'] / total_time * 100) if total_time > 0 else 0
+        bar = '█' * int(pct / 5) + '░' * (20 - int(pct / 5))
+        print(f"{item['name']:<45} {item['time']:>6.3f}s ({pct:>5.1f}%) {bar}")
+    
+    print(f"{'-'*60}")
+    print(f"{'TOTAL':<45} {total_time:>6.3f}s")
+    print(f"{'='*60}\n")
+    
+    # Clear for next run
+    st.session_state['_kpc_timing_data'] = []
+
+
+def reset_timing():
+    """Reset timing data for new page load."""
+    st.session_state['_kpc_timing_data'] = []
 
 # Imports
 from utils.auth import AuthManager
@@ -170,6 +245,7 @@ def load_lookup_data():
     """
     Load lookup data for filters (cached).
     
+    UPDATED v3.5.0: Added timing debug output
     UPDATED v2.10.0 (Option B - Sales view + Parents):
     - KPI Center: Leaf nodes từ unified view + tất cả ancestors
     - Includes hierarchy info: parent_center_id, level, has_children
@@ -183,8 +259,14 @@ def load_lookup_data():
         - kpi_center_ids_with_assignment: Set of KPI Center IDs with KPI assignment
         - kpi_types_with_assignment: Set of KPI Types with KPI assignment
     """
+    import time as _time
     from utils.db import get_db_engine
     from sqlalchemy import text
+    
+    if DEBUG_TIMING:
+        print(f"\n{'='*60}")
+        print(f"📋 LOADING LOOKUP DATA (cached query)")
+        print(f"{'='*60}")
     
     engine = get_db_engine()
     
@@ -194,6 +276,7 @@ def load_lookup_data():
     #    - Recursive CTE để lấy tất cả ancestors (parents)
     #    - Include hierarchy info: parent_center_id, level, has_children
     # =========================================================================
+    _start = _time.perf_counter()
     kpi_center_query = """
         WITH RECURSIVE 
         -- Step 1: Get leaf nodes from sales data
@@ -279,6 +362,8 @@ def load_lookup_data():
         ORDER BY hl.kpi_type, hl.level, hl.kpi_center_name
     """
     kpi_center_df = pd.read_sql(text(kpi_center_query), engine)
+    if DEBUG_TIMING:
+        print(f"   📊 SQL [kpi_center_hierarchy]: {_time.perf_counter() - _start:.3f}s → {len(kpi_center_df):,} rows")
     
     # Convert has_children to boolean
     if not kpi_center_df.empty:
@@ -290,6 +375,7 @@ def load_lookup_data():
     # 2. KPI CENTERS WITH KPI ASSIGNMENT - For "Only with KPI" checkbox filter
     #    Returns kpi_center_id and kpi_type for filtering both dropdowns
     # =========================================================================
+    _start = _time.perf_counter()
     kpi_assignment_query = """
         SELECT DISTINCT 
             kac.kpi_center_id,
@@ -299,6 +385,8 @@ def load_lookup_data():
         WHERE kac.kpi_center_id IS NOT NULL
     """
     kpi_assignment_df = pd.read_sql(text(kpi_assignment_query), engine)
+    if DEBUG_TIMING:
+        print(f"   📊 SQL [kpi_assignments]: {_time.perf_counter() - _start:.3f}s → {len(kpi_assignment_df):,} rows")
     
     # Create set of KPI Center IDs with assignments (for filtering KPI Center dropdown)
     kpi_center_ids_with_assignment = set(
@@ -314,6 +402,7 @@ def load_lookup_data():
     # 3. LEGAL ENTITY - Join với companies table để lấy english_name
     #    (Đảm bảo tên đồng nhất giữa data cũ và mới)
     # =========================================================================
+    _start = _time.perf_counter()
     entity_query = """
         SELECT DISTINCT
             v.legal_entity_id AS entity_id,
@@ -324,10 +413,13 @@ def load_lookup_data():
         ORDER BY entity_name
     """
     entity_df = pd.read_sql(text(entity_query), engine)
+    if DEBUG_TIMING:
+        print(f"   📊 SQL [legal_entities]: {_time.perf_counter() - _start:.3f}s → {len(entity_df):,} rows")
     
     # =========================================================================
     # 4. AVAILABLE YEARS - From unified_sales_by_kpi_center_view
     # =========================================================================
+    _start = _time.perf_counter()
     years_query = """
         SELECT DISTINCT CAST(invoice_year AS SIGNED) AS year
         FROM unified_sales_by_kpi_center_view
@@ -336,6 +428,8 @@ def load_lookup_data():
     """
     years_df = pd.read_sql(text(years_query), engine)
     available_years = years_df['year'].tolist() if not years_df.empty else [datetime.now().year]
+    if DEBUG_TIMING:
+        print(f"   📊 SQL [available_years]: {_time.perf_counter() - _start:.3f}s → {len(years_df):,} rows")
     
     # =========================================================================
     # 5. RETURN EXTENDED TUPLE
@@ -393,6 +487,11 @@ def load_data_for_year_range(
     kpi_start = display_start or cache_start
     kpi_end = display_end or cache_end
     
+    if DEBUG_TIMING:
+        print(f"\n{'='*60}")
+        print(f"🚀 STARTING DATA LOAD: {start_year}-{end_year}")
+        print(f"{'='*60}")
+    
     progress_bar = st.progress(0, text=f"🔄 Loading data ({start_year}-{end_year})...")
     
     data = {}
@@ -400,51 +499,69 @@ def load_data_for_year_range(
     try:
         progress_bar.progress(10, text="📊 Loading sales data...")
         # Sales data uses CACHE period (can be filtered client-side via inv_date column)
-        data['sales_df'] = queries.get_sales_data(
-            start_date=cache_start,
-            end_date=cache_end,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
+        with timer("DB: get_sales_data"):
+            data['sales_df'] = queries.get_sales_data(
+                start_date=cache_start,
+                end_date=cache_end,
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids
+            )
+        if DEBUG_TIMING:
+            print(f"   → Sales rows: {len(data['sales_df']):,}")
         
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        targets_list = []
-        for yr in range(start_year, end_year + 1):
-            t = queries.get_kpi_targets(year=yr, kpi_center_ids=kpi_center_ids)
-            if not t.empty:
-                targets_list.append(t)
-        data['targets_df'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
+        with timer("DB: get_kpi_targets (all years)"):
+            targets_list = []
+            for yr in range(start_year, end_year + 1):
+                t = queries.get_kpi_targets(year=yr, kpi_center_ids=kpi_center_ids)
+                if not t.empty:
+                    targets_list.append(t)
+            data['targets_df'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
+        if DEBUG_TIMING:
+            print(f"   → Targets rows: {len(data['targets_df']):,}")
         
         progress_bar.progress(40, text="📦 Loading backlog data...")
         # =====================================================================
         # NEW v2.14.0: Pass exclude_internal to backlog queries
         # When exclude_internal=True: Revenue = 0 for Internal, GP kept
         # =====================================================================
-        data['backlog_summary_df'] = queries.get_backlog_data(
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_backlog_data (total)"):
+            data['backlog_summary_df'] = queries.get_backlog_data(
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        if DEBUG_TIMING:
+            print(f"   → Total backlog rows: {len(data['backlog_summary_df']):,}")
         
-        data['backlog_in_period_df'] = queries.get_backlog_in_period(
-            start_date=cache_start,
-            end_date=cache_end,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_backlog_in_period"):
+            data['backlog_in_period_df'] = queries.get_backlog_in_period(
+                start_date=cache_start,
+                end_date=cache_end,
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        if DEBUG_TIMING:
+            print(f"   → In-period backlog rows: {len(data['backlog_in_period_df']):,}")
         
-        data['backlog_by_month_df'] = queries.get_backlog_by_month(
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_backlog_by_month"):
+            data['backlog_by_month_df'] = queries.get_backlog_by_month(
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        if DEBUG_TIMING:
+            print(f"   → Backlog by month rows: {len(data['backlog_by_month_df']):,}")
         
         progress_bar.progress(55, text="📋 Loading backlog details...")
-        data['backlog_detail_df'] = queries.get_backlog_detail(
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
+        with timer("DB: get_backlog_detail"):
+            data['backlog_detail_df'] = queries.get_backlog_detail(
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids
+            )
+        if DEBUG_TIMING:
+            print(f"   → Backlog detail rows: {len(data['backlog_detail_df']):,}")
         
         progress_bar.progress(70, text="🆕 Loading complex KPIs...")
         # =====================================================================
@@ -455,54 +572,66 @@ def load_data_for_year_range(
         # - Multiple types → dedupe per entity to avoid double counting
         # - exclude_internal=True → Internal customers excluded entirely from counts
         # =====================================================================
-        data['new_customers_df'] = queries.get_new_customers(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
-        data['new_customers_detail_df'] = queries.get_new_customers_detail(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
-        data['new_products_df'] = queries.get_new_products(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_new_customers"):
+            data['new_customers_df'] = queries.get_new_customers(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        with timer("DB: get_new_customers_detail"):
+            data['new_customers_detail_df'] = queries.get_new_customers_detail(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        with timer("DB: get_new_products"):
+            data['new_products_df'] = queries.get_new_products(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
         # Use same data for detail (already filtered)
-        data['new_products_detail_df'] = queries.get_new_products_detail(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
-        data['new_business_df'] = queries.get_new_business_revenue(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
-        data['new_business_detail_df'] = queries.get_new_business_detail(
-            kpi_start, kpi_end, kpi_center_ids,
-            entity_ids=entity_ids,
-            selected_kpi_types=selected_kpi_types,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_new_products_detail"):
+            data['new_products_detail_df'] = queries.get_new_products_detail(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        with timer("DB: get_new_business_revenue"):
+            data['new_business_df'] = queries.get_new_business_revenue(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        with timer("DB: get_new_business_detail"):
+            data['new_business_detail_df'] = queries.get_new_business_detail(
+                kpi_start, kpi_end, kpi_center_ids,
+                entity_ids=entity_ids,
+                selected_kpi_types=selected_kpi_types,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
+        if DEBUG_TIMING:
+            print(f"   → New customers: {len(data['new_customers_df']):,} rows")
+            print(f"   → New products: {len(data['new_products_df']):,} rows")
+            print(f"   → New business: {len(data['new_business_df']):,} rows")
         
         progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
-        data['backlog_risk'] = queries.get_backlog_risk_analysis(
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids,
-            exclude_internal=exclude_internal  # NEW v2.14.0
-        )
+        with timer("DB: get_backlog_risk_analysis"):
+            data['backlog_risk'] = queries.get_backlog_risk_analysis(
+                kpi_center_ids=kpi_center_ids,
+                entity_ids=entity_ids,
+                exclude_internal=exclude_internal  # NEW v2.14.0
+            )
         
-        for key in data:
-            if isinstance(data[key], pd.DataFrame) and not data[key].empty:
-                data[key] = _clean_dataframe_for_display(data[key])
+        with timer("Clean dataframes"):
+            for key in data:
+                if isinstance(data[key], pd.DataFrame) and not data[key].empty:
+                    data[key] = _clean_dataframe_for_display(data[key])
         
         data['_loaded_at'] = datetime.now()
         data['_year_range'] = (start_year, end_year)
@@ -517,6 +646,11 @@ def load_data_for_year_range(
         data['_exclude_internal'] = exclude_internal
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")
+        
+        if DEBUG_TIMING:
+            print(f"\n{'='*60}")
+            print(f"✅ DATA LOAD COMPLETE")
+            print(f"{'='*60}\n")
         
     except Exception as e:
         progress_bar.empty()
@@ -850,38 +984,46 @@ def load_yoy_data(queries: KPICenterQueries, filter_values: dict):
 def main():
     """Main page function."""
     
+    # Reset timing for new page load
+    reset_timing()
+    
     access = check_access()
     
     st.title("🎯 KPI Center Performance")
     st.caption(f"Logged in as: {st.session_state.get('user_fullname', 'User')} ({st.session_state.get('user_role', '')})")
     
-    try:
-        (
-            kpi_center_df, 
-            entity_df, 
-            available_years,
-            kpi_center_ids_with_assignment,
-            kpi_types_with_assignment,
-        ) = load_lookup_data()
-    except Exception as e:
-        st.error(f"Failed to load lookup data: {e}")
-        logger.error(f"Lookup data error: {e}")
-        st.stop()
+    with timer("Load lookup data (cached)"):
+        try:
+            (
+                kpi_center_df, 
+                entity_df, 
+                available_years,
+                kpi_center_ids_with_assignment,
+                kpi_types_with_assignment,
+            ) = load_lookup_data()
+        except Exception as e:
+            st.error(f"Failed to load lookup data: {e}")
+            logger.error(f"Lookup data error: {e}")
+            st.stop()
     
     queries = KPICenterQueries(access)
     filters = KPICenterFilters(access)
     
-    filter_values = filters.render_sidebar_filters(
-        kpi_center_df=kpi_center_df,
-        entity_df=entity_df,
-        available_years=available_years,
-        kpi_types_with_assignment=kpi_types_with_assignment,  # NEW v2.6.0
-    )
+    with timer("Render sidebar filters"):
+        filter_values = filters.render_sidebar_filters(
+            kpi_center_df=kpi_center_df,
+            entity_df=entity_df,
+            available_years=available_years,
+            kpi_types_with_assignment=kpi_types_with_assignment,  # NEW v2.6.0
+        )
     
     is_valid, error_msg = filters.validate_filters(filter_values)
     if not is_valid:
         st.error(f"⚠️ Filter error: {error_msg}")
         st.stop()
+    
+    if DEBUG_TIMING:
+        print(f"\n🔍 Filters applied: {filter_values.get('period_type')} {filter_values.get('year')}")
     
     # =========================================================================
     # LOAD DATA WITH SMART CACHING
@@ -897,28 +1039,45 @@ def main():
     # =========================================================================
     # UPDATED v2.7.0: Pass kpi_center_df for selected_kpi_types derivation
     # =========================================================================
-    raw_data = get_or_load_data(queries, active_filters, kpi_center_df=kpi_center_df)
-    data = filter_data_client_side(raw_data, active_filters)
+    with timer("Get/Load data (with caching)"):
+        raw_data = get_or_load_data(queries, active_filters, kpi_center_df=kpi_center_df)
+    
+    if DEBUG_TIMING:
+        print(f"\n🔍 CLIENT-SIDE FILTERING...")
+    
+    with timer("Client-side filter"):
+        data = filter_data_client_side(raw_data, active_filters)
+    
+    if DEBUG_TIMING:
+        for key, val in data.items():
+            if not key.startswith('_') and isinstance(val, pd.DataFrame):
+                print(f"   → {key}: {len(val):,} rows")
     
     sales_df = data.get('sales_df', pd.DataFrame())
     targets_df = data.get('targets_df', pd.DataFrame())
     
     if sales_df.empty:
         st.warning("No data found for the selected filters. Try adjusting your selection.")
+        print_timing_summary()
         st.stop()
     
     # =========================================================================
     # CALCULATE METRICS
     # =========================================================================
     
-    metrics_calc = KPICenterMetrics(sales_df, targets_df)
+    if DEBUG_TIMING:
+        print(f"\n📈 CALCULATING METRICS...")
     
-    overview_metrics = metrics_calc.calculate_overview_metrics(
-        period_type=active_filters['period_type'],
-        year=active_filters['year'],
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date']
-    )
+    with timer("Metrics: KPICenterMetrics init"):
+        metrics_calc = KPICenterMetrics(sales_df, targets_df)
+    
+    with timer("Metrics: calculate_overview_metrics"):
+        overview_metrics = metrics_calc.calculate_overview_metrics(
+            period_type=active_filters['period_type'],
+            year=active_filters['year'],
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date']
+        )
     
     # =========================================================================
     # COMPLEX KPIs - UPDATED v2.6.0: Use weighted counting
@@ -945,14 +1104,15 @@ def main():
     selected_kpi_types = get_selected_kpi_types(active_filters, kpi_center_df)
     
     # Get New Business Revenue per KPI Center
-    new_business_by_center_df = queries.get_new_business_by_kpi_center(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        kpi_center_ids=active_filters.get('kpi_center_ids', []),
-        entity_ids=active_filters.get('entity_ids', []),
-        selected_kpi_types=selected_kpi_types,
-        exclude_internal=active_filters.get('exclude_internal_revenue', True)
-    )
+    with timer("DB: get_new_business_by_kpi_center"):
+        new_business_by_center_df = queries.get_new_business_by_kpi_center(
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            kpi_center_ids=active_filters.get('kpi_center_ids', []),
+            entity_ids=active_filters.get('entity_ids', []),
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=active_filters.get('exclude_internal_revenue', True)
+        )
     
     if not new_business_by_center_df.empty:
         for _, row in new_business_by_center_df.iterrows():
@@ -962,14 +1122,15 @@ def main():
             complex_kpis_by_center[kpc_id]['new_business_revenue'] = row.get('new_business_revenue', 0) or 0
     
     # Get New Customers per KPI Center
-    new_customers_by_center_df = queries.get_new_customers_by_kpi_center(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        kpi_center_ids=active_filters.get('kpi_center_ids', []),
-        entity_ids=active_filters.get('entity_ids', []),
-        selected_kpi_types=selected_kpi_types,
-        exclude_internal=active_filters.get('exclude_internal_revenue', True)
-    )
+    with timer("DB: get_new_customers_by_kpi_center"):
+        new_customers_by_center_df = queries.get_new_customers_by_kpi_center(
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            kpi_center_ids=active_filters.get('kpi_center_ids', []),
+            entity_ids=active_filters.get('entity_ids', []),
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=active_filters.get('exclude_internal_revenue', True)
+        )
     
     if not new_customers_by_center_df.empty:
         for _, row in new_customers_by_center_df.iterrows():
@@ -979,14 +1140,15 @@ def main():
             complex_kpis_by_center[kpc_id]['num_new_customers'] = row.get('weighted_count', 0) or 0
     
     # Get New Products per KPI Center
-    new_products_by_center_df = queries.get_new_products_by_kpi_center(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        kpi_center_ids=active_filters.get('kpi_center_ids', []),
-        entity_ids=active_filters.get('entity_ids', []),
-        selected_kpi_types=selected_kpi_types,
-        exclude_internal=active_filters.get('exclude_internal_revenue', True)
-    )
+    with timer("DB: get_new_products_by_kpi_center"):
+        new_products_by_center_df = queries.get_new_products_by_kpi_center(
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            kpi_center_ids=active_filters.get('kpi_center_ids', []),
+            entity_ids=active_filters.get('entity_ids', []),
+            selected_kpi_types=selected_kpi_types,
+            exclude_internal=active_filters.get('exclude_internal_revenue', True)
+        )
     
     if not new_products_by_center_df.empty:
         for _, row in new_products_by_center_df.iterrows():
@@ -995,35 +1157,44 @@ def main():
                 complex_kpis_by_center[kpc_id] = {}
             complex_kpis_by_center[kpc_id]['num_new_products'] = row.get('weighted_count', 0) or 0
     
-    pipeline_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
-        total_backlog_df=data.get('backlog_summary_df', pd.DataFrame()),
-        in_period_backlog_df=data.get('backlog_in_period_df', pd.DataFrame()),
-        period_type=active_filters['period_type'],
-        year=active_filters['year'],
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date']
-    )
+    with timer("Metrics: calculate_pipeline_forecast"):
+        pipeline_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
+            total_backlog_df=data.get('backlog_summary_df', pd.DataFrame()),
+            in_period_backlog_df=data.get('backlog_in_period_df', pd.DataFrame()),
+            period_type=active_filters['period_type'],
+            year=active_filters['year'],
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date']
+        )
     
     # UPDATED v3.3.1: Pass complex_kpis_by_center for accurate calculation
-    overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
-        period_type=active_filters['period_type'],
-        year=active_filters['year'],
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        complex_kpis_by_center=complex_kpis_by_center
-    )
+    with timer("Metrics: calculate_overall_kpi_achievement"):
+        overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
+            period_type=active_filters['period_type'],
+            year=active_filters['year'],
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            complex_kpis_by_center=complex_kpis_by_center
+        )
     
     yoy_metrics = None
     if active_filters.get('show_yoy', True):
-        prev_sales_df = load_yoy_data(queries, active_filters)
-        yoy_metrics = metrics_calc.calculate_yoy_metrics(sales_df, prev_sales_df)
+        with timer("DB: get_previous_year_data"):
+            prev_sales_df = load_yoy_data(queries, active_filters)
+        with timer("Metrics: calculate_yoy_metrics"):
+            yoy_metrics = metrics_calc.calculate_yoy_metrics(sales_df, prev_sales_df)
     
-    monthly_df = metrics_calc.prepare_monthly_summary()
-    kpi_center_summary_df = metrics_calc.aggregate_by_kpi_center()
+    with timer("Metrics: prepare_monthly_summary"):
+        monthly_df = metrics_calc.prepare_monthly_summary()
+    with timer("Metrics: aggregate_by_kpi_center"):
+        kpi_center_summary_df = metrics_calc.aggregate_by_kpi_center()
     period_info = analyze_period(active_filters)
     
     filter_summary = filters.get_filter_summary(active_filters)
     st.caption(f"📊 {filter_summary}")
+    
+    if DEBUG_TIMING:
+        print(f"\n🖼️ RENDERING UI...")
     
     # ==========================================================================
     # TABS
@@ -1669,6 +1840,14 @@ This ensures accurate achievement calculation.
             kpi_center_ids=active_filters.get('kpi_center_ids', []),
             active_filters=active_filters
         )
+    
+    # ==========================================================================
+    # TIMING SUMMARY - Print at end of page load
+    # ==========================================================================
+    if DEBUG_TIMING:
+        print(f"✅ PAGE RENDER COMPLETE")
+        print(f"{'='*60}")
+    print_timing_summary()
 
 
 # =============================================================================

@@ -1,9 +1,14 @@
 # utils/kpi_center_performance/queries.py
 """
 KPI Center Performance Data Queries
+
+VERSION: 3.5.0
+CHANGELOG:
+- v3.5.0: Added DEBUG_QUERY_TIMING for terminal timing output
 """
 
 import logging
+import time
 from datetime import date, datetime
 from typing import List, Optional, Tuple, Dict
 import pandas as pd
@@ -15,6 +20,11 @@ from .constants import LOOKBACK_YEARS, CACHE_TTL_SECONDS
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# DEBUG TIMING FLAG - Set to True to see SQL query timings in terminal
+# =============================================================================
+DEBUG_QUERY_TIMING = True
 
 
 class KPICenterQueries:
@@ -2663,12 +2673,25 @@ class KPICenterQueries:
     ) -> pd.DataFrame:
         """
         Execute SQL query and return DataFrame.
+        
+        UPDATED v3.5.0: Added timing output to terminal.
         """
+        start_time = time.perf_counter()
+        
         try:
             logger.debug(f"Executing {query_name}")
             df = pd.read_sql(text(query), self.engine, params=params)
+            
+            elapsed = time.perf_counter() - start_time
+            
+            if DEBUG_QUERY_TIMING:
+                print(f"   📊 SQL [{query_name}]: {elapsed:.3f}s → {len(df):,} rows")
+            
             logger.debug(f"{query_name} returned {len(df)} rows")
             return df
         except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            if DEBUG_QUERY_TIMING:
+                print(f"   ❌ SQL [{query_name}]: {elapsed:.3f}s → ERROR: {e}")
             logger.error(f"Error executing {query_name}: {e}")
             return pd.DataFrame()
