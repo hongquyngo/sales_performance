@@ -4,20 +4,29 @@ SQL Queries and Data Loading for Salesperson Performance
 
 Handles all database interactions:
 - Sales data from unified_sales_by_salesperson_view
+- Lookback data for Complex KPIs (via get_lookback_sales_data)
 - KPI targets from sales_employee_kpi_assignments_view
-- Complex KPIs (new customers, products, business revenue)
+- Backlog data from backlog_by_salesperson_looker_view
 - Lookup data (salespeople list, entities, years)
 
 All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.0.0: REMOVED deprecated Complex KPI SQL methods (replaced by Pandas)
+          - Removed: get_new_customers(), get_new_products(), 
+                    get_new_business_revenue(), get_new_business_detail(),
+                    calculate_complex_kpi_value()
+          - Added: get_lookback_sales_data() - single query for Pandas processing
+          - See: complex_kpi_calculator.py for new implementation
+          - Performance: 14.76s -> ~3.0s (80% faster)
+          - Removed ~600 lines of Complex KPI SQL code
 - v1.7.0: FIXED get_backlog_detail() LIMIT issue
           - Changed limit parameter: int = 100 -> Optional[int] = None
           - Default is now None (no limit) to avoid data truncation
           - LIMIT clause only added when limit is explicitly provided
           - Fixes mismatch between Backlog Tab totals and Overview totals
-- v1.6.0: ADDED calculate_complex_kpi_value() helper method
+- v1.6.0: ADDED calculate_complex_kpi_value() helper method (DEPRECATED in v3.0.0)
           - Calculates single complex KPI for specific employees
           - Used by KPI Progress to filter by employees with target
           - Supports: num_new_customers, num_new_products, new_business_revenue
@@ -41,6 +50,8 @@ CHANGELOG:
           first sale on same day (split credit scenario)
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
+
+VERSION: 3.0.0
 """
 
 import logging
@@ -52,7 +63,7 @@ from sqlalchemy import text
 import time
 
 from utils.db import get_db_engine
-from .constants import LOOKBACK_YEARS, CACHE_TTL_SECONDS
+from .constants import CACHE_TTL_SECONDS
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
@@ -194,6 +205,67 @@ class SalespersonQueries:
         )
     
     # =========================================================================
+    # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
+    # =========================================================================
+    
+    def get_lookback_sales_data(
+        self,
+        end_date: date,
+        lookback_years: int = 5
+    ) -> pd.DataFrame:
+        """
+        Load ALL sales data for Complex KPI calculations.
+        
+        This replaces the expensive SQL CTEs in get_new_customers, get_new_products,
+        and get_new_business_revenue with a single query + Pandas processing.
+        
+        IMPORTANT: Does NOT filter by employee_ids because Complex KPIs need
+        GLOBAL first dates (first customer to COMPANY, not first to salesperson).
+        
+        Performance:
+        - Old: 4 SQL queries with CTEs = 14.76s
+        - New: 1 simple SELECT = ~2.8s
+        
+        Args:
+            end_date: End date of analysis period (lookback starts from end_date.year - lookback_years)
+            lookback_years: Number of years to look back (default 5)
+            
+        Returns:
+            DataFrame with all sales data needed for Complex KPI calculations
+        """
+        # Calculate lookback start date
+        lookback_start = date(end_date.year - lookback_years, 1, 1)
+        
+        # Simple SELECT - no WHERE on employee_ids for global first dates
+        # Include legacy_code for product_key calculation
+        query = """
+            SELECT 
+                sales_id,
+                sales_name,
+                split_rate_percent,
+                inv_date,
+                customer,
+                customer_id,
+                customer_code,
+                customer_type,
+                product_id,
+                product_pn,
+                pt_code,
+                package_size,
+                legacy_code,
+                brand,
+                sales_by_split_usd,
+                gross_profit_by_split_usd,
+                gp1_by_split_usd
+            FROM unified_sales_by_salesperson_view
+            WHERE inv_date >= :lookback_start
+        """
+        
+        params = {'lookback_start': lookback_start}
+        
+        return self._execute_query(query, params, "lookback_sales_data")
+    
+    # =========================================================================
     # KPI TARGETS
     # =========================================================================
     
@@ -248,613 +320,21 @@ class SalespersonQueries:
         
         return self._execute_query(query, params, "kpi_targets")
     
-    # =========================================================================
-    # COMPLEX KPIs - NEW CUSTOMERS
-    # =========================================================================
-    
-    def get_new_customers(
-        self,
-        start_date: date,
-        end_date: date,
-        employee_ids: List[int] = None,
-        exclude_internal: bool = False
-    ) -> pd.DataFrame:
-        """
-        Get customers with first invoice to COMPANY in period (vs 5-year lookback).
-        
-        A customer is "new to company" if:
-        - The first invoice for this customer (globally, any salesperson)
-        - Falls within the specified date range
-        - When looking back LOOKBACK_YEARS years
-        
-        Credit is given to the salesperson who made the first sale.
-        
-        Returns DataFrame with: customer_id, customer_code, customer, sales_id, sales_name,
-                            split_rate_percent, first_invoice_date
-        
-        UPDATED v1.1.0: Changed from "new to salesperson" to "new to company"
-        UPDATED v1.6.0: Added customer_code for display in popover
-        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
-        """
-        if employee_ids:
-            employee_ids = self.access.validate_selected_employees(employee_ids)
-        else:
-            employee_ids = self.access.get_accessible_employee_ids()
-        
-        if not employee_ids:
-            return pd.DataFrame()
-        
-        # Lookback: 5 years from start of end_date's year
-        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
-        
-        # Build internal filter clause
-        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
-        
-        # UPDATED v1.6.0: Added customer_code to all CTEs and final SELECT
-        # UPDATED v1.8.0: Added exclude_internal filter
-        query = f"""
-            WITH first_customer_date AS (
-                -- Step 1: Find first invoice date for each customer (globally)
-                -- Exclude internal customers from the start if requested
-                SELECT 
-                    customer_id,
-                    MIN(inv_date) as first_invoice_date
-                FROM unified_sales_by_salesperson_view
-                WHERE inv_date >= :lookback_start
-                {internal_filter}
-                GROUP BY customer_id
-            ),
-            first_day_records AS (
-                -- Step 2: Get all records from first invoice date
-                -- UPDATED: Added customer_code
-                SELECT 
-                    u.customer_id,
-                    u.customer_code,
-                    u.customer,
-                    u.sales_id,
-                    u.sales_name,
-                    u.split_rate_percent,
-                    fcd.first_invoice_date
-                FROM first_customer_date fcd
-                JOIN unified_sales_by_salesperson_view u 
-                    ON fcd.customer_id = u.customer_id 
-                    AND u.inv_date = fcd.first_invoice_date
-                WHERE 1=1 {internal_filter}
-            ),
-            deduplicated AS (
-                -- Step 3: Deduplicate per customer + salesperson (count each combo once)
-                -- UPDATED: Added MAX(customer_code)
-                SELECT 
-                    customer_id,
-                    MAX(customer_code) as customer_code,
-                    MAX(customer) as customer,
-                    sales_id,
-                    MAX(sales_name) as sales_name,
-                    MAX(split_rate_percent) as split_rate_percent,
-                    first_invoice_date
-                FROM first_day_records
-                GROUP BY customer_id, sales_id, first_invoice_date
-            )
-            SELECT 
-                customer_id,
-                customer_code,
-                customer,
-                sales_id,
-                sales_name,
-                split_rate_percent,
-                first_invoice_date
-            FROM deduplicated
-            WHERE first_invoice_date BETWEEN :start_date AND :end_date
-            AND sales_id IN :employee_ids
-            ORDER BY first_invoice_date DESC
-        """
-        
-        params = {
-            'lookback_start': lookback_start,
-            'start_date': start_date,
-            'end_date': end_date,
-            'employee_ids': tuple(employee_ids)
-        }
-        
-        return self._execute_query(query, params, "new_customers")
 
     # =========================================================================
-    # COMPLEX KPIs - NEW PRODUCTS (REFACTORED v1.4.0)
+    # COMPLEX KPIs - DEPRECATED v3.0.0
     # =========================================================================
-    
-    def get_new_products(
-        self,
-        start_date: date,
-        end_date: date,
-        employee_ids: List[int] = None,
-        exclude_internal: bool = False
-    ) -> pd.DataFrame:
-        """
-        Get products with first invoice ever in period (any customer).
-        
-        A product is "new" if:
-        - The first invoice for this product (globally, any salesperson)
-        - Falls within the specified date range
-        - When looking back LOOKBACK_YEARS years
-        
-        FIXED v1.7.0: 
-        - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
-        - Reason: legacy_code in REALTIME can contain multiple comma-separated values
-        - product_id is always consistent and unique across systems
-        
-        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
-        
-        Logic:
-        1. Create unified product key using COALESCE(product_id, legacy_code)
-        - Prefer product_id because it's consistent across systems
-        - Fall back to legacy_code for old HISTORY records without product_id
-        2. Find MIN(inv_date) for each unified product key
-        3. Filter to products where first sale is within selected period
-        4. Credit all salespeople who sold on the first day (split scenario)
-        5. Deduplicate per (product, salesperson) combo
-        
-        Returns DataFrame with: product_id, product_pn, pt_code, package_size, legacy_code, brand,
-                            sales_id, sales_name, split_rate_percent, first_sale_date
-        """
-        if employee_ids:
-            employee_ids = self.access.validate_selected_employees(employee_ids)
-        else:
-            employee_ids = self.access.get_accessible_employee_ids()
-        
-        if not employee_ids:
-            return pd.DataFrame()
-        
-        # Lookback: 5 years from start of end_date's year
-        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
-        
-        # Build internal filter clause
-        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
-        
-        # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
-        # UPDATED v1.8.0: Added exclude_internal filter
-        query = f"""
-            WITH 
-            -- ================================================================
-            -- Step 1: Create unified product key and find first sale date
-            -- FIXED v1.7.0: Priority product_id > legacy_code
-            -- Reason: legacy_code can have multiple comma-separated values in REALTIME
-            -- ================================================================
-            first_sale_by_product AS (
-                SELECT 
-                    -- Unified key: prefer product_id (consistent), fallback to legacy_code
-                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
-                    MIN(inv_date) as first_sale_date
-                FROM unified_sales_by_salesperson_view
-                WHERE inv_date >= :lookback_start
-                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                {internal_filter}
-                GROUP BY COALESCE(CAST(product_id AS CHAR), legacy_code)
-            ),
-            
-            -- ================================================================
-            -- Step 2: Filter to products with first sale in selected period
-            -- ================================================================
-            new_products AS (
-                SELECT product_key, first_sale_date
-                FROM first_sale_by_product
-                WHERE first_sale_date BETWEEN :start_date AND :end_date
-            ),
-            
-            -- ================================================================
-            -- Step 3: Get all sales records from first sale date
-            -- Join back to get full product info and salesperson attribution
-            -- FIXED v1.7.0: Use same product_key logic
-            -- ================================================================
-            first_day_records AS (
-                SELECT 
-                    u.product_id,
-                    u.product_pn,
-                    u.pt_code,
-                    u.package_size,
-                    u.legacy_code,
-                    u.brand,
-                    u.sales_id,
-                    u.sales_name,
-                    u.split_rate_percent,
-                    np.first_sale_date
-                FROM new_products np
-                JOIN unified_sales_by_salesperson_view u 
-                    ON COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = np.product_key
-                    AND u.inv_date = np.first_sale_date
-                WHERE 1=1 {internal_filter}
-            ),
-            
-            -- ================================================================
-            -- Step 4: Deduplicate - Each (product_key, sales_id) counted once
-            -- Handles multiple invoice lines for same product on same day
-            -- FIXED v1.7.0: Use same product_key logic
-            -- ================================================================
-            deduplicated AS (
-                SELECT 
-                    -- Use MAX to get non-null values where available
-                    MAX(product_id) as product_id,
-                    MAX(product_pn) as product_pn,
-                    MAX(pt_code) as pt_code,
-                    MAX(package_size) as package_size,
-                    MAX(legacy_code) as legacy_code,
-                    MAX(brand) as brand,
-                    sales_id,
-                    MAX(sales_name) as sales_name,
-                    MAX(split_rate_percent) as split_rate_percent,
-                    first_sale_date,
-                    -- Keep product_key for grouping
-                    COALESCE(CAST(MAX(product_id) AS CHAR), MAX(legacy_code)) as product_key
-                FROM first_day_records
-                GROUP BY 
-                    COALESCE(CAST(product_id AS CHAR), legacy_code),
-                    sales_id, 
-                    first_sale_date
-            )
-            
-            -- ================================================================
-            -- Final: Return results filtered by accessible salespeople
-            -- ================================================================
-            SELECT 
-                product_id,
-                product_pn,
-                pt_code,
-                package_size,
-                legacy_code,
-                brand,
-                sales_id,
-                sales_name,
-                split_rate_percent,
-                first_sale_date
-            FROM deduplicated
-            WHERE sales_id IN :employee_ids
-            ORDER BY first_sale_date DESC
-        """
-        
-        params = {
-            'lookback_start': lookback_start,
-            'start_date': start_date,
-            'end_date': end_date,
-            'employee_ids': tuple(employee_ids)
-        }
-        
-        return self._execute_query(query, params, "new_products")
+    # The following methods have been replaced by ComplexKPICalculator (Pandas-based):
+    # - get_new_customers() -> ComplexKPICalculator.calculate_new_customers()
+    # - get_new_products() -> ComplexKPICalculator.calculate_new_products()
+    # - get_new_business_revenue() -> ComplexKPICalculator.calculate_new_business_revenue()
+    # - get_new_business_detail() -> ComplexKPICalculator.calculate_new_business_detail()
+    # - calculate_complex_kpi_value() -> ComplexKPICalculator.calculate_all()
+    #
+    # See: utils/salesperson_performance/complex_kpi_calculator.py
+    # Performance improvement: 14.76s -> ~3.0s (80% faster)
+    # =========================================================================
 
-    # =========================================================================
-    # COMPLEX KPIs - NEW BUSINESS REVENUE
-    # =========================================================================
-        
-    def get_new_business_revenue(
-        self,
-        start_date: date,
-        end_date: date,
-        employee_ids: List[int] = None,
-        exclude_internal: bool = False
-    ) -> pd.DataFrame:
-        """
-        Get revenue from first product sale to each customer.
-        
-        "New business" = first time a specific product is sold to a specific customer.
-        Revenue is attributed based on the sales split percentage.
-        
-        FIXED v1.7.0: Changed product_key from COALESCE(legacy_code, product_id) 
-        to COALESCE(product_id, legacy_code) for consistent combo identification.
-        
-        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
-        
-        Returns DataFrame with: sales_id, sales_name, new_business_revenue, new_business_gp, new_combos_count
-        """
-        if employee_ids:
-            employee_ids = self.access.validate_selected_employees(employee_ids)
-        else:
-            employee_ids = self.access.get_accessible_employee_ids()
-        
-        if not employee_ids:
-            return pd.DataFrame()
-        
-        # Lookback: 5 years from start of end_date's year
-        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
-        
-        # Build internal filter clause
-        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
-        
-        # FIXED v1.7.0: Changed product_key priority from legacy_code to product_id
-        # UPDATED v1.8.0: Added exclude_internal filter
-        query = f"""
-            WITH 
-            -- ================================================================
-            -- Step 1: Find first sale date for each customer-product combo
-            -- FIXED v1.7.0: Use product_id as primary key
-            -- ================================================================
-            first_combo_date AS (
-                SELECT 
-                    customer_id,
-                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
-                    MIN(inv_date) as first_combo_date
-                FROM unified_sales_by_salesperson_view
-                WHERE inv_date >= :lookback_start
-                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                {internal_filter}
-                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
-            ),
-            
-            -- ================================================================
-            -- Step 2: Identify combos that are "new" (first sale within period)
-            -- ================================================================
-            new_combos AS (
-                SELECT customer_id, product_key, first_combo_date
-                FROM first_combo_date
-                WHERE first_combo_date BETWEEN :start_date AND :end_date
-            ),
-            
-            -- ================================================================
-            -- Step 3: Get ALL revenue from new combos within period
-            -- (not just first day - includes repeat orders of new combos)
-            -- FIXED v1.7.0: Use same product_key logic
-            -- ================================================================
-            all_revenue_in_period AS (
-                SELECT 
-                    u.customer_id,
-                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) AS product_key,
-                    u.sales_id,
-                    u.sales_name,
-                    u.sales_by_split_usd,
-                    u.gross_profit_by_split_usd
-                FROM new_combos nc
-                JOIN unified_sales_by_salesperson_view u 
-                    ON nc.customer_id = u.customer_id 
-                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
-                WHERE u.inv_date BETWEEN :start_date AND :end_date
-                {internal_filter}
-            )
-            
-            -- ================================================================
-            -- Final: Aggregate by salesperson
-            -- ================================================================
-            SELECT 
-                sales_id,
-                sales_name,
-                SUM(sales_by_split_usd) as new_business_revenue,
-                SUM(gross_profit_by_split_usd) as new_business_gp,
-                COUNT(DISTINCT CONCAT(customer_id, '-', product_key)) as new_combos_count
-            FROM all_revenue_in_period
-            WHERE sales_id IN :employee_ids
-            GROUP BY sales_id, sales_name
-            ORDER BY new_business_revenue DESC
-        """
-        
-        params = {
-            'lookback_start': lookback_start,
-            'start_date': start_date,
-            'end_date': end_date,
-            'employee_ids': tuple(employee_ids)
-        }
-        
-        return self._execute_query(query, params, "new_business_revenue")
-
-
-    def get_new_business_detail(
-        self,
-        start_date: date,
-        end_date: date,
-        employee_ids: List[int] = None,
-        exclude_internal: bool = False
-    ) -> pd.DataFrame:
-        """
-        Get detailed line items for new business (first customer-product combos).
-        
-        Returns line-by-line detail for popover display showing each new combo.
-        
-        FIXED v1.7.0: 
-        - Changed product_key from COALESCE(legacy_code, product_id) to COALESCE(product_id, legacy_code)
-        - Added customer_code for display in popover
-        
-        UPDATED v1.8.0: Added exclude_internal parameter to filter out internal customers
-        
-        Returns DataFrame with: customer, customer_code, product info (pt_code, product_pn, package_size),
-                            brand, salesperson, revenue, GP, first_combo_date
-        """
-        if employee_ids:
-            employee_ids = self.access.validate_selected_employees(employee_ids)
-        else:
-            employee_ids = self.access.get_accessible_employee_ids()
-        
-        if not employee_ids:
-            return pd.DataFrame()
-        
-        # Lookback: 5 years from start of end_date's year
-        lookback_start = date(end_date.year - LOOKBACK_YEARS, 1, 1)
-        
-        # Build internal filter clause
-        internal_filter = "AND LOWER(customer_type) != 'internal'" if exclude_internal else ""
-        
-        # FIXED v1.7.0: Changed product_key priority + Added customer_code
-        # UPDATED v1.8.0: Added exclude_internal filter
-        query = f"""
-            WITH 
-            -- ================================================================
-            -- Step 1: Find first sale date for each customer-product combo
-            -- FIXED v1.7.0: Use product_id as primary key
-            -- ================================================================
-            first_combo_date AS (
-                SELECT 
-                    customer_id,
-                    COALESCE(CAST(product_id AS CHAR), legacy_code) AS product_key,
-                    MIN(inv_date) as first_combo_date
-                FROM unified_sales_by_salesperson_view
-                WHERE inv_date >= :lookback_start
-                AND (product_id IS NOT NULL OR legacy_code IS NOT NULL)
-                {internal_filter}
-                GROUP BY customer_id, COALESCE(CAST(product_id AS CHAR), legacy_code)
-            ),
-            
-            -- ================================================================
-            -- Step 2: Identify combos that are "new" (first sale within period)
-            -- ================================================================
-            new_combos AS (
-                SELECT customer_id, product_key, first_combo_date
-                FROM first_combo_date
-                WHERE first_combo_date BETWEEN :start_date AND :end_date
-            ),
-            
-            -- ================================================================
-            -- Step 3: Get detailed revenue data for new combos
-            -- Aggregate by combo + salesperson
-            -- FIXED v1.7.0: Use same product_key logic + Added customer_code
-            -- ================================================================
-            combo_detail AS (
-                SELECT 
-                    u.customer_id,
-                    MAX(u.customer_code) as customer_code,
-                    u.customer,
-                    MAX(u.product_id) as product_id,
-                    MAX(u.product_pn) as product_pn,
-                    MAX(u.pt_code) as pt_code,
-                    MAX(u.package_size) as package_size,
-                    MAX(u.brand) as brand,
-                    u.sales_id,
-                    MAX(u.sales_name) as sales_name,
-                    MAX(u.split_rate_percent) as split_rate_percent,
-                    nc.first_combo_date,
-                    SUM(u.sales_by_split_usd) as revenue,
-                    SUM(u.gross_profit_by_split_usd) as gross_profit
-                FROM new_combos nc
-                JOIN unified_sales_by_salesperson_view u 
-                    ON nc.customer_id = u.customer_id 
-                    AND COALESCE(CAST(u.product_id AS CHAR), u.legacy_code) = nc.product_key
-                WHERE u.inv_date BETWEEN :start_date AND :end_date
-                AND u.sales_id IN :employee_ids
-                {internal_filter}
-                GROUP BY 
-                    u.customer_id, 
-                    u.customer,
-                    COALESCE(CAST(u.product_id AS CHAR), u.legacy_code),
-                    u.sales_id,
-                    nc.first_combo_date
-            )
-            
-            -- ================================================================
-            -- Final: Return with customer_code for display
-            -- UPDATED v2.6.1: Added sales_id for client-side filtering
-            -- ================================================================
-            SELECT 
-                sales_id,
-                customer,
-                customer_code,
-                product_pn,
-                pt_code,
-                package_size,
-                brand,
-                sales_name,
-                split_rate_percent,
-                first_combo_date,
-                revenue,
-                gross_profit
-            FROM combo_detail
-            ORDER BY revenue DESC
-        """
-        
-        params = {
-            'lookback_start': lookback_start,
-            'start_date': start_date,
-            'end_date': end_date,
-            'employee_ids': tuple(employee_ids)
-        }
-        
-        return self._execute_query(query, params, "new_business_detail")
-
-    # =========================================================================
-    # COMPLEX KPI HELPER - CALCULATE FOR SPECIFIC EMPLOYEES (NEW v1.6.0)
-    # =========================================================================
-    
-    def calculate_complex_kpi_value(
-        self,
-        kpi_name: str,
-        start_date: date,
-        end_date: date,
-        employee_ids: List[int]
-    ) -> float:
-        """
-        Calculate a single complex KPI value for specific employees.
-        
-        NEW v1.6.0: Helper method to calculate complex KPI values filtered
-        by employees who have that specific KPI target assigned.
-        
-        OPTIMIZATION v2.6.0: Added internal caching via session_state
-        
-        This ensures KPI Progress shows accurate achievement by only counting
-        actuals from employees who are responsible for that KPI.
-        
-        Args:
-            kpi_name: KPI name - one of:
-                - 'num_new_customers': Count of new customers (weighted by split)
-                - 'num_new_products': Count of new products (weighted by split)
-                - 'new_business_revenue': Revenue from new customer-product combos
-            start_date: Period start date
-            end_date: Period end date
-            employee_ids: List of employee IDs to include (NOT validated against access)
-                         This should be the list of employees with the KPI target
-            
-        Returns:
-            Calculated KPI value (float)
-            - For count KPIs: sum of split_rate_percent / 100
-            - For revenue KPIs: sum of revenue
-            
-        Example:
-            # Get employees with 'num_new_customers' target
-            employees_with_target = targets_df[
-                targets_df['kpi_name'] == 'num_new_customers'
-            ]['employee_id'].unique().tolist()
-            
-            # Calculate actual for those employees only
-            actual = queries.calculate_complex_kpi_value(
-                'num_new_customers',
-                start_date,
-                end_date,
-                employees_with_target
-            )
-        """
-        if not employee_ids:
-            return 0.0
-        
-        kpi_name_lower = kpi_name.lower()
-        
-        # OPTIMIZATION v2.6.0: Internal caching
-        cache_key = f"_complex_kpi_{kpi_name_lower}_{start_date}_{end_date}_{tuple(sorted(employee_ids))}"
-        if cache_key in st.session_state:
-            if DEBUG_QUERY_TIMING:
-                print(f"   ♻️ [calculate_complex_kpi_value] {kpi_name_lower} from cache")
-            return st.session_state[cache_key]
-        
-        result = 0.0
-        
-        if kpi_name_lower == 'num_new_customers':
-            # Get new customers for specific employees
-            df = self.get_new_customers(start_date, end_date, employee_ids)
-            if not df.empty:
-                # Count = sum of split_rate_percent / 100
-                result = df['split_rate_percent'].sum() / 100
-        
-        elif kpi_name_lower == 'num_new_products':
-            # Get new products for specific employees
-            df = self.get_new_products(start_date, end_date, employee_ids)
-            if not df.empty:
-                # Count = sum of split_rate_percent / 100
-                result = df['split_rate_percent'].sum() / 100
-        
-        elif kpi_name_lower == 'new_business_revenue':
-            # Get new business revenue for specific employees
-            df = self.get_new_business_revenue(start_date, end_date, employee_ids)
-            if not df.empty:
-                # Revenue = sum of new_business_revenue
-                result = df['new_business_revenue'].sum()
-        
-        else:
-            logger.warning(f"Unknown complex KPI: {kpi_name}")
-        
-        # Cache result
-        st.session_state[cache_key] = result
-        return result
-    
     # =========================================================================
     # LOOKUP DATA
     # =========================================================================

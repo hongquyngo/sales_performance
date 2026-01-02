@@ -10,6 +10,14 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v3.0.0: PERFORMANCE - Pandas-based Complex KPI Calculator
+          - Replaced 4 SQL CTEs with single query + Pandas processing
+          - Initial load: 14.76s → ~3.0s (80% faster)
+          - Filter change: 14.76s → ~0.1s (99% faster, instant recalculation)
+          - New module: complex_kpi_calculator.py
+          - ComplexKPICalculator pre-calculates first dates on init
+          - calculate_all() returns new_customers, new_products, new_business
+          - Lookback data cached in _lookback_df for exclude_internal toggle
 - v2.6.1: FIXED new_business_detail caching for salesperson filter change
           - Root cause: new_business_detail_ was cleared on every filter change,
             and query was called with selected employee_ids instead of all accessible
@@ -49,7 +57,7 @@ CHANGELOG:
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 2.6.1
+Version: 3.0.0
 """
 
 import streamlit as st
@@ -130,6 +138,12 @@ from utils.salesperson_performance import (
     SalespersonFilters,
     SalespersonCharts,
     MONTH_ORDER
+)
+
+# NEW v3.0.0: Pandas-based Complex KPI Calculator
+from utils.salesperson_performance.complex_kpi_calculator import (
+    ComplexKPICalculator,
+    calculate_lookback_start,
 )
 
 from utils.salesperson_performance.fragments import (
@@ -511,33 +525,44 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         print(f"   → Targets rows: {len(data['targets']):,}")
         
         # =====================================================================
-        # PHASE 2: Complex KPIs - FILTERED by access control
-        # UPDATED v1.8.0: Pass exclude_internal parameter
+        # PHASE 2: Complex KPIs - Using Pandas Calculator (v3.0.0)
+        # Single SQL query + in-memory processing
+        # Performance: 14.76s → ~3.0s (80% faster)
         # =====================================================================
-        progress_bar.progress(30, text="🆕 Loading new business metrics...")
+        progress_bar.progress(30, text="🆕 Loading lookback data for Complex KPIs...")
         
-        with timer("DB: get_new_customers"):
-            data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
-        print(f"   → New customers rows: {len(data['new_customers']):,}")
+        # Load lookback data (5 years) - single query, NO employee filter
+        # Complex KPIs need GLOBAL first dates (first to COMPANY, not to salesperson)
+        with timer("DB: get_lookback_sales_data"):
+            lookback_df = q.get_lookback_sales_data(end_date, lookback_years=5)
+        print(f"   → Lookback data rows: {len(lookback_df):,}")
         
-        with timer("DB: get_new_products"):
-            data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
-        print(f"   → New products rows: {len(data['new_products']):,}")
+        # Store raw lookback data for later recalculation if exclude_internal changes
+        data['_lookback_df'] = lookback_df
         
-        with timer("DB: get_new_business_revenue"):
-            data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
-        print(f"   → New business rows: {len(data['new_business']):,}")
-        
-        # NEW v2.6.1: Load new_business_detail with all accessible employees
-        # This enables client-side filtering when salesperson selection changes
-        with timer("DB: get_new_business_detail"):
-            data['new_business_detail'] = q.get_new_business_detail(
+        # Create calculator and compute all Complex KPIs
+        progress_bar.progress(40, text="📊 Calculating Complex KPIs (Pandas)...")
+        with timer("Pandas: ComplexKPICalculator"):
+            complex_kpi_calc = ComplexKPICalculator(lookback_df, exclude_internal=exclude_internal)
+            complex_kpis_result = complex_kpi_calc.calculate_all(
                 start_date=start_date,
                 end_date=end_date,
-                employee_ids=filter_employee_ids,
-                exclude_internal=exclude_internal
+                employee_ids=filter_employee_ids
             )
-        print(f"   → New business detail rows: {len(data['new_business_detail']):,}")
+        
+        # Unpack results (maintain same data structure as before)
+        data['new_customers'] = complex_kpis_result['new_customers']
+        data['new_products'] = complex_kpis_result['new_products']
+        data['new_business'] = complex_kpis_result['new_business']
+        data['new_business_detail'] = complex_kpis_result['new_business_detail']
+        
+        # Store calculator for instant recalculation on filter changes
+        data['_complex_kpi_calculator'] = complex_kpi_calc
+        
+        print(f"   → New customers: {len(data['new_customers']):,} rows")
+        print(f"   → New products: {len(data['new_products']):,} rows")
+        print(f"   → New business: {len(data['new_business']):,} rows")
+        print(f"   → New business detail: {len(data['new_business_detail']):,} rows")
         
         # =====================================================================
         # PHASE 3: Backlog data - FILTERED by access control
@@ -746,6 +771,27 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         filtered[key] = df_filtered
     
+    # =========================================================================
+    # NEW v3.0.0: Recalculate Complex KPIs with Pandas when filters change
+    # This is instant (<0.3s) since data is already in memory
+    # =========================================================================
+    if '_complex_kpi_calculator' in raw_data and raw_data['_complex_kpi_calculator'] is not None:
+        calc = raw_data['_complex_kpi_calculator']
+        
+        with timer("Pandas: Recalculate Complex KPIs"):
+            # Recalculate with current filters (employee_ids)
+            complex_kpis_result = calc.calculate_all(
+                start_date=start_date,
+                end_date=end_date,
+                employee_ids=employee_ids if employee_ids else None
+            )
+        
+        # Update filtered data with recalculated Complex KPIs
+        filtered['new_customers'] = complex_kpis_result['new_customers']
+        filtered['new_products'] = complex_kpis_result['new_products']
+        filtered['new_business'] = complex_kpis_result['new_business']
+        filtered['new_business_detail'] = complex_kpis_result['new_business_detail']
+    
     # Print timing
     filter_elapsed = time.perf_counter() - filter_start
     if DEBUG_TIMING:
@@ -810,15 +856,24 @@ def _needs_data_reload(filter_values: dict) -> bool:
 
 def _needs_complex_kpi_reload(filter_values: dict) -> bool:
     """
-    Check if we need to reload Complex KPIs data.
+    Check if we need to recreate Complex KPI calculator.
     
-    NEW v1.8.0: Complex KPIs are reloaded when exclude_internal changes
-    because they are aggregated server-side and can't be filtered client-side.
+    UPDATED v3.0.0: Uses Pandas calculator instead of SQL queries.
+    Only need to recreate when exclude_internal changes.
     
     Returns True if:
-    - No cached exclude_internal value
-    - exclude_internal value changed
+    - No cached calculator exists
+    - exclude_internal value changed (need to rebuild with different filter)
     """
+    # Check if calculator exists
+    if 'raw_cached_data' not in st.session_state or st.session_state.raw_cached_data is None:
+        return True
+    
+    raw_data = st.session_state.raw_cached_data
+    if '_complex_kpi_calculator' not in raw_data or raw_data['_complex_kpi_calculator'] is None:
+        return True
+    
+    # Check if exclude_internal changed
     cached_exclude_internal = st.session_state.get('_cached_exclude_internal')
     current_exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
@@ -830,53 +885,51 @@ def _needs_complex_kpi_reload(filter_values: dict) -> bool:
 
 def _reload_complex_kpis(filter_values: dict):
     """
-    Reload only Complex KPIs data when exclude_internal changes.
+    Recreate Complex KPI calculator when exclude_internal changes.
     
-    NEW v1.8.0: This is more efficient than reloading all data.
+    UPDATED v3.0.0: Uses Pandas calculator instead of SQL queries.
+    Much faster - only rebuilds the calculator with new exclude_internal setting.
     """
-    # OPTIMIZATION v2.6.0: Use cached AccessControl
-    user_role = st.session_state.get('user_role', 'viewer')
-    employee_id = st.session_state.get('employee_id')
-    access_cache_key = f"_access_control_{user_role}_{employee_id}"
+    if 'raw_cached_data' not in st.session_state or st.session_state.raw_cached_data is None:
+        logger.warning("No raw_cached_data for Complex KPI reload")
+        return
     
-    access = AccessControl(user_role, employee_id)
+    raw_data = st.session_state.raw_cached_data
     
-    # Inject cached IDs if available
-    if access_cache_key in st.session_state:
-        access._accessible_ids = st.session_state[access_cache_key]['ids']
+    # Check if we have lookback data
+    if '_lookback_df' not in raw_data or raw_data['_lookback_df'] is None:
+        logger.warning("No lookback data for Complex KPI recalculation")
+        return
     
-    q = SalespersonQueries(access)
+    lookback_df = raw_data['_lookback_df']
+    exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
-    # Get parameters
+    logger.info(f"Recreating ComplexKPICalculator with exclude_internal={exclude_internal}")
+    
+    # Recreate calculator with new exclude_internal setting
+    with timer("Pandas: Recreate ComplexKPICalculator"):
+        calc = ComplexKPICalculator(lookback_df, exclude_internal=exclude_internal)
+    
+    # Store updated calculator
+    raw_data['_complex_kpi_calculator'] = calc
+    
+    # Recalculate for current filters
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     employee_ids = filter_values.get('employee_ids')
-    exclude_internal = filter_values.get('exclude_internal_revenue', True)
     
-    # Get accessible employee IDs
-    if employee_ids:
-        filter_employee_ids = access.validate_selected_employees(employee_ids)
-    else:
-        filter_employee_ids = access.get_accessible_employee_ids()
-        # For full access, use None for efficiency
-        if access.get_access_level() == 'full':
-            filter_employee_ids = None
-    
-    # Reload Complex KPIs with exclude_internal parameter
-    logger.info(f"Reloading Complex KPIs with exclude_internal={exclude_internal}")
-    
-    new_customers = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
-    new_products = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
-    new_business = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
+    result = calc.calculate_all(start_date, end_date, employee_ids)
     
     # Update cached data
-    if 'raw_cached_data' in st.session_state and st.session_state.raw_cached_data:
-        st.session_state.raw_cached_data['new_customers'] = new_customers
-        st.session_state.raw_cached_data['new_products'] = new_products
-        st.session_state.raw_cached_data['new_business'] = new_business
+    raw_data['new_customers'] = result['new_customers']
+    raw_data['new_products'] = result['new_products']
+    raw_data['new_business'] = result['new_business']
+    raw_data['new_business_detail'] = result['new_business_detail']
     
-    # Store current exclude_internal value
+    # Update cache flag
     st.session_state['_cached_exclude_internal'] = exclude_internal
+    
+    logger.info(f"Complex KPIs recalculated: {result['summary']}")
 
 
 def get_or_load_data(filter_values: dict) -> dict:
@@ -1034,30 +1087,12 @@ with timer("Metrics: calculate_overview_metrics"):
         year=active_filters['year']
     )
 
-# FIXED v1.3.0: Query new_business fresh with correct date range
-# OPTIMIZATION v2.6.0: Only query fresh if cached data is empty or dates don't match
-# new_business is aggregated data without date column, but cached data is already filtered
-# by date range in load_data_for_year_range, so we can use it when available
-_cached_new_business = data.get('new_business', pd.DataFrame())
-
-if _cached_new_business.empty:
-    # No cached data, need to query fresh
-    with timer("DB: get_new_business_revenue (fresh - no cache)"):
-        fresh_new_business_df = queries.get_new_business_revenue(
-            start_date=active_filters['start_date'],
-            end_date=active_filters['end_date'],
-            employee_ids=active_filters['employee_ids']
-        )
-else:
-    # Use cached data - it's already filtered by employee_ids in filter_data_client_side
-    fresh_new_business_df = _cached_new_business
-    if DEBUG_TIMING:
-        print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
-
-# UPDATED v2.6.1: Use new_business_detail from cached data (client-side filtered)
-# This avoids re-querying when salesperson selection changes
+# Complex KPIs are now calculated by ComplexKPICalculator (v3.0.0)
+# Data is already available in cached data from Pandas processing
+fresh_new_business_df = data.get('new_business', pd.DataFrame())
 fresh_new_business_detail_df = data.get('new_business_detail', pd.DataFrame())
 if DEBUG_TIMING:
+    print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
     print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
 
 with timer("Metrics: calculate_complex_kpis"):
@@ -2149,22 +2184,39 @@ with tab4:
                         actual = 0
                 elif kpi_name in complex_kpi_names:
                     # =============================================================
-                    # FIXED v2.4.0: Query complex KPIs filtered by employees with target
-                    # OPTIMIZATION v2.6.0: Cache results in session_state
-                    # Instead of using pre-calculated values from all selected employees,
-                    # we now query fresh with only the employees who have this KPI target
+                    # UPDATED v3.0.0: Use Pandas calculator instead of SQL query
+                    # ComplexKPICalculator is already loaded and cached
+                    # Just recalculate with filtered employee_ids (instant)
                     # =============================================================
                     cache_key = f"complex_kpi_{kpi_name}_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(sorted(employees_with_target))}"
                     if cache_key not in st.session_state:
-                        actual = queries.calculate_complex_kpi_value(
-                            kpi_name=kpi_name,
-                            start_date=active_filters['start_date'],
-                            end_date=active_filters['end_date'],
-                            employee_ids=employees_with_target
-                        )
+                        # Get calculator from cached data
+                        calc = st.session_state.get('raw_cached_data', {}).get('_complex_kpi_calculator')
+                        if calc is not None:
+                            # Recalculate with specific employee_ids (instant - data in memory)
+                            result = calc.calculate_all(
+                                start_date=active_filters['start_date'],
+                                end_date=active_filters['end_date'],
+                                employee_ids=employees_with_target
+                            )
+                            summary = result.get('summary', {})
+                            
+                            # Map KPI name to summary field
+                            if kpi_name == 'num_new_customers':
+                                actual = summary.get('num_new_customers', 0)
+                            elif kpi_name == 'num_new_products':
+                                actual = summary.get('num_new_products', 0)
+                            elif kpi_name == 'new_business_revenue':
+                                actual = summary.get('new_business_revenue', 0)
+                            else:
+                                actual = 0
+                        else:
+                            actual = 0
+                            logger.warning("ComplexKPICalculator not found in cached data")
+                        
                         st.session_state[cache_key] = actual
                         if DEBUG_TIMING:
-                            print(f"   📊 Complex KPI [{kpi_name}] queried: {actual}")
+                            print(f"   📊 Complex KPI [{kpi_name}] calculated (Pandas): {actual}")
                     else:
                         actual = st.session_state[cache_key]
                         if DEBUG_TIMING:
