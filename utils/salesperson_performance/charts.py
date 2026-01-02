@@ -12,6 +12,12 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 
 CHANGELOG:
+- v1.2.1: FIXED KeyError 'amount' in build_cumulative_yoy_chart()
+          - Bug: When current_df or previous_df is empty, calc_cumulative() 
+            returned empty DataFrame without columns, causing KeyError on line 1051
+          - Fix: calc_cumulative() now returns DataFrame with proper column structure
+            when input is empty: {month, amount, cumulative, Year, month_order}
+          - Added safety checks before accessing 'amount' and 'cumulative' columns
 - v1.2.0: ADDED Pipeline & Forecast section with tabs
           - render_pipeline_forecast_section(): New method with 3 tabs (Revenue/GP/GP1)
           - 5 columns: Total Backlog, In-Period Backlog, Target, Forecast, GAP
@@ -1019,8 +1025,15 @@ class SalespersonCharts:
         
         def calc_cumulative(df, year_label):
             """Calculate cumulative by month."""
-            if df.empty:
-                return pd.DataFrame()
+            # FIXED v1.2.1: Return DataFrame with proper column structure when empty
+            if df.empty or col not in df.columns:
+                return pd.DataFrame({
+                    'month': [],
+                    'amount': [],
+                    'cumulative': [],
+                    'Year': [],
+                    'month_order': []
+                })
             
             # Aggregate by month first
             monthly = df.groupby('invoice_month')[col].sum().reset_index()
@@ -1044,16 +1057,19 @@ class SalespersonCharts:
         
         combined = pd.concat([current_cum, previous_cum], ignore_index=True)
         
-        if combined.empty or combined['cumulative'].sum() == 0:
+        # FIXED v1.2.1: Check column exists before accessing
+        if combined.empty or 'cumulative' not in combined.columns or combined['cumulative'].sum() == 0:
             return SalespersonCharts._empty_chart("No data available")
         
         # Filter out months with no data for current year (future months)
-        current_max_month = current_cum[current_cum['amount'] > 0]['month_order'].max()
-        if pd.notna(current_max_month):
-            # For current year, only show up to the latest month with data
-            current_filtered = current_cum[current_cum['month_order'] <= current_max_month]
-            # For previous year, show all months
-            combined = pd.concat([current_filtered, previous_cum], ignore_index=True)
+        # FIXED v1.2.1: Check if current_cum has data before accessing 'amount' column
+        if not current_cum.empty and 'amount' in current_cum.columns and len(current_cum[current_cum['amount'] > 0]) > 0:
+            current_max_month = current_cum[current_cum['amount'] > 0]['month_order'].max()
+            if pd.notna(current_max_month):
+                # For current year, only show up to the latest month with data
+                current_filtered = current_cum[current_cum['month_order'] <= current_max_month]
+                # For previous year, show all months
+                combined = pd.concat([current_filtered, previous_cum], ignore_index=True)
         
         # Color scale
         color_scale = alt.Scale(
