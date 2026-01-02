@@ -734,8 +734,10 @@ class SalespersonQueries:
             
             -- ================================================================
             -- Final: Return with customer_code for display
+            -- UPDATED v2.6.1: Added sales_id for client-side filtering
             -- ================================================================
             SELECT 
+                sales_id,
                 customer,
                 customer_code,
                 product_pn,

@@ -10,6 +10,13 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v2.6.1: FIXED new_business_detail caching for salesperson filter change
+          - Root cause: new_business_detail_ was cleared on every filter change,
+            and query was called with selected employee_ids instead of all accessible
+          - Fix: Load new_business_detail in load_data_for_year_range() with all
+            accessible employees, filter client-side like other data
+          - Added sales_id to query output for client-side filtering
+          - Impact: Salesperson change: 2.6s → <0.1s
 - v2.5.1: FIXED Backlog by ETD not filtering by selected salesperson
           - Root cause: backlog_by_month query aggregates by etd_year/etd_month
             without sales_id column, so client-side filter cannot work
@@ -42,7 +49,7 @@ CHANGELOG:
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 2.5.1
+Version: 2.6.1
 """
 
 import streamlit as st
@@ -517,6 +524,17 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
         print(f"   → New business rows: {len(data['new_business']):,}")
         
+        # NEW v2.6.1: Load new_business_detail with all accessible employees
+        # This enables client-side filtering when salesperson selection changes
+        with timer("DB: get_new_business_detail"):
+            data['new_business_detail'] = q.get_new_business_detail(
+                start_date=start_date,
+                end_date=end_date,
+                employee_ids=filter_employee_ids,
+                exclude_internal=exclude_internal
+            )
+        print(f"   → New business detail rows: {len(data['new_business_detail']):,}")
+        
         # Step 4: Backlog data - FILTERED by access control
         progress_bar.progress(60, text="📦 Loading backlog data...")
         with timer("DB: get_backlog_data (total)"):
@@ -633,12 +651,14 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         # Filter by date range
         # FIXED v1.3.0: Added date columns for complex KPIs
+        # UPDATED v2.6.1: Added first_combo_date for new_business_detail
         date_cols = [
             'inv_date',              # sales data
             'oc_date',               # order confirmation
             'invoiced_date',         # backlog
             'first_invoice_date',    # new_customers
             'first_sale_date',       # new_products
+            'first_combo_date',      # new_business_detail
         ]
         for date_col in date_cols:
             if date_col in df_filtered.columns:
@@ -914,11 +934,11 @@ if filters_submitted:
     
     # OPTIMIZATION v2.6.0: Clear computed caches when filters change
     # This ensures fresh calculations for new filter values
+    # UPDATED v2.6.1: Removed new_business_detail_ - now cached in raw_cached_data
     cache_prefixes = (
         'complex_kpi_',        # Main page complex KPI cache
         '_complex_kpi_',       # queries.py internal cache
         'prev_year_data_',     # YoY comparison cache
-        'new_business_detail_', # New business detail cache
         'yoy_frag_prev_',      # Fragment YoY cache
     )
     keys_to_clear = [k for k in st.session_state.keys() 
@@ -959,8 +979,9 @@ with st.sidebar:
                 del st.session_state[access_cache_key]
             
             # Clear all computed caches
+            # UPDATED v2.6.1: Removed new_business_detail_ - now in raw_cached_data
             cache_prefixes = ('complex_kpi_', '_complex_kpi_', 'prev_year_data_', 
-                            'new_business_detail_', 'yoy_frag_prev_')
+                            'yoy_frag_prev_')
             for key in list(st.session_state.keys()):
                 if key.startswith(cache_prefixes):
                     del st.session_state[key]
@@ -1025,21 +1046,11 @@ else:
     if DEBUG_TIMING:
         print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
 
-# NEW v1.5.0: Query new_business detail for combo-level display in popover
-# OPTIMIZATION v2.6.0: Cache this as well
-_new_business_detail_key = f"new_business_detail_{active_filters['start_date']}_{active_filters['end_date']}"
-if _new_business_detail_key not in st.session_state:
-    with timer("DB: get_new_business_detail"):
-        fresh_new_business_detail_df = queries.get_new_business_detail(
-            start_date=active_filters['start_date'],
-            end_date=active_filters['end_date'],
-            employee_ids=active_filters['employee_ids']
-        )
-    st.session_state[_new_business_detail_key] = fresh_new_business_detail_df
-else:
-    fresh_new_business_detail_df = st.session_state[_new_business_detail_key]
-    if DEBUG_TIMING:
-        print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
+# UPDATED v2.6.1: Use new_business_detail from cached data (client-side filtered)
+# This avoids re-querying when salesperson selection changes
+fresh_new_business_detail_df = data.get('new_business_detail', pd.DataFrame())
+if DEBUG_TIMING:
+    print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
 
 with timer("Metrics: calculate_complex_kpis"):
     complex_kpis = metrics_calc.calculate_complex_kpis(
