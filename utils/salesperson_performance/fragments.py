@@ -403,13 +403,19 @@ def yoy_comparison_fragment(
         
         st.markdown(f"##### 📅 {primary_year} vs {primary_year - 1}")
         
-        # Load previous year data
-        previous_sales_df = queries.get_previous_year_data(
-            start_date=filter_values['start_date'],
-            end_date=filter_values['end_date'],
-            employee_ids=filter_values['employee_ids'],
-            entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
-        )
+        # Load previous year data - OPTIMIZATION v2.6.0: Cache in session_state
+        yoy_frag_cache_key = f"yoy_frag_prev_{filter_values['start_date']}_{filter_values['end_date']}_{tuple(filter_values['employee_ids'] or [])}"
+        
+        if yoy_frag_cache_key not in st.session_state:
+            previous_sales_df = queries.get_previous_year_data(
+                start_date=filter_values['start_date'],
+                end_date=filter_values['end_date'],
+                employee_ids=filter_values['employee_ids'],
+                entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
+            )
+            st.session_state[yoy_frag_cache_key] = previous_sales_df
+        else:
+            previous_sales_df = st.session_state[yoy_frag_cache_key]
         
         # Apply same filters to previous year data
         if not previous_sales_df.empty:

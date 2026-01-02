@@ -322,10 +322,29 @@ if not db_connected:
 # INITIALIZE COMPONENTS
 # =============================================================================
 
-access = AccessControl(
-    user_role=st.session_state.get('user_role', 'viewer'),
-    employee_id=st.session_state.get('employee_id')
-)
+# OPTIMIZATION v2.6.0: Cache AccessControl accessible_ids in session_state
+user_role = st.session_state.get('user_role', 'viewer')
+employee_id = st.session_state.get('employee_id')
+access_cache_key = f"_access_control_{user_role}_{employee_id}"
+
+access = AccessControl(user_role=user_role, employee_id=employee_id)
+
+# Cache or reuse accessible IDs
+if access_cache_key not in st.session_state:
+    _ac_ids = access.get_accessible_employee_ids()
+    st.session_state[access_cache_key] = {
+        'level': access.get_access_level(),
+        'ids': _ac_ids
+    }
+    if DEBUG_TIMING:
+        print(f"   ✅ AccessControl IDs cached: {access.get_access_level()}, {len(_ac_ids) if _ac_ids else 'all'} employees")
+else:
+    # Inject cached IDs to avoid DB query
+    access._accessible_ids = st.session_state[access_cache_key]['ids']
+    if DEBUG_TIMING:
+        _ac_level = st.session_state[access_cache_key]['level']
+        _ac_ids = st.session_state[access_cache_key]['ids']
+        print(f"   ♻️ Using cached AccessControl: {_ac_level}, {len(_ac_ids) if _ac_ids else 'all'} employees")
 
 queries = SalespersonQueries(access)
 filters_ui = SalespersonFilters(access)
@@ -334,11 +353,41 @@ filters_ui = SalespersonFilters(access)
 # SIDEBAR FILTERS (Form-based - only applies on click)
 # =============================================================================
 
-salesperson_options = queries.get_salesperson_options()
-entity_options = queries.get_entity_options()
+# OPTIMIZATION: Cache sidebar options in session_state
+# These are expensive queries (~8s) that rarely change
+def _get_cached_sidebar_options():
+    """Get sidebar options with session_state caching."""
+    cache_key = f"sidebar_options_{st.session_state.get('employee_id', 0)}"
+    
+    if cache_key not in st.session_state:
+        with timer("Sidebar: get_salesperson_options"):
+            salesperson_opts = queries.get_salesperson_options()
+        with timer("Sidebar: get_entity_options"):
+            entity_opts = queries.get_entity_options()
+        with timer("Sidebar: get_default_date_range"):
+            default_start, default_end = queries.get_default_date_range()
+        
+        st.session_state[cache_key] = {
+            'salesperson': salesperson_opts,
+            'entity': entity_opts,
+            'default_start': default_start,
+            'default_end': default_end,
+            'cached_at': datetime.now()
+        }
+        if DEBUG_TIMING:
+            print(f"   ✅ Sidebar options cached for employee_id={st.session_state.get('employee_id')}")
+    else:
+        if DEBUG_TIMING:
+            cached_at = st.session_state[cache_key].get('cached_at', 'unknown')
+            print(f"   ♻️ Using cached sidebar options (cached at: {cached_at})")
+    
+    return st.session_state[cache_key]
 
-# Get default date range from database
-default_start, default_end = queries.get_default_date_range()
+sidebar_cache = _get_cached_sidebar_options()
+salesperson_options = sidebar_cache['salesperson']
+entity_options = sidebar_cache['entity']
+default_start = sidebar_cache['default_start']
+default_end = sidebar_cache['default_end']
 
 # Use form-based filters to prevent rerun on every change
 filter_values, filters_submitted = filters_ui.render_filter_form(
@@ -379,17 +428,33 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     print(f"{'='*60}")
     load_start_time = time.perf_counter()
     
-    # Initialize AccessControl
-    with timer("AccessControl.init"):
-        access_control = AccessControl(
-            st.session_state.get('user_role', 'viewer'),
-            st.session_state.get('employee_id')
-        )
+    # OPTIMIZATION v2.6.0: Cache AccessControl accessible_ids in session_state
+    # This avoids expensive recursive CTE query on every page load
+    user_role = st.session_state.get('user_role', 'viewer')
+    employee_id = st.session_state.get('employee_id')
+    access_cache_key = f"_access_control_{user_role}_{employee_id}"
     
-    # Get accessible employee IDs based on role
-    with timer("AccessControl.get_accessible_ids"):
-        access_level = access_control.get_access_level()
-        accessible_ids = access_control.get_accessible_employee_ids()
+    if access_cache_key in st.session_state:
+        access_level = st.session_state[access_cache_key]['level']
+        accessible_ids = st.session_state[access_cache_key]['ids']
+        if DEBUG_TIMING:
+            print(f"   ♻️ Using cached AccessControl ({access_level}, {len(accessible_ids) if accessible_ids else 'all'} employees)")
+    else:
+        with timer("AccessControl.init"):
+            access_control = AccessControl(user_role, employee_id)
+        
+        with timer("AccessControl.get_accessible_ids"):
+            access_level = access_control.get_access_level()
+            accessible_ids = access_control.get_accessible_employee_ids()
+        
+        st.session_state[access_cache_key] = {
+            'level': access_level,
+            'ids': accessible_ids
+        }
+    
+    # Create AccessControl with cached IDs (no DB query needed)
+    access_control = AccessControl(user_role, employee_id)
+    access_control._accessible_ids = accessible_ids  # Inject cached IDs
     
     # For full access, pass None to load all (more efficient than huge IN clause)
     # For restricted access, pass the specific IDs
@@ -741,11 +806,17 @@ def _reload_complex_kpis(filter_values: dict):
     
     NEW v1.8.0: This is more efficient than reloading all data.
     """
-    # Get access control (using classes already imported at top)
-    access = AccessControl(
-        st.session_state.get('user_role', 'viewer'),
-        st.session_state.get('employee_id')
-    )
+    # OPTIMIZATION v2.6.0: Use cached AccessControl
+    user_role = st.session_state.get('user_role', 'viewer')
+    employee_id = st.session_state.get('employee_id')
+    access_cache_key = f"_access_control_{user_role}_{employee_id}"
+    
+    access = AccessControl(user_role, employee_id)
+    
+    # Inject cached IDs if available
+    if access_cache_key in st.session_state:
+        access._accessible_ids = st.session_state[access_cache_key]['ids']
+    
     q = SalespersonQueries(access)
     
     # Get parameters
@@ -840,6 +911,22 @@ if _get_applied_filters() is None:
 if filters_submitted:
     _set_applied_filters(filter_values)
     logger.info(f"Filters applied: {filter_values['period_type']} {filter_values['year']}")
+    
+    # OPTIMIZATION v2.6.0: Clear computed caches when filters change
+    # This ensures fresh calculations for new filter values
+    cache_prefixes = (
+        'complex_kpi_',        # Main page complex KPI cache
+        '_complex_kpi_',       # queries.py internal cache
+        'prev_year_data_',     # YoY comparison cache
+        'new_business_detail_', # New business detail cache
+        'yoy_frag_prev_',      # Fragment YoY cache
+    )
+    keys_to_clear = [k for k in st.session_state.keys() 
+                    if k.startswith(cache_prefixes)]
+    for key in keys_to_clear:
+        del st.session_state[key]
+    if DEBUG_TIMING and keys_to_clear:
+        print(f"   🗑️ Cleared {len(keys_to_clear)} computed caches due to filter change")
 
 # Always use applied filters (not current form values)
 # This ensures data stays consistent even if form values change without submit
@@ -859,6 +946,25 @@ with st.sidebar:
                 del st.session_state['_cached_end_year']
             if '_cached_exclude_internal' in st.session_state:
                 del st.session_state['_cached_exclude_internal']
+            
+            # OPTIMIZATION v2.6.0: Also clear sidebar cache and computed caches
+            employee_id = st.session_state.get('employee_id', 0)
+            user_role = st.session_state.get('user_role', 'viewer')
+            sidebar_cache_key = f"sidebar_options_{employee_id}"
+            access_cache_key = f"_access_control_{user_role}_{employee_id}"
+            
+            if sidebar_cache_key in st.session_state:
+                del st.session_state[sidebar_cache_key]
+            if access_cache_key in st.session_state:
+                del st.session_state[access_cache_key]
+            
+            # Clear all computed caches
+            cache_prefixes = ('complex_kpi_', '_complex_kpi_', 'prev_year_data_', 
+                            'new_business_detail_', 'yoy_frag_prev_')
+            for key in list(st.session_state.keys()):
+                if key.startswith(cache_prefixes):
+                    del st.session_state[key]
+            
             st.rerun()
     with col_r2:
         cached_start, cached_end = _get_cached_year_range()
@@ -900,21 +1006,40 @@ with timer("Metrics: calculate_overview_metrics"):
     )
 
 # FIXED v1.3.0: Query new_business fresh with correct date range
-# new_business is aggregated data without date column, cannot filter client-side
-with timer("DB: get_new_business_revenue (fresh)"):
-    fresh_new_business_df = queries.get_new_business_revenue(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        employee_ids=active_filters['employee_ids']
-    )
+# OPTIMIZATION v2.6.0: Only query fresh if cached data is empty or dates don't match
+# new_business is aggregated data without date column, but cached data is already filtered
+# by date range in load_data_for_year_range, so we can use it when available
+_cached_new_business = data.get('new_business', pd.DataFrame())
+
+if _cached_new_business.empty:
+    # No cached data, need to query fresh
+    with timer("DB: get_new_business_revenue (fresh - no cache)"):
+        fresh_new_business_df = queries.get_new_business_revenue(
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            employee_ids=active_filters['employee_ids']
+        )
+else:
+    # Use cached data - it's already filtered by employee_ids in filter_data_client_side
+    fresh_new_business_df = _cached_new_business
+    if DEBUG_TIMING:
+        print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
 
 # NEW v1.5.0: Query new_business detail for combo-level display in popover
-with timer("DB: get_new_business_detail"):
-    fresh_new_business_detail_df = queries.get_new_business_detail(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        employee_ids=active_filters['employee_ids']
-    )
+# OPTIMIZATION v2.6.0: Cache this as well
+_new_business_detail_key = f"new_business_detail_{active_filters['start_date']}_{active_filters['end_date']}"
+if _new_business_detail_key not in st.session_state:
+    with timer("DB: get_new_business_detail"):
+        fresh_new_business_detail_df = queries.get_new_business_detail(
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            employee_ids=active_filters['employee_ids']
+        )
+    st.session_state[_new_business_detail_key] = fresh_new_business_detail_df
+else:
+    fresh_new_business_detail_df = st.session_state[_new_business_detail_key]
+    if DEBUG_TIMING:
+        print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
 
 with timer("Metrics: calculate_complex_kpis"):
     complex_kpis = metrics_calc.calculate_complex_kpis(
@@ -967,12 +1092,22 @@ period_info = analyze_period(active_filters)
 # YoY comparison (only for single-year periods)
 yoy_metrics = None
 if active_filters['compare_yoy'] and not period_info['is_multi_year']:
-    previous_sales_df = queries.get_previous_year_data(
-        start_date=active_filters['start_date'],
-        end_date=active_filters['end_date'],
-        employee_ids=active_filters['employee_ids'],
-        entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
-    )
+    # OPTIMIZATION v2.6.0: Cache previous year data
+    yoy_cache_key = f"prev_year_data_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(active_filters['employee_ids'] or [])}"
+    
+    if yoy_cache_key not in st.session_state:
+        with timer("DB: get_previous_year_data"):
+            previous_sales_df = queries.get_previous_year_data(
+                start_date=active_filters['start_date'],
+                end_date=active_filters['end_date'],
+                employee_ids=active_filters['employee_ids'],
+                entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
+            )
+        st.session_state[yoy_cache_key] = previous_sales_df
+    else:
+        previous_sales_df = st.session_state[yoy_cache_key]
+        if DEBUG_TIMING:
+            print(f"   ♻️ Using cached previous_year_data ({len(previous_sales_df)} rows)")
     
     if not previous_sales_df.empty:
         prev_metrics_calc = SalespersonMetrics(previous_sales_df, None)
@@ -1996,15 +2131,25 @@ with tab4:
                 elif kpi_name in complex_kpi_names:
                     # =============================================================
                     # FIXED v2.4.0: Query complex KPIs filtered by employees with target
+                    # OPTIMIZATION v2.6.0: Cache results in session_state
                     # Instead of using pre-calculated values from all selected employees,
                     # we now query fresh with only the employees who have this KPI target
                     # =============================================================
-                    actual = queries.calculate_complex_kpi_value(
-                        kpi_name=kpi_name,
-                        start_date=active_filters['start_date'],
-                        end_date=active_filters['end_date'],
-                        employee_ids=employees_with_target
-                    )
+                    cache_key = f"complex_kpi_{kpi_name}_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(sorted(employees_with_target))}"
+                    if cache_key not in st.session_state:
+                        actual = queries.calculate_complex_kpi_value(
+                            kpi_name=kpi_name,
+                            start_date=active_filters['start_date'],
+                            end_date=active_filters['end_date'],
+                            employee_ids=employees_with_target
+                        )
+                        st.session_state[cache_key] = actual
+                        if DEBUG_TIMING:
+                            print(f"   📊 Complex KPI [{kpi_name}] queried: {actual}")
+                    else:
+                        actual = st.session_state[cache_key]
+                        if DEBUG_TIMING:
+                            print(f"   ♻️ Complex KPI [{kpi_name}] from cache: {actual}")
                 else:
                     actual = 0
                 

@@ -777,6 +777,8 @@ class SalespersonQueries:
         NEW v1.6.0: Helper method to calculate complex KPI values filtered
         by employees who have that specific KPI target assigned.
         
+        OPTIMIZATION v2.6.0: Added internal caching via session_state
+        
         This ensures KPI Progress shows accurate achievement by only counting
         actuals from employees who are responsible for that KPI.
         
@@ -814,33 +816,42 @@ class SalespersonQueries:
         
         kpi_name_lower = kpi_name.lower()
         
+        # OPTIMIZATION v2.6.0: Internal caching
+        cache_key = f"_complex_kpi_{kpi_name_lower}_{start_date}_{end_date}_{tuple(sorted(employee_ids))}"
+        if cache_key in st.session_state:
+            if DEBUG_QUERY_TIMING:
+                print(f"   ♻️ [calculate_complex_kpi_value] {kpi_name_lower} from cache")
+            return st.session_state[cache_key]
+        
+        result = 0.0
+        
         if kpi_name_lower == 'num_new_customers':
             # Get new customers for specific employees
             df = self.get_new_customers(start_date, end_date, employee_ids)
-            if df.empty:
-                return 0.0
-            # Count = sum of split_rate_percent / 100
-            return df['split_rate_percent'].sum() / 100
+            if not df.empty:
+                # Count = sum of split_rate_percent / 100
+                result = df['split_rate_percent'].sum() / 100
         
         elif kpi_name_lower == 'num_new_products':
             # Get new products for specific employees
             df = self.get_new_products(start_date, end_date, employee_ids)
-            if df.empty:
-                return 0.0
-            # Count = sum of split_rate_percent / 100
-            return df['split_rate_percent'].sum() / 100
+            if not df.empty:
+                # Count = sum of split_rate_percent / 100
+                result = df['split_rate_percent'].sum() / 100
         
         elif kpi_name_lower == 'new_business_revenue':
             # Get new business revenue for specific employees
             df = self.get_new_business_revenue(start_date, end_date, employee_ids)
-            if df.empty:
-                return 0.0
-            # Revenue = sum of new_business_revenue
-            return df['new_business_revenue'].sum()
+            if not df.empty:
+                # Revenue = sum of new_business_revenue
+                result = df['new_business_revenue'].sum()
         
         else:
             logger.warning(f"Unknown complex KPI: {kpi_name}")
-            return 0.0
+        
+        # Cache result
+        st.session_state[cache_key] = result
+        return result
     
     # =========================================================================
     # LOOKUP DATA
