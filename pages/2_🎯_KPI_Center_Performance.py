@@ -2,8 +2,14 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.6.0
+VERSION: 3.8.0
 CHANGELOG:
+- v3.8.0: Cleanup queries.py - removed unused backlog and target functions
+          File reduced from 1445 to 716 lines
+- v3.7.0: Phase 2 Optimization
+          - Backlog: 4 queries → 1 query + BacklogCalculator (Pandas)
+          - Targets: 3 queries → 1 multi-year query
+          - Expected savings: ~8s (from ~34s to ~26s)
 - v3.6.0: Major performance optimization using Pandas-based Complex KPI calculations
           - Replaced 9 SQL queries (~27s) with ComplexKPICalculator (~0.3s)
           - Load lookback data first, extract sidebar options (~3.7s saved)
@@ -500,13 +506,18 @@ def load_data_for_year_range(
     end_year: int,
     kpi_center_ids: list,
     entity_ids: list = None,
-    display_start: date = None,  # NEW: Display period start for complex KPIs
-    display_end: date = None,    # NEW: Display period end for complex KPIs
-    selected_kpi_types: list = None,  # NEW v2.7.0: For double-counting prevention
-    exclude_internal: bool = True  # NEW v2.14.0: Exclude internal revenue/customers
+    display_start: date = None,  # Display period start for complex KPIs
+    display_end: date = None,    # Display period end for complex KPIs
+    selected_kpi_types: list = None,  # For double-counting prevention
+    exclude_internal: bool = True  # Exclude internal revenue/customers
 ) -> dict:
     """
     Load data for specified year range.
+    
+    UPDATED v3.7.0: Phase 2 Optimization
+    - Backlog: 4 SQL queries (~6.3s) → 1 query + Pandas (~1.6s)
+    - Targets: 3 SQL queries (~3.7s) → 1 query (~0.15s)
+    - Total savings: ~8s
     
     Args:
         queries: KPICenterQueries instance
@@ -514,27 +525,19 @@ def load_data_for_year_range(
         end_year: End year for cache range
         kpi_center_ids: List of KPI Center IDs to filter
         entity_ids: Optional list of entity IDs to filter
-        display_start: Actual display period start date (for complex KPIs that can't be filtered client-side)
-        display_end: Actual display period end date (for complex KPIs that can't be filtered client-side)
-        selected_kpi_types: List of selected KPI types for dedupe logic (NEW v2.7.0)
-        exclude_internal: If True, exclude internal revenue in backlog and internal customers in Complex KPIs (NEW v2.14.0)
+        display_start: Actual display period start date
+        display_end: Actual display period end date
+        selected_kpi_types: List of selected KPI types for dedupe logic
+        exclude_internal: If True, exclude internal revenue
     
     Returns:
         dict: Dictionary containing all loaded DataFrames
-    
-    Note:
-        - Sales data uses cache period (start_year to end_year) because it CAN be filtered client-side
-        - Complex KPIs (new_customers, new_products, new_business) use display period because 
-          they return aggregated data WITHOUT date columns, so they CANNOT be filtered client-side
-        - NEW v2.7.0: selected_kpi_types is passed to complex KPI queries for dedupe logic
-        - NEW v2.14.0: exclude_internal is passed to backlog and complex KPI queries for consistent business logic
     """
     # Cache period - for data that CAN be filtered client-side
     cache_start = date(start_year, 1, 1)
     cache_end = date(end_year, 12, 31)
     
     # Display period - for complex KPIs that CANNOT be filtered client-side
-    # If not provided, fall back to cache period
     kpi_start = display_start or cache_start
     kpi_end = display_end or cache_end
     
@@ -548,8 +551,10 @@ def load_data_for_year_range(
     data = {}
     
     try:
+        # =====================================================================
+        # STEP 1: SALES DATA (unchanged)
+        # =====================================================================
         progress_bar.progress(10, text="📊 Loading sales data...")
-        # Sales data uses CACHE period (can be filtered client-side via inv_date column)
         with timer("DB: get_sales_data"):
             data['sales_df'] = queries.get_sales_data(
                 start_date=cache_start,
@@ -560,65 +565,62 @@ def load_data_for_year_range(
         if DEBUG_TIMING:
             print(f"   → Sales rows: {len(data['sales_df']):,}")
         
+        # =====================================================================
+        # STEP 2: KPI TARGETS - OPTIMIZED v3.7.0
+        # Single query for all years instead of loop
+        # =====================================================================
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        with timer("DB: get_kpi_targets (all years)"):
-            targets_list = []
-            for yr in range(start_year, end_year + 1):
-                t = queries.get_kpi_targets(year=yr, kpi_center_ids=kpi_center_ids)
-                if not t.empty:
-                    targets_list.append(t)
-            data['targets_df'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
+        with timer("DB: get_kpi_targets_multi_year"):
+            years_to_query = list(range(start_year, end_year + 1))
+            data['targets_df'] = queries.get_kpi_targets_multi_year(
+                years=years_to_query,
+                kpi_center_ids=kpi_center_ids
+            )
         if DEBUG_TIMING:
-            print(f"   → Targets rows: {len(data['targets_df']):,}")
+            print(f"   → Targets rows: {len(data['targets_df']):,} (years: {years_to_query})")
         
-        progress_bar.progress(40, text="📦 Loading backlog data...")
         # =====================================================================
-        # NEW v2.14.0: Pass exclude_internal to backlog queries
-        # When exclude_internal=True: Revenue = 0 for Internal, GP kept
+        # STEP 3: BACKLOG DATA - OPTIMIZED v3.7.0
+        # Single query + Pandas processing instead of 4 separate queries
         # =====================================================================
-        with timer("DB: get_backlog_data (total)"):
-            data['backlog_summary_df'] = queries.get_backlog_data(
-                kpi_center_ids=kpi_center_ids,
-                entity_ids=entity_ids,
-                exclude_internal=exclude_internal  # NEW v2.14.0
-            )
-        if DEBUG_TIMING:
-            print(f"   → Total backlog rows: {len(data['backlog_summary_df']):,}")
+        progress_bar.progress(40, text="📦 Loading backlog data (optimized)...")
         
-        with timer("DB: get_backlog_in_period"):
-            data['backlog_in_period_df'] = queries.get_backlog_in_period(
-                start_date=cache_start,
-                end_date=cache_end,
-                kpi_center_ids=kpi_center_ids,
-                entity_ids=entity_ids,
-                exclude_internal=exclude_internal  # NEW v2.14.0
-            )
-        if DEBUG_TIMING:
-            print(f"   → In-period backlog rows: {len(data['backlog_in_period_df']):,}")
-        
-        with timer("DB: get_backlog_by_month"):
-            data['backlog_by_month_df'] = queries.get_backlog_by_month(
-                kpi_center_ids=kpi_center_ids,
-                entity_ids=entity_ids,
-                exclude_internal=exclude_internal  # NEW v2.14.0
-            )
-        if DEBUG_TIMING:
-            print(f"   → Backlog by month rows: {len(data['backlog_by_month_df']):,}")
-        
-        progress_bar.progress(55, text="📋 Loading backlog details...")
-        with timer("DB: get_backlog_detail"):
-            data['backlog_detail_df'] = queries.get_backlog_detail(
+        # Load raw backlog data ONCE
+        with timer("DB: get_all_backlog_raw"):
+            backlog_raw_df = queries.get_all_backlog_raw(
                 kpi_center_ids=kpi_center_ids,
                 entity_ids=entity_ids
             )
         if DEBUG_TIMING:
-            print(f"   → Backlog detail rows: {len(data['backlog_detail_df']):,}")
+            print(f"   → Raw backlog rows: {len(backlog_raw_df):,}")
         
+        # Process with BacklogCalculator
+        from utils.kpi_center_performance.backlog_calculator import BacklogCalculator
+        
+        with timer("Pandas: BacklogCalculator"):
+            backlog_calc = BacklogCalculator(backlog_raw_df, exclude_internal=exclude_internal)
+            backlog_results = backlog_calc.calculate_all(
+                start_date=kpi_start,
+                end_date=kpi_end
+            )
+        
+        # Map results to expected data keys
+        data['backlog_summary_df'] = backlog_results['backlog_summary_df']
+        data['backlog_in_period_df'] = backlog_results['backlog_in_period_df']
+        data['backlog_by_month_df'] = backlog_results['backlog_by_month_df']
+        data['backlog_detail_df'] = backlog_results['backlog_detail_df']
+        data['backlog_risk'] = backlog_results['backlog_risk']
+        
+        if DEBUG_TIMING:
+            print(f"   → Backlog summary: {len(data['backlog_summary_df']):,} rows")
+            print(f"   → Backlog in-period: {len(data['backlog_in_period_df']):,} rows")
+            print(f"   → Backlog by month: {len(data['backlog_by_month_df']):,} rows")
+            print(f"   → Backlog detail: {len(data['backlog_detail_df']):,} rows")
+        
+        # =====================================================================
+        # STEP 4: COMPLEX KPIs (unchanged from v3.6.0)
+        # =====================================================================
         progress_bar.progress(70, text="🆕 Calculating complex KPIs (Pandas)...")
-        # =====================================================================
-        # OPTIMIZED v3.6.0: Use Pandas instead of SQL for Complex KPIs
-        # Performance: 9 SQL queries (~27s) → 1 Pandas calculation (~0.3s)
-        # =====================================================================
         
         # Check if lookback data is available from load_lookup_data
         if '_kpc_lookback_df' in st.session_state:
@@ -660,29 +662,25 @@ def load_data_for_year_range(
             print(f"   → New products: {len(data['new_products_df']):,} rows")
             print(f"   → New business detail: {len(data['new_business_detail_df']):,} rows")
         
-        progress_bar.progress(85, text="⚠️ Analyzing backlog risk...")
-        with timer("DB: get_backlog_risk_analysis"):
-            data['backlog_risk'] = queries.get_backlog_risk_analysis(
-                kpi_center_ids=kpi_center_ids,
-                entity_ids=entity_ids,
-                exclude_internal=exclude_internal  # NEW v2.14.0
-            )
-        
+        # =====================================================================
+        # STEP 5: CLEAN DATAFRAMES
+        # =====================================================================
+        progress_bar.progress(90, text="🧹 Cleaning data...")
         with timer("Clean dataframes"):
-            for key in data:
-                if isinstance(data[key], pd.DataFrame) and not data[key].empty:
+            for key in ['sales_df', 'backlog_summary_df', 'backlog_in_period_df', 
+                        'backlog_by_month_df', 'backlog_detail_df']:
+                if key in data and not data[key].empty:
                     data[key] = _clean_dataframe_for_display(data[key])
         
+        # =====================================================================
+        # STEP 6: STORE METADATA FOR RELOAD CHECK
+        # =====================================================================
         data['_loaded_at'] = datetime.now()
         data['_year_range'] = (start_year, end_year)
-        # Store display period for reference
         data['_display_period'] = (kpi_start, kpi_end)
-        # NEW v2.7.0: Store for reload check
         data['_selected_kpi_types'] = selected_kpi_types
-        data['_kpi_center_ids'] = kpi_center_ids  # CRITICAL: For reload check when KPI Center changes
-        # NEW v2.9.0: Store entity_ids for reload check
+        data['_kpi_center_ids'] = kpi_center_ids
         data['_entity_ids'] = entity_ids
-        # NEW v2.14.0: Store exclude_internal for reload check
         data['_exclude_internal'] = exclude_internal
         
         progress_bar.progress(100, text="✅ Data loaded successfully!")

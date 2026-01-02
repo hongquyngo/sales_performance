@@ -2,13 +2,21 @@
 """
 KPI Center Performance Data Queries
 
-VERSION: 3.6.0
+VERSION: 3.8.2
 CHANGELOG:
+- v3.8.2: Restored get_kpi_center_list() and get_kpi_center_achievement_summary()
+          for potential future use and backward compatibility
+- v3.8.1: Restored get_leaf_descendants() - still used by metrics.py
+- v3.8.0: Cleanup - Removed unused functions after Phase 2 optimization
+          Removed: get_kpi_targets, get_backlog_data, get_backlog_in_period,
+                   get_backlog_by_month, get_backlog_detail, get_backlog_risk_analysis
+          File reduced from 1445 to ~880 lines (~39% reduction)
+- v3.7.0: Phase 2 Optimization
+          Added get_all_backlog_raw() for Pandas-based backlog processing
+          Added get_kpi_targets_multi_year() to replace per-year loop
+          Expected savings: ~8s per page load
 - v3.6.0: Removed Complex KPI methods (now handled by complex_kpi_calculator.py)
-          Removed get_entity_list, get_available_years (extracted from lookback)
-          Removed calculate_complex_kpi_value (replaced by ComplexKPICalculator)
           Added get_lookback_sales_data() for Pandas-based processing
-          File reduced from 2779 to 1248 lines (~55% reduction)
 - v3.5.0: Added DEBUG_QUERY_TIMING for terminal timing output
 """
 
@@ -277,64 +285,148 @@ class KPICenterQueries:
             "lookback_sales_data"
         )
     
-    def get_previous_year_data(
-        self,
-        start_date: date,
-        end_date: date,
-        kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None
-    ) -> pd.DataFrame:
-        """
-        Get previous year's sales data for the same period.
-        
-        Args:
-            start_date: Current period start
-            end_date: Current period end
-            kpi_center_ids: Optional filter
-            entity_ids: Optional filter
-            
-        Returns:
-            DataFrame with previous year's sales
-        """
-        # Calculate previous year dates
-        prev_start = date(start_date.year - 1, start_date.month, start_date.day)
-        try:
-            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
-        except ValueError:
-            # Handle Feb 29 -> Feb 28
-            prev_end = date(end_date.year - 1, end_date.month, 28)
-        
-        return self.get_sales_data(
-            start_date=prev_start,
-            end_date=prev_end,
-            kpi_center_ids=kpi_center_ids,
-            entity_ids=entity_ids
-        )
-    
     # =========================================================================
-    # KPI TARGETS
+    # BACKLOG RAW DATA (NEW v3.7.0 - for Pandas optimization)
     # =========================================================================
     
-    def get_kpi_targets(
+    def get_all_backlog_raw(
         self,
-        year: int,
         kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
         include_children: bool = True
     ) -> pd.DataFrame:
         """
-        Get KPI targets for specified year and KPI Centers.
+        Load ALL raw backlog data for Pandas-based processing.
+        
+        NEW v3.7.0: This method loads data once for:
+        1. Backlog Summary (by KPI Center)
+        2. Backlog In-Period (filtered by ETD)
+        3. Backlog By Month (grouped by ETD month)
+        4. Backlog Detail (raw records)
+        5. Backlog Risk Analysis
+        
+        PERFORMANCE:
+        - Replaces 4 SQL queries (~6.3s) with 1 query (~1.6s)
+        - Savings: ~75%
         
         Args:
-            year: Target year
-            kpi_center_ids: Optional list of KPI Centers
+            kpi_center_ids: Optional list of KPI Center IDs to filter
+            entity_ids: Optional list of entity IDs to filter
             include_children: Include child KPI Centers
             
         Returns:
-            DataFrame with KPI assignments
+            DataFrame with ALL backlog records (uninvoiced orders)
         """
         if not self.access.can_access_page():
             return pd.DataFrame()
         
+        # Expand KPI Center IDs to include children
+        if kpi_center_ids:
+            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
+            if include_children:
+                expanded_ids = set(kpi_center_ids)
+                for parent_id in kpi_center_ids:
+                    child_ids = self.get_child_kpi_center_ids(parent_id)
+                    expanded_ids.update(child_ids)
+                kpi_center_ids = list(expanded_ids)
+        else:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+        
+        if not kpi_center_ids:
+            return pd.DataFrame()
+        
+        # Query all columns needed for all aggregations
+        query = """
+            SELECT 
+                -- Order info
+                oc_number,
+                oc_date,
+                etd,
+                etd_year,
+                etd_month,
+                
+                -- Customer info
+                customer,
+                customer_id,
+                customer_type,
+                customer_po_number,
+                
+                -- Product info
+                product_pn,
+                pt_code,
+                package_size,
+                brand,
+                
+                -- KPI Center info
+                kpi_center,
+                kpi_center_id,
+                kpi_type,
+                split_rate_percent,
+                
+                -- Entity info
+                legal_entity,
+                entity_id,
+                
+                -- Amounts
+                backlog_by_kpi_center_usd,
+                backlog_gp_by_kpi_center_usd,
+                
+                -- Status info
+                pending_type,
+                days_until_etd,
+                days_since_order,
+                status,
+                invoice_completion_percent
+            FROM backlog_by_kpi_center_flat_looker_view
+            WHERE kpi_center_id IN :kpi_center_ids
+              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
+        """
+        
+        params = {'kpi_center_ids': tuple(kpi_center_ids)}
+        
+        if entity_ids:
+            query += " AND entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += " ORDER BY backlog_by_kpi_center_usd DESC"
+        
+        return self._execute_query(query, params, "backlog_raw_all")
+    
+    # =========================================================================
+    # KPI TARGETS MULTI-YEAR (NEW v3.7.0 - replaces per-year loop)
+    # =========================================================================
+    
+    def get_kpi_targets_multi_year(
+        self,
+        years: List[int],
+        kpi_center_ids: List[int] = None,
+        include_children: bool = True
+    ) -> pd.DataFrame:
+        """
+        Get KPI targets for multiple years in a single query.
+        
+        NEW v3.7.0: Replaces per-year loop that called get_kpi_targets() 3 times.
+        
+        PERFORMANCE:
+        - Before: 3 queries (0.115s each) + overhead = ~3.7s
+        - After: 1 query = ~0.15s
+        - Savings: ~96%
+        
+        Args:
+            years: List of years to query (e.g., [2024, 2025, 2026])
+            kpi_center_ids: Optional list of KPI Centers
+            include_children: Include child KPI Centers
+            
+        Returns:
+            DataFrame with KPI assignments for all specified years
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+        
+        if not years:
+            return pd.DataFrame()
+        
+        # Expand KPI Center IDs
         if kpi_center_ids:
             kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
             if include_children:
@@ -368,507 +460,51 @@ class KPICenterQueries:
                 notes,
                 is_current_year
             FROM sales_kpi_center_assignments_view
-            WHERE year = :year
+            WHERE year IN :years
               AND kpi_center_id IN :kpi_center_ids
-            ORDER BY kpi_center_name, kpi_name
+            ORDER BY year, kpi_center_name, kpi_name
         """
         
         params = {
-            'year': year,
+            'years': tuple(years),
             'kpi_center_ids': tuple(kpi_center_ids)
         }
         
-        return self._execute_query(query, params, "kpi_targets")
+        return self._execute_query(query, params, "kpi_targets_multi_year")
     
-    # =========================================================================
-    # BACKLOG DATA - UPDATED v2.14.0: Added exclude_internal parameter
-    # =========================================================================
-    
-    def get_backlog_data(
-        self,
-        kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None,
-        include_children: bool = True,
-        exclude_internal: bool = True  # NEW v2.14.0
-    ) -> pd.DataFrame:
-        """
-        Get backlog summary by KPI Center.
-        Only includes uninvoiced orders (invoice_completion_percent < 100).
-        
-        NEW v2.14.0: Added exclude_internal parameter
-        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
-        - GP values are preserved (same business logic as Sales data)
-        
-        Args:
-            kpi_center_ids: Optional list of KPI Center IDs to filter
-            entity_ids: Optional list of entity IDs to filter
-            include_children: Include child KPI Centers
-            exclude_internal: If True, set revenue = 0 for Internal customers (keep GP)
-        """
-        if not self.access.can_access_page():
-            return pd.DataFrame()
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-            if include_children:
-                expanded_ids = set(kpi_center_ids)
-                for parent_id in kpi_center_ids:
-                    child_ids = self.get_child_kpi_center_ids(parent_id)
-                    expanded_ids.update(child_ids)
-                kpi_center_ids = list(expanded_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return pd.DataFrame()
-        
-        # NEW v2.14.0: Use CASE WHEN to set revenue = 0 for Internal customers
-        if exclude_internal:
-            query = """
-                SELECT 
-                    kpi_center_id,
-                    kpi_center,
-                    kpi_type,
-                    COUNT(DISTINCT oc_number) AS backlog_orders,
-                    SUM(CASE 
-                        WHEN customer_type = 'Internal' THEN 0 
-                        ELSE backlog_by_kpi_center_usd 
-                    END) AS total_backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        else:
-            query = """
-                SELECT 
-                    kpi_center_id,
-                    kpi_center,
-                    kpi_type,
-                    COUNT(DISTINCT oc_number) AS backlog_orders,
-                    SUM(backlog_by_kpi_center_usd) AS total_backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS total_backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        
-        params = {'kpi_center_ids': tuple(kpi_center_ids)}
-        
-        if entity_ids:
-            query += " AND entity_id IN :entity_ids"
-            params['entity_ids'] = tuple(entity_ids)
-        
-        query += " GROUP BY kpi_center_id, kpi_center, kpi_type"
-        
-        return self._execute_query(query, params, "backlog_data")
-    
-    def get_backlog_in_period(
+    def get_previous_year_data(
         self,
         start_date: date,
         end_date: date,
         kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None,
-        include_children: bool = True,
-        exclude_internal: bool = True  # NEW v2.14.0
+        entity_ids: List[int] = None
     ) -> pd.DataFrame:
         """
-        Get backlog with ETD within specified period.
-        Only includes uninvoiced orders.
-        
-        NEW v2.14.0: Added exclude_internal parameter
-        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
-        - GP values are preserved
-        """
-        if not self.access.can_access_page():
-            return pd.DataFrame()
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-            if include_children:
-                expanded_ids = set(kpi_center_ids)
-                for parent_id in kpi_center_ids:
-                    child_ids = self.get_child_kpi_center_ids(parent_id)
-                    expanded_ids.update(child_ids)
-                kpi_center_ids = list(expanded_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return pd.DataFrame()
-        
-        # NEW v2.14.0: Use CASE WHEN for exclude_internal
-        if exclude_internal:
-            query = """
-                SELECT 
-                    kpi_center_id,
-                    kpi_center,
-                    kpi_type,
-                    COUNT(DISTINCT oc_number) AS in_period_orders,
-                    SUM(CASE 
-                        WHEN customer_type = 'Internal' THEN 0 
-                        ELSE backlog_by_kpi_center_usd 
-                    END) AS in_period_backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-                  AND etd BETWEEN :start_date AND :end_date
-            """
-        else:
-            query = """
-                SELECT 
-                    kpi_center_id,
-                    kpi_center,
-                    kpi_type,
-                    COUNT(DISTINCT oc_number) AS in_period_orders,
-                    SUM(backlog_by_kpi_center_usd) AS in_period_backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS in_period_backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-                  AND etd BETWEEN :start_date AND :end_date
-            """
-        
-        params = {
-            'kpi_center_ids': tuple(kpi_center_ids),
-            'start_date': start_date,
-            'end_date': end_date
-        }
-        
-        if entity_ids:
-            query += " AND entity_id IN :entity_ids"
-            params['entity_ids'] = tuple(entity_ids)
-        
-        query += " GROUP BY kpi_center_id, kpi_center, kpi_type"
-        
-        return self._execute_query(query, params, "backlog_in_period")
-    
-    def get_backlog_by_month(
-        self,
-        kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None,
-        include_children: bool = True,
-        exclude_internal: bool = True  # NEW v2.14.0
-    ) -> pd.DataFrame:
-        """
-        Get backlog grouped by ETD month/year.
-        Only includes uninvoiced orders.
-        
-        NEW v2.14.0: Added exclude_internal parameter
-        - When True (default): Sets backlog_by_kpi_center_usd = 0 for Internal customers
-        - GP values are preserved
-        """
-        if not self.access.can_access_page():
-            return pd.DataFrame()
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-            if include_children:
-                expanded_ids = set(kpi_center_ids)
-                for parent_id in kpi_center_ids:
-                    child_ids = self.get_child_kpi_center_ids(parent_id)
-                    expanded_ids.update(child_ids)
-                kpi_center_ids = list(expanded_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return pd.DataFrame()
-        
-        # NEW v2.14.0: Use CASE WHEN for exclude_internal
-        if exclude_internal:
-            query = """
-                SELECT 
-                    etd_year,
-                    etd_month,
-                    COUNT(DISTINCT oc_number) AS backlog_orders,
-                    SUM(CASE 
-                        WHEN customer_type = 'Internal' THEN 0 
-                        ELSE backlog_by_kpi_center_usd 
-                    END) AS backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        else:
-            query = """
-                SELECT 
-                    etd_year,
-                    etd_month,
-                    COUNT(DISTINCT oc_number) AS backlog_orders,
-                    SUM(backlog_by_kpi_center_usd) AS backlog_usd,
-                    SUM(backlog_gp_by_kpi_center_usd) AS backlog_gp_usd
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        
-        params = {'kpi_center_ids': tuple(kpi_center_ids)}
-        
-        if entity_ids:
-            query += " AND entity_id IN :entity_ids"
-            params['entity_ids'] = tuple(entity_ids)
-        
-        query += """
-            GROUP BY etd_year, etd_month
-            ORDER BY etd_year, 
-                     FIELD(etd_month, 'Jan','Feb','Mar','Apr','May','Jun',
-                                      'Jul','Aug','Sep','Oct','Nov','Dec')
-        """
-        
-        return self._execute_query(query, params, "backlog_by_month")
-    
-    def get_backlog_detail(
-        self,
-        kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None,
-        include_children: bool = True,
-        limit: Optional[int] = None
-    ) -> pd.DataFrame:
-        """
-        Get detailed backlog records for drill-down.
-        Only includes uninvoiced orders.
-        
-        NOTE: This function returns RAW data with ALL columns including Internal.
-        The exclude_internal logic is NOT applied here because the detail table
-        should show all records. Revenue exclusion is handled in metrics calculation.
+        Get previous year's sales data for the same period.
         
         Args:
-            kpi_center_ids: Optional list of KPI Center IDs to filter
-            entity_ids: Optional list of entity IDs to filter
-            include_children: Include child KPI Centers
-            limit: Optional row limit (None = no limit)
-        
-        Returns:
-            DataFrame with individual backlog line items
-        """
-        if not self.access.can_access_page():
-            return pd.DataFrame()
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-            if include_children:
-                expanded_ids = set(kpi_center_ids)
-                for parent_id in kpi_center_ids:
-                    child_ids = self.get_child_kpi_center_ids(parent_id)
-                    expanded_ids.update(child_ids)
-                kpi_center_ids = list(expanded_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return pd.DataFrame()
-        
-        query = """
-            SELECT 
-                oc_number,
-                oc_date,
-                etd,
-                customer,
-                customer_id,
-                customer_type,
-                customer_po_number,
-                product_pn,
-                pt_code,
-                package_size,
-                brand,
-                kpi_center,
-                kpi_center_id,
-                kpi_type,
-                legal_entity,
-                entity_id,
-                backlog_by_kpi_center_usd,
-                backlog_gp_by_kpi_center_usd,
-                split_rate_percent,
-                pending_type,
-                days_until_etd,
-                days_since_order,
-                status,
-                invoice_completion_percent
-            FROM backlog_by_kpi_center_flat_looker_view
-            WHERE kpi_center_id IN :kpi_center_ids
-              AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-        """
-        
-        params = {'kpi_center_ids': tuple(kpi_center_ids)}
-        
-        if entity_ids:
-            query += " AND entity_id IN :entity_ids"
-            params['entity_ids'] = tuple(entity_ids)
-        
-        query += " ORDER BY backlog_by_kpi_center_usd DESC"
-        
-        if limit is not None:
-            query += f" LIMIT {limit}"
-        
-        return self._execute_query(query, params, "backlog_detail")
-    
-    # =========================================================================
-    # BACKLOG RISK ANALYSIS - UPDATED v2.14.0: Added exclude_internal
-    # =========================================================================
-    
-    def get_backlog_risk_analysis(
-        self,
-        kpi_center_ids: List[int] = None,
-        entity_ids: List[int] = None,
-        start_date: date = None,
-        end_date: date = None,
-        exclude_internal: bool = True  # NEW v2.14.0
-    ) -> Dict:
-        """
-        Analyze backlog for overdue and risk factors.
-        
-        NEW v2.14.0: Added exclude_internal parameter
-        - When True (default): Revenue metrics exclude Internal, GP metrics kept
-        
-        Returns:
-            Dictionary with:
-            - overdue_orders: Orders with ETD in the past
-            - overdue_revenue: Total revenue at risk (excludes Internal if flag set)
-            - at_risk_orders: Orders with ETD within 7 days
-            - in_period_overdue: Overdue orders within selected period
-        """
-        if not self.access.can_access_page():
-            return {}
-        
-        if kpi_center_ids:
-            kpi_center_ids = self.access.validate_selected_kpi_centers(kpi_center_ids)
-        else:
-            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
-        
-        if not kpi_center_ids:
-            return {}
-        
-        # NEW v2.14.0: Use CASE WHEN for revenue metrics when exclude_internal=True
-        if exclude_internal:
-            query = """
-                SELECT 
-                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                    SUM(CASE 
-                        WHEN days_until_etd < 0 AND customer_type != 'Internal' 
-                        THEN backlog_by_kpi_center_usd 
-                        ELSE 0 
-                    END) AS overdue_revenue,
-                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
-                    COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
-                    SUM(CASE 
-                        WHEN days_until_etd BETWEEN 0 AND 7 AND customer_type != 'Internal'
-                        THEN backlog_by_kpi_center_usd 
-                        ELSE 0 
-                    END) AS at_risk_revenue,
-                    COUNT(DISTINCT oc_number) AS total_orders,
-                    SUM(CASE 
-                        WHEN customer_type != 'Internal' 
-                        THEN backlog_by_kpi_center_usd 
-                        ELSE 0 
-                    END) AS total_backlog
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        else:
-            query = """
-                SELECT 
-                    COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue,
-                    SUM(CASE WHEN days_until_etd < 0 THEN backlog_gp_by_kpi_center_usd ELSE 0 END) AS overdue_gp,
-                    COUNT(DISTINCT CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN oc_number END) AS at_risk_orders,
-                    SUM(CASE WHEN days_until_etd BETWEEN 0 AND 7 THEN backlog_by_kpi_center_usd ELSE 0 END) AS at_risk_revenue,
-                    COUNT(DISTINCT oc_number) AS total_orders,
-                    SUM(backlog_by_kpi_center_usd) AS total_backlog
-                FROM backlog_by_kpi_center_flat_looker_view
-                WHERE kpi_center_id IN :kpi_center_ids
-                  AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-            """
-        
-        params = {'kpi_center_ids': tuple(kpi_center_ids)}
-        
-        if entity_ids:
-            query += " AND entity_id IN :entity_ids"
-            params['entity_ids'] = tuple(entity_ids)
-        
-        df = self._execute_query(query, params, "backlog_risk_analysis")
-        
-        if df.empty:
-            return {}
-        
-        row = df.iloc[0]
-        
-        # Get in-period overdue if dates provided
-        in_period_overdue = 0
-        in_period_overdue_revenue = 0
-        
-        if start_date and end_date:
-            # NEW v2.14.0: Apply same exclude_internal logic to period query
-            if exclude_internal:
-                period_query = """
-                    SELECT 
-                        COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                        SUM(CASE 
-                            WHEN days_until_etd < 0 AND customer_type != 'Internal'
-                            THEN backlog_by_kpi_center_usd 
-                            ELSE 0 
-                        END) AS overdue_revenue
-                    FROM backlog_by_kpi_center_flat_looker_view
-                    WHERE kpi_center_id IN :kpi_center_ids
-                      AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-                      AND etd BETWEEN :start_date AND :end_date
-                """
-            else:
-                period_query = """
-                    SELECT 
-                        COUNT(DISTINCT CASE WHEN days_until_etd < 0 THEN oc_number END) AS overdue_orders,
-                        SUM(CASE WHEN days_until_etd < 0 THEN backlog_by_kpi_center_usd ELSE 0 END) AS overdue_revenue
-                    FROM backlog_by_kpi_center_flat_looker_view
-                    WHERE kpi_center_id IN :kpi_center_ids
-                      AND (invoice_completion_percent < 100 OR invoice_completion_percent IS NULL)
-                      AND etd BETWEEN :start_date AND :end_date
-                """
-            params['start_date'] = start_date
-            params['end_date'] = end_date
+            start_date: Current period start
+            end_date: Current period end
+            kpi_center_ids: Optional filter
+            entity_ids: Optional filter
             
-            if entity_ids:
-                period_query += " AND entity_id IN :entity_ids"
-            
-            period_df = self._execute_query(period_query, params, "in_period_overdue")
-            if not period_df.empty:
-                in_period_overdue = period_df.iloc[0]['overdue_orders'] or 0
-                in_period_overdue_revenue = period_df.iloc[0]['overdue_revenue'] or 0
+        Returns:
+            DataFrame with previous year's sales
+        """
+        # Calculate previous year dates
+        prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+        try:
+            prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+        except ValueError:
+            # Handle Feb 29 -> Feb 28
+            prev_end = date(end_date.year - 1, end_date.month, 28)
         
-        return {
-            'overdue_orders': int(row.get('overdue_orders') or 0),
-            'overdue_revenue': float(row.get('overdue_revenue') or 0),
-            'overdue_gp': float(row.get('overdue_gp') or 0),
-            'at_risk_orders': int(row.get('at_risk_orders') or 0),
-            'at_risk_revenue': float(row.get('at_risk_revenue') or 0),
-            'total_orders': int(row.get('total_orders') or 0),
-            'total_backlog': float(row.get('total_backlog') or 0),
-            'in_period_overdue': int(in_period_overdue),
-            'in_period_overdue_revenue': float(in_period_overdue_revenue),
-            'overdue_percent': (float(row.get('overdue_revenue') or 0) / float(row.get('total_backlog') or 1)) * 100
-        }
-    
-    # =========================================================================
-    # COMPLEX KPIs - REMOVED in v3.6.0
-    # =========================================================================
-    # The following methods have been removed and replaced with Pandas-based
-    # calculations in complex_kpi_calculator.py:
-    # 
-    # - get_new_customers()
-    # - get_new_customers_detail()
-    # - get_new_products()
-    # - get_new_products_detail()
-    # - get_new_business_revenue()
-    # - get_new_business_detail()
-    # - get_new_business_by_kpi_center()
-    # - get_new_customers_by_kpi_center()
-    # - get_new_products_by_kpi_center()
-    #
-    # Performance improvement: 9 SQL queries (~27s) → 1 Pandas calculation (~0.3s)
-    # See: utils/kpi_center_performance/complex_kpi_calculator.py
-    # =========================================================================
+        return self.get_sales_data(
+            start_date=prev_start,
+            end_date=prev_end,
+            kpi_center_ids=kpi_center_ids,
+            entity_ids=entity_ids
+        )
 
     # =========================================================================
     # LOOKUP DATA METHODS
@@ -895,13 +531,6 @@ class KPICenterQueries:
         """
         
         return self._execute_query(query, {}, "kpi_center_list")
-    
-    # =========================================================================
-    # REMOVED in v3.6.0:
-    # - get_entity_list() → extracted from lookback data in main page
-    # - get_available_years() → extracted from lookback data in main page
-    # - calculate_complex_kpi_value() → replaced by ComplexKPICalculator
-    # =========================================================================
 
     def get_kpi_center_achievement_summary(
         self,
@@ -984,7 +613,6 @@ class KPICenterQueries:
     # =========================================================================
     # HIERARCHY METHODS - NEW v3.2.0
     # =========================================================================
-    
     def get_hierarchy_with_levels(
         self,
         kpi_type: str = None,
@@ -1063,7 +691,6 @@ class KPICenterQueries:
         params = {'kpi_type': kpi_type} if kpi_type else {}
         
         return self._execute_query(query, params, "hierarchy_with_levels")
-    
     def get_all_descendants(
         self,
         kpi_center_id: int,
@@ -1120,7 +747,7 @@ class KPICenterQueries:
         """
         Get only leaf (no children) descendants for a KPI Center.
         
-        NEW v3.2.0: Used for parent progress calculation.
+        Used for parent progress calculation in metrics.py.
         
         Args:
             kpi_center_id: Parent KPI Center ID
@@ -1166,7 +793,7 @@ class KPICenterQueries:
         except Exception as e:
             logger.error(f"Error getting leaf descendants for {kpi_center_id}: {e}")
             return []
-    
+
     def get_ancestors(
         self,
         kpi_center_id: int,
@@ -1217,7 +844,6 @@ class KPICenterQueries:
         except Exception as e:
             logger.error(f"Error getting ancestors for {kpi_center_id}: {e}")
             return [kpi_center_id] if include_self else []
-
     # =========================================================================
     # HELPER METHODS
     # =========================================================================
