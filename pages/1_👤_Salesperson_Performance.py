@@ -50,6 +50,66 @@ from datetime import datetime, date
 import logging
 import pandas as pd
 import time
+from contextlib import contextmanager
+from functools import wraps
+
+# =============================================================================
+# DEBUG TIMING UTILITIES
+# =============================================================================
+
+# Set to True to enable timing output
+DEBUG_TIMING = True
+
+_timing_log = []
+
+@contextmanager
+def timer(label: str, print_immediately: bool = True):
+    """Context manager for timing code blocks."""
+    start = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - start
+    msg = f"⏱️ [{label}] {elapsed:.3f}s"
+    _timing_log.append((label, elapsed))
+    if DEBUG_TIMING and print_immediately:
+        print(msg)
+
+def timing_decorator(label: str = None):
+    """Decorator for timing functions."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            func_label = label or func.__name__
+            start = time.perf_counter()
+            result = func(*args, **kwargs)
+            elapsed = time.perf_counter() - start
+            msg = f"⏱️ [{func_label}] {elapsed:.3f}s"
+            _timing_log.append((func_label, elapsed))
+            if DEBUG_TIMING:
+                print(msg)
+            return result
+        return wrapper
+    return decorator
+
+def print_timing_summary():
+    """Print summary of all timing measurements."""
+    if not DEBUG_TIMING or not _timing_log:
+        return
+    print("\n" + "="*60)
+    print("📊 TIMING SUMMARY")
+    print("="*60)
+    total = sum(t[1] for t in _timing_log)
+    for label, elapsed in sorted(_timing_log, key=lambda x: -x[1]):
+        pct = (elapsed / total * 100) if total > 0 else 0
+        bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+        print(f"{label:40} {elapsed:7.3f}s ({pct:5.1f}%) {bar}")
+    print("-"*60)
+    print(f"{'TOTAL':40} {total:7.3f}s")
+    print("="*60 + "\n")
+
+def reset_timing():
+    """Reset timing log for new page load."""
+    global _timing_log
+    _timing_log = []
 
 # Shared utilities
 from utils.auth import AuthManager
@@ -314,15 +374,22 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     
     This significantly reduces load time for non-admin users.
     """
+    print(f"\n{'='*60}")
+    print(f"🚀 STARTING DATA LOAD: {start_year}-{end_year}")
+    print(f"{'='*60}")
+    load_start_time = time.perf_counter()
+    
     # Initialize AccessControl
-    access_control = AccessControl(
-        st.session_state.get('user_role', 'viewer'),
-        st.session_state.get('employee_id')
-    )
+    with timer("AccessControl.init"):
+        access_control = AccessControl(
+            st.session_state.get('user_role', 'viewer'),
+            st.session_state.get('employee_id')
+        )
     
     # Get accessible employee IDs based on role
-    access_level = access_control.get_access_level()
-    accessible_ids = access_control.get_accessible_employee_ids()
+    with timer("AccessControl.get_accessible_ids"):
+        access_level = access_control.get_access_level()
+        accessible_ids = access_control.get_accessible_employee_ids()
     
     # For full access, pass None to load all (more efficient than huge IN clause)
     # For restricted access, pass the specific IDs
@@ -350,63 +417,88 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     try:
         # Step 1: Sales data - FILTERED by access control
         progress_bar.progress(10, text=f"📊 Loading sales data ({load_msg})...")
-        data['sales'] = q.get_sales_data(
-            start_date=start_date,
-            end_date=end_date,
-            employee_ids=filter_employee_ids,
-            entity_ids=None
-        )
+        with timer("DB: get_sales_data"):
+            data['sales'] = q.get_sales_data(
+                start_date=start_date,
+                end_date=end_date,
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+            )
+        print(f"   → Sales rows: {len(data['sales']):,}")
         
         # Step 2: KPI targets - FILTERED by access control
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        targets_list = []
-        for yr in range(start_year, end_year + 1):
-            t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
-            if not t.empty:
-                targets_list.append(t)
-        data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
+        with timer("DB: get_kpi_targets (all years)"):
+            targets_list = []
+            for yr in range(start_year, end_year + 1):
+                t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
+                if not t.empty:
+                    targets_list.append(t)
+            data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
+        print(f"   → Targets rows: {len(data['targets']):,}")
         
         # Step 3: Complex KPIs - FILTERED by access control
         # UPDATED v1.8.0: Pass exclude_internal parameter
         progress_bar.progress(40, text="🆕 Loading new business metrics...")
-        data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
-        data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
-        data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
+        with timer("DB: get_new_customers"):
+            data['new_customers'] = q.get_new_customers(start_date, end_date, filter_employee_ids, exclude_internal)
+        print(f"   → New customers rows: {len(data['new_customers']):,}")
+        
+        with timer("DB: get_new_products"):
+            data['new_products'] = q.get_new_products(start_date, end_date, filter_employee_ids, exclude_internal)
+        print(f"   → New products rows: {len(data['new_products']):,}")
+        
+        with timer("DB: get_new_business_revenue"):
+            data['new_business'] = q.get_new_business_revenue(start_date, end_date, filter_employee_ids, exclude_internal)
+        print(f"   → New business rows: {len(data['new_business']):,}")
         
         # Step 4: Backlog data - FILTERED by access control
         progress_bar.progress(60, text="📦 Loading backlog data...")
-        data['total_backlog'] = q.get_backlog_data(
-            employee_ids=filter_employee_ids,
-            entity_ids=None
-        )
-        data['in_period_backlog'] = q.get_backlog_in_period(
-            start_date=start_date,
-            end_date=end_date,
-            employee_ids=filter_employee_ids,
-            entity_ids=None
-        )
-        data['backlog_by_month'] = q.get_backlog_by_month(
-            employee_ids=filter_employee_ids,
-            entity_ids=None
-        )
+        with timer("DB: get_backlog_data (total)"):
+            data['total_backlog'] = q.get_backlog_data(
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+            )
+        print(f"   → Total backlog rows: {len(data['total_backlog']):,}")
+        
+        with timer("DB: get_backlog_in_period"):
+            data['in_period_backlog'] = q.get_backlog_in_period(
+                start_date=start_date,
+                end_date=end_date,
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+            )
+        print(f"   → In-period backlog rows: {len(data['in_period_backlog']):,}")
+        
+        with timer("DB: get_backlog_by_month"):
+            data['backlog_by_month'] = q.get_backlog_by_month(
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+            )
+        print(f"   → Backlog by month rows: {len(data['backlog_by_month']):,}")
         
         # Step 5: Backlog detail - FILTERED by access control
         # UPDATED v2.2.0: Removed limit to get ALL backlog records for accurate totals
         progress_bar.progress(80, text="📋 Loading backlog details...")
-        data['backlog_detail'] = q.get_backlog_detail(
-            employee_ids=filter_employee_ids,
-            entity_ids=None
-            # limit removed - now returns all records (default: None)
-        )
+        with timer("DB: get_backlog_detail"):
+            data['backlog_detail'] = q.get_backlog_detail(
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+                # limit removed - now returns all records (default: None)
+            )
+        print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
         
         # Step 6: Sales split data - FILTERED by access control
         progress_bar.progress(95, text="👥 Loading sales split data...")
-        data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
+        with timer("DB: get_sales_split_data"):
+            data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
+        print(f"   → Sales split rows: {len(data['sales_split']):,}")
         
         # Step 7: Clean all dataframes
-        for key in data:
-            if isinstance(data[key], pd.DataFrame) and not data[key].empty:
-                data[key] = _clean_dataframe_for_display(data[key])
+        with timer("Clean dataframes"):
+            for key in data:
+                if isinstance(data[key], pd.DataFrame) and not data[key].empty:
+                    data[key] = _clean_dataframe_for_display(data[key])
         
         # Store metadata
         data['_loaded_at'] = datetime.now()
@@ -416,6 +508,12 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         
         # Complete
         progress_bar.progress(100, text="✅ Data loaded successfully!")
+        
+        # Print load summary
+        total_load_time = time.perf_counter() - load_start_time
+        print(f"\n{'='*60}")
+        print(f"✅ DATA LOAD COMPLETE: {total_load_time:.2f}s total")
+        print(f"{'='*60}\n")
         
     except Exception as e:
         progress_bar.empty()
@@ -445,6 +543,9 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     - Backlog detail still shows internal orders (for display)
     - Backlog aggregates (total_backlog, in_period_backlog) zero internal revenue
     """
+    filter_start = time.perf_counter()
+    if DEBUG_TIMING:
+        print(f"\n🔍 CLIENT-SIDE FILTERING...")
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     employee_ids = filter_values['employee_ids']
@@ -551,6 +652,14 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 df_filtered.loc[is_internal, 'backlog_sales_by_split_usd'] = 0
         
         filtered[key] = df_filtered
+    
+    # Print timing
+    filter_elapsed = time.perf_counter() - filter_start
+    if DEBUG_TIMING:
+        print(f"⏱️ [Client-side filter] {filter_elapsed:.3f}s")
+        for key, df in filtered.items():
+            if isinstance(df, pd.DataFrame):
+                print(f"   → {key}: {len(df):,} rows")
     
     return filtered
 
@@ -778,62 +887,73 @@ if data['sales'].empty and data['total_backlog'].empty:
 # CALCULATE METRICS
 # =============================================================================
 
-metrics_calc = SalespersonMetrics(data['sales'], data['targets'])
+if DEBUG_TIMING:
+    print(f"\n📈 CALCULATING METRICS...")
 
-overview_metrics = metrics_calc.calculate_overview_metrics(
-    period_type=active_filters['period_type'],
-    year=active_filters['year']
-)
+with timer("Metrics: SalespersonMetrics init"):
+    metrics_calc = SalespersonMetrics(data['sales'], data['targets'])
+
+with timer("Metrics: calculate_overview_metrics"):
+    overview_metrics = metrics_calc.calculate_overview_metrics(
+        period_type=active_filters['period_type'],
+        year=active_filters['year']
+    )
 
 # FIXED v1.3.0: Query new_business fresh with correct date range
 # new_business is aggregated data without date column, cannot filter client-side
-fresh_new_business_df = queries.get_new_business_revenue(
-    start_date=active_filters['start_date'],
-    end_date=active_filters['end_date'],
-    employee_ids=active_filters['employee_ids']
-)
+with timer("DB: get_new_business_revenue (fresh)"):
+    fresh_new_business_df = queries.get_new_business_revenue(
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        employee_ids=active_filters['employee_ids']
+    )
 
 # NEW v1.5.0: Query new_business detail for combo-level display in popover
-fresh_new_business_detail_df = queries.get_new_business_detail(
-    start_date=active_filters['start_date'],
-    end_date=active_filters['end_date'],
-    employee_ids=active_filters['employee_ids']
-)
+with timer("DB: get_new_business_detail"):
+    fresh_new_business_detail_df = queries.get_new_business_detail(
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date'],
+        employee_ids=active_filters['employee_ids']
+    )
 
-complex_kpis = metrics_calc.calculate_complex_kpis(
-    new_customers_df=data['new_customers'],
-    new_products_df=data['new_products'],
-    new_business_df=fresh_new_business_df  # Use fresh data instead of cached
-)
+with timer("Metrics: calculate_complex_kpis"):
+    complex_kpis = metrics_calc.calculate_complex_kpis(
+        new_customers_df=data['new_customers'],
+        new_products_df=data['new_products'],
+        new_business_df=fresh_new_business_df  # Use fresh data instead of cached
+    )
 
-backlog_metrics = metrics_calc.calculate_backlog_metrics(
-    total_backlog_df=data['total_backlog'],
-    in_period_backlog_df=data['in_period_backlog'],
-    period_type=active_filters['period_type'],
-    year=active_filters['year'],
-    start_date=active_filters['start_date'],
-    end_date=active_filters['end_date']
-)
+with timer("Metrics: calculate_backlog_metrics"):
+    backlog_metrics = metrics_calc.calculate_backlog_metrics(
+        total_backlog_df=data['total_backlog'],
+        in_period_backlog_df=data['in_period_backlog'],
+        period_type=active_filters['period_type'],
+        year=active_filters['year'],
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date']
+    )
 
 # NEW v2.5.0: Calculate Pipeline & Forecast with KPI-filtered logic
 # This ensures each metric (Revenue/GP/GP1) only includes data from
 # employees who have that specific KPI target assigned
-pipeline_forecast_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
-    total_backlog_df=data['total_backlog'],
-    in_period_backlog_df=data['in_period_backlog'],
-    backlog_detail_df=data['backlog_detail'],  # Needed for employee filtering
-    period_type=active_filters['period_type'],
-    year=active_filters['year'],
-    start_date=active_filters['start_date'],
-    end_date=active_filters['end_date']
-)
+with timer("Metrics: calculate_pipeline_forecast_metrics"):
+    pipeline_forecast_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
+        total_backlog_df=data['total_backlog'],
+        in_period_backlog_df=data['in_period_backlog'],
+        backlog_detail_df=data['backlog_detail'],  # Needed for employee filtering
+        period_type=active_filters['period_type'],
+        year=active_filters['year'],
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date']
+    )
 
 # Analyze in-period backlog for overdue detection
-in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
-    backlog_detail_df=data['backlog_detail'],
-    start_date=active_filters['start_date'],
-    end_date=active_filters['end_date']
-)
+with timer("Metrics: analyze_in_period_backlog"):
+    in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
+        backlog_detail_df=data['backlog_detail'],
+        start_date=active_filters['start_date'],
+        end_date=active_filters['end_date']
+    )
 
 # Get period context for display logic
 period_context = backlog_metrics.get('period_context', {})
@@ -863,12 +983,19 @@ if active_filters['compare_yoy'] and not period_info['is_multi_year']:
         yoy_metrics = metrics_calc.calculate_yoy_comparison(overview_metrics, prev_overview)
 
 # Overall KPI Achievement (weighted average)
-overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
-    overview_metrics=overview_metrics,
-    complex_kpis=complex_kpis,
-    period_type=active_filters['period_type'],
-    year=active_filters['year']
-)
+with timer("Metrics: calculate_overall_kpi_achievement"):
+    overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
+        overview_metrics=overview_metrics,
+        complex_kpis=complex_kpis,
+        period_type=active_filters['period_type'],
+        year=active_filters['year']
+    )
+
+# Print timing summary before rendering
+if DEBUG_TIMING:
+    print_timing_summary()
+    reset_timing()
+    print(f"\n🖼️ RENDERING UI...")
 
 # =============================================================================
 # PAGE HEADER
@@ -2081,6 +2208,11 @@ with tab5:
 # =============================================================================
 # FOOTER
 # =============================================================================
+
+# Print final timing summary for UI rendering
+if DEBUG_TIMING:
+    print_timing_summary()
+    print(f"✅ PAGE RENDER COMPLETE\n{'='*60}\n")
 
 st.divider()
 st.caption(

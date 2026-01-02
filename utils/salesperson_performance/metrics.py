@@ -36,10 +36,14 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
+import time
 
 from .constants import MONTH_ORDER, QUARTER_MONTHS, KPI_TYPES
 
 logger = logging.getLogger(__name__)
+
+# Debug timing flag
+DEBUG_METRICS_TIMING = True
 
 
 class SalespersonMetrics:
@@ -736,6 +740,8 @@ class SalespersonMetrics:
             - kpi_count: Number of KPIs with targets
             - total_weight: Sum of weights used
         """
+        _start_time = time.perf_counter()
+        
         if self.targets_df.empty:
             return {
                 'overall_achievement': None,
@@ -872,6 +878,10 @@ class SalespersonMetrics:
         # Calculate overall weighted average
         overall_achievement = (weighted_sum / total_weight) if total_weight > 0 else None
         
+        if DEBUG_METRICS_TIMING:
+            _elapsed = time.perf_counter() - _start_time
+            print(f"   📊 [overall_kpi_achievement] {len(kpi_details)} KPIs in {_elapsed:.3f}s")
+        
         return {
             'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
             'kpi_details': kpi_details,
@@ -921,6 +931,10 @@ class SalespersonMetrics:
             - gp1: Dict with invoiced, backlog, forecast, target, gap
             - summary: Dict with totals (for backward compatibility)
         """
+        _start_time = time.perf_counter()
+        if DEBUG_METRICS_TIMING:
+            print(f"   📊 [pipeline_forecast] Starting calculation...")
+        
         if year is None:
             year = datetime.now().year
         
@@ -1123,6 +1137,10 @@ class SalespersonMetrics:
             'backlog_orders': backlog_orders,
             'gp1_gp_ratio': round(gp1_gp_ratio, 4),
         }
+        
+        if DEBUG_METRICS_TIMING:
+            _elapsed = time.perf_counter() - _start_time
+            print(f"   📊 [pipeline_forecast] Completed in {_elapsed:.3f}s")
         
         return {
             'period_context': period_context,
@@ -1815,4 +1833,3 @@ class SalespersonMetrics:
             top_brands = brand_data.copy()
         
         return top_brands
-    

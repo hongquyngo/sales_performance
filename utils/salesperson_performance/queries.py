@@ -49,12 +49,16 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
+import time
 
 from utils.db import get_db_engine
 from .constants import LOOKBACK_YEARS, CACHE_TTL_SECONDS
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
+
+# Debug timing flag - set to True to see query timings
+DEBUG_QUERY_TIMING = True
 
 
 class SalespersonQueries:
@@ -1359,9 +1363,15 @@ class SalespersonQueries:
             DataFrame with results
         """
         try:
+            start_time = time.perf_counter()
             logger.debug(f"Executing {query_name}")
             df = pd.read_sql(text(query), self.engine, params=params)
-            logger.debug(f"{query_name} returned {len(df)} rows")
+            elapsed = time.perf_counter() - start_time
+            
+            if DEBUG_QUERY_TIMING:
+                print(f"   📊 SQL [{query_name}]: {elapsed:.3f}s → {len(df):,} rows")
+            
+            logger.debug(f"{query_name} returned {len(df)} rows in {elapsed:.3f}s")
             return df
         except Exception as e:
             logger.error(f"Error executing {query_name}: {e}")
@@ -1383,6 +1393,7 @@ def _get_sales_data_cached(
     Cached version of sales data query.
     Note: Uses tuple for cache key compatibility.
     """
+    start_time = time.perf_counter()
     engine = get_db_engine()
     
     query = """
@@ -1434,7 +1445,11 @@ def _get_sales_data_cached(
     query += " ORDER BY inv_date DESC"
     
     try:
-        return pd.read_sql(text(query), engine, params=params)
+        df = pd.read_sql(text(query), engine, params=params)
+        elapsed = time.perf_counter() - start_time
+        if DEBUG_QUERY_TIMING:
+            print(f"   📊 SQL [cached_sales_data]: {elapsed:.3f}s → {len(df):,} rows")
+        return df
     except Exception as e:
         logger.error(f"Error in cached sales query: {e}")
         return pd.DataFrame()
