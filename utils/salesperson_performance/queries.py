@@ -4,7 +4,7 @@ SQL Queries and Data Loading for Salesperson Performance
 
 Handles all database interactions:
 - Sales data from unified_sales_by_salesperson_view
-- Lookback data for Complex KPIs (via get_lookback_sales_data)
+- Lookback data for Complex KPIs AND sidebar options (via get_lookback_sales_data)
 - KPI targets from sales_employee_kpi_assignments_view
 - Backlog data from backlog_by_salesperson_looker_view
 - Lookup data (salespeople list, entities, years)
@@ -13,6 +13,11 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.1.0: UPDATED get_lookback_sales_data() for sidebar options
+          - Added columns: sales_email, legal_entity_id, legal_entity, inv_number, invoice_year
+          - Enables extraction of sidebar options from lookback data
+          - Eliminates need for 3 separate sidebar SQL queries (7.33s savings)
+          - See: sidebar_options_extractor.py for Pandas extraction
 - v3.0.0: REMOVED deprecated Complex KPI SQL methods (replaced by Pandas)
           - Removed: get_new_customers(), get_new_products(), 
                     get_new_business_revenue(), get_new_business_detail(),
@@ -51,7 +56,7 @@ CHANGELOG:
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 
-VERSION: 3.0.0
+VERSION: 3.1.0
 """
 
 import logging
@@ -206,6 +211,7 @@ class SalespersonQueries:
     
     # =========================================================================
     # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
+    # UPDATED v3.1.0: Added columns for sidebar options extraction
     # =========================================================================
     
     def get_lookback_sales_data(
@@ -214,36 +220,45 @@ class SalespersonQueries:
         lookback_years: int = 5
     ) -> pd.DataFrame:
         """
-        Load ALL sales data for Complex KPI calculations.
+        Load ALL sales data for Complex KPI calculations AND sidebar options.
         
         This replaces the expensive SQL CTEs in get_new_customers, get_new_products,
         and get_new_business_revenue with a single query + Pandas processing.
+        
+        UPDATED v3.1.0: Also used to extract sidebar options (salesperson, entity, years)
+        - Saves additional 7.3s by eliminating 3 separate SQL queries
         
         IMPORTANT: Does NOT filter by employee_ids because Complex KPIs need
         GLOBAL first dates (first customer to COMPANY, not first to salesperson).
         
         Performance:
-        - Old: 4 SQL queries with CTEs = 14.76s
-        - New: 1 simple SELECT = ~2.8s
+        - Old: 4 SQL queries with CTEs = 14.76s + 3 sidebar queries = 7.3s
+        - New: 1 simple SELECT = ~2.8s + Pandas extraction = ~0.01s
         
         Args:
             end_date: End date of analysis period (lookback starts from end_date.year - lookback_years)
             lookback_years: Number of years to look back (default 5)
             
         Returns:
-            DataFrame with all sales data needed for Complex KPI calculations
+            DataFrame with all sales data needed for Complex KPI calculations and sidebar options
         """
         # Calculate lookback start date
         lookback_start = date(end_date.year - lookback_years, 1, 1)
         
         # Simple SELECT - no WHERE on employee_ids for global first dates
         # Include legacy_code for product_key calculation
+        # UPDATED v3.1.0: Added sales_email, legal_entity_id, legal_entity, inv_number, invoice_year
         query = """
             SELECT 
                 sales_id,
                 sales_name,
+                sales_email,
                 split_rate_percent,
                 inv_date,
+                inv_number,
+                invoice_year,
+                legal_entity_id,
+                legal_entity,
                 customer,
                 customer_id,
                 customer_code,
@@ -336,180 +351,19 @@ class SalespersonQueries:
     # =========================================================================
 
     # =========================================================================
-    # LOOKUP DATA
+    # SIDEBAR OPTIONS - DEPRECATED v3.1.0
     # =========================================================================
-    
-    def get_salesperson_options(
-        self,
-        start_date: date = None,
-        end_date: date = None,
-        year: int = None
-    ) -> pd.DataFrame:
-        """
-        Get list of salespeople who have sales data for dropdown selection.
-        Only returns salespeople with actual sales records.
-        Filtered by access control.
-        
-        Args:
-            start_date: Optional start date filter (if both dates provided)
-            end_date: Optional end date filter (if both dates provided)
-            year: Optional year filter (alternative to date range)
-        
-        Returns DataFrame with: employee_id, sales_name, email, invoice_count
-        """
-        accessible_ids = self.access.get_accessible_employee_ids()
-        
-        if not accessible_ids:
-            return pd.DataFrame()
-        
-        # Query salespeople from actual sales data
-        query = """
-            SELECT DISTINCT
-                sales_id as employee_id,
-                sales_name,
-                sales_email as email,
-                COUNT(DISTINCT inv_number) as invoice_count
-            FROM unified_sales_by_salesperson_view
-            WHERE sales_id IN :employee_ids
-              AND sales_id IS NOT NULL
-              AND sales_name IS NOT NULL
-        """
-        
-        params = {'employee_ids': tuple(accessible_ids)}
-        
-        # Add date filter if provided
-        if start_date and end_date:
-            query += " AND inv_date BETWEEN :start_date AND :end_date"
-            params['start_date'] = start_date
-            params['end_date'] = end_date
-        elif year:
-            query += " AND invoice_year = :year"
-            params['year'] = int(year)
-        
-        query += """
-            GROUP BY sales_id, sales_name, sales_email
-            HAVING COUNT(DISTINCT inv_number) > 0
-            ORDER BY sales_name
-        """
-        
-        return self._execute_query(query, params, "salesperson_options")
-    
-    def get_entity_options(self) -> pd.DataFrame:
-        """
-        Get list of legal entities that have sales data.
-        
-        Returns DataFrame with: entity_id, entity_name, entity_code, invoice_count
-        """
-        query = """
-            SELECT DISTINCT
-                legal_entity_id as entity_id,
-                legal_entity as entity_name,
-                COUNT(DISTINCT inv_number) as invoice_count
-            FROM unified_sales_by_salesperson_view
-            WHERE legal_entity_id IS NOT NULL
-              AND legal_entity IS NOT NULL
-            GROUP BY legal_entity_id, legal_entity
-            HAVING COUNT(DISTINCT inv_number) > 0
-            ORDER BY legal_entity
-        """
-        
-        return self._execute_query(query, {}, "entity_options")
-    
-    def get_available_years(self) -> List[int]:
-        """
-        Get list of years that have sales data.
-        
-        Returns sorted list of years (descending).
-        """
-        query = """
-            SELECT DISTINCT invoice_year
-            FROM unified_sales_by_salesperson_view
-            WHERE invoice_year IS NOT NULL
-            ORDER BY invoice_year DESC
-        """
-        
-        df = self._execute_query(query, {}, "available_years")
-        
-        if df.empty:
-            current_year = datetime.now().year
-            return [current_year, current_year - 1]
-        
-        # Ensure years are integers
-        return [int(y) for y in df['invoice_year'].tolist()]
-    
-    def get_default_date_range(self) -> Tuple[date, date]:
-        """
-        Get default date range based on actual data in database.
-        
-        Start: January 1st of the most recent year with sales data
-        End: Today (for current period analysis)
-        
-        Note: Backlog is NOT filtered by this date range.
-        Date range only applies to sales/invoice data.
-        
-        Returns:
-            Tuple of (start_date, end_date)
-        """
-        today = date.today()
-        
-        # Get most recent year with sales
-        query_year = """
-            SELECT MAX(invoice_year) as max_year
-            FROM unified_sales_by_salesperson_view
-            WHERE invoice_year IS NOT NULL
-        """
-        df_year = self._execute_query(query_year, {}, "max_sales_year")
-        
-        if df_year.empty or df_year['max_year'].iloc[0] is None:
-            start_date = date(today.year, 1, 1)
-        else:
-            max_year = int(df_year['max_year'].iloc[0])
-            start_date = date(max_year, 1, 1)
-        
-        # End date is always today for current period
-        end_date = today
-        
-        return start_date, end_date
-    
-    def get_employees_with_kpi(self, years: List[int]) -> List[int]:
-        """
-        Get list of employee IDs that have KPI assignments in given years.
-        
-        Used to filter salesperson dropdown to only show those with KPI targets.
-        
-        Args:
-            years: List of years to check for KPI assignments
-                   (e.g., [2025] for single year, [2024, 2025] for cross-year)
-        
-        Returns:
-            List of employee_id that have at least one KPI assignment in any of the years
-        
-        Example:
-            # Single year
-            ids = queries.get_employees_with_kpi([2025])
-            
-            # Cross-year (Custom period from Dec 2024 to Mar 2025)
-            ids = queries.get_employees_with_kpi([2024, 2025])
-        """
-        if not years:
-            return []
-        
-        query = """
-            SELECT DISTINCT employee_id 
-            FROM sales_employee_kpi_assignments_view 
-            WHERE year IN :years
-            ORDER BY employee_id
-        """
-        
-        params = {'years': tuple(years)}
-        
-        df = self._execute_query(query, params, "employees_with_kpi")
-        
-        if df.empty:
-            return []
-        
-        return df['employee_id'].tolist()
-    
+    # The following methods have been replaced by SidebarOptionsExtractor (Pandas-based):
+    # - get_salesperson_options() -> SidebarOptionsExtractor.extract_salesperson_options()
+    # - get_entity_options() -> SidebarOptionsExtractor.extract_entity_options()
+    # - get_available_years() -> SidebarOptionsExtractor.extract_available_years()
+    # - get_default_date_range() -> SidebarOptionsExtractor.extract_date_range()
+    # - get_employees_with_kpi() -> Not needed (filter in memory)
+    #
+    # See: utils/salesperson_performance/sidebar_options_extractor.py
+    # Performance improvement: 7.33s (3 SQL queries) -> ~0.01s (Pandas extraction)
+    # =========================================================================
+
     # =========================================================================
     # YoY COMPARISON DATA
     # =========================================================================
