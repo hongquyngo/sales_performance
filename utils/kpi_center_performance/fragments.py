@@ -14,9 +14,6 @@ from .charts import KPICenterCharts
 from .constants import MONTH_ORDER
 
 from .filters import (
-    FilterResult,
-    TextSearchResult,
-    NumberRangeResult,
     render_multiselect_filter,
     apply_multiselect_filter,
     render_text_search_filter,

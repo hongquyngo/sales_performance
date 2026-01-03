@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from .constants import PERIOD_TYPES, MONTH_ORDER, KPI_CENTER_TYPES
+from .constants import PERIOD_TYPES, MONTH_ORDER
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
@@ -710,19 +710,9 @@ def apply_number_filter(
 
 # =============================================================================
 # SMART CACHING SESSION STATE
+# NOTE: _get_cached_year_range() and _set_cached_year_range() REMOVED in v4.0.0
+#       - Replaced by CACHE_KEY_UNIFIED in UnifiedDataLoader
 # =============================================================================
-
-def _get_cached_year_range() -> Tuple[Optional[int], Optional[int]]:
-    """Get currently cached year range from session state."""
-    start = st.session_state.get('_kpc_cached_start_year')
-    end = st.session_state.get('_kpc_cached_end_year')
-    return start, end
-
-
-def _set_cached_year_range(start_year: int, end_year: int):
-    """Store cached year range in session state."""
-    st.session_state['_kpc_cached_start_year'] = start_year
-    st.session_state['_kpc_cached_end_year'] = end_year
 
 
 def _get_applied_filters() -> Optional[Dict]:
@@ -736,8 +726,20 @@ def _set_applied_filters(filters: Dict):
 
 
 def clear_data_cache():
-    """Clear all cached data - called by Refresh button."""
+    """
+    Clear all cached data - called by Refresh button.
+    
+    UPDATED v4.0.0: Uses new unified cache keys from constants.py
+    """
+    from .constants import CACHE_KEY_UNIFIED, CACHE_KEY_PROCESSED, CACHE_KEY_FILTERS, CACHE_KEY_TIMING
+    
     keys_to_clear = [
+        # New v4.0.0 cache keys
+        CACHE_KEY_UNIFIED,
+        CACHE_KEY_PROCESSED,
+        CACHE_KEY_FILTERS,
+        CACHE_KEY_TIMING,
+        # Legacy keys (for backward compatibility during transition)
         '_kpc_cached_start_year',
         '_kpc_cached_end_year',
         '_kpc_raw_cached_data',
@@ -749,7 +751,7 @@ def clear_data_cache():
     
     # Also clear st.cache_data
     st.cache_data.clear()
-    logger.info("Data cache cleared")
+    logger.info("Data cache cleared (v4.0.0 unified + legacy keys)")
 
 
 # =============================================================================

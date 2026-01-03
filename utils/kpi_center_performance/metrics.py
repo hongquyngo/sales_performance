@@ -462,28 +462,7 @@ class KPICenterMetrics:
         
         return {'overall_achievement': None, 'kpi_count': 0}
     
-    def _get_individual_kpi_center_actual(self, kpi_center_id: int, kpi_name: str) -> float:
-        """Get actual value for a specific KPI Center and KPI type."""
-        if self.sales_df.empty:
-            return 0
-        
-        kpi_center_data = self.sales_df[self.sales_df['kpi_center_id'] == kpi_center_id]
-        
-        if kpi_center_data.empty:
-            return 0
-        
-        column_map = {
-            'revenue': 'sales_by_kpi_center_usd',
-            'gross_profit': 'gross_profit_by_kpi_center_usd',
-            'gross_profit_1': 'gp1_by_kpi_center_usd',
-            'gp1': 'gp1_by_kpi_center_usd',
-        }
-        
-        col = column_map.get(kpi_name)
-        if col and col in kpi_center_data.columns:
-            return kpi_center_data[col].sum()
-        
-        return 0
+    # NOTE: _get_individual_kpi_center_actual() REMOVED in v4.0.0 - never called
     
     # =========================================================================
     # PRORATED TARGET HELPER - NEW v3.1.0 (synced with Salesperson)
