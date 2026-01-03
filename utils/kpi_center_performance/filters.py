@@ -473,7 +473,7 @@ def render_multiselect_with_exclude(
         default = []
     
     # Layout: Label with Exclude checkbox on right
-    col1, col2 = ctx.columns([3, 1])
+    col1, col2 = ctx.columns([4, 1])
     
     with col1:
         ctx.markdown(f"**{label}**")
@@ -482,8 +482,7 @@ def render_multiselect_with_exclude(
         excluded = ctx.checkbox(
             "Excl",
             value=False,
-            key=f"{key}_exclude",
-            help="Tick to EXCLUDE items matching this condition"
+            key=f"{key}_exclude"
         )
     
     # Multiselect
@@ -581,8 +580,7 @@ def render_text_search_filter(
         excluded = ctx.checkbox(
             "Excl",
             value=False,
-            key=f"{key}_excl",
-            help="Tick to EXCLUDE items matching search"
+            key=f"{key}_excl"
         )
     
     # Text input
@@ -672,7 +670,7 @@ def render_number_filter_with_exclude(
         ctx = st
     
     # Layout
-    col1, col2 = ctx.columns([3, 1])
+    col1, col2 = ctx.columns([4, 1])
     
     with col1:
         ctx.markdown(f"**{label}**")
@@ -681,8 +679,7 @@ def render_number_filter_with_exclude(
         excluded = ctx.checkbox(
             "Excl",
             value=False,
-            key=f"{key}_exclude",
-            help="Tick to EXCLUDE items matching this condition"
+            key=f"{key}_exclude"
         )
     
     # Number input

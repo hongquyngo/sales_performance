@@ -136,12 +136,11 @@ def monthly_trend_fragment(
     col_cust, col_brand, col_prod = st.columns(3)
     
     with col_cust:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Customer**")
         with subcol2:
-            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer", 
-                                       help="Exclude selected customers")
+            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer")
         
         customers = ['All customers...'] + sorted(sales_df['customer'].dropna().unique().tolist())
         selected_customer = st.selectbox(
@@ -152,12 +151,11 @@ def monthly_trend_fragment(
         )
     
     with col_brand:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Brand**")
         with subcol2:
-            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand",
-                                    help="Exclude selected brands")
+            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand")
         
         brands = ['All brands...'] + sorted(sales_df['brand'].dropna().unique().tolist())
         selected_brand = st.selectbox(
@@ -168,12 +166,11 @@ def monthly_trend_fragment(
         )
     
     with col_prod:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Product**")
         with subcol2:
-            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product",
-                                      help="Exclude selected products")
+            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product")
         
         products = ['All products...'] + sorted(sales_df['product_pn'].dropna().unique().tolist()[:100])
         selected_product = st.selectbox(
@@ -288,12 +285,11 @@ def yoy_comparison_fragment(
     col_cust, col_brand, col_prod = st.columns(3)
     
     with col_cust:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Customer**")
         with subcol2:
-            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer",
-                                       help="Exclude selected customers")
+            excl_customer = st.checkbox("Excl", key=f"{fragment_key}_excl_customer")
         
         if sales_df is not None and not sales_df.empty:
             customers = ['All customers...'] + sorted(sales_df['customer'].dropna().unique().tolist())
@@ -308,12 +304,11 @@ def yoy_comparison_fragment(
         )
     
     with col_brand:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Brand**")
         with subcol2:
-            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand",
-                                    help="Exclude selected brands")
+            excl_brand = st.checkbox("Excl", key=f"{fragment_key}_excl_brand")
         
         if sales_df is not None and not sales_df.empty:
             brands = ['All brands...'] + sorted(sales_df['brand'].dropna().unique().tolist())
@@ -328,12 +323,11 @@ def yoy_comparison_fragment(
         )
     
     with col_prod:
-        subcol1, subcol2 = st.columns([3, 1])
+        subcol1, subcol2 = st.columns([4, 1])
         with subcol1:
             st.markdown("**Product**")
         with subcol2:
-            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product",
-                                      help="Exclude selected products")
+            excl_product = st.checkbox("Excl", key=f"{fragment_key}_excl_product")
         
         if sales_df is not None and not sales_df.empty:
             products = ['All products...'] + sorted(sales_df['product_pn'].dropna().unique().tolist()[:100])
