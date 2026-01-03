@@ -2,19 +2,6 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 4.0.1
-CHANGELOG:
-- v4.0.1: RESTORED missing features from v3.9.0
-  - Progress bar during data loading (in UnifiedDataLoader)
-  - Export Report UI at end of Overview tab
-  - Backlog & Forecast charts (waterfall + gap analysis)
-  - Full metrics display with proper help text
-- v4.0.0: Unified data loading architecture
-  - Replaced load_lookup_data() + load_data_for_year_range() with UnifiedDataLoader
-  - Replaced filter_data_client_side() with DataProcessor
-  - Simplified reload logic (only on cache expiry)
-  - All constants centralized in constants.py
-  - ~60% faster first load, ~95% faster filter changes
 """
 
 import logging
@@ -56,21 +43,20 @@ from utils.kpi_center_performance import (
     # Filter helpers
     analyze_period,
     
-    # Fragments
+    # Fragments - Overview tab
     monthly_trend_fragment,
     yoy_comparison_fragment,
-    sales_detail_fragment,
-    pivot_analysis_fragment,
-    backlog_list_fragment,
-    backlog_by_etd_fragment,
-    backlog_risk_analysis_fragment,
+    export_report_fragment,
+    
+    # Fragments - Analysis tab
+    top_performers_fragment,
+    
+    # Fragments - KPI & Targets tab
     kpi_assignments_fragment,
     kpi_progress_fragment,
     kpi_center_ranking_fragment,
-    top_performers_fragment,
-    export_report_fragment,
     
-    # Tab-level fragment wrappers - NEW v4.2.0
+    # Tab-level fragment wrappers
     sales_detail_tab_fragment,
     backlog_tab_fragment,
     
@@ -155,28 +141,6 @@ def _print_timing_summary():
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-
-def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean dataframe to avoid Arrow serialization errors."""
-    if df.empty:
-        return df
-    
-    df_clean = df.copy()
-    
-    # Year columns should be int
-    year_columns = ['etd_year', 'oc_year', 'invoice_year', 'year']
-    for col in year_columns:
-        if col in df_clean.columns:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0).astype(int)
-    
-    # Numeric columns
-    numeric_columns = ['days_until_etd', 'days_since_order', 'split_rate_percent']
-    for col in numeric_columns:
-        if col in df_clean.columns:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-    
-    return df_clean
-
 
 def calculate_weighted_count(df: pd.DataFrame, split_col: str = 'split_rate_percent') -> float:
     """
