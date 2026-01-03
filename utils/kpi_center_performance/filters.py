@@ -14,8 +14,15 @@ Renders filter UI elements:
 REQUIREMENTS:
 - Streamlit >= 1.33.0 (for @st.fragment support)
 
-VERSION: 2.14.0
+VERSION: 2.15.0
 CHANGELOG:
+- v2.15.0: UX improvement - Auto-uncheck "Only with KPI assignment" when no
+          assignments found for selected KPI Type/Year (Option C behavior):
+          - Checkbox auto-unchecks to reflect actual state
+          - Warning displayed to inform user
+          - Fixed Streamlit widget key limitation: check assignments BEFORE
+            rendering checkbox to avoid "cannot modify after instantiated" error
+          - No st.rerun() needed - state set before widget renders
 - v2.14.0: BUGFIX - "Only with KPI assignment" filter was filtering out ALL data
           when selected KPI Type has no assignment for current year:
           - Root cause: _get_kpi_centers_with_assignments() returned IDs for ALL types
@@ -984,35 +991,53 @@ class KPICenterFilters:
                             kpi_type_filter_local = selected_type
                     
                     # =========================================================
-                    # 2. ONLY WITH KPI CHECKBOX
+                    # 2. ONLY WITH KPI CHECKBOX - UPDATED v2.15.0
                     # =========================================================
+                    
+                    # v2.15.0: Check assignments BEFORE rendering checkbox
+                    # This avoids the "cannot modify after widget instantiated" error
+                    kpi_check_years_local = [current_year]
+                    kpi_center_ids_with_kpi = []
+                    
+                    # Pre-check if there are any assignments for this type/year
+                    # Only query if checkbox would be checked (default or session state)
+                    should_check_assignments = st.session_state.get('frag_only_with_kpi', True)
+                    
+                    if should_check_assignments:
+                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(
+                            kpi_check_years_local, 
+                            kpi_type=kpi_type_filter_local
+                        )
+                        
+                        # NEW v2.15.0 (Option C): Auto-uncheck if no assignments found
+                        # Must do this BEFORE checkbox is rendered
+                        if not kpi_center_ids_with_kpi:
+                            st.session_state.frag_only_with_kpi = False
+                            st.warning(
+                                f"⚠️ No KPI assignments for **{kpi_type_filter_local}** in {current_year}. "
+                                f"Filter unchecked to show all KPI Centers."
+                            )
+                    
+                    # Initialize checkbox default if not set
                     if 'frag_only_with_kpi' not in st.session_state:
                         st.session_state.frag_only_with_kpi = True
                     
+                    # Now render the checkbox (session_state already set correctly)
                     only_with_kpi_local = st.checkbox(
                         "Only with KPI assignment",
                         key="frag_only_with_kpi",
                         help="Show only KPI Centers with KPI targets assigned for the selected year and type."
                     )
                     
-                    # Get KPI Centers with assignments FOR SELECTED KPI TYPE - FIXED v2.14.0
-                    kpi_check_years_local = [current_year]
-                    kpi_center_ids_with_kpi = []
-                    no_assignment_for_type = False  # NEW v2.14.0: Track if no assignments for this type
-                    
-                    if only_with_kpi_local:
-                        # NEW v2.14.0: Pass kpi_type to filter correctly
+                    # If user just checked the box, we need to query again
+                    if only_with_kpi_local and not kpi_center_ids_with_kpi:
                         kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(
                             kpi_check_years_local, 
                             kpi_type=kpi_type_filter_local
                         )
-                        
-                        # NEW v2.14.0: Check if no assignments found for this type/year
-                        if not kpi_center_ids_with_kpi:
-                            no_assignment_for_type = True
                     
                     # =========================================================
-                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.14.0
+                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.15.0
                     # =========================================================
                     st.markdown("**🎯 KPI Center**")
                     
@@ -1024,30 +1049,19 @@ class KPICenterFilters:
                         if 'kpi_type' in kpi_center_df.columns and kpi_type_filter_local:
                             filtered_kc_df = filtered_kc_df[filtered_kc_df['kpi_type'] == kpi_type_filter_local]
                         
-                        # Store count before assignment filter for warning message
-                        count_before_assignment_filter = len(filtered_kc_df)
-                        
-                        # Filter by KPI assignment (only if we have matching assignments)
-                        # NEW v2.14.0: Skip filter if no assignments found for this type
-                        if only_with_kpi_local and kpi_center_ids_with_kpi and not no_assignment_for_type:
+                        # Filter by KPI assignment (only if checkbox checked AND we have IDs)
+                        # v2.15.0: No need for fallback - checkbox auto-unchecks if no assignments
+                        if only_with_kpi_local and kpi_center_ids_with_kpi:
                             filtered_kc_df = filtered_kc_df[
                                 filtered_kc_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
                             ]
                         
-                        # NEW v2.14.0: Show warning if no KPI assignments for this type/year
-                        if no_assignment_for_type and only_with_kpi_local:
-                            st.warning(
-                                f"⚠️ No KPI assignments for **{kpi_type_filter_local}** in {current_year}. "
-                                f"Showing all {count_before_assignment_filter} KPI Centers."
-                            )
-                        
-                        # Show info
+                        # Show info about filtered count
                         total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
                         filtered_count = len(filtered_kc_df)
                         hidden_count = total_in_type - filtered_count
                         
-                        # Only show "hidden" caption if we actually hid some (and not showing warning)
-                        if hidden_count > 0 and not no_assignment_for_type:
+                        if hidden_count > 0:
                             st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
                     
                     if filtered_kc_df.empty:
