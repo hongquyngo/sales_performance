@@ -83,6 +83,13 @@ from .fragments import (
     kpi_center_ranking_fragment,
     top_performers_fragment,
     export_report_fragment,
+    # Tab-level filter functions - NEW v4.2.0
+    render_sales_tab_filters,
+    apply_sales_tab_filters,
+    get_sales_filter_summary,
+    render_backlog_tab_filters,
+    apply_backlog_tab_filters,
+    get_backlog_filter_summary,
 )
 
 # Setup Module

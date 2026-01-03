@@ -70,6 +70,14 @@ from utils.kpi_center_performance import (
     top_performers_fragment,
     export_report_fragment,
     
+    # Tab-level filter functions - NEW v4.2.0
+    render_sales_tab_filters,
+    apply_sales_tab_filters,
+    get_sales_filter_summary,
+    render_backlog_tab_filters,
+    apply_backlog_tab_filters,
+    get_backlog_filter_summary,
+    
     # Setup
     setup_tab_fragment,
     
@@ -638,16 +646,38 @@ def main():
     
     with tab2:
         if not sales_df.empty:
-            sales_detail_fragment(
+            # Store original count before filtering
+            sales_total_count = len(sales_df)
+            
+            # Render filters at tab level (above sub-tabs)
+            sales_filter_results = render_sales_tab_filters(
                 sales_df=sales_df,
-                fragment_key="kpc_detail"
+                key_prefix="sales_tab"
             )
+            
+            # Apply filters
+            filtered_sales_df = apply_sales_tab_filters(sales_df, sales_filter_results)
+            
+            # Show filter summary
+            filter_summary = get_sales_filter_summary(sales_filter_results)
+            if filter_summary:
+                st.caption(f"🔍 Active filters: {filter_summary}")
             
             st.divider()
             
-            with st.expander("📊 Pivot Analysis", expanded=False):
+            # Sub-tabs for Sales Detail
+            sales_tab1, sales_tab2 = st.tabs(["📋 Sales List", "📊 Pivot Analysis"])
+            
+            with sales_tab1:
+                sales_detail_fragment(
+                    sales_df=filtered_sales_df,
+                    fragment_key="kpc_detail",
+                    total_count=sales_total_count
+                )
+            
+            with sales_tab2:
                 pivot_analysis_fragment(
-                    sales_df=sales_df,
+                    sales_df=filtered_sales_df,
                     fragment_key="kpc_pivot"
                 )
         else:
@@ -694,6 +724,10 @@ def main():
         if backlog_df.empty:
             st.info("📦 No backlog data available")
         else:
+            # Store original count before filtering
+            backlog_total_count = len(backlog_df)
+            
+            # Check for overdue warning (on original data)
             in_period_analysis = KPICenterMetrics.analyze_in_period_backlog(
                 backlog_detail_df=backlog_df,
                 start_date=active_filters.get('start_date', date.today()),
@@ -703,6 +737,23 @@ def main():
             if in_period_analysis.get('overdue_warning'):
                 st.warning(in_period_analysis['overdue_warning'])
             
+            # Render filters at tab level (above sub-tabs)
+            backlog_filter_results = render_backlog_tab_filters(
+                backlog_df=backlog_df,
+                key_prefix="backlog_tab"
+            )
+            
+            # Apply filters
+            filtered_backlog_df = apply_backlog_tab_filters(backlog_df, backlog_filter_results)
+            
+            # Show filter summary
+            bl_filter_summary = get_backlog_filter_summary(backlog_filter_results)
+            if bl_filter_summary:
+                st.caption(f"🔍 Active filters: {bl_filter_summary}")
+            
+            st.divider()
+            
+            # Sub-tabs for Backlog
             backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs([
                 "📋 Backlog List",
                 "📅 By ETD",
@@ -711,21 +762,22 @@ def main():
             
             with backlog_tab1:
                 backlog_list_fragment(
-                    backlog_df=backlog_df,
+                    backlog_df=filtered_backlog_df,
                     filter_values=active_filters,
-                    total_backlog_df=data.get('backlog_summary_df', pd.DataFrame())
+                    total_backlog_df=data.get('backlog_summary_df', pd.DataFrame()),
+                    total_count=backlog_total_count
                 )
             
             with backlog_tab2:
                 backlog_by_etd_fragment(
-                    backlog_detail_df=backlog_df,
+                    backlog_detail_df=filtered_backlog_df,
                     current_year=active_filters.get('year', date.today().year),
                     fragment_key="kpc_backlog_etd"
                 )
             
             with backlog_tab3:
                 backlog_risk_analysis_fragment(
-                    backlog_df=backlog_df,
+                    backlog_df=filtered_backlog_df,
                     fragment_key="kpc_backlog_risk"
                 )
     
