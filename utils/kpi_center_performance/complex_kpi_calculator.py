@@ -2,22 +2,6 @@
 """
 Complex KPI Calculator - Pandas-based calculations for KPI Center Performance
 
-VERSION: 1.0.0
-PURPOSE: Replace 9 SQL queries (~27s) with Pandas operations (~0.3s)
-
-This module calculates:
-- New Customers (weighted count by split_rate_percent)
-- New Products (weighted count by split_rate_percent)
-- New Business Revenue (sum of revenue from new customer-product combos)
-
-PERFORMANCE:
-- Before: 9 SQL queries with CTEs scanning 5-year lookback data = ~27s
-- After: 1 SQL query + Pandas processing = ~3.3s (90% reduction)
-
-USAGE:
-    lookback_df = queries.get_lookback_sales_data(end_date)
-    calc = ComplexKPICalculator(lookback_df, exclude_internal=True)
-    result = calc.calculate_all(start_date, end_date, kpi_center_ids)
 """
 
 import pandas as pd

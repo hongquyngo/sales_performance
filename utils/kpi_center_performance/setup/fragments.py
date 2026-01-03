@@ -2,13 +2,6 @@
 """
 UI Fragments for Setup Tab - KPI Center Performance
 
-Full management console with 3 sub-tabs:
-1. Split Rules - CRUD for kpi_center_split_by_customer_product (with renewal feature)
-2. KPI Assignments - CRUD for sales_kpi_center_assignments
-3. Hierarchy - Tree view of kpi_centers
-
-Note: Validation has been merged into Split Rules and KPI Assignments tabs.
-      Renewal feature added in v2.5.0 for bulk-renewing expiring rules.
 """
 
 import streamlit as st

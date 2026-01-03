@@ -2,11 +2,6 @@
 """
 Constants for KPI Center Performance Module
 
-VERSION: 2.4.0
-CHANGELOG:
-- v2.4.0: SYNCED with Salesperson constants:
-          - Added all colors for charts (primary, secondary, etc.)
-          - Added CHART_WIDTH, CHART_HEIGHT for consistent chart sizing
 """
 
 # =====================================================================

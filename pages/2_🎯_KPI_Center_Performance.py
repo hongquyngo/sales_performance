@@ -2,26 +2,6 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.9.0
-CHANGELOG:
-- v3.9.0: BUGFIX - Backlog data showing 0 rows after client-side filter
-          - Root cause: backlog_detail_df filtered by oc_date with YTD 2026
-          - But backlog orders have oc_date in 2024-2025 → all filtered out!
-          - Fix: Skip date filter for backlog DataFrames (show full pipeline)
-          - Backlog already filtered by kpi_center_ids at SQL level
-          - In-period filtering handled by BacklogCalculator using etd
-- v3.8.0: Cleanup queries.py - removed unused backlog and target functions
-          File reduced from 1445 to 716 lines
-- v3.7.0: Phase 2 Optimization
-          - Backlog: 4 queries → 1 query + BacklogCalculator (Pandas)
-          - Targets: 3 queries → 1 multi-year query
-          - Expected savings: ~8s (from ~34s to ~26s)
-- v3.6.0: Major performance optimization using Pandas-based Complex KPI calculations
-          - Replaced 9 SQL queries (~27s) with ComplexKPICalculator (~0.3s)
-          - Load lookback data first, extract sidebar options (~3.7s saved)
-          - Entities and Years now extracted from lookback data (instant)
-          - Expected improvement: 67s → ~15s first load (-78%)
-- v3.5.0: Added timing debug output to terminal for performance analysis
 """
 
 import logging

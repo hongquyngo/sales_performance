@@ -2,15 +2,6 @@
 """
 Formatted Excel Export for KPI Center Performance
 
-Creates professional Excel reports with:
-- Cover sheet with KPI summary
-- Pipeline & Forecast metrics
-- KPI Center summary with conditional formatting
-- Monthly breakdown
-- Detailed transactions
-- Backlog summary, detail, and by ETD
-
-VERSION: 1.0.0
 """
 
 import logging

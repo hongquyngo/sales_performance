@@ -2,23 +2,6 @@
 """
 Backlog Calculator - Pandas-based calculations for KPI Center Performance
 
-VERSION: 1.0.0
-PURPOSE: Replace 4 SQL queries (~6.3s) with 1 SQL query + Pandas operations (~1.6s)
-
-This module calculates:
-- Backlog Summary (by KPI Center)
-- Backlog In-Period (filtered by ETD date range)
-- Backlog By Month (grouped by ETD year/month)
-- Backlog Risk Analysis (overdue, at-risk categories)
-
-PERFORMANCE:
-- Before: 4 SQL queries with GROUP BY = ~6.3s
-- After: 1 SQL query + Pandas processing = ~1.6s (75% reduction)
-
-USAGE:
-    raw_df = queries.get_all_backlog_raw(kpi_center_ids, entity_ids)
-    calc = BacklogCalculator(raw_df, exclude_internal=True)
-    result = calc.calculate_all(start_date, end_date)
 """
 
 import pandas as pd

@@ -2,51 +2,6 @@
 """
 KPI Calculations for KPI Center Performance
 
-Handles all metric calculations:
-- Period aggregations (YTD/QTD/MTD)
-- Target comparisons and achievement rates
-- YoY growth calculations
-- Complex KPI metrics (new customers/products/business)
-- Parent KPI Center rollup
-- Data aggregations by KPI Center/period
-
-VERSION: 3.3.2
-CHANGELOG:
-- v3.3.2: SYNCED Overall Achievement in Overview tab with Progress tab logic:
-          - calculate_overall_kpi_achievement() now uses target-proportion weights
-          - Aggregate targets & actuals by KPI type (not individual assignments)
-          - Only include actuals from centers WITH that specific KPI target
-          - Include complex KPIs (new business, new customers, new products)
-          - Added calculation_method='target_proportion' for UI display
-- v3.3.1: FIX Parent aggregation to only include children with target:
-          - OLD: Aggregated actual from ALL descendants
-          - NEW: Only aggregate actual from descendants that have target for that specific KPI
-          - Example: If A has Revenue target but not New Business,
-            Parent will only count A's actual for Revenue, not for New Business
-          - Added 'contributing_centers' field to show "From X of Y centers with this target"
-- v3.3.0: ENHANCED Parent KPI Center calculation in Progress tab:
-          - OLD: Weighted average of children's overall achievements
-          - NEW: Aggregate KPIs with Target-Proportion Weights:
-            * Step 1: Aggregate targets & actuals by KPI type from all descendants
-            * Step 2: Calculate achievement per KPI = total_actual / total_target
-            * Step 3: Derive weight from target proportion (currency KPIs)
-            * Step 4: Currency KPIs = 80% weight, Count KPIs = 20% weight
-            * Step 5: Calculate weighted overall
-          - Parents now show per-KPI progress bars like leaf nodes
-          - More accurate: Large target teams have proportional impact
-          - Added 'calculation_method' and 'weight_source' fields for UI display
-- v3.2.0: NEW Hierarchy methods for KPI & Targets tab v3.2.0:
-          - calculate_rollup_targets(): Aggregate targets for parent KPI Centers
-          - calculate_per_center_progress(): Per-center KPI progress with overall achievement
-          - Leaf nodes: Direct calculation from actuals vs targets
-          - Parent nodes: Weighted average of children's achievements
-- v2.1.0: Fixed employee_count -> kpi_center_count for consistency
-          Added better error handling in pipeline calculations
-
-KEY DIFFERENCE FROM SALESPERSON MODULE:
-- Parent KPI Center performance = Direct sales + Sum of all children
-- Uses kpi_center_id instead of sales_id
-- Column naming: sales_by_kpi_center_usd, gross_profit_by_kpi_center_usd, etc.
 """
 
 import logging

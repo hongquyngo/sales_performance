@@ -2,22 +2,6 @@
 """
 KPI Center Performance Data Queries
 
-VERSION: 3.8.2
-CHANGELOG:
-- v3.8.2: Restored get_kpi_center_list() and get_kpi_center_achievement_summary()
-          for potential future use and backward compatibility
-- v3.8.1: Restored get_leaf_descendants() - still used by metrics.py
-- v3.8.0: Cleanup - Removed unused functions after Phase 2 optimization
-          Removed: get_kpi_targets, get_backlog_data, get_backlog_in_period,
-                   get_backlog_by_month, get_backlog_detail, get_backlog_risk_analysis
-          File reduced from 1445 to ~880 lines (~39% reduction)
-- v3.7.0: Phase 2 Optimization
-          Added get_all_backlog_raw() for Pandas-based backlog processing
-          Added get_kpi_targets_multi_year() to replace per-year loop
-          Expected savings: ~8s per page load
-- v3.6.0: Removed Complex KPI methods (now handled by complex_kpi_calculator.py)
-          Added get_lookback_sales_data() for Pandas-based processing
-- v3.5.0: Added DEBUG_QUERY_TIMING for terminal timing output
 """
 
 import logging
