@@ -2,22 +2,17 @@
 """
 KPI Center Performance Module
 
-VERSION: 4.1.0
+VERSION: 4.3.0
 CHANGELOG:
+- v4.3.0: Modular refactor - charts and fragments split into submodules
+  - charts.py split into overview/, backlog/, analysis/, common/
+  - fragments.py split into overview/, sales_detail/, backlog/, analysis/, kpi_targets/, common/
+  - Direct imports from submodules (no wrapper files needed)
+  - Fixes circular import issues
+  - KPICenterCharts class preserved for backward compatibility
+- v4.2.0: Tab-level fragment wrappers
 - v4.1.0: Code cleanup and consolidation
-  - Removed unused _get_entities_by_kpi_type() from filters.py
-  - Removed unused KPI_CENTER_TYPES constant
-  - Removed duplicate get_child_kpi_center_ids() (use get_all_descendants())
-  - Consolidated DEBUG_TIMING definitions to constants.py
-  - Fixed _complex_kpi_calculator caching bug (exclude_internal tracking)
-  - Deprecated render_sidebar_filters() - use render_filter_form()
-  - Consolidated analyze_period_context() into analyze_period()
-  - Optimized _expand_kpi_center_ids_with_children() to use cached hierarchy
 - v4.0.0: Unified data loading architecture
-  - Added UnifiedDataLoader for single-source data loading
-  - Added DataProcessor for Pandas-based filtering
-  - Simplified reload logic (only on cache expiry)
-  - ~60% faster first load, ~95% faster filter changes
 """
 
 # =============================================================================
@@ -63,29 +58,119 @@ from .filters import (
     clear_data_cache,
 )
 
-# Charts
-from .charts import KPICenterCharts
+# =============================================================================
+# CHARTS - Direct imports from submodules (v4.3.0)
+# =============================================================================
+
+# Common chart utilities
+from .common.charts import (
+    empty_chart,
+    convert_pipeline_to_backlog_metrics,
+)
+
+# Overview charts
+from .overview.charts import (
+    render_kpi_cards,
+    build_monthly_trend_dual_chart,
+    build_cumulative_dual_chart,
+    build_yoy_comparison_chart,
+    build_yoy_cumulative_chart,
+    build_monthly_trend_chart,
+    build_multi_year_monthly_chart,
+    build_multi_year_cumulative_chart,
+    build_multi_year_summary_table,
+)
+
+# Analysis charts
+from .analysis.charts import (
+    build_pareto_chart,
+    build_top_performers_chart,
+)
+
+# Backlog charts
+from .backlog.charts import (
+    build_forecast_waterfall_chart,
+    build_gap_analysis_chart,
+    build_backlog_by_month_chart,
+    build_backlog_by_month_chart_multiyear,
+    build_backlog_by_month_stacked,
+)
+
+
+# Backward compatibility wrapper class
+class KPICenterCharts:
+    """
+    Backward compatibility wrapper for chart functions.
+    
+    Delegates to functions in submodules.
+    Prefer direct imports for new code.
+    """
+    # Common
+    empty_chart = staticmethod(empty_chart)
+    convert_pipeline_to_backlog_metrics = staticmethod(convert_pipeline_to_backlog_metrics)
+    
+    # Overview
+    render_kpi_cards = staticmethod(render_kpi_cards)
+    build_monthly_trend_dual_chart = staticmethod(build_monthly_trend_dual_chart)
+    build_cumulative_dual_chart = staticmethod(build_cumulative_dual_chart)
+    build_yoy_comparison_chart = staticmethod(build_yoy_comparison_chart)
+    build_yoy_cumulative_chart = staticmethod(build_yoy_cumulative_chart)
+    build_monthly_trend_chart = staticmethod(build_monthly_trend_chart)
+    build_multi_year_monthly_chart = staticmethod(build_multi_year_monthly_chart)
+    build_multi_year_cumulative_chart = staticmethod(build_multi_year_cumulative_chart)
+    build_multi_year_summary_table = staticmethod(build_multi_year_summary_table)
+    
+    # Analysis
+    build_pareto_chart = staticmethod(build_pareto_chart)
+    build_top_performers_chart = staticmethod(build_top_performers_chart)
+    
+    # Backlog
+    build_forecast_waterfall_chart = staticmethod(build_forecast_waterfall_chart)
+    build_gap_analysis_chart = staticmethod(build_gap_analysis_chart)
+    build_backlog_by_month_chart = staticmethod(build_backlog_by_month_chart)
+    build_backlog_by_month_chart_multiyear = staticmethod(build_backlog_by_month_chart_multiyear)
+    build_backlog_by_month_stacked = staticmethod(build_backlog_by_month_stacked)
 
 # Export
 from .export import KPICenterExport
 
-# Fragments
-from .fragments import (
+# =============================================================================
+# FRAGMENTS - Direct imports from submodules (v4.3.0)
+# =============================================================================
+
+# Common fragments
+from .common.fragments import prepare_monthly_summary
+
+# Overview fragments
+from .overview.fragments import (
     monthly_trend_fragment,
     yoy_comparison_fragment,
+    export_report_fragment,
+)
+
+# Sales detail fragments
+from .sales_detail.fragments import (
     sales_detail_fragment,
     pivot_analysis_fragment,
+    sales_detail_tab_fragment,
+)
+
+# Analysis fragments
+from .analysis.fragments import top_performers_fragment
+
+# Backlog fragments
+from .backlog.fragments import (
     backlog_list_fragment,
     backlog_by_etd_fragment,
     backlog_risk_analysis_fragment,
+    backlog_tab_fragment,
+)
+
+# KPI Targets fragments
+from .kpi_targets.fragments import (
     kpi_assignments_fragment,
     kpi_progress_fragment,
     kpi_center_ranking_fragment,
-    top_performers_fragment,
-    export_report_fragment,
-    # Tab-level fragment wrappers - NEW v4.2.0
-    sales_detail_tab_fragment,
-    backlog_tab_fragment,
 )
 
 # Setup Module
@@ -140,7 +225,7 @@ __all__ = [
     'KPICenterQueries',
     'KPICenterMetrics',
     'KPICenterFilters',
-    'KPICenterCharts',
+    'KPICenterCharts',  # Backward compat wrapper
     'KPICenterExport',
     
     # Setup Module
@@ -165,19 +250,42 @@ __all__ = [
     'apply_number_filter',
     'clear_data_cache',
     
+    # Chart Functions (v4.3.0 - direct exports)
+    'empty_chart',
+    'convert_pipeline_to_backlog_metrics',
+    'render_kpi_cards',
+    'build_monthly_trend_dual_chart',
+    'build_cumulative_dual_chart',
+    'build_yoy_comparison_chart',
+    'build_yoy_cumulative_chart',
+    'build_monthly_trend_chart',
+    'build_multi_year_monthly_chart',
+    'build_multi_year_cumulative_chart',
+    'build_multi_year_summary_table',
+    'build_pareto_chart',
+    'build_top_performers_chart',
+    'build_forecast_waterfall_chart',
+    'build_gap_analysis_chart',
+    'build_backlog_by_month_chart',
+    'build_backlog_by_month_chart_multiyear',
+    'build_backlog_by_month_stacked',
+    
     # Fragments
+    'prepare_monthly_summary',
     'monthly_trend_fragment',
     'yoy_comparison_fragment',
+    'export_report_fragment',
     'sales_detail_fragment',
     'pivot_analysis_fragment',
+    'sales_detail_tab_fragment',
+    'top_performers_fragment',
     'backlog_list_fragment',
     'backlog_by_etd_fragment',
     'backlog_risk_analysis_fragment',
+    'backlog_tab_fragment',
     'kpi_assignments_fragment',
     'kpi_progress_fragment',
     'kpi_center_ranking_fragment',
-    'top_performers_fragment',
-    'export_report_fragment',
     
     # Setup Fragments
     'setup_tab_fragment',
@@ -202,7 +310,6 @@ __all__ = [
     # Constants - UI
     'PERIOD_TYPES',
     'MONTH_ORDER',
-    'KPI_CENTER_TYPES',
     'COLORS',
     'CHART_WIDTH',
     'CHART_HEIGHT',
@@ -212,4 +319,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '4.1.0'
+__version__ = '4.3.0'
