@@ -2,19 +2,29 @@
 """
 Streamlit Fragments for KPI Center Performance - Overview Tab.
 
+VERSION: 4.6.0
+CHANGELOG:
+- v4.6.0: Refactored Overview tab
+  - Added overview_tab_fragment() as main entry point
+  - Moved _render_backlog_forecast_section() from main page
+  - Centralized all Overview tab rendering logic
+
 Contains:
+- overview_tab_fragment: Main Overview tab entry point (NEW)
 - monthly_trend_fragment: Monthly trend charts with filters
 - yoy_comparison_fragment: Year-over-Year / Multi-Year comparison
 - export_report_fragment: Excel report generation
+- _render_backlog_forecast_section: Backlog & Forecast metrics/charts (INTERNAL)
 """
 
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import date
 import pandas as pd
 import streamlit as st
 
 from .charts import (
+    render_kpi_cards,
     build_monthly_trend_dual_chart,
     build_cumulative_dual_chart,
     build_multi_year_monthly_chart,
@@ -24,6 +34,9 @@ from .charts import (
 )
 from ..constants import MONTH_ORDER
 from ..common.fragments import prepare_monthly_summary
+from ..common.charts import convert_pipeline_to_backlog_metrics
+from ..backlog.charts import build_forecast_waterfall_chart, build_gap_analysis_chart
+from ..filters import analyze_period
 
 logger = logging.getLogger(__name__)
 
@@ -623,3 +636,328 @@ def export_report_fragment(
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_report_btn"
         )
+
+
+# =============================================================================
+# BACKLOG FORECAST SECTION - MOVED FROM MAIN PAGE v4.6.0
+# =============================================================================
+
+def _render_backlog_forecast_section(
+    summary_metrics: Dict,
+    kpi_metrics: Dict,
+    metric_type: str,
+    chart_backlog_metrics: Dict = None,
+    gp1_gp_ratio: float = 1.0
+):
+    """
+    Render backlog forecast metrics AND charts for a specific tab (revenue/gp/gp1).
+    
+    MOVED from main page v4.6.0 (was _render_backlog_forecast_tab)
+    
+    Args:
+        summary_metrics: Overall summary metrics (total_backlog_revenue, etc.)
+        kpi_metrics: KPI-specific metrics (in_period_backlog, target, forecast, gap)
+        metric_type: 'revenue', 'gp', or 'gp1'
+        chart_backlog_metrics: Dict for chart rendering (optional)
+        gp1_gp_ratio: Ratio for GP1 estimation (default 1.0)
+    """
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+    
+    # Labels and keys based on type
+    if metric_type == 'revenue':
+        total_key = 'total_backlog_revenue'
+        label_total = "Total Backlog"
+        help_suffix = "revenue"
+        kpi_name = "Revenue"
+    elif metric_type == 'gp':
+        total_key = 'total_backlog_gp'
+        label_total = "Total GP Backlog"
+        help_suffix = "GP"
+        kpi_name = "GP"
+    else:  # gp1
+        total_key = 'total_backlog_gp1'
+        label_total = "Total GP1 Backlog"
+        help_suffix = "GP1"
+        kpi_name = "GP1"
+    
+    with col_m1:
+        help_text = f"All outstanding {help_suffix} from pending orders"
+        if metric_type == 'gp1' and gp1_gp_ratio != 1.0:
+            help_text = f"Estimated GP1 backlog (GP × {gp1_gp_ratio:.2%})"
+        st.metric(
+            label=label_total,
+            value=f"${summary_metrics.get(total_key, 0):,.0f}",
+            delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
+            delta_color="off",
+            help=help_text
+        )
+    
+    with col_m2:
+        in_period = kpi_metrics.get('in_period_backlog', 0)
+        target = kpi_metrics.get('target')
+        pct = (in_period / target * 100) if target and target > 0 else None
+        kpc_count = kpi_metrics.get('kpi_center_count', 0)
+        st.metric(
+            label="In-Period (KPI)",
+            value=f"${in_period:,.0f}",
+            delta=f"{pct:.0f}% of target" if pct else None,
+            delta_color="off",
+            help=f"Backlog with ETD in period. Only from {kpc_count} KPI Centers with {kpi_name} KPI."
+        )
+    
+    with col_m3:
+        target = kpi_metrics.get('target')
+        kpc_count = kpi_metrics.get('kpi_center_count', 0)
+        if target and target > 0:
+            st.metric(
+                label="Target",
+                value=f"${target:,.0f}",
+                delta=f"{kpc_count} KPI Centers",
+                delta_color="off",
+                help=f"Sum of prorated {kpi_name} targets from {kpc_count} KPI Centers"
+            )
+        else:
+            st.metric(
+                label="Target",
+                value="N/A",
+                delta="No KPI assigned",
+                delta_color="off",
+                help="No KPI target assigned"
+            )
+    
+    with col_m4:
+        forecast = kpi_metrics.get('forecast')
+        achievement = kpi_metrics.get('forecast_achievement')
+        if forecast is not None:
+            delta_color = "normal" if achievement and achievement >= 100 else "inverse"
+            st.metric(
+                label="Forecast (KPI)",
+                value=f"${forecast:,.0f}",
+                delta=f"{achievement:.0f}% of target" if achievement else None,
+                delta_color=delta_color if achievement else "off",
+                help="Invoiced + In-Period Backlog"
+            )
+        else:
+            st.metric(
+                label="Forecast (KPI)",
+                value="N/A",
+                delta="No target",
+                delta_color="off",
+                help="No KPI target assigned"
+            )
+    
+    with col_m5:
+        gap = kpi_metrics.get('gap')
+        gap_pct = kpi_metrics.get('gap_percent')
+        if gap is not None:
+            gap_label = "Surplus ✅" if gap >= 0 else "GAP ⚠️"
+            delta_color = "normal" if gap >= 0 else "inverse"
+            st.metric(
+                label=gap_label,
+                value=f"${gap:+,.0f}",
+                delta=f"{gap_pct:+.1f}%" if gap_pct else None,
+                delta_color=delta_color,
+                help="Forecast - Target. Positive = ahead, Negative = behind."
+            )
+        else:
+            st.metric(
+                label="GAP",
+                value="N/A",
+                delta="No target",
+                delta_color="off",
+                help="No KPI target assigned"
+            )
+    
+    # =========================================================================
+    # CHARTS ROW
+    # =========================================================================
+    if chart_backlog_metrics:
+        col_bf1, col_bf2 = st.columns(2)
+        with col_bf1:
+            st.markdown(f"**{kpi_name} Forecast vs Target**")
+            forecast_chart = build_forecast_waterfall_chart(
+                backlog_metrics=chart_backlog_metrics,
+                metric=metric_type,
+                title=""
+            )
+            st.altair_chart(forecast_chart, use_container_width=True)
+        with col_bf2:
+            st.markdown(f"**{kpi_name}: Target vs Forecast**")
+            gap_chart = build_gap_analysis_chart(
+                backlog_metrics=chart_backlog_metrics,
+                metrics_to_show=[metric_type],
+                title=""
+            )
+            st.altair_chart(gap_chart, use_container_width=True)
+
+
+# =============================================================================
+# OVERVIEW TAB FRAGMENT - NEW v4.6.0
+# =============================================================================
+
+def overview_tab_fragment(
+    # Data
+    sales_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    data: Dict,
+    
+    # Metrics
+    overview_metrics: Dict,
+    yoy_metrics: Optional[Dict],
+    complex_kpis: Dict,
+    pipeline_metrics: Dict,
+    overall_achievement: Dict,
+    
+    # Filters & Config
+    active_filters: Dict,
+    queries,
+    unified_cache: Dict,
+    
+    # Summaries (pre-calculated)
+    monthly_df: pd.DataFrame,
+    kpi_center_summary_df: pd.DataFrame,
+):
+    """
+    Render the complete Overview tab.
+    
+    NEW v4.6.0: Centralizes all Overview tab rendering logic.
+    Replaces inline code in main page.
+    
+    Args:
+        sales_df: Filtered sales data
+        targets_df: Filtered targets data
+        data: Processed data dict from DataProcessor
+        overview_metrics: Overview metrics from KPICenterMetrics
+        yoy_metrics: Year-over-Year metrics (optional)
+        complex_kpis: Complex KPI values (new customers, products, business)
+        pipeline_metrics: Pipeline/forecast metrics
+        overall_achievement: Overall KPI achievement dict
+        active_filters: Currently applied filters
+        queries: KPICenterQueries instance (for YoY fragment)
+        unified_cache: Unified raw data cache (for YoY fragment)
+        monthly_df: Pre-calculated monthly summary
+        kpi_center_summary_df: Pre-calculated KPI Center summary
+    """
+    # =========================================================================
+    # SECTION 1: KPI CARDS
+    # =========================================================================
+    render_kpi_cards(
+        metrics=overview_metrics,
+        yoy_metrics=yoy_metrics,
+        complex_kpis=complex_kpis,
+        overall_achievement=overall_achievement,
+        new_customers_df=data.get('new_customers_detail_df'),
+        new_products_df=data.get('new_products_detail_df'),
+        new_business_df=data.get('new_business_df'),
+        new_business_detail_df=data.get('new_business_detail_df')
+    )
+    
+    st.divider()
+    
+    # =========================================================================
+    # SECTION 2: MONTHLY TREND
+    # =========================================================================
+    monthly_trend_fragment(
+        sales_df=sales_df,
+        filter_values=active_filters,
+        targets_df=targets_df,
+        fragment_key="kpc_trend"
+    )
+    
+    st.divider()
+    
+    # =========================================================================
+    # SECTION 3: YEAR-OVER-YEAR COMPARISON
+    # =========================================================================
+    if active_filters.get('show_yoy', True):
+        yoy_comparison_fragment(
+            queries=queries,
+            filter_values=active_filters,
+            current_year=active_filters['year'],
+            sales_df=sales_df,
+            raw_cached_data=unified_cache,
+            fragment_key="kpc_yoy"
+        )
+        
+        st.divider()
+    
+    # =========================================================================
+    # SECTION 4: BACKLOG & FORECAST
+    # =========================================================================
+    period_info = analyze_period(active_filters)
+    
+    if period_info.get('show_backlog', True):
+        col_bf_header, col_bf_help = st.columns([6, 1])
+        with col_bf_header:
+            st.subheader("📦 Backlog & Forecast")
+        with col_bf_help:
+            with st.popover("ℹ️ Help"):
+                st.markdown("""
+**📦 Backlog & Forecast**
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| **Total Backlog** | `Σ backlog_by_kpi_center_usd` | All outstanding orders |
+| **In-Period (KPI)** | `Σ backlog WHERE ETD in period` | Backlog expected to ship in period |
+| **Target** | `Σ prorated_target` | Sum of prorated annual targets |
+| **Forecast (KPI)** | `Invoiced + In-Period` | Projected total |
+| **GAP/Surplus** | `Forecast - Target` | Positive = ahead, Negative = behind |
+                """)
+        
+        # Overdue warning
+        backlog_risk = data.get('backlog_risk', {})
+        if backlog_risk and backlog_risk.get('overdue_orders', 0) > 0:
+            overdue_orders = backlog_risk.get('overdue_orders', 0)
+            overdue_revenue = backlog_risk.get('overdue_revenue', 0)
+            st.warning(f"⚠️ {overdue_orders} orders are past ETD. Value: ${overdue_revenue:,.0f}")
+        
+        # Pipeline metrics display
+        summary_metrics = pipeline_metrics.get('summary', {})
+        gp1_gp_ratio = summary_metrics.get('gp1_gp_ratio', 1.0)
+        if gp1_gp_ratio != 1.0:
+            st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
+        
+        chart_backlog_metrics = convert_pipeline_to_backlog_metrics(pipeline_metrics)
+        
+        revenue_metrics = pipeline_metrics.get('revenue', {})
+        gp_metrics = pipeline_metrics.get('gross_profit', {})
+        gp1_metrics = pipeline_metrics.get('gp1', {})
+        
+        bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+        
+        with bf_tab1:
+            _render_backlog_forecast_section(
+                summary_metrics, revenue_metrics, 'revenue',
+                chart_backlog_metrics=chart_backlog_metrics
+            )
+        
+        with bf_tab2:
+            _render_backlog_forecast_section(
+                summary_metrics, gp_metrics, 'gp',
+                chart_backlog_metrics=chart_backlog_metrics
+            )
+        
+        with bf_tab3:
+            _render_backlog_forecast_section(
+                summary_metrics, gp1_metrics, 'gp1',
+                chart_backlog_metrics=chart_backlog_metrics,
+                gp1_gp_ratio=gp1_gp_ratio
+            )
+    
+    # =========================================================================
+    # SECTION 5: EXPORT REPORT
+    # =========================================================================
+    st.divider()
+    export_report_fragment(
+        metrics=overview_metrics,
+        complex_kpis=complex_kpis,
+        pipeline_metrics=pipeline_metrics,
+        filter_values=active_filters,
+        yoy_metrics=yoy_metrics,
+        kpi_center_summary_df=kpi_center_summary_df,
+        monthly_df=monthly_df,
+        sales_detail_df=sales_df,
+        backlog_summary_df=data.get('backlog_summary_df', pd.DataFrame()),
+        backlog_detail_df=data.get('backlog_detail_df', pd.DataFrame()),
+        backlog_by_month_df=data.get('backlog_by_month_df', pd.DataFrame())
+    )

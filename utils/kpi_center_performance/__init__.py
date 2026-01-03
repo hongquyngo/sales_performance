@@ -2,7 +2,9 @@
 """
 KPI Center Performance Module
 
-
+VERSION: 4.6.0
+CHANGELOG:
+- v4.6.0: Added overview_tab_fragment as main Overview tab entry point
 """
 
 # =============================================================================
@@ -127,8 +129,9 @@ from .export import KPICenterExport
 # Common fragments
 from .common.fragments import prepare_monthly_summary
 
-# Overview fragments
+# Overview fragments - UPDATED v4.6.0
 from .overview.fragments import (
+    overview_tab_fragment,  # NEW v4.6.0 - Main tab entry point
     monthly_trend_fragment,
     yoy_comparison_fragment,
     export_report_fragment,
@@ -254,19 +257,28 @@ __all__ = [
     'build_backlog_by_month_chart_multiyear',
     'build_backlog_by_month_stacked',
     
-    # Fragments
+    # Fragments - Overview (UPDATED v4.6.0)
+    'overview_tab_fragment',  # NEW v4.6.0
     'prepare_monthly_summary',
     'monthly_trend_fragment',
     'yoy_comparison_fragment',
     'export_report_fragment',
+    
+    # Fragments - Sales Detail
     'sales_detail_fragment',
     'pivot_analysis_fragment',
     'sales_detail_tab_fragment',
+    
+    # Fragments - Analysis
     'top_performers_fragment',
+    
+    # Fragments - Backlog
     'backlog_list_fragment',
     'backlog_by_etd_fragment',
     'backlog_risk_analysis_fragment',
     'backlog_tab_fragment',
+    
+    # Fragments - KPI Targets
     'kpi_assignments_fragment',
     'kpi_progress_fragment',
     'kpi_center_ranking_fragment',
@@ -303,4 +315,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '4.4.0'
+__version__ = '4.6.0'
