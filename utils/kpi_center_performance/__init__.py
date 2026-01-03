@@ -2,17 +2,7 @@
 """
 KPI Center Performance Module
 
-VERSION: 4.3.0
-CHANGELOG:
-- v4.3.0: Modular refactor - charts and fragments split into submodules
-  - charts.py split into overview/, backlog/, analysis/, common/
-  - fragments.py split into overview/, sales_detail/, backlog/, analysis/, kpi_targets/, common/
-  - Direct imports from submodules (no wrapper files needed)
-  - Fixes circular import issues
-  - KPICenterCharts class preserved for backward compatibility
-- v4.2.0: Tab-level fragment wrappers
-- v4.1.0: Code cleanup and consolidation
-- v4.0.0: Unified data loading architecture
+
 """
 
 # =============================================================================
@@ -75,10 +65,8 @@ from .overview.charts import (
     build_cumulative_dual_chart,
     build_yoy_comparison_chart,
     build_yoy_cumulative_chart,
-    build_monthly_trend_chart,
     build_multi_year_monthly_chart,
     build_multi_year_cumulative_chart,
-    build_multi_year_summary_table,
 )
 
 # Analysis charts
@@ -115,10 +103,8 @@ class KPICenterCharts:
     build_cumulative_dual_chart = staticmethod(build_cumulative_dual_chart)
     build_yoy_comparison_chart = staticmethod(build_yoy_comparison_chart)
     build_yoy_cumulative_chart = staticmethod(build_yoy_cumulative_chart)
-    build_monthly_trend_chart = staticmethod(build_monthly_trend_chart)
     build_multi_year_monthly_chart = staticmethod(build_multi_year_monthly_chart)
     build_multi_year_cumulative_chart = staticmethod(build_multi_year_cumulative_chart)
-    build_multi_year_summary_table = staticmethod(build_multi_year_summary_table)
     
     # Analysis
     build_pareto_chart = staticmethod(build_pareto_chart)
@@ -258,10 +244,8 @@ __all__ = [
     'build_cumulative_dual_chart',
     'build_yoy_comparison_chart',
     'build_yoy_cumulative_chart',
-    'build_monthly_trend_chart',
     'build_multi_year_monthly_chart',
     'build_multi_year_cumulative_chart',
-    'build_multi_year_summary_table',
     'build_pareto_chart',
     'build_top_performers_chart',
     'build_forecast_waterfall_chart',
@@ -319,4 +303,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '4.3.0'
+__version__ = '4.4.0'
