@@ -2,8 +2,13 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 4.0.0
+VERSION: 4.0.1
 CHANGELOG:
+- v4.0.1: RESTORED missing features from v3.9.0
+  - Progress bar during data loading (in UnifiedDataLoader)
+  - Export Report UI at end of Overview tab
+  - Backlog & Forecast charts (waterfall + gap analysis)
+  - Full metrics display with proper help text
 - v4.0.0: Unified data loading architecture
   - Replaced load_lookup_data() + load_data_for_year_range() with UnifiedDataLoader
   - Replaced filter_data_client_side() with DataProcessor
@@ -591,13 +596,41 @@ def main():
             bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
             
             with bf_tab1:
-                _render_backlog_forecast_tab(summary_metrics, revenue_metrics, 'revenue')
+                _render_backlog_forecast_tab(
+                    summary_metrics, revenue_metrics, 'revenue',
+                    chart_backlog_metrics=chart_backlog_metrics
+                )
             
             with bf_tab2:
-                _render_backlog_forecast_tab(summary_metrics, gp_metrics, 'gp')
+                _render_backlog_forecast_tab(
+                    summary_metrics, gp_metrics, 'gp',
+                    chart_backlog_metrics=chart_backlog_metrics
+                )
             
             with bf_tab3:
-                _render_backlog_forecast_tab(summary_metrics, gp1_metrics, 'gp1')
+                _render_backlog_forecast_tab(
+                    summary_metrics, gp1_metrics, 'gp1',
+                    chart_backlog_metrics=chart_backlog_metrics,
+                    gp1_gp_ratio=gp1_gp_ratio
+                )
+        
+        # =====================================================================
+        # EXPORT SECTION - RESTORED from v3.9.0
+        # =====================================================================
+        st.divider()
+        export_report_fragment(
+            metrics=overview_metrics,
+            complex_kpis=complex_kpis,
+            pipeline_metrics=pipeline_metrics,
+            filter_values=active_filters,
+            yoy_metrics=yoy_metrics,
+            kpi_center_summary_df=kpi_center_summary_df,
+            monthly_df=monthly_df,
+            sales_detail_df=sales_df,
+            backlog_summary_df=data.get('backlog_summary_df', pd.DataFrame()),
+            backlog_detail_df=data.get('backlog_detail_df', pd.DataFrame()),
+            backlog_by_month_df=data.get('backlog_by_month_df', pd.DataFrame())
+        )
     
     # =========================================================================
     # TAB 2: SALES DETAIL
@@ -788,30 +821,57 @@ def main():
 
 # =============================================================================
 # HELPER: BACKLOG FORECAST TAB RENDERING
+# RESTORED v4.0.1: Added charts (waterfall + gap analysis) from v3.9.0
 # =============================================================================
 
-def _render_backlog_forecast_tab(summary_metrics: dict, kpi_metrics: dict, metric_type: str):
-    """Render backlog forecast metrics for a specific tab (revenue/gp/gp1)."""
+def _render_backlog_forecast_tab(
+    summary_metrics: dict, 
+    kpi_metrics: dict, 
+    metric_type: str,
+    chart_backlog_metrics: dict = None,
+    gp1_gp_ratio: float = 1.0
+):
+    """
+    Render backlog forecast metrics AND charts for a specific tab (revenue/gp/gp1).
+    
+    RESTORED from v3.9.0: Now includes both metrics row AND charts row.
+    
+    Args:
+        summary_metrics: Overall summary metrics (total_backlog_revenue, etc.)
+        kpi_metrics: KPI-specific metrics (in_period_backlog, target, forecast, gap)
+        metric_type: 'revenue', 'gp', or 'gp1'
+        chart_backlog_metrics: Dict for chart rendering (optional)
+        gp1_gp_ratio: Ratio for GP1 estimation (default 1.0)
+    """
     col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
     
-    # Labels based on type
+    # Labels and keys based on type
     if metric_type == 'revenue':
         total_key = 'total_backlog_revenue'
         label_total = "Total Backlog"
+        help_suffix = "revenue"
+        kpi_name = "Revenue"
     elif metric_type == 'gp':
         total_key = 'total_backlog_gp'
         label_total = "Total GP Backlog"
+        help_suffix = "GP"
+        kpi_name = "GP"
     else:  # gp1
         total_key = 'total_backlog_gp1'
         label_total = "Total GP1 Backlog"
+        help_suffix = "GP1"
+        kpi_name = "GP1"
     
     with col_m1:
+        help_text = f"All outstanding {help_suffix} from pending orders"
+        if metric_type == 'gp1' and gp1_gp_ratio != 1.0:
+            help_text = f"Estimated GP1 backlog (GP × {gp1_gp_ratio:.2%})"
         st.metric(
             label=label_total,
             value=f"${summary_metrics.get(total_key, 0):,.0f}",
             delta=f"{int(summary_metrics.get('backlog_orders', 0)):,} orders" if summary_metrics.get('backlog_orders') else None,
             delta_color="off",
-            help="All outstanding value from pending orders"
+            help=help_text
         )
     
     with col_m2:
@@ -824,38 +884,39 @@ def _render_backlog_forecast_tab(summary_metrics: dict, kpi_metrics: dict, metri
             value=f"${in_period:,.0f}",
             delta=f"{pct:.0f}% of target" if pct else None,
             delta_color="off",
-            help=f"Backlog with ETD in period. Only from {kpc_count} KPI Centers with this KPI."
+            help=f"Backlog with ETD in period. Only from {kpc_count} KPI Centers with {kpi_name} KPI."
         )
     
     with col_m3:
         target = kpi_metrics.get('target')
+        kpc_count = kpi_metrics.get('kpi_center_count', 0)
         if target and target > 0:
             st.metric(
                 label="Target",
                 value=f"${target:,.0f}",
-                delta=f"{kpi_metrics.get('kpi_center_count', 0)} KPI Centers",
+                delta=f"{kpc_count} KPI Centers",
                 delta_color="off",
-                help="Prorated annual target"
+                help=f"Sum of prorated {kpi_name} targets from {kpc_count} KPI Centers"
             )
         else:
             st.metric(
                 label="Target",
                 value="N/A",
-                delta="No target set",
+                delta="No KPI assigned",
+                delta_color="off",
                 help="No KPI target assigned"
             )
     
     with col_m4:
         forecast = kpi_metrics.get('forecast')
-        target = kpi_metrics.get('target', 0)
+        achievement = kpi_metrics.get('forecast_achievement')
         if forecast is not None:
-            pct = (forecast / target * 100) if target and target > 0 else None
-            delta_color = "normal" if pct and pct >= 100 else "inverse"
+            delta_color = "normal" if achievement and achievement >= 100 else "inverse"
             st.metric(
                 label="Forecast (KPI)",
                 value=f"${forecast:,.0f}",
-                delta=f"{pct:.0f}% of target" if pct else None,
-                delta_color=delta_color if pct else "off",
+                delta=f"{achievement:.0f}% of target" if achievement else None,
+                delta_color=delta_color if achievement else "off",
                 help="Invoiced + In-Period Backlog"
             )
         else:
@@ -869,14 +930,16 @@ def _render_backlog_forecast_tab(summary_metrics: dict, kpi_metrics: dict, metri
     
     with col_m5:
         gap = kpi_metrics.get('gap')
+        gap_pct = kpi_metrics.get('gap_percent')
         if gap is not None:
-            gap_label = "Surplus" if gap >= 0 else "GAP"
+            gap_label = "Surplus ✅" if gap >= 0 else "GAP ⚠️"
+            delta_color = "normal" if gap >= 0 else "inverse"
             st.metric(
                 label=gap_label,
-                value=f"${abs(gap):,.0f}",
-                delta="On track ✓" if gap >= 0 else "Behind target",
-                delta_color="normal" if gap >= 0 else "inverse",
-                help="Forecast minus Target"
+                value=f"${gap:+,.0f}",
+                delta=f"{gap_pct:+.1f}%" if gap_pct else None,
+                delta_color=delta_color,
+                help="Forecast - Target. Positive = ahead, Negative = behind."
             )
         else:
             st.metric(
@@ -886,6 +949,28 @@ def _render_backlog_forecast_tab(summary_metrics: dict, kpi_metrics: dict, metri
                 delta_color="off",
                 help="No KPI target assigned"
             )
+    
+    # =========================================================================
+    # CHARTS ROW - RESTORED from v3.9.0
+    # =========================================================================
+    if chart_backlog_metrics:
+        col_bf1, col_bf2 = st.columns(2)
+        with col_bf1:
+            st.markdown(f"**{kpi_name} Forecast vs Target**")
+            forecast_chart = KPICenterCharts.build_forecast_waterfall_chart(
+                backlog_metrics=chart_backlog_metrics,
+                metric=metric_type,
+                title=""
+            )
+            st.altair_chart(forecast_chart, use_container_width=True)
+        with col_bf2:
+            st.markdown(f"**{kpi_name}: Target vs Forecast**")
+            gap_chart = KPICenterCharts.build_gap_analysis_chart(
+                backlog_metrics=chart_backlog_metrics,
+                metrics_to_show=[metric_type],
+                title=""
+            )
+            st.altair_chart(gap_chart, use_container_width=True)
 
 
 # =============================================================================

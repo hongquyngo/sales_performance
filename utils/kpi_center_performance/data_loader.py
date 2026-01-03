@@ -2,7 +2,11 @@
 """
 Unified Data Loader for KPI Center Performance
 
-VERSION: 4.0.0
+VERSION: 4.0.1
+
+CHANGELOG:
+- v4.0.1: RESTORED progress bar from v3.9.0 in _load_all_raw_data()
+- v4.0.0: Initial unified data loading architecture
 
 Single source of truth for all raw data loading.
 Load ONCE, filter MANY times.
@@ -179,40 +183,58 @@ class UnifiedDataLoader:
         total_start = time.perf_counter()
         
         # =====================================================================
-        # 1. SALES RAW DATA (largest dataset)
+        # PROGRESS BAR - Restored from v3.9.0
         # =====================================================================
-        start = time.perf_counter()
-        data['sales_raw_df'] = self._load_sales_raw(lookback_start)
-        elapsed = time.perf_counter() - start
-        if DEBUG_TIMING:
-            print(f"   📊 SQL [sales_raw]: {elapsed:.3f}s → {len(data['sales_raw_df']):,} rows")
+        progress_bar = st.progress(0, text="🔄 Loading unified data...")
         
-        # =====================================================================
-        # 2. BACKLOG RAW DATA
-        # =====================================================================
-        start = time.perf_counter()
-        data['backlog_raw_df'] = self._load_backlog_raw()
-        elapsed = time.perf_counter() - start
-        if DEBUG_TIMING:
-            print(f"   📊 SQL [backlog_raw]: {elapsed:.3f}s → {len(data['backlog_raw_df']):,} rows")
-        
-        # =====================================================================
-        # 3. TARGETS RAW DATA
-        # =====================================================================
-        start = time.perf_counter()
-        data['targets_raw_df'] = self._load_targets_raw(target_years)
-        elapsed = time.perf_counter() - start
-        if DEBUG_TIMING:
-            print(f"   📊 SQL [targets_raw]: {elapsed:.3f}s → {len(data['targets_raw_df']):,} rows")
-        
-        # =====================================================================
-        # 4. HIERARCHY DATA
-        # =====================================================================
-        start = time.perf_counter()
-        data['hierarchy_df'] = self._load_hierarchy()
-        elapsed = time.perf_counter() - start
-        if DEBUG_TIMING:
-            print(f"   📊 SQL [hierarchy]: {elapsed:.3f}s → {len(data['hierarchy_df']):,} rows")
+        try:
+            # =====================================================================
+            # 1. SALES RAW DATA (largest dataset)
+            # =====================================================================
+            progress_bar.progress(10, text="📊 Loading sales data...")
+            start = time.perf_counter()
+            data['sales_raw_df'] = self._load_sales_raw(lookback_start)
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [sales_raw]: {elapsed:.3f}s → {len(data['sales_raw_df']):,} rows")
+            
+            # =====================================================================
+            # 2. BACKLOG RAW DATA
+            # =====================================================================
+            progress_bar.progress(40, text="📦 Loading backlog data...")
+            start = time.perf_counter()
+            data['backlog_raw_df'] = self._load_backlog_raw()
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [backlog_raw]: {elapsed:.3f}s → {len(data['backlog_raw_df']):,} rows")
+            
+            # =====================================================================
+            # 3. TARGETS RAW DATA
+            # =====================================================================
+            progress_bar.progress(70, text="🎯 Loading KPI targets...")
+            start = time.perf_counter()
+            data['targets_raw_df'] = self._load_targets_raw(target_years)
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [targets_raw]: {elapsed:.3f}s → {len(data['targets_raw_df']):,} rows")
+            
+            # =====================================================================
+            # 4. HIERARCHY DATA
+            # =====================================================================
+            progress_bar.progress(90, text="🏢 Loading hierarchy...")
+            start = time.perf_counter()
+            data['hierarchy_df'] = self._load_hierarchy()
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [hierarchy]: {elapsed:.3f}s → {len(data['hierarchy_df']):,} rows")
+            
+            progress_bar.progress(100, text="✅ Data loaded successfully!")
+            
+        finally:
+            # Clear progress bar after short delay
+            import time as _time
+            _time.sleep(0.3)
+            progress_bar.empty()
         
         # =====================================================================
         # METADATA
