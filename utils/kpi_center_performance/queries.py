@@ -13,15 +13,10 @@ import streamlit as st
 from sqlalchemy import text
 
 from utils.db import get_db_engine
-from .constants import LOOKBACK_YEARS, CACHE_TTL_SECONDS
+from .constants import LOOKBACK_YEARS, CACHE_TTL_SECONDS, DEBUG_QUERY_TIMING
 from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# DEBUG TIMING FLAG - Set to True to see SQL query timings in terminal
-# =============================================================================
-DEBUG_QUERY_TIMING = True
 
 
 class KPICenterQueries:
@@ -56,44 +51,8 @@ class KPICenterQueries:
     # =========================================================================
     # KPI CENTER HIERARCHY HELPERS
     # Note: get_kpi_center_hierarchy() moved to setup/queries.py (v3.4.0)
+    # Note: get_child_kpi_center_ids() removed v4.1.0 - use get_all_descendants() instead
     # =========================================================================
-    
-    def get_child_kpi_center_ids(self, parent_id: int) -> List[int]:
-        """
-        Get all child KPI Center IDs for a given parent (recursive).
-        
-        Args:
-            parent_id: Parent KPI Center ID
-            
-        Returns:
-            List of child KPI Center IDs (including grandchildren, etc.)
-        """
-        query = """
-            WITH RECURSIVE children AS (
-                -- Base case: direct children
-                SELECT id AS kpi_center_id
-                FROM kpi_centers
-                WHERE parent_center_id = :parent_id
-                  AND delete_flag = 0
-                
-                UNION ALL
-                
-                -- Recursive case: grandchildren
-                SELECT kc.id
-                FROM kpi_centers kc
-                INNER JOIN children c ON kc.parent_center_id = c.kpi_center_id
-                WHERE kc.delete_flag = 0
-            )
-            SELECT kpi_center_id FROM children
-        """
-        
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text(query), {'parent_id': parent_id})
-                return [row[0] for row in result]
-        except Exception as e:
-            logger.error(f"Error fetching child KPI Centers: {e}")
-            return []
     
     # =========================================================================
     # CORE SALES DATA
@@ -129,7 +88,7 @@ class KPICenterQueries:
             if include_children:
                 expanded_ids = set(kpi_center_ids)
                 for parent_id in kpi_center_ids:
-                    child_ids = self.get_child_kpi_center_ids(parent_id)
+                    child_ids = self.get_all_descendants(parent_id, include_self=False)
                     expanded_ids.update(child_ids)
                 kpi_center_ids = list(expanded_ids)
         else:

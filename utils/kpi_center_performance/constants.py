@@ -117,8 +117,7 @@ MONTH_ORDER = [
 
 PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'Custom']
 
-# KPI Center Types
-KPI_CENTER_TYPES = ['Sales Team', 'Product Line', 'Region', 'Channel', 'Other']
+# KPI Center Types - REMOVED v4.1.0 (unused)
 
 # =============================================================================
 # CHART DIMENSIONS

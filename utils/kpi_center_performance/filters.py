@@ -138,12 +138,17 @@ def _get_kpi_centers_with_assignments(
 
 
 # =============================================================================
-# ENTITY BY KPI TYPE HELPER - NEW v2.11.0
+# ENTITY BY KPI TYPE HELPER - REMOVED v4.1.0
 # =============================================================================
+# NOTE: _get_entities_by_kpi_type() removed - use DataProcessor.get_entities_by_kpi_type() instead
+# which uses cached DataFrame instead of SQL query
 
-def _get_entities_by_kpi_type(kpi_type: str = None) -> pd.DataFrame:
+
+def _get_entities_from_cache(kpi_type: str = None) -> pd.DataFrame:
     """
-    Get Legal Entities that have sales data for the selected KPI Type.
+    Get Legal Entities from cached sales data, optionally filtered by KPI Type.
+    
+    NEW v4.1.0: Replaces SQL-based _get_entities_by_kpi_type() with cached data lookup.
     
     Args:
         kpi_type: KPI Type to filter by (e.g., 'TERRITORY', 'VERTICAL')
@@ -152,73 +157,99 @@ def _get_entities_by_kpi_type(kpi_type: str = None) -> pd.DataFrame:
     Returns:
         DataFrame with columns: entity_id, entity_name
     """
+    import streamlit as st
+    from .constants import CACHE_KEY_UNIFIED
+    
     try:
-        from utils.db import get_db_engine
-        engine = get_db_engine()
+        cache = st.session_state.get(CACHE_KEY_UNIFIED)
+        if not cache:
+            return pd.DataFrame(columns=['entity_id', 'entity_name'])
         
-        if kpi_type:
-            query = """
-                SELECT DISTINCT
-                    v.legal_entity_id AS entity_id,
-                    COALESCE(c.english_name, v.legal_entity) AS entity_name
-                FROM unified_sales_by_kpi_center_view v
-                LEFT JOIN companies c ON v.legal_entity_id = c.id
-                WHERE v.legal_entity_id IS NOT NULL
-                  AND v.kpi_type = :kpi_type
-                ORDER BY entity_name
-            """
-            df = pd.read_sql(text(query), engine, params={'kpi_type': kpi_type})
-        else:
-            query = """
-                SELECT DISTINCT
-                    v.legal_entity_id AS entity_id,
-                    COALESCE(c.english_name, v.legal_entity) AS entity_name
-                FROM unified_sales_by_kpi_center_view v
-                LEFT JOIN companies c ON v.legal_entity_id = c.id
-                WHERE v.legal_entity_id IS NOT NULL
-                ORDER BY entity_name
-            """
-            df = pd.read_sql(text(query), engine)
+        sales_df = cache.get('sales_raw_df', pd.DataFrame())
+        if sales_df.empty or 'legal_entity_id' not in sales_df.columns:
+            return pd.DataFrame(columns=['entity_id', 'entity_name'])
         
-        return df
+        df = sales_df
+        
+        # Filter by KPI Type if specified
+        if kpi_type and 'kpi_type' in df.columns:
+            df = df[df['kpi_type'] == kpi_type]
+        
+        if df.empty:
+            return pd.DataFrame(columns=['entity_id', 'entity_name'])
+        
+        # Get unique entities
+        entities = df.groupby(['legal_entity_id', 'legal_entity']).size().reset_index(name='_count')
+        entities = entities.rename(columns={
+            'legal_entity_id': 'entity_id',
+            'legal_entity': 'entity_name'
+        })[['entity_id', 'entity_name']].drop_duplicates()
+        
+        return entities.sort_values('entity_name').reset_index(drop=True)
         
     except Exception as e:
-        logger.error(f"Error fetching entities by KPI Type: {e}")
+        logger.error(f"Error fetching entities from cache: {e}")
         return pd.DataFrame(columns=['entity_id', 'entity_name'])
 
 
 # =============================================================================
-# PARENT-CHILD HIERARCHY HELPER - NEW v2.3.0
+# PARENT-CHILD HIERARCHY HELPER - UPDATED v4.1.0
 # =============================================================================
 
 def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]:
     """
     Expand KPI Center IDs to include all children (recursive).
     
-    When user selects a parent KPI Center, this function finds all 
-    descendant KPI Centers and returns the complete list.
+    UPDATED v4.1.0: Now uses cached hierarchy from UnifiedDataLoader when available,
+    falling back to SQL query only if cache is not present.
     
     Args:
         kpi_center_ids: List of selected KPI Center IDs (may include parents)
         
     Returns:
         List of KPI Center IDs including all descendants
-        
-    Example:
-        Input: [1]  (where 1 is parent of 101, 102, 103)
-        Output: [1, 101, 102, 103]
     """
     if not kpi_center_ids:
         return kpi_center_ids
     
+    # Try to use cached hierarchy from session state (faster)
+    import streamlit as st
+    from .constants import CACHE_KEY_UNIFIED
+    
+    cache = st.session_state.get(CACHE_KEY_UNIFIED)
+    if cache and not cache.get('hierarchy_df', pd.DataFrame()).empty:
+        hierarchy_df = cache['hierarchy_df']
+        
+        # Build parent-child map
+        children_map = {}
+        for _, row in hierarchy_df.iterrows():
+            parent = row.get('parent_center_id')
+            if pd.notna(parent):
+                parent = int(parent)
+                if parent not in children_map:
+                    children_map[parent] = []
+                children_map[parent].append(int(row['kpi_center_id']))
+        
+        # BFS to get all descendants
+        expanded = set(kpi_center_ids)
+        queue = list(kpi_center_ids)
+        while queue:
+            current = queue.pop(0)
+            children = children_map.get(current, [])
+            for child in children:
+                if child not in expanded:
+                    expanded.add(child)
+                    queue.append(child)
+        
+        return list(expanded)
+    
+    # Fallback: SQL query (only if cache not available)
     try:
         from utils.db import get_db_engine
         engine = get_db_engine()
         
-        # Use recursive CTE to get all descendants
         query = """
             WITH RECURSIVE all_centers AS (
-                -- Base case: selected centers
                 SELECT id AS kpi_center_id
                 FROM kpi_centers 
                 WHERE id IN :selected_ids
@@ -226,7 +257,6 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
                 
                 UNION ALL
                 
-                -- Recursive case: all descendants
                 SELECT kc.id
                 FROM kpi_centers kc
                 INNER JOIN all_centers ac ON kc.parent_center_id = ac.kpi_center_id
@@ -238,20 +268,10 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
         
         with engine.connect() as conn:
             result = conn.execute(text(query), {'selected_ids': tuple(kpi_center_ids)})
-            expanded_ids = [row[0] for row in result]
-            
-            # Log expansion for debugging
-            if len(expanded_ids) > len(kpi_center_ids):
-                logger.info(
-                    f"KPI Center IDs expanded: {len(kpi_center_ids)} → {len(expanded_ids)} "
-                    f"(added {len(expanded_ids) - len(kpi_center_ids)} children)"
-                )
-            
-            return expanded_ids
+            return [row[0] for row in result]
             
     except Exception as e:
         logger.error(f"Error expanding KPI Center IDs with children: {e}")
-        # Fallback: return original IDs
         return kpi_center_ids
 
 
@@ -815,7 +835,7 @@ class KPICenterFilters:
             
             Args:
                 kpi_center_df: KPI Center options (with hierarchy columns if available)
-                entity_df: Entity options (fallback if _get_entities_by_kpi_type fails)
+                entity_df: Entity options (fallback if _get_entities_from_cache fails)
                 default_start_date: Default start date (from DB - Jan 1 of latest sales year)
                 default_end_date: Default end date (from DB - max backlog ETD or today)
                 kpi_types_with_assignment: Set of KPI Types that have KPI assignments
@@ -1028,16 +1048,17 @@ class KPICenterFilters:
                     st.divider()
                     
                     # =========================================================
-                    # 4. ENTITY FILTER (filtered by KPI Type) - NEW v2.11.0
+                    # 4. ENTITY FILTER (filtered by KPI Type) - UPDATED v4.1.0
                     # =========================================================
                     st.markdown("**🏢 Legal Entity**")
                     
                     entity_ids_local = []
                     
-                    # Get entities for selected KPI Type
-                    filtered_entity_df = _get_entities_by_kpi_type(kpi_type_filter_local)
+                    # Get entities for selected KPI Type from cached data
+                    # UPDATED v4.1.0: Use cached sales_raw instead of SQL query
+                    filtered_entity_df = _get_entities_from_cache(kpi_type_filter_local)
                     
-                    # Fallback to provided entity_df if query fails
+                    # Fallback to provided entity_df if cache lookup fails
                     if filtered_entity_df.empty and entity_df is not None:
                         filtered_entity_df = entity_df.copy()
                     
@@ -1298,7 +1319,7 @@ class KPICenterFilters:
             return filter_values, submitted
 
     # =========================================================================
-    # LEGACY METHOD - For backward compatibility
+    # LEGACY METHOD - DEPRECATED v4.1.0
     # =========================================================================
     
     def render_sidebar_filters(
@@ -1309,8 +1330,20 @@ class KPICenterFilters:
         kpi_types_with_assignment: set = None,
     ) -> Dict:
         """
-        Legacy method - redirects to render_filter_form for backward compatibility.
+        DEPRECATED v4.1.0: Use render_filter_form() directly instead.
+        
+        This wrapper exists for backward compatibility only.
+        Will be removed in a future version.
+        
+        Legacy method - redirects to render_filter_form.
         """
+        import warnings
+        warnings.warn(
+            "render_sidebar_filters() is deprecated. Use render_filter_form() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         filter_values, _ = self.render_filter_form(
             kpi_center_df=kpi_center_df,
             entity_df=entity_df,
@@ -1406,15 +1439,23 @@ def analyze_period(filter_values: Dict) -> Dict:
     """
     Analyze period to determine comparison type and which sections to show.
     
+    UPDATED v4.1.0: Consolidated with KPICenterMetrics.analyze_period_context().
+    Now includes all fields from both functions.
+    
     Returns:
         Dictionary with:
         - is_historical: End date is in the past
+        - is_current: Period includes today
+        - is_future: Start date is in the future
         - is_multi_year: Period spans multiple years
         - years_in_period: List of years in period
         - show_backlog: Whether to show backlog/forecast section
         - show_forecast: Whether to show forecast (same as show_backlog)
         - comparison_type: 'multi_year' or 'yoy'
         - forecast_message: Message when forecast not shown
+        - today: Current date
+        - days_until_end: Days from today until end_date
+        - period_status: 'historical', 'current', or 'future'
     """
     today = date.today()
     start = filter_values['start_date']
@@ -1424,8 +1465,19 @@ def analyze_period(filter_values: Dict) -> Dict:
     years_in_period = list(range(start.year, end.year + 1))
     is_multi_year = len(years_in_period) > 1
     
-    # Historical = end date is in the past
+    # Period classification (from analyze_period_context)
     is_historical = end < today
+    is_future = start > today
+    is_current = not is_historical and not is_future
+    days_until_end = (end - today).days
+    
+    # Period status
+    if is_historical:
+        period_status = 'historical'
+    elif is_future:
+        period_status = 'future'
+    else:
+        period_status = 'current'
     
     # Only show backlog for current/future periods
     show_backlog = end >= date(today.year, today.month, 1)
@@ -1434,8 +1486,11 @@ def analyze_period(filter_values: Dict) -> Dict:
     forecast_message = ""
     if not show_backlog:
         forecast_message = f"📅 Historical period ({end.strftime('%Y-%m-%d')}) - forecast not applicable"
+    elif is_future:
+        forecast_message = "📅 Future period - showing projected backlog only"
     
     return {
+        # Original fields
         'is_historical': is_historical,
         'is_multi_year': is_multi_year,
         'years_in_period': years_in_period,
@@ -1443,4 +1498,10 @@ def analyze_period(filter_values: Dict) -> Dict:
         'show_forecast': show_backlog,
         'comparison_type': 'multi_year' if is_multi_year else 'yoy',
         'forecast_message': forecast_message,
+        # Added from analyze_period_context
+        'is_current': is_current,
+        'is_future': is_future,
+        'today': today,
+        'days_until_end': days_until_end,
+        'period_status': period_status,
     }

@@ -2,8 +2,17 @@
 """
 KPI Center Performance Module
 
-VERSION: 4.0.0
+VERSION: 4.1.0
 CHANGELOG:
+- v4.1.0: Code cleanup and consolidation
+  - Removed unused _get_entities_by_kpi_type() from filters.py
+  - Removed unused KPI_CENTER_TYPES constant
+  - Removed duplicate get_child_kpi_center_ids() (use get_all_descendants())
+  - Consolidated DEBUG_TIMING definitions to constants.py
+  - Fixed _complex_kpi_calculator caching bug (exclude_internal tracking)
+  - Deprecated render_sidebar_filters() - use render_filter_form()
+  - Consolidated analyze_period_context() into analyze_period()
+  - Optimized _expand_kpi_center_ids_with_children() to use cached hierarchy
 - v4.0.0: Unified data loading architecture
   - Added UnifiedDataLoader for single-source data loading
   - Added DataProcessor for Pandas-based filtering
@@ -105,7 +114,7 @@ from .constants import (
     # UI settings
     PERIOD_TYPES,
     MONTH_ORDER,
-    KPI_CENTER_TYPES,
+    # KPI_CENTER_TYPES removed v4.1.0 (unused)
     COLORS,
     CHART_WIDTH,
     CHART_HEIGHT,
@@ -200,4 +209,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '4.0.0'
+__version__ = '4.1.0'

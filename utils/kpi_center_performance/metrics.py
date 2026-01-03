@@ -43,17 +43,27 @@ class KPICenterMetrics:
         self.targets_df = targets_df if targets_df is not None else pd.DataFrame()
     
     # =========================================================================
-    # PERIOD CONTEXT ANALYSIS
+    # PERIOD CONTEXT ANALYSIS - DEPRECATED v4.1.0
     # =========================================================================
     
     @staticmethod
     def analyze_period_context(start_date: date, end_date: date) -> Dict:
         """
-        Analyze the selected period relative to today.
+        DEPRECATED v4.1.0: Use filters.analyze_period() instead.
         
-        Determines if period is historical, current, or future for proper
-        handling of backlog and forecast displays.
+        This method is kept for backward compatibility but will be removed
+        in a future version. The analyze_period() function now includes
+        all fields from this method plus additional multi-year analysis.
+        
+        Analyze the selected period relative to today.
         """
+        import warnings
+        warnings.warn(
+            "analyze_period_context() is deprecated. Use filters.analyze_period() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         today = date.today()
         
         is_historical = end_date < today

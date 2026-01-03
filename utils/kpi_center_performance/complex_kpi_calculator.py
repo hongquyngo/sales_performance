@@ -11,10 +11,9 @@ from typing import List, Optional, Dict, Any, Tuple
 import time
 import logging
 
-logger = logging.getLogger(__name__)
+from .constants import DEBUG_TIMING
 
-# Debug timing flag - synced with main page
-DEBUG_TIMING = True
+logger = logging.getLogger(__name__)
 
 
 class ComplexKPICalculator:

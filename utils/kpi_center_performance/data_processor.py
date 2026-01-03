@@ -456,11 +456,15 @@ class DataProcessor:
         # Create or reuse calculator
         # Note: Calculator is initialized with ALL sales_raw data
         # because it needs lookback history to determine "new"
-        if self._complex_kpi_calculator is None:
+        # FIX v4.1.0: Track exclude_internal to invalidate cache when it changes
+        cache_key = f"exclude_internal_{exclude_internal}"
+        if (self._complex_kpi_calculator is None or 
+            getattr(self, '_complex_kpi_cache_key', None) != cache_key):
             self._complex_kpi_calculator = ComplexKPICalculator(
                 self.sales_raw,
                 exclude_internal=exclude_internal
             )
+            self._complex_kpi_cache_key = cache_key
         
         calculator = self._complex_kpi_calculator
         
