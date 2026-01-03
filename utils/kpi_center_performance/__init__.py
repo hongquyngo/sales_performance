@@ -69,6 +69,8 @@ from .overview.charts import (
     build_yoy_cumulative_chart,
     build_multi_year_monthly_chart,
     build_multi_year_cumulative_chart,
+    build_forecast_waterfall_chart,
+    build_gap_analysis_chart,
 )
 
 # Analysis charts
@@ -79,8 +81,6 @@ from .analysis.charts import (
 
 # Backlog charts
 from .backlog.charts import (
-    build_forecast_waterfall_chart,
-    build_gap_analysis_chart,
     build_backlog_by_month_chart,
     build_backlog_by_month_chart_multiyear,
     build_backlog_by_month_stacked,

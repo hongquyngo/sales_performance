@@ -9,8 +9,6 @@ from .fragments import (
 )
 
 from .charts import (
-    build_forecast_waterfall_chart,
-    build_gap_analysis_chart,
     build_backlog_by_month_chart,
     build_backlog_by_month_chart_multiyear,
     build_backlog_by_month_stacked,
@@ -23,8 +21,6 @@ __all__ = [
     'backlog_by_etd_fragment',
     'backlog_risk_analysis_fragment',
     # Charts
-    'build_forecast_waterfall_chart',
-    'build_gap_analysis_chart',
     'build_backlog_by_month_chart',
     'build_backlog_by_month_chart_multiyear',
     'build_backlog_by_month_stacked',
