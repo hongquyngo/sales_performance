@@ -31,11 +31,12 @@ from .charts import (
     build_multi_year_cumulative_chart,
     build_yoy_comparison_chart,
     build_yoy_cumulative_chart,
+    build_forecast_waterfall_chart,
+    build_gap_analysis_chart
 )
 from ..constants import MONTH_ORDER
 from ..common.fragments import prepare_monthly_summary
 from ..common.charts import convert_pipeline_to_backlog_metrics
-from ..backlog.charts import build_forecast_waterfall_chart, build_gap_analysis_chart
 from ..filters import analyze_period
 
 logger = logging.getLogger(__name__)
