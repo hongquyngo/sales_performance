@@ -21,10 +21,12 @@ class KPICenterMetrics:
     
     Usage:
         metrics = KPICenterMetrics(sales_df, targets_df)
-        
         overview = metrics.calculate_overview_metrics('YTD', 2025)
-        monthly = metrics.prepare_monthly_summary()
-        by_kpi_center = metrics.aggregate_by_kpi_center()
+    
+    Note: For monthly summary and KPI Center aggregation, use DataProcessor instead:
+        processor = DataProcessor(unified_cache)
+        monthly_df = processor.prepare_monthly_summary(sales_df)
+        by_kpi_center_df = processor.aggregate_by_kpi_center(sales_df)
     """
     
     def __init__(
@@ -1457,148 +1459,6 @@ class KPICenterMetrics:
             result['status'] = 'healthy'
         
         return result
-    
-    # =========================================================================
-    # MONTHLY SUMMARY
-    # =========================================================================
-    
-    def prepare_monthly_summary(self) -> pd.DataFrame:
-        """
-        Prepare monthly breakdown of metrics.
-        
-        Returns DataFrame with monthly revenue, GP, GP1, customer count.
-        """
-        if self.sales_df.empty:
-            return self._get_empty_monthly_summary()
-        
-        df = self.sales_df.copy()
-        
-        # Ensure invoice_month exists
-        if 'invoice_month' not in df.columns or df['invoice_month'].isna().all():
-            if 'inv_date' in df.columns:
-                df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
-                df['invoice_month'] = df['inv_date'].dt.strftime('%b')
-            else:
-                return self._get_empty_monthly_summary()
-        
-        # Group by month
-        monthly = df.groupby('invoice_month').agg({
-            'sales_by_kpi_center_usd': 'sum',
-            'gross_profit_by_kpi_center_usd': 'sum',
-            'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in df.columns else 'count',
-            'customer_id': pd.Series.nunique
-        }).reset_index()
-        
-        monthly.columns = ['invoice_month', 'revenue', 'gross_profit', 'gp1', 'customer_count']
-        
-        # If gp1 column was count (fallback), set to 0
-        if 'gp1_by_kpi_center_usd' not in df.columns:
-            monthly['gp1'] = 0
-        
-        # Calculate GP%
-        monthly['gp_percent'] = (monthly['gross_profit'] / monthly['revenue'] * 100).round(2)
-        monthly['gp1_percent'] = (monthly['gp1'] / monthly['revenue'] * 100).round(2)
-        
-        # Ensure all months present
-        all_months = pd.DataFrame({'invoice_month': MONTH_ORDER})
-        monthly = all_months.merge(monthly, on='invoice_month', how='left').fillna(0)
-        
-        # Add month order for sorting
-        monthly['month_order'] = monthly['invoice_month'].apply(
-            lambda x: MONTH_ORDER.index(x) if x in MONTH_ORDER else 12
-        )
-        monthly = monthly.sort_values('month_order')
-        
-        # Calculate cumulative
-        monthly['cumulative_revenue'] = monthly['revenue'].cumsum()
-        monthly['cumulative_gp'] = monthly['gross_profit'].cumsum()
-        monthly['cumulative_gp1'] = monthly['gp1'].cumsum()
-        
-        return monthly
-    
-    def _get_empty_monthly_summary(self) -> pd.DataFrame:
-        """Return empty monthly summary."""
-        return pd.DataFrame({
-            'invoice_month': MONTH_ORDER,
-            'revenue': [0] * 12,
-            'gross_profit': [0] * 12,
-            'gp1': [0] * 12,
-            'customer_count': [0] * 12,
-            'gp_percent': [0] * 12,
-            'gp1_percent': [0] * 12,
-            'cumulative_revenue': [0] * 12,
-            'cumulative_gp': [0] * 12,
-            'cumulative_gp1': [0] * 12,
-            'month_order': list(range(12)),
-        })
-    
-    # =========================================================================
-    # KPI CENTER AGGREGATION
-    # =========================================================================
-    
-    def aggregate_by_kpi_center(self) -> pd.DataFrame:
-        """
-        Aggregate metrics by KPI Center for ranking and comparison.
-        
-        Returns:
-            DataFrame with per-KPI-Center metrics
-        """
-        if self.sales_df.empty:
-            return pd.DataFrame()
-        
-        df = self.sales_df.copy()
-        
-        # Group by KPI Center
-        by_kpi_center = df.groupby(['kpi_center_id', 'kpi_center']).agg({
-            'sales_by_kpi_center_usd': 'sum',
-            'gross_profit_by_kpi_center_usd': 'sum',
-            'gp1_by_kpi_center_usd': 'sum' if 'gp1_by_kpi_center_usd' in df.columns else 'count',
-            'customer_id': pd.Series.nunique,
-            'inv_number': pd.Series.nunique if 'inv_number' in df.columns else 'count'
-        }).reset_index()
-        
-        by_kpi_center.columns = ['kpi_center_id', 'kpi_center', 'revenue', 'gross_profit', 'gp1', 'customers', 'invoices']
-        
-        # If gp1 was count (fallback), set to 0
-        if 'gp1_by_kpi_center_usd' not in df.columns:
-            by_kpi_center['gp1'] = 0
-        
-        # Calculate percentages
-        by_kpi_center['gp_percent'] = (by_kpi_center['gross_profit'] / by_kpi_center['revenue'] * 100).round(2)
-        by_kpi_center['gp1_percent'] = (by_kpi_center['gp1'] / by_kpi_center['revenue'] * 100).round(2)
-        
-        # Add kpi_type if available
-        if 'kpi_type' in df.columns:
-            kpi_types = df.groupby('kpi_center_id')['kpi_type'].first().reset_index()
-            by_kpi_center = by_kpi_center.merge(kpi_types, on='kpi_center_id', how='left')
-        
-        # Add targets if available
-        if not self.targets_df.empty:
-            # Get revenue targets
-            revenue_targets = self.targets_df[
-                self.targets_df['kpi_name'].str.lower() == 'revenue'
-            ][['kpi_center_id', 'annual_target_value_numeric']].copy()
-            revenue_targets.columns = ['kpi_center_id', 'revenue_target']
-            
-            by_kpi_center = by_kpi_center.merge(revenue_targets, on='kpi_center_id', how='left')
-            
-            # Calculate achievement
-            by_kpi_center['revenue_achievement'] = (
-                by_kpi_center['revenue'] / by_kpi_center['revenue_target'] * 100
-            ).round(1)
-            
-            # GP targets
-            gp_targets = self.targets_df[
-                self.targets_df['kpi_name'].str.lower() == 'gross_profit'
-            ][['kpi_center_id', 'annual_target_value_numeric']].copy()
-            gp_targets.columns = ['kpi_center_id', 'gp_target']
-            
-            by_kpi_center = by_kpi_center.merge(gp_targets, on='kpi_center_id', how='left')
-            by_kpi_center['gp_achievement'] = (
-                by_kpi_center['gross_profit'] / by_kpi_center['gp_target'] * 100
-            ).round(1)
-        
-        return by_kpi_center.sort_values('revenue', ascending=False)
     
     # =========================================================================
     # BACKLOG BY MONTH PREPARATION

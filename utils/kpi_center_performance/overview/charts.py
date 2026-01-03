@@ -2,7 +2,7 @@
 """
 Overview Tab Charts for KPI Center Performance
 
-VERSION: 4.3.0
+VERSION: 4.4.0
 EXTRACTED FROM: charts.py v3.3.2
 
 Contains:
@@ -11,19 +11,22 @@ Contains:
 - build_cumulative_dual_chart: Cumulative Revenue + GP lines
 - build_yoy_comparison_chart: Year-over-Year grouped bars
 - build_yoy_cumulative_chart: YoY cumulative lines
-- build_monthly_trend_chart: Simple trend (backward compat)
 - build_multi_year_monthly_chart: Multi-year grouped bars
 - build_multi_year_cumulative_chart: Multi-year cumulative lines
-- build_multi_year_summary_table: Multi-year summary DataFrame
+
+CHANGELOG v4.4.0:
+- Removed dead code: build_monthly_trend_chart (unused "backward compat")
+- Removed dead code: build_multi_year_summary_table (unused)
+- Removed unused imports: Optional, CHART_HEIGHT
 """
 
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, List
 import pandas as pd
 import altair as alt
 import streamlit as st
 
-from ..constants import COLORS, MONTH_ORDER, CHART_WIDTH, CHART_HEIGHT
+from ..constants import COLORS, MONTH_ORDER, CHART_WIDTH
 from ..common.charts import empty_chart
 
 logger = logging.getLogger(__name__)
@@ -907,57 +910,6 @@ def build_yoy_cumulative_chart(
 
 
 # =============================================================================
-# MONTHLY TREND CHART (Simple version for backward compatibility)
-# =============================================================================
-
-def build_monthly_trend_chart(
-    monthly_df: pd.DataFrame,
-    metric: str = "Revenue",
-    show_target: bool = True,
-    target_value: float = None
-) -> alt.Chart:
-    """Build simple monthly trend bar chart with optional target line."""
-    if monthly_df.empty:
-        return alt.Chart().mark_text().encode(text=alt.value("No data"))
-    
-    metric_col_map = {'Revenue': 'revenue', 'Gross Profit': 'gross_profit', 'GP1': 'gp1'}
-    value_col = metric_col_map.get(metric, 'revenue')
-    
-    if value_col not in monthly_df.columns:
-        return alt.Chart().mark_text().encode(text=alt.value(f"Column {value_col} not found"))
-    
-    chart_df = monthly_df.copy()
-    chart_df['month_order'] = chart_df['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
-    chart_df = chart_df.sort_values('month_order')
-    
-    bars = alt.Chart(chart_df).mark_bar(
-        color=COLORS.get('primary', '#1f77b4'),
-        cornerRadiusTopLeft=3,
-        cornerRadiusTopRight=3
-    ).encode(
-        x=alt.X('month:N', sort=MONTH_ORDER, title='Month'),
-        y=alt.Y(f'{value_col}:Q', title=metric),
-        tooltip=[
-            alt.Tooltip('month:N', title='Month'),
-            alt.Tooltip(f'{value_col}:Q', title=metric, format='$,.0f')
-        ]
-    )
-    
-    chart = bars
-    
-    if show_target and target_value and target_value > 0:
-        target_df = pd.DataFrame({'target': [target_value]})
-        target_line = alt.Chart(target_df).mark_rule(
-            color=COLORS.get('target', '#d62728'),
-            strokeDash=[5, 5],
-            strokeWidth=2
-        ).encode(y='target:Q')
-        chart = chart + target_line
-    
-    return chart.properties(width='container', height=300)
-
-
-# =============================================================================
 # MULTI-YEAR COMPARISON CHARTS (NEW v2.5.0)
 # =============================================================================
 
@@ -1186,56 +1138,3 @@ def build_multi_year_cumulative_chart(
     )
     
     return chart
-
-
-def build_multi_year_summary_table(
-    sales_df: pd.DataFrame,
-    years: List[int],
-    metric: str = 'revenue'
-) -> pd.DataFrame:
-    """
-    Build summary table for multi-year comparison.
-    
-    Args:
-        sales_df: Sales data containing multiple years
-        years: List of years to compare
-        metric: 'revenue', 'gross_profit', or 'gp1'
-        
-    Returns:
-        DataFrame with yearly totals and YoY growth
-    """
-    # KPI Center column mapping
-    metric_map = {
-        'revenue': 'sales_by_kpi_center_usd',
-        'gross_profit': 'gross_profit_by_kpi_center_usd',
-        'gp1': 'gp1_by_kpi_center_usd'
-    }
-    
-    col = metric_map.get(metric, 'sales_by_kpi_center_usd')
-    
-    if sales_df.empty:
-        return pd.DataFrame()
-    
-    df = sales_df.copy()
-    
-    # Ensure year column exists
-    if 'inv_date' in df.columns:
-        df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
-        df['year'] = df['inv_date'].dt.year
-    elif 'invoice_year' in df.columns:
-        df['year'] = df['invoice_year'].astype(int)
-    else:
-        return pd.DataFrame()
-    
-    # Aggregate by year
-    yearly = df.groupby('year')[col].sum().reset_index()
-    yearly.columns = ['Year', 'Total']
-    yearly = yearly[yearly['Year'].isin(years)].sort_values('Year')
-    
-    # Calculate YoY growth
-    yearly['YoY Growth'] = yearly['Total'].pct_change() * 100
-    yearly['YoY Growth'] = yearly['YoY Growth'].apply(
-        lambda x: f"{x:+.1f}%" if pd.notna(x) else "-"
-    )
-    
-    return yearly

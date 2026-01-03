@@ -9,8 +9,8 @@ Contains:
 """
 
 import logging
-from typing import Dict, Optional, List
-from datetime import datetime, date
+from typing import Dict, List
+from datetime import date
 import pandas as pd
 import streamlit as st
 
