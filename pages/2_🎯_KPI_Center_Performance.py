@@ -2,30 +2,6 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 4.6.0
-CHANGELOG:
-- v4.6.0: Refactored Overview tab
-  - Moved Overview tab rendering to overview_tab_fragment()
-  - Moved _render_backlog_forecast_tab() helper to overview/fragments.py
-  - Reduced main page by ~120 lines
-  - Consistent pattern with other tabs (sales_detail_tab_fragment, backlog_tab_fragment)
-- v4.5.0: Code cleanup & optimization
-  - Removed unused imports: sales_detail_fragment, pivot_analysis_fragment,
-    backlog_list_fragment, backlog_by_etd_fragment, backlog_risk_analysis_fragment
-  - Removed dead function: _clean_dataframe_for_display()
-  - Fixed duplicate calculation: *_by_center now from DataProcessor (not recalculated)
-  - Reorganized imports with better grouping
-- v4.0.1: RESTORED missing features from v3.9.0
-  - Progress bar during data loading (in UnifiedDataLoader)
-  - Export Report UI at end of Overview tab
-  - Backlog & Forecast charts (waterfall + gap analysis)
-  - Full metrics display with proper help text
-- v4.0.0: Unified data loading architecture
-  - Replaced load_lookup_data() + load_data_for_year_range() with UnifiedDataLoader
-  - Replaced filter_data_client_side() with DataProcessor
-  - Simplified reload logic (only on cache expiry)
-  - All constants centralized in constants.py
-  - ~60% faster first load, ~95% faster filter changes
 """
 
 import logging
