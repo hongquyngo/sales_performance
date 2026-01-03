@@ -2,8 +2,14 @@
 """
 KPI Center Performance Dashboard
 
-VERSION: 3.8.0
+VERSION: 3.9.0
 CHANGELOG:
+- v3.9.0: BUGFIX - Backlog data showing 0 rows after client-side filter
+          - Root cause: backlog_detail_df filtered by oc_date with YTD 2026
+          - But backlog orders have oc_date in 2024-2025 → all filtered out!
+          - Fix: Skip date filter for backlog DataFrames (show full pipeline)
+          - Backlog already filtered by kpi_center_ids at SQL level
+          - In-period filtering handled by BacklogCalculator using etd
 - v3.8.0: Cleanup queries.py - removed unused backlog and target functions
           File reduced from 1445 to 716 lines
 - v3.7.0: Phase 2 Optimization
@@ -858,6 +864,11 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     """
     Filter cached data client-side based on ALL filters.
     
+    UPDATED v3.9.0: Skip date filter for backlog DataFrames
+    - Backlog should show "full pipeline" (as noted in UI caption)
+    - Backlog is already filtered by kpi_center_ids at SQL level
+    - In-period filtering is handled by BacklogCalculator using etd
+    
     UPDATED v2.5.0: Uses kpi_center_ids_expanded to include children data
     when a parent KPI Center is selected.
     """
@@ -880,6 +891,17 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     # =========================================================================
     kpi_type_filter = filter_values.get('kpi_type_filter', None)
     
+    # =========================================================================
+    # NEW v3.9.0: DataFrames that should NOT be filtered by date
+    # Backlog shows "full pipeline" - date filtering handled separately
+    # =========================================================================
+    skip_date_filter_keys = {
+        'backlog_summary_df',
+        'backlog_in_period_df', 
+        'backlog_by_month_df',
+        'backlog_detail_df',
+    }
+    
     filtered = {}
     
     for key, df in raw_data.items():
@@ -892,16 +914,19 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         df_filtered = df.copy()
         
-        # Filter by date range
-        date_cols = ['inv_date', 'oc_date', 'invoiced_date', 'first_invoice_date', 'first_sale_date']
-        for date_col in date_cols:
-            if date_col in df_filtered.columns:
-                df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
-                df_filtered = df_filtered[
-                    (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
-                    (df_filtered[date_col] <= pd.Timestamp(end_date))
-                ]
-                break
+        # =====================================================================
+        # Filter by date range - UPDATED v3.9.0: Skip for backlog DataFrames
+        # =====================================================================
+        if key not in skip_date_filter_keys:
+            date_cols = ['inv_date', 'oc_date', 'invoiced_date', 'first_invoice_date', 'first_sale_date']
+            for date_col in date_cols:
+                if date_col in df_filtered.columns:
+                    df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
+                    df_filtered = df_filtered[
+                        (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
+                        (df_filtered[date_col] <= pd.Timestamp(end_date))
+                    ]
+                    break
         
         # Filter by kpi_center_ids (now uses expanded IDs with children)
         if kpi_center_ids:
@@ -1093,11 +1118,20 @@ def main():
     
     sales_df = data.get('sales_df', pd.DataFrame())
     targets_df = data.get('targets_df', pd.DataFrame())
+    backlog_df = data.get('backlog_detail_df', pd.DataFrame())
     
-    if sales_df.empty:
+    # =========================================================================
+    # UPDATED v3.9.0: Allow page to render if we have backlog data
+    # For periods like YTD 2026 with no sales yet, still show backlog
+    # =========================================================================
+    if sales_df.empty and backlog_df.empty:
         st.warning("No data found for the selected filters. Try adjusting your selection.")
         print_timing_summary()
         st.stop()
+    
+    # Show info if no sales but have backlog
+    if sales_df.empty and not backlog_df.empty:
+        st.info(f"📊 No sales data for the selected period, but showing {len(backlog_df):,} backlog records.")
     
     # =========================================================================
     # CALCULATE METRICS

@@ -14,8 +14,14 @@ Renders filter UI elements:
 REQUIREMENTS:
 - Streamlit >= 1.33.0 (for @st.fragment support)
 
-VERSION: 2.13.0
+VERSION: 2.14.0
 CHANGELOG:
+- v2.14.0: BUGFIX - "Only with KPI assignment" filter was filtering out ALL data
+          when selected KPI Type has no assignment for current year:
+          - Root cause: _get_kpi_centers_with_assignments() returned IDs for ALL types
+          - Fix: Added kpi_type parameter to filter by selected type
+          - Added fallback: Show warning + all KPI Centers when no assignments found
+          - Example: TERRITORY in 2026 has no assignments → show warning, show all data
 - v2.13.0: SYNCED with Salesperson filters v2.5.0:
           - Added TextSearchResult dataclass for text search filters
           - Added render_text_search_filter() for OC#/Customer PO search
@@ -101,9 +107,16 @@ logger = logging.getLogger(__name__)
 # KPI ASSIGNMENT HELPER
 # =============================================================================
 
-def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
+def _get_kpi_centers_with_assignments(
+    years: List[int],
+    kpi_type: str = None  # NEW v2.14.0: Optional KPI Type filter
+) -> List[int]:
     """
     Get list of KPI Center IDs that have KPI assignments in given years.
+    
+    UPDATED v2.14.0: Added kpi_type parameter to filter by KPI Type.
+    This fixes the bug where TERRITORY filter shows 0 results when only
+    VERTICAL has assignments for the selected year.
     
     UPDATED v2.12.0: Now includes all ancestors (parents) of KPI Centers 
     with direct assignments. Business logic: Parent KPI = sum of children KPIs,
@@ -111,6 +124,7 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
     
     Args:
         years: List of years to check
+        kpi_type: Optional KPI Type to filter (e.g., 'TERRITORY', 'VERTICAL')
         
     Returns:
         List of kpi_center_ids with KPI assignments (direct or inherited from children)
@@ -122,44 +136,85 @@ def _get_kpi_centers_with_assignments(years: List[int]) -> List[int]:
         from utils.db import get_db_engine
         engine = get_db_engine()
         
+        # Build query with optional kpi_type filter
         # Query includes:
-        # 1. KPI Centers with direct assignments
+        # 1. KPI Centers with direct assignments (optionally filtered by kpi_type)
         # 2. All ancestors (parents) of those KPI Centers
-        query = """
-            WITH RECURSIVE 
-            -- Step 1: Get KPI Centers with direct assignments
-            direct_assignments AS (
-                SELECT DISTINCT kpi_center_id
-                FROM sales_kpi_center_assignments_view 
-                WHERE year IN :years
-            ),
-            
-            -- Step 2: Get all ancestors (parents) recursively
-            all_with_ancestors AS (
-                -- Base case: direct assignments
-                SELECT kpi_center_id, kpi_center_id AS original_id
-                FROM direct_assignments
+        
+        if kpi_type:
+            # Filter by KPI Type - JOIN with kpi_centers to check type
+            query = """
+                WITH RECURSIVE 
+                -- Step 1: Get KPI Centers with direct assignments for this type
+                direct_assignments AS (
+                    SELECT DISTINCT kac.kpi_center_id
+                    FROM sales_kpi_center_assignments_view kac
+                    JOIN kpi_centers kc ON kac.kpi_center_id = kc.id
+                    WHERE kac.year IN :years
+                      AND kc.type = :kpi_type
+                      AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+                ),
                 
-                UNION
+                -- Step 2: Get all ancestors (parents) recursively
+                all_with_ancestors AS (
+                    -- Base case: direct assignments
+                    SELECT kpi_center_id, kpi_center_id AS original_id
+                    FROM direct_assignments
+                    
+                    UNION
+                    
+                    -- Recursive case: parents of KPI Centers
+                    SELECT kc.parent_center_id AS kpi_center_id, awa.original_id
+                    FROM kpi_centers kc
+                    INNER JOIN all_with_ancestors awa ON kc.id = awa.kpi_center_id
+                    WHERE kc.parent_center_id IS NOT NULL
+                      AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+                )
                 
-                -- Recursive case: parents of KPI Centers
-                SELECT kc.parent_center_id AS kpi_center_id, awa.original_id
-                FROM kpi_centers kc
-                INNER JOIN all_with_ancestors awa ON kc.id = awa.kpi_center_id
-                WHERE kc.parent_center_id IS NOT NULL
-                  AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
-            )
-            
-            SELECT DISTINCT kpi_center_id 
-            FROM all_with_ancestors
-            WHERE kpi_center_id IS NOT NULL
-            ORDER BY kpi_center_id
-        """
+                SELECT DISTINCT kpi_center_id 
+                FROM all_with_ancestors
+                WHERE kpi_center_id IS NOT NULL
+                ORDER BY kpi_center_id
+            """
+            params = {'years': tuple(years), 'kpi_type': kpi_type}
+        else:
+            # Original query without kpi_type filter
+            query = """
+                WITH RECURSIVE 
+                -- Step 1: Get KPI Centers with direct assignments
+                direct_assignments AS (
+                    SELECT DISTINCT kpi_center_id
+                    FROM sales_kpi_center_assignments_view 
+                    WHERE year IN :years
+                ),
+                
+                -- Step 2: Get all ancestors (parents) recursively
+                all_with_ancestors AS (
+                    -- Base case: direct assignments
+                    SELECT kpi_center_id, kpi_center_id AS original_id
+                    FROM direct_assignments
+                    
+                    UNION
+                    
+                    -- Recursive case: parents of KPI Centers
+                    SELECT kc.parent_center_id AS kpi_center_id, awa.original_id
+                    FROM kpi_centers kc
+                    INNER JOIN all_with_ancestors awa ON kc.id = awa.kpi_center_id
+                    WHERE kc.parent_center_id IS NOT NULL
+                      AND (kc.delete_flag = 0 OR kc.delete_flag IS NULL)
+                )
+                
+                SELECT DISTINCT kpi_center_id 
+                FROM all_with_ancestors
+                WHERE kpi_center_id IS NOT NULL
+                ORDER BY kpi_center_id
+            """
+            params = {'years': tuple(years)}
         
         with engine.connect() as conn:
-            result = conn.execute(text(query), {'years': tuple(years)})
+            result = conn.execute(text(query), params)
             ids = [row[0] for row in result]
-            logger.debug(f"KPI Centers with assignments (incl. parents): {len(ids)} for years {years}")
+            logger.debug(f"KPI Centers with assignments (incl. parents): {len(ids)} for years {years}, kpi_type={kpi_type}")
             return ids
             
     except Exception as e:
@@ -937,17 +992,27 @@ class KPICenterFilters:
                     only_with_kpi_local = st.checkbox(
                         "Only with KPI assignment",
                         key="frag_only_with_kpi",
-                        help="Show only KPI Centers with KPI targets assigned."
+                        help="Show only KPI Centers with KPI targets assigned for the selected year and type."
                     )
                     
-                    # Get KPI Centers with assignments
+                    # Get KPI Centers with assignments FOR SELECTED KPI TYPE - FIXED v2.14.0
                     kpi_check_years_local = [current_year]
                     kpi_center_ids_with_kpi = []
+                    no_assignment_for_type = False  # NEW v2.14.0: Track if no assignments for this type
+                    
                     if only_with_kpi_local:
-                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(kpi_check_years_local)
+                        # NEW v2.14.0: Pass kpi_type to filter correctly
+                        kpi_center_ids_with_kpi = _get_kpi_centers_with_assignments(
+                            kpi_check_years_local, 
+                            kpi_type=kpi_type_filter_local
+                        )
+                        
+                        # NEW v2.14.0: Check if no assignments found for this type/year
+                        if not kpi_center_ids_with_kpi:
+                            no_assignment_for_type = True
                     
                     # =========================================================
-                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.12.0
+                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.14.0
                     # =========================================================
                     st.markdown("**🎯 KPI Center**")
                     
@@ -959,18 +1024,30 @@ class KPICenterFilters:
                         if 'kpi_type' in kpi_center_df.columns and kpi_type_filter_local:
                             filtered_kc_df = filtered_kc_df[filtered_kc_df['kpi_type'] == kpi_type_filter_local]
                         
-                        # Filter by KPI assignment
-                        if only_with_kpi_local and kpi_center_ids_with_kpi:
+                        # Store count before assignment filter for warning message
+                        count_before_assignment_filter = len(filtered_kc_df)
+                        
+                        # Filter by KPI assignment (only if we have matching assignments)
+                        # NEW v2.14.0: Skip filter if no assignments found for this type
+                        if only_with_kpi_local and kpi_center_ids_with_kpi and not no_assignment_for_type:
                             filtered_kc_df = filtered_kc_df[
                                 filtered_kc_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
                             ]
+                        
+                        # NEW v2.14.0: Show warning if no KPI assignments for this type/year
+                        if no_assignment_for_type and only_with_kpi_local:
+                            st.warning(
+                                f"⚠️ No KPI assignments for **{kpi_type_filter_local}** in {current_year}. "
+                                f"Showing all {count_before_assignment_filter} KPI Centers."
+                            )
                         
                         # Show info
                         total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
                         filtered_count = len(filtered_kc_df)
                         hidden_count = total_in_type - filtered_count
                         
-                        if hidden_count > 0:
+                        # Only show "hidden" caption if we actually hid some (and not showing warning)
+                        if hidden_count > 0 and not no_assignment_for_type:
                             st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
                     
                     if filtered_kc_df.empty:
