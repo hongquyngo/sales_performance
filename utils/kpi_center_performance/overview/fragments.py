@@ -14,7 +14,14 @@ from datetime import datetime, date
 import pandas as pd
 import streamlit as st
 
-from ..charts import KPICenterCharts
+from .charts import (
+    build_monthly_trend_dual_chart,
+    build_cumulative_dual_chart,
+    build_multi_year_monthly_chart,
+    build_multi_year_cumulative_chart,
+    build_yoy_comparison_chart,
+    build_yoy_cumulative_chart,
+)
 from ..constants import MONTH_ORDER
 from ..common.fragments import prepare_monthly_summary
 
@@ -163,7 +170,7 @@ def monthly_trend_fragment(
     
     with chart_col1:
         st.markdown("**📊 Monthly Trend**")
-        trend_chart = KPICenterCharts.build_monthly_trend_dual_chart(
+        trend_chart = build_monthly_trend_dual_chart(
             monthly_df=monthly_df,
             show_gp_percent_line=True
         )
@@ -171,7 +178,7 @@ def monthly_trend_fragment(
     
     with chart_col2:
         st.markdown("**📈 Cumulative Performance**")
-        cumulative_chart = KPICenterCharts.build_cumulative_dual_chart(
+        cumulative_chart = build_cumulative_dual_chart(
             monthly_df=monthly_df
         )
         st.altair_chart(cumulative_chart, use_container_width=True)
@@ -402,7 +409,7 @@ def yoy_comparison_fragment(
                 
                 with chart_col1:
                     st.markdown(f"**📊 Monthly {metric_name} by Year**")
-                    chart = KPICenterCharts.build_multi_year_monthly_chart(
+                    chart = build_multi_year_monthly_chart(
                         monthly_df=monthly_by_year,
                         metric_col=metric_col,
                         years=unique_years
@@ -411,7 +418,7 @@ def yoy_comparison_fragment(
                 
                 with chart_col2:
                     st.markdown(f"**📈 Cumulative {metric_name}**")
-                    chart = KPICenterCharts.build_multi_year_cumulative_chart(
+                    chart = build_multi_year_cumulative_chart(
                         monthly_df=monthly_by_year,
                         metric_col=metric_col,
                         years=unique_years
@@ -528,7 +535,7 @@ def yoy_comparison_fragment(
                 
                 with chart_col1:
                     st.markdown(f"**📊 Monthly {metric_name} Comparison**")
-                    comparison_chart = KPICenterCharts.build_yoy_comparison_chart(
+                    comparison_chart = build_yoy_comparison_chart(
                         current_df=current_monthly,
                         previous_df=previous_monthly,
                         metric=metric_name,
@@ -539,7 +546,7 @@ def yoy_comparison_fragment(
                 
                 with chart_col2:
                     st.markdown(f"**📈 Cumulative {metric_name}**")
-                    cumulative_chart = KPICenterCharts.build_yoy_cumulative_chart(
+                    cumulative_chart = build_yoy_cumulative_chart(
                         current_df=current_monthly,
                         previous_df=previous_monthly,
                         metric=metric_name,

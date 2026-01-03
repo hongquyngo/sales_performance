@@ -15,7 +15,11 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from ..charts import KPICenterCharts
+from .charts import (
+    build_backlog_by_month_chart,
+    build_backlog_by_month_chart_multiyear,
+    build_backlog_by_month_stacked,
+)
 from ..constants import MONTH_ORDER
 from ..common.fragments import format_product_display, format_oc_po
 
@@ -586,7 +590,7 @@ def backlog_by_etd_fragment(
         
         if revenue_col and df_timeline[revenue_col].sum() > 0:
             # Build chart
-            chart = KPICenterCharts.build_backlog_by_month_chart_multiyear(
+            chart = build_backlog_by_month_chart_multiyear(
                 monthly_df=df_timeline,
                 revenue_col=revenue_col,
                 title=""
@@ -625,7 +629,7 @@ def backlog_by_etd_fragment(
         # =============================================================
         
         if revenue_col and df_years[revenue_col].sum() > 0:
-            chart = KPICenterCharts.build_backlog_by_month_stacked(
+            chart = build_backlog_by_month_stacked(
                 monthly_df=df_years,
                 revenue_col=revenue_col,
                 title=""
@@ -683,7 +687,7 @@ def backlog_by_etd_fragment(
             year_data['month_order'] = year_data['etd_month'].map(month_to_num)
             year_data = year_data.sort_values('month_order')
             
-            chart = KPICenterCharts.build_backlog_by_month_chart(
+            chart = build_backlog_by_month_chart(
                 monthly_df=year_data,
                 revenue_col=revenue_col,
                 gp_col=gp_col,

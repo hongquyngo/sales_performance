@@ -11,7 +11,7 @@ from typing import Dict, Optional
 import pandas as pd
 import streamlit as st
 
-from ..charts import KPICenterCharts
+from .charts import build_top_performers_chart
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def top_performers_fragment(
     chart_col, table_col = st.columns([1.2, 1])
     
     with chart_col:
-        chart = KPICenterCharts.build_top_performers_chart(
+        chart = build_top_performers_chart(
             data_df=top_data,
             value_col=metric_lower,
             label_col=group_col,
