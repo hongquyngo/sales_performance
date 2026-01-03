@@ -1,0 +1,670 @@
+# utils/kpi_center_performance/kpi_targets/fragments.py
+"""
+Streamlit Fragments for KPI Center Performance - KPI & Targets Tab.
+
+Contains:
+- kpi_assignments_fragment: KPI assignments with hierarchy rollup
+- kpi_progress_fragment: KPI progress with per-center breakdown
+- kpi_center_ranking_fragment: KPI Center performance ranking
+"""
+
+import logging
+from typing import Dict, Optional
+import pandas as pd
+import streamlit as st
+
+from ..common.fragments import format_currency, get_rank_display
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# KPI ASSIGNMENTS FRAGMENT (My KPIs Tab) - UPDATED v3.2.0
+# =============================================================================
+
+@st.fragment
+def kpi_assignments_fragment(
+    rollup_targets: Dict,
+    hierarchy_df: pd.DataFrame = None,
+    fragment_key: str = "kpc_assignments"
+):
+    """
+    KPI Assignments fragment with hierarchy rollup support.
+    
+    UPDATED v3.2.0: Shows targets for all KPI Centers with hierarchy rollup.
+    - Leaf nodes: Direct assignments with weight
+    - Parent nodes: Aggregated from all descendants (+ own direct if any)
+    
+    Args:
+        rollup_targets: Dict from metrics.calculate_rollup_targets()
+        hierarchy_df: For level filtering (optional)
+        fragment_key: Unique key prefix for widgets
+    """
+    if not rollup_targets:
+        st.info("📋 No KPI assignments found for selected KPI Centers and year")
+        return
+    
+    # Help popover
+    col_title, col_help = st.columns([6, 1])
+    with col_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+**📊 KPI Assignments Explained**
+
+**🎯 Direct Assignment**
+KPIs assigned directly to this KPI Center.
+Weight % is used for calculating Overall Achievement.
+
+**📁 Rollup**
+Aggregated KPI targets from all child KPI Centers.
+Formula: `Parent Target = Sum(All Descendants' Targets)`
+
+**📁 Mixed**
+This KPI Center has both direct assignments AND child centers.
+Targets shown are: `Direct + Sum(Children)`
+
+**Format Notes**
+- Currency values: Rounded to nearest dollar
+- Counts: 1 decimal if value < 10
+            """)
+    
+    # Level filter
+    if hierarchy_df is not None and 'level' in hierarchy_df.columns:
+        levels = sorted(hierarchy_df['level'].unique())
+        level_options = ['All Levels'] + [f"Level {l}" for l in levels] + ['Leaf Only']
+        selected_level = st.selectbox(
+            "Filter by Level",
+            level_options,
+            key=f"{fragment_key}_level_filter"
+        )
+    else:
+        selected_level = 'All Levels'
+    
+    # Sort by level for hierarchy display
+    sorted_centers = sorted(
+        rollup_targets.values(),
+        key=lambda x: (x.get('level', 0), x.get('kpi_center_name', ''))
+    )
+    
+    # Filter by level
+    if selected_level != 'All Levels':
+        if selected_level == 'Leaf Only':
+            sorted_centers = [c for c in sorted_centers if c.get('is_leaf', True)]
+        else:
+            level_num = int(selected_level.split(' ')[1])
+            sorted_centers = [c for c in sorted_centers if c.get('level', 0) == level_num]
+    
+    if not sorted_centers:
+        st.info("No KPI Centers found for selected level")
+        return
+    
+    # Display each KPI Center
+    for center_data in sorted_centers:
+        kpi_center_name = center_data['kpi_center_name']
+        source = center_data['source']
+        level = center_data.get('level', 0)
+        is_leaf = center_data.get('is_leaf', True)
+        children_count = center_data.get('children_count', 0)
+        children_names = center_data.get('children_names', [])
+        targets = center_data.get('targets', [])
+        
+        # Icon based on source
+        if source == 'Direct':
+            icon = "🎯"
+            badge = ""
+        elif source == 'Rollup':
+            icon = "📁"
+            badge = f" (Rollup from {children_count} centers)"
+        else:  # Mixed
+            icon = "📁"
+            badge = f" (Mixed: Direct + {children_count} children)"
+        
+        # Indentation based on level
+        indent = "  " * level
+        
+        with st.expander(f"{indent}{icon} {kpi_center_name}{badge}", expanded=(level == 0 or is_leaf)):
+            if not targets:
+                st.caption("No KPIs assigned")
+                continue
+            
+            # Build display dataframe
+            display_data = []
+            for t in targets:
+                annual = t.get('annual_target', 0)
+                monthly = t.get('monthly_target', annual / 12 if annual else 0)
+                quarterly = t.get('quarterly_target', annual / 4 if annual else 0)
+                is_currency = t.get('is_currency', False)
+                
+                # Format values
+                if is_currency:
+                    annual_str = f"${annual:,.0f}" if annual else "-"
+                    monthly_str = f"${monthly:,.0f}" if monthly else "-"
+                    quarterly_str = f"${quarterly:,.0f}" if quarterly else "-"
+                else:
+                    annual_str = f"{annual:,.1f}" if annual and annual < 10 else f"{annual:,.0f}" if annual else "-"
+                    monthly_str = f"{monthly:,.2f}" if monthly and monthly < 1 else f"{monthly:,.1f}" if monthly else "-"
+                    quarterly_str = f"{quarterly:,.1f}" if quarterly else "-"
+                
+                row = {
+                    'KPI': t.get('display_name', ''),
+                    'Annual Target': annual_str,
+                    'Monthly': monthly_str,
+                    'Quarterly': quarterly_str,
+                    'Unit': t.get('unit', ''),
+                }
+                
+                # Weight only for direct assignments
+                if source == 'Direct' and t.get('weight') is not None:
+                    row['Weight %'] = f"{t['weight']:.0f}%"
+                
+                display_data.append(row)
+            
+            # Create dataframe
+            display_df = pd.DataFrame(display_data)
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Show children names for rollup
+            if children_names and source in ['Rollup', 'Mixed']:
+                children_str = ', '.join(children_names[:5])
+                if len(children_names) > 5:
+                    children_str += f" +{len(children_names) - 5} more"
+                st.caption(f"ℹ️ Aggregated from: {children_str}")
+
+
+# =============================================================================
+# KPI PROGRESS FRAGMENT (Progress Tab) - UPDATED v3.3.0
+# =============================================================================
+
+@st.fragment
+def kpi_progress_fragment(
+    progress_data: Dict,
+    hierarchy_df: pd.DataFrame = None,
+    period_type: str = 'YTD',
+    year: int = None,
+    fragment_key: str = "kpc_progress"
+):
+    """
+    KPI Progress fragment with per-center breakdown.
+    
+    UPDATED v3.3.0: Parents now show aggregated KPIs with target-proportion weights.
+    - Leaf nodes: Direct KPI progress with individual metrics
+    - Parent nodes: Aggregated KPIs from all descendants with derived weights
+    
+    Args:
+        progress_data: Dict from metrics.calculate_per_center_progress()
+        hierarchy_df: For level info and filtering
+        period_type: Current period type for display
+        year: Current year
+        fragment_key: Unique key prefix
+    """
+    if not progress_data:
+        st.info("📊 No KPI progress data available")
+        return
+    
+    # Help popover - UPDATED v3.3.0
+    col_title, col_help = st.columns([6, 1])
+    with col_help:
+        with st.popover("ℹ️ How it works"):
+            st.markdown(f"""
+**📈 KPI Progress Calculation**
+
+---
+
+**🎯 Leaf KPI Centers (Direct)**
+
+Each KPI has its own target and weight assigned.
+
+`Achievement = Actual / Prorated Target × 100`
+
+`Overall = Σ(KPI Achievement × Assigned Weight) / Σ(Weights)`
+
+---
+
+**📁 Parent KPI Centers (Aggregated)**
+
+**Step 1:** Aggregate targets & actuals by KPI type
+
+⚠️ **Important:** Only children with target for each specific KPI contribute to that KPI's calculation.
+
+| KPI | Target | Actual |
+|-----|--------|--------|
+| Revenue | Sum from centers with Revenue target | Sum from same centers |
+| New Business | Sum from centers with NB target | Sum from same centers |
+
+*Example: If A has Revenue target but not New Business, A's actual only counts for Revenue, not New Business.*
+
+**Step 2:** Calculate Achievement per KPI
+
+`KPI Achievement = Total Actual / Total Prorated Target × 100`
+
+**Step 3:** Derive Weight from Target Proportion
+
+For **currency KPIs** (Revenue, GP, New Business):
+```
+Weight = KPI Target / Total Currency Targets × 80%
+```
+
+For **count KPIs** (New Customers, New Products):
+```
+Weight = Equal split of remaining 20%
+```
+
+**Step 4:** Calculate Overall
+
+`Overall = Σ(KPI Achievement × Derived Weight) / 100`
+
+---
+
+**Why Target-Proportion Weights?**
+
+- Larger business units have proportional impact
+- Fair comparison regardless of team size
+- Consistent with financial reporting standards
+
+**Why Only Include Centers With Target?**
+
+- Centers without a KPI target are not evaluated on that KPI
+- Prevents unfair inclusion of actuals from unassigned centers
+- More accurate performance measurement
+
+---
+
+**Prorated Target** ({period_type} {year}):
+
+| Period | Formula |
+|--------|---------|
+| YTD | Annual × (Days Elapsed / 365) |
+| QTD | Annual / 4 |
+| MTD | Annual / 12 |
+| Custom | Annual × (Days in Range / 365) |
+
+---
+
+**Achievement Colors:**
+- ✅ Green: ≥ 100%
+- 🟡 Yellow: 80-99%
+- 🔴 Red: < 80%
+            """)
+    
+    # View filter
+    view_options = ['All KPI Centers', 'Leaf Only', 'Parents Only']
+    selected_view = st.selectbox(
+        "View",
+        view_options,
+        key=f"{fragment_key}_view"
+    )
+    
+    # Sort by level, then by overall achievement (descending)
+    sorted_centers = sorted(
+        progress_data.values(),
+        key=lambda x: (x.get('level', 0), -(x.get('overall', 0) or 0))
+    )
+    
+    # Filter by view
+    if selected_view == 'Leaf Only':
+        sorted_centers = [c for c in sorted_centers if c.get('is_leaf', True)]
+    elif selected_view == 'Parents Only':
+        sorted_centers = [c for c in sorted_centers if not c.get('is_leaf', True)]
+    
+    if not sorted_centers:
+        st.info("No KPI Centers found for selected view")
+        return
+    
+    # Display each KPI Center
+    for center_data in sorted_centers:
+        kpi_center_id = center_data['kpi_center_id']
+        kpi_center_name = center_data['kpi_center_name']
+        level = center_data.get('level', 0)
+        is_leaf = center_data.get('is_leaf', True)
+        overall = center_data.get('overall')
+        source = center_data.get('source', 'Direct')
+        kpis = center_data.get('kpis', [])
+        
+        # Icon
+        icon = "🎯" if is_leaf else "📁"
+        
+        # Overall badge
+        if overall is not None:
+            if overall >= 100:
+                overall_badge = f"✅ {overall:.1f}%"
+                badge_type = "success"
+            elif overall >= 80:
+                overall_badge = f"🟡 {overall:.1f}%"
+                badge_type = "warning"
+            else:
+                overall_badge = f"🔴 {overall:.1f}%"
+                badge_type = "error"
+        else:
+            overall_badge = "N/A"
+            badge_type = "off"
+        
+        # Header with overall
+        st.markdown(f"### {icon} {kpi_center_name}")
+        
+        # Overall achievement metric
+        col_overall, col_spacer = st.columns([2, 4])
+        with col_overall:
+            if badge_type == "success":
+                st.success(f"⭐ Overall: {overall_badge}")
+            elif badge_type == "warning":
+                st.warning(f"⭐ Overall: {overall_badge}")
+            elif badge_type == "error":
+                st.error(f"⭐ Overall: {overall_badge}")
+            else:
+                st.info(f"⭐ Overall: {overall_badge}")
+        
+        # Show source indicator for parents
+        if not is_leaf:
+            children_count = center_data.get('children_count', 0)
+            calculation_method = center_data.get('calculation_method', 'target_proportion')
+            st.caption(f"📊 Aggregated from {children_count} child KPI Centers | Weight: Target Proportion")
+        
+        # Show KPI progress for BOTH leaf and parent nodes (NEW v3.3.0)
+        if kpis:
+            for kpi in kpis:
+                display_name = kpi.get('display_name', '')
+                actual = kpi.get('actual', 0)
+                prorated_target = kpi.get('prorated_target', 0)
+                annual_target = kpi.get('annual_target', 0)
+                achievement = kpi.get('achievement', 0)
+                weight = kpi.get('weight', 100)
+                is_currency = kpi.get('is_currency', False)
+                weight_source = kpi.get('weight_source', 'assigned')
+                contributing_centers = kpi.get('contributing_centers', 0)  # NEW v3.3.1
+                
+                # Format values
+                if is_currency:
+                    actual_str = f"${actual:,.0f}"
+                    prorated_str = f"${prorated_target:,.0f}"
+                    annual_str = f"${annual_target:,.0f}"
+                else:
+                    actual_str = f"{actual:,.1f}" if actual < 10 else f"{actual:,.0f}"
+                    prorated_str = f"{prorated_target:,.1f}" if prorated_target < 10 else f"{prorated_target:,.0f}"
+                    annual_str = f"{annual_target:,.0f}"
+                
+                # KPI name with weight - show weight source for parents
+                if not is_leaf and weight_source == 'target_proportion':
+                    st.markdown(f"**{display_name}** ({weight:.1f}% derived)")
+                else:
+                    st.markdown(f"**{display_name}** ({weight:.0f}%)")
+                
+                # Progress bar
+                progress_value = min(achievement / 100, 1.0) if achievement > 0 else 0
+                st.progress(progress_value)
+                
+                # Details - UPDATED v3.3.1: Show contributing centers count
+                if not is_leaf:
+                    children_count = center_data.get('children_count', 0)
+                    if contributing_centers > 0 and contributing_centers < children_count:
+                        # Not all children have this KPI target
+                        st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — From {contributing_centers} of {children_count} centers with this target")
+                    else:
+                        st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual) — From {contributing_centers} centers")
+                else:
+                    st.caption(f"{actual_str} / {prorated_str} prorated ({annual_str} annual)")
+                
+                # Achievement badge
+                col_badge, _ = st.columns([1, 5])
+                with col_badge:
+                    if achievement >= 100:
+                        st.success(f"✅ {achievement:.1f}%")
+                    elif achievement >= 80:
+                        st.warning(f"🟡 {achievement:.1f}%")
+                    else:
+                        st.error(f"🔴 {achievement:.1f}%")
+        
+        # For parent nodes: show children summary in expander (optional detail)
+        if not is_leaf:
+            children_summary = center_data.get('children_summary', [])
+            
+            if children_summary:
+                with st.expander(f"👥 View {len(children_summary)} Child KPI Centers"):
+                    # Create summary table
+                    summary_data = []
+                    for child in children_summary:
+                        ach = child.get('achievement')
+                        ach_str = f"{ach:.1f}%" if ach is not None else "N/A"
+                        summary_data.append({
+                            'KPI Center': child.get('name', ''),
+                            'Overall Achievement': ach_str,
+                        })
+                    
+                    summary_df = pd.DataFrame(summary_data)
+                    st.dataframe(
+                        summary_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(200, len(summary_data) * 35 + 40)
+                    )
+        
+        st.markdown("---")
+
+
+# =============================================================================
+# KPI CENTER RANKING FRAGMENT - UPDATED v3.2.0 with level grouping
+# =============================================================================
+
+@st.fragment
+def kpi_center_ranking_fragment(
+    ranking_df: pd.DataFrame,
+    progress_data: Dict = None,
+    hierarchy_df: pd.DataFrame = None,
+    show_targets: bool = True,
+    fragment_key: str = "kpc_ranking"
+):
+    """
+    KPI Center performance ranking table with hierarchy level grouping.
+    
+    UPDATED v3.2.0: Group by hierarchy level for fair comparison.
+    - Only shows levels with ≥2 items
+    - Medals for top 3 within each level
+    
+    Args:
+        ranking_df: Sales summary by KPI Center
+        progress_data: Dict from metrics.calculate_per_center_progress() for overall achievement
+        hierarchy_df: With level info for grouping
+        show_targets: Whether to show achievement column
+        fragment_key: Unique key prefix
+    """
+    if ranking_df.empty:
+        st.info("No ranking data available")
+        return
+    
+    # Help popover
+    col_title, col_help = st.columns([6, 1])
+    with col_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+**🏆 Ranking Explained**
+
+**Why Group by Level?**
+
+KPI Centers have different scopes:
+- **Level 0/1**: Regional (aggregate multiple sub-regions)
+- **Level 2+**: Individual markets
+- **Leaf**: Smallest units
+
+Comparing ALL together isn't fair because 
+parent totals include children's data.
+
+**By grouping by level**, we compare:
+- Parents with parents
+- Leaves with leaves
+
+**Achievement %**: 
+- Leaf: Weighted average of KPI achievements
+- Parent: Weighted average of children's achievements
+            """)
+    
+    # Rank by dropdown
+    sort_options = ['KPI Achievement %', 'Revenue', 'Gross Profit', 'GP1', 'GP %', 'Customers']
+    if not show_targets or progress_data is None:
+        sort_options.remove('KPI Achievement %')
+    
+    col_rank, col_level = st.columns(2)
+    
+    with col_rank:
+        sort_by = st.selectbox(
+            "📊 Rank by",
+            sort_options,
+            key=f"{fragment_key}_sort"
+        )
+    
+    # Level filter
+    with col_level:
+        if hierarchy_df is not None and 'level' in hierarchy_df.columns:
+            levels = sorted(hierarchy_df['level'].unique())
+            level_options = ['All (grouped)'] + [f"Level {l}" for l in levels] + ['Leaf Only']
+            selected_level = st.selectbox(
+                "🏷️ Level",
+                level_options,
+                key=f"{fragment_key}_level"
+            )
+        else:
+            selected_level = 'All (grouped)'
+    
+    # Merge progress data into ranking_df
+    if progress_data:
+        ranking_df = ranking_df.copy()
+        ranking_df['overall_achievement'] = ranking_df['kpi_center_id'].apply(
+            lambda x: progress_data.get(x, {}).get('overall')
+        )
+    
+    # Merge hierarchy data
+    if hierarchy_df is not None:
+        ranking_df = ranking_df.merge(
+            hierarchy_df[['kpi_center_id', 'level', 'is_leaf']],
+            on='kpi_center_id',
+            how='left'
+        )
+    else:
+        ranking_df['level'] = 0
+        ranking_df['is_leaf'] = 1
+    
+    # Map sort selection
+    sort_col_map = {
+        'KPI Achievement %': 'overall_achievement',
+        'Revenue': 'revenue',
+        'Gross Profit': 'gross_profit',
+        'GP1': 'gp1',
+        'GP %': 'gp_percent',
+        'Customers': 'customers'
+    }
+    sort_col = sort_col_map.get(sort_by, 'revenue')
+    
+    if sort_col not in ranking_df.columns:
+        sort_col = 'revenue'
+    
+    # Column config - use TextColumn for pre-formatted values
+    column_config = {
+        'Rank': st.column_config.TextColumn('Rank', width='small'),
+        'kpi_center': st.column_config.TextColumn('KPI Center', width='medium'),
+        'revenue_fmt': st.column_config.TextColumn('Revenue', width='small'),
+        'gross_profit_fmt': st.column_config.TextColumn('Gross Profit', width='small'),
+        'gp1_fmt': st.column_config.TextColumn('GP1', width='small'),
+        'gp_percent': st.column_config.NumberColumn('GP %', format='%.1f%%'),
+        'customers': st.column_config.NumberColumn('Customers', format='%d'),
+    }
+    
+    if progress_data and 'overall_achievement' in ranking_df.columns:
+        column_config['overall_achievement'] = st.column_config.ProgressColumn(
+            'Achievement %',
+            min_value=0,
+            max_value=150,
+            format='%.1f%%'
+        )
+    
+    display_cols = ['Rank', 'kpi_center', 'revenue_fmt', 'gross_profit_fmt', 'gp1_fmt', 'gp_percent', 'customers']
+    if progress_data and 'overall_achievement' in ranking_df.columns:
+        display_cols.append('overall_achievement')
+    
+    available_cols = [c for c in display_cols if c in ranking_df.columns or c.replace('_fmt', '') in ranking_df.columns]
+    
+    # Filter and display by level
+    if selected_level == 'All (grouped)':
+        # Group by level
+        levels = sorted(ranking_df['level'].dropna().unique())
+        
+        for level in levels:
+            level_df = ranking_df[ranking_df['level'] == level].copy()
+            
+            # Only show levels with ≥2 items (to rank)
+            if len(level_df) < 2:
+                continue
+            
+            # Sort and rank within level
+            level_df = level_df.sort_values(sort_col, ascending=False, na_position='last')
+            level_df.insert(0, 'Rank', [get_rank_display(i) for i in range(1, len(level_df) + 1)])
+            
+            # Format currency columns
+            if 'revenue' in level_df.columns:
+                level_df['revenue_fmt'] = level_df['revenue'].apply(format_currency)
+            if 'gross_profit' in level_df.columns:
+                level_df['gross_profit_fmt'] = level_df['gross_profit'].apply(format_currency)
+            if 'gp1' in level_df.columns:
+                level_df['gp1_fmt'] = level_df['gp1'].apply(format_currency)
+            
+            # Level header
+            is_leaf_level = level_df['is_leaf'].iloc[0] == 1 if 'is_leaf' in level_df.columns else False
+            level_label = "Leaf" if is_leaf_level else f"Level {int(level)}"
+            
+            st.markdown(f"##### 📁 {level_label} ({len(level_df)} KPI Centers)")
+            
+            # Get available columns for this dataframe
+            df_available_cols = [c for c in display_cols if c in level_df.columns]
+            
+            st.dataframe(
+                level_df[df_available_cols],
+                hide_index=True,
+                column_config=column_config,
+                use_container_width=True
+            )
+            
+            st.markdown("")  # Spacing
+        
+    else:
+        # Single level view
+        if selected_level == 'Leaf Only':
+            filtered_df = ranking_df[ranking_df['is_leaf'] == 1].copy()
+            level_label = "Leaf"
+        else:
+            level_num = int(selected_level.split(' ')[1])
+            filtered_df = ranking_df[ranking_df['level'] == level_num].copy()
+            level_label = f"Level {level_num}"
+        
+        if filtered_df.empty:
+            st.info(f"No KPI Centers found for {level_label}")
+            return
+        
+        if len(filtered_df) < 2:
+            st.warning(f"Only {len(filtered_df)} KPI Center at {level_label}. Need ≥2 to rank.")
+        
+        # Sort and rank
+        filtered_df = filtered_df.sort_values(sort_col, ascending=False, na_position='last')
+        filtered_df.insert(0, 'Rank', [get_rank_display(i) for i in range(1, len(filtered_df) + 1)])
+        
+        # Format currency columns
+        if 'revenue' in filtered_df.columns:
+            filtered_df['revenue_fmt'] = filtered_df['revenue'].apply(format_currency)
+        if 'gross_profit' in filtered_df.columns:
+            filtered_df['gross_profit_fmt'] = filtered_df['gross_profit'].apply(format_currency)
+        if 'gp1' in filtered_df.columns:
+            filtered_df['gp1_fmt'] = filtered_df['gp1'].apply(format_currency)
+        
+        # Get available columns for this dataframe
+        df_available_cols = [c for c in display_cols if c in filtered_df.columns]
+        
+        st.dataframe(
+            filtered_df[df_available_cols],
+            hide_index=True,
+            column_config=column_config,
+            use_container_width=True
+        )
+    
+    # Footer
+    st.caption(f"⭐ Ranked by **{sort_by}** (highest first)")
