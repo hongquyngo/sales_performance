@@ -26,31 +26,38 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# TAB-LEVEL FILTER FUNCTIONS - NEW v4.2.0
+# TAB-LEVEL FRAGMENTS - NEW v4.2.0
 # =============================================================================
 
-def render_sales_tab_filters(
+@st.fragment
+def sales_detail_tab_fragment(
     sales_df: pd.DataFrame,
+    filter_values: Dict = None,
     key_prefix: str = "sales_tab"
-) -> Dict:
+):
     """
-    Render filters for Sales Detail tab (above sub-tabs).
+    Fragment wrapper for Sales Detail tab.
     
-    These filters apply to ALL sub-tabs (Sales List, Pivot Analysis).
+    Includes filters + sub-tabs. Changes to filters only rerun this fragment,
+    not the entire page.
     
     Args:
-        sales_df: Raw sales DataFrame to extract filter options
+        sales_df: Raw sales DataFrame
+        filter_values: Filter values from sidebar
         key_prefix: Unique key prefix for widgets
-        
-    Returns:
-        Dict with filter results for each filter type
     """
     if sales_df.empty:
-        return {}
+        st.info("No sales data for the selected period")
+        return
     
+    # Store original count
+    total_count = len(sales_df)
+    
+    # =========================================================================
+    # FILTERS ROW
+    # =========================================================================
     col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
     
-    # Customer filter
     with col_f1:
         customer_options = sorted(sales_df['customer'].dropna().unique().tolist())
         customer_filter = render_multiselect_filter(
@@ -59,7 +66,6 @@ def render_sales_tab_filters(
             key=f"{key_prefix}_customer"
         )
     
-    # Brand filter
     with col_f2:
         brand_options = sorted(sales_df['brand'].dropna().unique().tolist())
         brand_filter = render_multiselect_filter(
@@ -68,7 +74,6 @@ def render_sales_tab_filters(
             key=f"{key_prefix}_brand"
         )
     
-    # Product filter
     with col_f3:
         product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
         product_filter = render_multiselect_filter(
@@ -77,7 +82,6 @@ def render_sales_tab_filters(
             key=f"{key_prefix}_product"
         )
     
-    # OC# / Customer PO search
     with col_f4:
         oc_po_filter = render_text_search_filter(
             label="OC# / Customer PO",
@@ -85,7 +89,6 @@ def render_sales_tab_filters(
             placeholder="Search..."
         )
     
-    # Min Amount filter
     with col_f5:
         amount_filter = render_number_filter(
             label="Min Amount ($)",
@@ -94,120 +97,115 @@ def render_sales_tab_filters(
             step=1000
         )
     
-    return {
-        'customer': customer_filter,
-        'brand': brand_filter,
-        'product': product_filter,
-        'oc_po': oc_po_filter,
-        'amount': amount_filter
-    }
-
-
-def apply_sales_tab_filters(
-    sales_df: pd.DataFrame,
-    filter_results: Dict
-) -> pd.DataFrame:
-    """
-    Apply filter results to sales DataFrame.
-    
-    Args:
-        sales_df: DataFrame to filter
-        filter_results: Dict from render_sales_tab_filters()
-        
-    Returns:
-        Filtered DataFrame
-    """
-    if sales_df.empty or not filter_results:
-        return sales_df
-    
+    # =========================================================================
+    # APPLY FILTERS
+    # =========================================================================
     filtered_df = sales_df.copy()
+    filtered_df = apply_multiselect_filter(filtered_df, 'customer', customer_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'brand', brand_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', product_filter)
     
-    # Apply multiselect filters
-    if 'customer' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'customer', filter_results['customer'])
-    if 'brand' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'brand', filter_results['brand'])
-    if 'product' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', filter_results['product'])
+    # Text search
+    search_columns = []
+    if 'oc_number' in filtered_df.columns:
+        search_columns.append('oc_number')
+    if 'customer_po_number' in filtered_df.columns:
+        search_columns.append('customer_po_number')
+    if search_columns:
+        filtered_df = apply_text_search_filter(filtered_df, columns=search_columns, search_result=oc_po_filter)
     
-    # Apply text search on multiple columns
-    if 'oc_po' in filter_results:
-        search_columns = []
-        if 'oc_number' in filtered_df.columns:
-            search_columns.append('oc_number')
-        if 'customer_po_number' in filtered_df.columns:
-            search_columns.append('customer_po_number')
-        if search_columns:
-            filtered_df = apply_text_search_filter(
-                filtered_df, 
-                columns=search_columns,
-                search_result=filter_results['oc_po']
-            )
+    # Number filter
+    filtered_df = apply_number_filter(filtered_df, 'sales_by_kpi_center_usd', amount_filter)
     
-    # Apply number filter
-    if 'amount' in filter_results:
-        filtered_df = apply_number_filter(filtered_df, 'sales_by_kpi_center_usd', filter_results['amount'])
-    
-    return filtered_df
-
-
-def get_sales_filter_summary(filter_results: Dict) -> str:
-    """Get summary string of active filters."""
-    if not filter_results:
-        return ""
-    
+    # =========================================================================
+    # FILTER SUMMARY
+    # =========================================================================
     active_filters = []
+    if customer_filter.is_active:
+        mode = "excl" if customer_filter.excluded else "incl"
+        active_filters.append(f"Customer: {len(customer_filter.selected)} ({mode})")
+    if brand_filter.is_active:
+        mode = "excl" if brand_filter.excluded else "incl"
+        active_filters.append(f"Brand: {len(brand_filter.selected)} ({mode})")
+    if product_filter.is_active:
+        mode = "excl" if product_filter.excluded else "incl"
+        active_filters.append(f"Product: {len(product_filter.selected)} ({mode})")
+    if oc_po_filter.is_active:
+        mode = "excl" if oc_po_filter.excluded else "incl"
+        active_filters.append(f"OC/PO: '{oc_po_filter.query}' ({mode})")
+    if amount_filter.is_active:
+        mode = "excl" if amount_filter.excluded else "incl"
+        active_filters.append(f"Amount: ≥${amount_filter.min_value:,.0f} ({mode})")
     
-    if filter_results.get('customer') and filter_results['customer'].is_active:
-        f = filter_results['customer']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Customer: {len(f.selected)} ({mode})")
+    if active_filters:
+        st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
     
-    if filter_results.get('brand') and filter_results['brand'].is_active:
-        f = filter_results['brand']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Brand: {len(f.selected)} ({mode})")
+    st.divider()
     
-    if filter_results.get('product') and filter_results['product'].is_active:
-        f = filter_results['product']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Product: {len(f.selected)} ({mode})")
+    # =========================================================================
+    # SUB-TABS
+    # =========================================================================
+    sales_tab1, sales_tab2 = st.tabs(["📋 Sales List", "📊 Pivot Analysis"])
     
-    if filter_results.get('oc_po') and filter_results['oc_po'].is_active:
-        f = filter_results['oc_po']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"OC/PO: '{f.query}' ({mode})")
+    with sales_tab1:
+        sales_detail_fragment(
+            sales_df=filtered_df,
+            fragment_key=f"{key_prefix}_detail",
+            total_count=total_count
+        )
     
-    if filter_results.get('amount') and filter_results['amount'].is_active:
-        f = filter_results['amount']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Amount: ≥${f.min_value:,.0f} ({mode})")
-    
-    return ' | '.join(active_filters) if active_filters else ""
+    with sales_tab2:
+        pivot_analysis_fragment(
+            sales_df=filtered_df,
+            fragment_key=f"{key_prefix}_pivot"
+        )
 
 
-def render_backlog_tab_filters(
+@st.fragment
+def backlog_tab_fragment(
     backlog_df: pd.DataFrame,
+    filter_values: Dict = None,
     key_prefix: str = "backlog_tab"
-) -> Dict:
+):
     """
-    Render filters for Backlog tab (above sub-tabs).
+    Fragment wrapper for Backlog tab.
     
-    These filters apply to ALL sub-tabs (Backlog List, By ETD, Risk Analysis).
+    Includes filters + sub-tabs. Changes to filters only rerun this fragment,
+    not the entire page.
     
     Args:
-        backlog_df: Raw backlog DataFrame to extract filter options
+        backlog_df: Raw backlog DataFrame
+        filter_values: Filter values from sidebar (for date range)
         key_prefix: Unique key prefix for widgets
-        
-    Returns:
-        Dict with filter results for each filter type
     """
-    if backlog_df.empty:
-        return {}
+    from datetime import date
+    from .metrics import KPICenterMetrics
     
+    if backlog_df.empty:
+        st.info("📦 No backlog data available")
+        return
+    
+    # Store original count
+    total_count = len(backlog_df)
+    
+    # Check for overdue warning (on original data)
+    start_date = filter_values.get('start_date', date.today()) if filter_values else date.today()
+    end_date = filter_values.get('end_date', date.today()) if filter_values else date.today()
+    
+    in_period_analysis = KPICenterMetrics.analyze_in_period_backlog(
+        backlog_detail_df=backlog_df,
+        start_date=start_date,
+        end_date=end_date
+    )
+    
+    if in_period_analysis.get('overdue_warning'):
+        st.warning(in_period_analysis['overdue_warning'])
+    
+    # =========================================================================
+    # FILTERS ROW
+    # =========================================================================
     col_bf1, col_bf2, col_bf3, col_bf4, col_bf5 = st.columns(5)
     
-    # Customer filter
     with col_bf1:
         customer_options = sorted(backlog_df['customer'].dropna().unique().tolist())
         customer_filter = render_multiselect_filter(
@@ -216,7 +214,6 @@ def render_backlog_tab_filters(
             key=f"{key_prefix}_customer"
         )
     
-    # Brand filter
     with col_bf2:
         brand_options = sorted(backlog_df['brand'].dropna().unique().tolist()) if 'brand' in backlog_df.columns else []
         brand_filter = render_multiselect_filter(
@@ -225,7 +222,6 @@ def render_backlog_tab_filters(
             key=f"{key_prefix}_brand"
         )
     
-    # Product filter
     with col_bf3:
         product_options = sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100] if 'product_pn' in backlog_df.columns else []
         product_filter = render_multiselect_filter(
@@ -234,7 +230,6 @@ def render_backlog_tab_filters(
             key=f"{key_prefix}_product"
         )
     
-    # OC# / Customer PO search
     with col_bf4:
         oc_po_filter = render_text_search_filter(
             label="OC# / Customer PO",
@@ -242,7 +237,6 @@ def render_backlog_tab_filters(
             placeholder="Search..."
         )
     
-    # Status filter
     with col_bf5:
         pending_col = 'pending_type' if 'pending_type' in backlog_df.columns else 'status'
         status_options = backlog_df[pending_col].dropna().unique().tolist() if pending_col in backlog_df.columns else []
@@ -252,95 +246,78 @@ def render_backlog_tab_filters(
             key=f"{key_prefix}_status"
         )
     
-    return {
-        'customer': customer_filter,
-        'brand': brand_filter,
-        'product': product_filter,
-        'oc_po': oc_po_filter,
-        'status': status_filter,
-        '_status_col': pending_col  # Store column name for apply function
-    }
-
-
-def apply_backlog_tab_filters(
-    backlog_df: pd.DataFrame,
-    filter_results: Dict
-) -> pd.DataFrame:
-    """
-    Apply filter results to backlog DataFrame.
-    
-    Args:
-        backlog_df: DataFrame to filter
-        filter_results: Dict from render_backlog_tab_filters()
-        
-    Returns:
-        Filtered DataFrame
-    """
-    if backlog_df.empty or not filter_results:
-        return backlog_df
-    
+    # =========================================================================
+    # APPLY FILTERS
+    # =========================================================================
     filtered_df = backlog_df.copy()
+    filtered_df = apply_multiselect_filter(filtered_df, 'customer', customer_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'brand', brand_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', product_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, pending_col, status_filter)
     
-    # Apply multiselect filters
-    if 'customer' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'customer', filter_results['customer'])
-    if 'brand' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'brand', filter_results['brand'])
-    if 'product' in filter_results:
-        filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', filter_results['product'])
-    if 'status' in filter_results:
-        status_col = filter_results.get('_status_col', 'status')
-        filtered_df = apply_multiselect_filter(filtered_df, status_col, filter_results['status'])
+    # Text search
+    search_columns = ['oc_number']
+    if 'customer_po_number' in filtered_df.columns:
+        search_columns.append('customer_po_number')
+    elif 'customer_po' in filtered_df.columns:
+        search_columns.append('customer_po')
+    filtered_df = apply_text_search_filter(filtered_df, columns=search_columns, search_result=oc_po_filter)
     
-    # Apply text search on multiple columns
-    if 'oc_po' in filter_results:
-        search_columns = ['oc_number']
-        if 'customer_po_number' in filtered_df.columns:
-            search_columns.append('customer_po_number')
-        elif 'customer_po' in filtered_df.columns:
-            search_columns.append('customer_po')
-        filtered_df = apply_text_search_filter(
-            filtered_df, 
-            columns=search_columns,
-            search_result=filter_results['oc_po']
+    # =========================================================================
+    # FILTER SUMMARY
+    # =========================================================================
+    active_filters = []
+    if customer_filter.is_active:
+        mode = "excl" if customer_filter.excluded else "incl"
+        active_filters.append(f"Customer: {len(customer_filter.selected)} ({mode})")
+    if brand_filter.is_active:
+        mode = "excl" if brand_filter.excluded else "incl"
+        active_filters.append(f"Brand: {len(brand_filter.selected)} ({mode})")
+    if product_filter.is_active:
+        mode = "excl" if product_filter.excluded else "incl"
+        active_filters.append(f"Product: {len(product_filter.selected)} ({mode})")
+    if oc_po_filter.is_active:
+        mode = "excl" if oc_po_filter.excluded else "incl"
+        active_filters.append(f"OC/PO: '{oc_po_filter.query}' ({mode})")
+    if status_filter.is_active:
+        mode = "excl" if status_filter.excluded else "incl"
+        active_filters.append(f"Status: {len(status_filter.selected)} ({mode})")
+    
+    if active_filters:
+        st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
+    
+    st.divider()
+    
+    # =========================================================================
+    # SUB-TABS
+    # =========================================================================
+    backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs([
+        "📋 Backlog List",
+        "📅 By ETD",
+        "⚠️ Risk Analysis"
+    ])
+    
+    current_year = filter_values.get('year', date.today().year) if filter_values else date.today().year
+    
+    with backlog_tab1:
+        backlog_list_fragment(
+            backlog_df=filtered_df,
+            filter_values=filter_values,
+            total_count=total_count
         )
     
-    return filtered_df
-
-
-def get_backlog_filter_summary(filter_results: Dict) -> str:
-    """Get summary string of active backlog filters."""
-    if not filter_results:
-        return ""
+    with backlog_tab2:
+        backlog_by_etd_fragment(
+            backlog_detail_df=filtered_df,
+            current_year=current_year,
+            fragment_key=f"{key_prefix}_etd"
+        )
     
-    active_filters = []
-    
-    if filter_results.get('customer') and filter_results['customer'].is_active:
-        f = filter_results['customer']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Customer: {len(f.selected)} ({mode})")
-    
-    if filter_results.get('brand') and filter_results['brand'].is_active:
-        f = filter_results['brand']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Brand: {len(f.selected)} ({mode})")
-    
-    if filter_results.get('product') and filter_results['product'].is_active:
-        f = filter_results['product']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Product: {len(f.selected)} ({mode})")
-    
-    if filter_results.get('oc_po') and filter_results['oc_po'].is_active:
-        f = filter_results['oc_po']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"OC/PO: '{f.query}' ({mode})")
-    
-    if filter_results.get('status') and filter_results['status'].is_active:
-        f = filter_results['status']
-        mode = "excl" if f.excluded else "incl"
-        active_filters.append(f"Status: {len(f.selected)} ({mode})")
-    
-    return ' | '.join(active_filters) if active_filters else ""
+    with backlog_tab3:
+        backlog_risk_analysis_fragment(
+            backlog_df=filtered_df,
+            fragment_key=f"{key_prefix}_risk"
+        )
 
 
 # =============================================================================
@@ -1401,7 +1378,7 @@ def pivot_analysis_fragment(
 def backlog_list_fragment(
     backlog_df: pd.DataFrame,
     filter_values: Dict = None,
-    total_backlog_df: pd.DataFrame = None,
+    total_backlog_df: pd.DataFrame = None,  # DEPRECATED v4.2.0 - kept for backward compatibility
     fragment_key: str = "kpc_backlog",
     total_count: int = None
 ):
@@ -1410,13 +1387,13 @@ def backlog_list_fragment(
     
     UPDATED v4.2.0: Filters moved to tab level.
     - Receives pre-filtered data
-    - 7 summary metric cards
+    - Metrics calculated from filtered backlog_df
     - Formatted data table with column config
     
     Args:
         backlog_df: Pre-filtered backlog records (line items)
         filter_values: Current filter values (for date range)
-        total_backlog_df: Aggregated backlog totals (for accurate summary)
+        total_backlog_df: DEPRECATED - no longer used, kept for backward compatibility
         fragment_key: Unique key prefix for widgets
         total_count: Original total count before filtering (for display)
     """
@@ -1463,41 +1440,11 @@ def backlog_list_fragment(
             gp_col = col_name
             break
     
-    # Use aggregated totals if available, else calculate from detail
-    if total_backlog_df is not None and not total_backlog_df.empty:
-        # Check for various column name patterns
-        total_backlog_value = 0
-        total_backlog_gp = 0
-        total_orders = 0
-        total_customers = 0
-        
-        # FIX v3.3.2: Added 'total_backlog_usd' - the actual column name from get_backlog_data()
-        for col in ['total_backlog_usd', 'total_backlog_revenue', 'backlog_revenue', 'backlog_usd']:
-            if col in total_backlog_df.columns:
-                total_backlog_value = total_backlog_df[col].sum()
-                break
-        
-        # FIX v3.3.2: Added 'total_backlog_gp_usd' - the actual column name from get_backlog_data()
-        for col in ['total_backlog_gp_usd', 'total_backlog_gp', 'backlog_gp', 'backlog_gp_usd']:
-            if col in total_backlog_df.columns:
-                total_backlog_gp = total_backlog_df[col].sum()
-                break
-        
-        if 'backlog_orders' in total_backlog_df.columns:
-            total_orders = int(total_backlog_df['backlog_orders'].sum())
-        else:
-            total_orders = backlog_df['oc_number'].nunique() if 'oc_number' in backlog_df.columns else len(backlog_df)
-        
-        if 'backlog_customers' in total_backlog_df.columns:
-            total_customers = int(total_backlog_df['backlog_customers'].sum())
-        else:
-            total_customers = backlog_df['customer_id'].nunique() if 'customer_id' in backlog_df.columns else backlog_df['customer'].nunique()
-    else:
-        # Fallback: calculate from detail
-        total_backlog_value = backlog_df[value_col].sum() if value_col else 0
-        total_backlog_gp = backlog_df[gp_col].sum() if gp_col else 0
-        total_orders = backlog_df['oc_number'].nunique() if 'oc_number' in backlog_df.columns else len(backlog_df)
-        total_customers = backlog_df['customer_id'].nunique() if 'customer_id' in backlog_df.columns else backlog_df['customer'].nunique()
+    # FIXED v4.2.0: Always calculate from filtered backlog_df (not from total_backlog_df)
+    total_backlog_value = backlog_df[value_col].sum() if value_col else 0
+    total_backlog_gp = backlog_df[gp_col].sum() if gp_col else 0
+    total_orders = backlog_df['oc_number'].nunique() if 'oc_number' in backlog_df.columns else len(backlog_df)
+    total_customers = backlog_df['customer_id'].nunique() if 'customer_id' in backlog_df.columns else backlog_df['customer'].nunique()
     
     with col_s1:
         st.metric(
@@ -1505,7 +1452,7 @@ def backlog_list_fragment(
             f"${total_backlog_value:,.0f}", 
             f"{total_orders:,} orders",
             delta_color="off",
-            help="All pending orders from selected KPI Centers"
+            help="Total backlog value (filtered)"
         )
     with col_s2:
         st.metric(
@@ -1513,7 +1460,7 @@ def backlog_list_fragment(
             f"${total_backlog_gp:,.0f}",
             f"{total_customers:,} customers",
             delta_color="off",
-            help="Total gross profit from all pending orders"
+            help="Total gross profit (filtered)"
         )
     with col_s3:
         in_period_value = in_period_analysis.get('total_value', 0)
