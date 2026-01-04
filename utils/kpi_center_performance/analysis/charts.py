@@ -2,9 +2,11 @@
 """
 Analysis Tab Charts for KPI Center Performance.
 
-VERSION: 6.1.0
+VERSION: 6.2.0
 
-Charts matching Salesperson Performance reference code style.
+Changes:
+- v6.2.0: Added growth analysis charts (movers, waterfall, new/lost)
+- v6.1.0: Charts matching Salesperson Performance reference code style.
 """
 
 import logging
@@ -25,6 +27,16 @@ METRIC_COLORS = {
 
 LINE_COLOR = '#800080'  # Purple for cumulative line
 TEXT_COLOR = '#333333'
+
+# Growth colors
+GROWTH_COLORS = {
+    'gainer': '#2ca02c',        # Green
+    'decliner': '#d62728',      # Red
+    'new': '#17becf',           # Cyan
+    'lost': '#ff7f0e',          # Orange
+    'current': '#1f77b4',       # Blue
+    'previous': '#aec7e8',      # Light blue
+}
 
 
 # =============================================================================
@@ -175,6 +187,295 @@ def build_growth_comparison_chart(
             alt.Tooltip('Value:Q', title='Value', format='$,.0f'),
         ]
     ).properties(width='container', height=350, title=title)
+    
+    return chart
+
+
+# =============================================================================
+# GROWTH ANALYSIS CHARTS
+# =============================================================================
+
+def build_movers_bar_chart(
+    gainers_df: pd.DataFrame,
+    decliners_df: pd.DataFrame,
+    label_col: str,
+    title: str = "Top Movers",
+    top_n: int = 10
+) -> alt.Chart:
+    """
+    Build horizontal butterfly bar chart for top gainers and decliners.
+    
+    Args:
+        gainers_df: DataFrame with gainers (must have 'change' column)
+        decliners_df: DataFrame with decliners (must have 'change' column)
+        label_col: Column name for labels
+        title: Chart title
+        top_n: Number of items per side
+        
+    Returns:
+        Altair horizontal bar chart
+    """
+    if gainers_df.empty and decliners_df.empty:
+        return _empty_chart("No movers data available")
+    
+    # Prepare data
+    chart_data = []
+    
+    # Top gainers
+    for _, row in gainers_df.head(top_n).iterrows():
+        chart_data.append({
+            'name': row[label_col][:25],  # Truncate long names
+            'value': row['change'],
+            'type': 'Gainer',
+            'display_value': row['change']
+        })
+    
+    # Top decliners (use absolute value for display but keep negative for sorting)
+    for _, row in decliners_df.head(top_n).iterrows():
+        chart_data.append({
+            'name': row[label_col][:25],
+            'value': row['change'],  # Keep negative
+            'type': 'Decliner',
+            'display_value': row['change']
+        })
+    
+    if not chart_data:
+        return _empty_chart("No movers data available")
+    
+    df = pd.DataFrame(chart_data)
+    
+    chart = alt.Chart(df).mark_bar().encode(
+        x=alt.X('value:Q', title='Change ($)', axis=alt.Axis(format='~s')),
+        y=alt.Y('name:N', sort='-x', title=None, axis=alt.Axis(labelLimit=150)),
+        color=alt.Color(
+            'type:N',
+            scale=alt.Scale(
+                domain=['Gainer', 'Decliner'],
+                range=[GROWTH_COLORS['gainer'], GROWTH_COLORS['decliner']]
+            ),
+            legend=alt.Legend(title='Type', orient='top')
+        ),
+        tooltip=[
+            alt.Tooltip('name:N', title='Name'),
+            alt.Tooltip('value:Q', title='Change', format='$,.0f'),
+            alt.Tooltip('type:N', title='Type')
+        ]
+    ).properties(
+        width='container',
+        height=350,
+        title=title
+    )
+    
+    return chart
+
+
+def build_waterfall_chart(
+    compare_df: pd.DataFrame,
+    label_col: str,
+    title: str = "Growth Contribution",
+    top_n: int = 10
+) -> alt.Chart:
+    """
+    Build waterfall-style chart showing contribution to growth.
+    
+    Shows: Previous Total -> Top Contributors -> Current Total
+    """
+    if compare_df.empty:
+        return _empty_chart("No data available")
+    
+    # Get top positive and negative contributors
+    sorted_df = compare_df.sort_values('change', key=abs, ascending=False)
+    top_contributors = sorted_df.head(top_n).copy()
+    
+    # Calculate totals
+    total_previous = compare_df['previous'].sum()
+    total_current = compare_df['current'].sum()
+    others_change = compare_df['change'].sum() - top_contributors['change'].sum()
+    
+    # Build waterfall data
+    waterfall_data = []
+    running_total = total_previous
+    
+    # Starting point
+    waterfall_data.append({
+        'name': 'Previous',
+        'start': 0,
+        'end': total_previous,
+        'value': total_previous,
+        'type': 'total'
+    })
+    
+    # Add contributors sorted by change (positive first, then negative)
+    for _, row in top_contributors.sort_values('change', ascending=False).iterrows():
+        change = row['change']
+        waterfall_data.append({
+            'name': row[label_col][:20],
+            'start': running_total,
+            'end': running_total + change,
+            'value': change,
+            'type': 'increase' if change >= 0 else 'decrease'
+        })
+        running_total += change
+    
+    # Others
+    if abs(others_change) > 0:
+        waterfall_data.append({
+            'name': 'Others',
+            'start': running_total,
+            'end': running_total + others_change,
+            'value': others_change,
+            'type': 'increase' if others_change >= 0 else 'decrease'
+        })
+        running_total += others_change
+    
+    # End point
+    waterfall_data.append({
+        'name': 'Current',
+        'start': 0,
+        'end': total_current,
+        'value': total_current,
+        'type': 'total'
+    })
+    
+    df = pd.DataFrame(waterfall_data)
+    
+    # Create order for x-axis
+    df['order'] = range(len(df))
+    
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X('name:N', sort=alt.EncodingSortField(field='order'), title=None,
+                axis=alt.Axis(labelAngle=-45, labelLimit=100)),
+        y=alt.Y('start:Q', title='Value ($)', axis=alt.Axis(format='~s')),
+        y2='end:Q',
+        color=alt.Color(
+            'type:N',
+            scale=alt.Scale(
+                domain=['total', 'increase', 'decrease'],
+                range=['#4a90d9', GROWTH_COLORS['gainer'], GROWTH_COLORS['decliner']]
+            ),
+            legend=alt.Legend(title='Type', orient='top')
+        ),
+        tooltip=[
+            alt.Tooltip('name:N', title='Name'),
+            alt.Tooltip('value:Q', title='Value', format='$,.0f'),
+        ]
+    ).properties(
+        width='container',
+        height=350,
+        title=title
+    )
+    
+    return bars
+
+
+def build_new_lost_chart(
+    new_df: pd.DataFrame,
+    lost_df: pd.DataFrame,
+    label_col: str,
+    title: str = "New vs Lost",
+    top_n: int = 10
+) -> alt.Chart:
+    """
+    Build grouped bar chart comparing new and lost items.
+    """
+    if new_df.empty and lost_df.empty:
+        return _empty_chart("No new/lost data available")
+    
+    # Calculate summary metrics
+    total_new = new_df['current'].sum() if not new_df.empty else 0
+    total_lost = lost_df['previous'].sum() if not lost_df.empty else 0
+    net = total_new - total_lost
+    
+    # Summary chart data
+    summary_data = pd.DataFrame([
+        {'Category': 'New', 'Value': total_new, 'Type': 'New'},
+        {'Category': 'Lost', 'Value': -total_lost, 'Type': 'Lost'},  # Negative for visual
+        {'Category': 'Net Impact', 'Value': net, 'Type': 'Net'}
+    ])
+    
+    chart = alt.Chart(summary_data).mark_bar().encode(
+        x=alt.X('Category:N', title=None, sort=['New', 'Lost', 'Net Impact'],
+                axis=alt.Axis(labelAngle=0)),
+        y=alt.Y('Value:Q', title='Value ($)', axis=alt.Axis(format='~s')),
+        color=alt.Color(
+            'Type:N',
+            scale=alt.Scale(
+                domain=['New', 'Lost', 'Net'],
+                range=[GROWTH_COLORS['new'], GROWTH_COLORS['lost'], '#666666']
+            ),
+            legend=None
+        ),
+        tooltip=[
+            alt.Tooltip('Category:N', title='Category'),
+            alt.Tooltip('Value:Q', title='Value', format='$,.0f'),
+        ]
+    ).properties(
+        width='container',
+        height=200,
+        title=title
+    )
+    
+    # Add text labels
+    text = alt.Chart(summary_data).mark_text(
+        align='center',
+        baseline='bottom',
+        dy=-5,
+        fontSize=12,
+        fontWeight='bold'
+    ).encode(
+        x=alt.X('Category:N', sort=['New', 'Lost', 'Net Impact']),
+        y=alt.Y('Value:Q'),
+        text=alt.Text('Value:Q', format='$,.0f'),
+        color=alt.value(TEXT_COLOR)
+    )
+    
+    return chart + text
+
+
+def build_status_distribution_chart(
+    compare_df: pd.DataFrame,
+    title: str = "Status Distribution"
+) -> alt.Chart:
+    """
+    Build donut chart showing distribution of statuses.
+    """
+    if compare_df.empty:
+        return _empty_chart("No data available")
+    
+    # Count by status
+    status_counts = compare_df['status'].value_counts().reset_index()
+    status_counts.columns = ['status', 'count']
+    
+    # Define colors
+    status_colors = {
+        '🆕 New': GROWTH_COLORS['new'],
+        '❌ Lost': GROWTH_COLORS['decliner'],
+        '📈 Growing': GROWTH_COLORS['gainer'],
+        '📉 Declining': '#ff9896',
+        '➡️ Stable': '#c7c7c7'
+    }
+    
+    status_counts['color'] = status_counts['status'].map(status_colors)
+    
+    chart = alt.Chart(status_counts).mark_arc(innerRadius=50).encode(
+        theta=alt.Theta('count:Q'),
+        color=alt.Color(
+            'status:N',
+            scale=alt.Scale(
+                domain=list(status_colors.keys()),
+                range=list(status_colors.values())
+            ),
+            legend=alt.Legend(title='Status', orient='right')
+        ),
+        tooltip=[
+            alt.Tooltip('status:N', title='Status'),
+            alt.Tooltip('count:Q', title='Count')
+        ]
+    ).properties(
+        width=250,
+        height=250,
+        title=title
+    )
     
     return chart
 

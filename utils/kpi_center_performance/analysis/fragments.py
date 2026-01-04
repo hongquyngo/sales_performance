@@ -5,7 +5,9 @@ Streamlit Fragments for KPI Center Performance - Analysis Tab.
 VERSION: 6.2.0
 
 Changes:
-- v6.2.0: Added @st.fragment for partial rerun, added detail data table next to chart
+- v6.2.0: Added @st.fragment for partial rerun, added detail data table next to chart,
+          improved Growth Analysis with charts (movers bar, waterfall, new/lost summary,
+          status distribution) and insights expander.
 - v6.1.0: Optimized for performance with proper data caching.
 """
 
@@ -14,7 +16,14 @@ from typing import Dict
 import pandas as pd
 import streamlit as st
 
-from .charts import build_pareto_chart, build_growth_comparison_chart
+from .charts import (
+    build_pareto_chart, 
+    build_growth_comparison_chart,
+    build_movers_bar_chart,
+    build_waterfall_chart,
+    build_new_lost_chart,
+    build_status_distribution_chart
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +92,45 @@ def _render_header():
 | **Top Performers** | Pareto analysis by Customer/Brand/Product |
 | **Growth (YoY)** | Compare vs previous year |
 
-**Key Metrics:**
-- **Top Count**: Entities reaching threshold
-- **CR10**: % from top 10% of entities  
-- **HHI**: Concentration index (0-10000)
+---
+
+**📊 Key Metrics Explained:**
+
+**1️⃣ Top Count**
+- Number of entities (customers/brands/products) that together contribute to the selected threshold % of total value
+- Example: "6 of 31 total" means 6 customers make up 80% of revenue
+
+**2️⃣ CR10 (Concentration Ratio - Top 10%)**
+- Formula: `CR10 = (Value of Top 10% entities) / (Total Value) × 100`
+- Measures how much the top 10% of entities contribute to total
+- **Interpretation:**
+  - **> 70%**: High concentration - few entities dominate
+  - **40-70%**: Moderate concentration
+  - **< 40%**: Low concentration - diversified base
+
+**3️⃣ HHI (Herfindahl-Hirschman Index)**
+- Formula: `HHI = Σ(market_share²) × 10,000`
+- Where market_share = entity_value / total_value
+- Range: **0 to 10,000**
+- **Interpretation:**
+  - **< 1,500**: Low concentration (competitive/diversified)
+  - **1,500 - 2,500**: Moderate concentration
+  - **> 2,500**: High concentration (dominated by few)
+- Used by regulators (FTC, DOJ) to assess market competition
+
+---
+
+**💡 Example:**
+If you have 3 customers with 50%, 30%, 20% share:
+- HHI = (0.5² + 0.3² + 0.2²) × 10,000
+- HHI = (0.25 + 0.09 + 0.04) × 10,000 = **3,800** (High)
+
+---
+
+**🎯 Threshold Slider:**
+- Adjusts the cumulative % cutoff (default 80%)
+- Shows entities contributing up to that % of total
+- Based on Pareto Principle (80/20 rule)
             """)
 
 
@@ -472,13 +516,13 @@ def _growth_analysis_tab(
     view_tab1, view_tab2, view_tab3 = st.tabs(["📊 Top Movers", "🆕 New & Lost", "📋 Full List"])
     
     with view_tab1:
-        _render_top_movers(compare_df, dim_col, dimension)
+        _render_top_movers(compare_df, dim_col, dimension, metric)
     
     with view_tab2:
         _render_new_and_lost(compare_df, dim_col, dimension, metric)
     
     with view_tab3:
-        _render_full_comparison(compare_df, dim_col, dimension)
+        _render_full_comparison(compare_df, dim_col, dimension, metric)
 
 
 def _build_comparison_data(sales_df, prev_sales_df, dim_col, value_col) -> pd.DataFrame:
@@ -532,74 +576,168 @@ def _render_growth_metrics(compare_df, dimension, metric):
         st.metric("📉 Declining", f"{declining_count:,}")
 
 
-def _render_top_movers(compare_df, dim_col, dimension):
-    """Render top gainers and decliners."""
+def _render_top_movers(compare_df, dim_col, dimension, metric):
+    """Render top gainers and decliners with chart and tables."""
+    gainers = compare_df[compare_df['change'] > 0].nlargest(10, 'change')
+    losers = compare_df[compare_df['change'] < 0].nsmallest(10, 'change')
+    
+    # Chart section
+    col_chart, col_status = st.columns([3, 1])
+    
+    with col_chart:
+        # Movers bar chart
+        chart = build_movers_bar_chart(
+            gainers_df=gainers,
+            decliners_df=losers,
+            label_col=dim_col,
+            title=f"Top {dimension} Movers by {metric}"
+        )
+        st.altair_chart(chart, use_container_width=True)
+    
+    with col_status:
+        # Status distribution
+        status_chart = build_status_distribution_chart(
+            compare_df=compare_df,
+            title="Status Distribution"
+        )
+        st.altair_chart(status_chart, use_container_width=True)
+    
+    # Tables section
     col_gain, col_lose = st.columns(2)
     
     with col_gain:
         st.markdown("##### 📈 Top Gainers")
-        gainers = compare_df[compare_df['change'] > 0].nlargest(10, 'change')
         if not gainers.empty:
             display_df = pd.DataFrame({
+                '#': range(1, len(gainers) + 1),
                 dimension: gainers[dim_col].values,
                 'Previous': gainers['previous'].apply(lambda x: f"${x:,.0f}").values,
                 'Current': gainers['current'].apply(lambda x: f"${x:,.0f}").values,
                 'Change': gainers['change'].apply(lambda x: f"${x:+,.0f}").values,
                 'Growth %': gainers['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
             })
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                        height=min(350, 35 * len(display_df) + 38))
         else:
             st.info("No gainers")
     
     with col_lose:
         st.markdown("##### 📉 Top Decliners")
-        losers = compare_df[compare_df['change'] < 0].nsmallest(10, 'change')
         if not losers.empty:
             display_df = pd.DataFrame({
+                '#': range(1, len(losers) + 1),
                 dimension: losers[dim_col].values,
                 'Previous': losers['previous'].apply(lambda x: f"${x:,.0f}").values,
                 'Current': losers['current'].apply(lambda x: f"${x:,.0f}").values,
                 'Change': losers['change'].apply(lambda x: f"${x:+,.0f}").values,
                 'Growth %': losers['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
             })
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                        height=min(350, 35 * len(display_df) + 38))
         else:
             st.info("No decliners")
+    
+    # Insights expander
+    with st.expander("💡 Growth Insights", expanded=False):
+        _render_growth_insights(compare_df, gainers, losers, dim_col, dimension, metric)
 
 
 def _render_new_and_lost(compare_df, dim_col, dimension, metric):
-    """Render new and lost items."""
+    """Render new and lost items with chart and tables."""
+    new_items = compare_df[compare_df['status'] == '🆕 New'].nlargest(15, 'current')
+    lost_items = compare_df[compare_df['status'] == '❌ Lost'].nlargest(15, 'previous')
+    
+    # Summary chart
+    col_chart, col_waterfall = st.columns([1, 2])
+    
+    with col_chart:
+        chart = build_new_lost_chart(
+            new_df=new_items,
+            lost_df=lost_items,
+            label_col=dim_col,
+            title=f"New vs Lost {metric} Impact"
+        )
+        st.altair_chart(chart, use_container_width=True)
+    
+    with col_waterfall:
+        # Waterfall chart for contribution
+        waterfall = build_waterfall_chart(
+            compare_df=compare_df,
+            label_col=dim_col,
+            title=f"Top Contributors to {metric} Change",
+            top_n=8
+        )
+        st.altair_chart(waterfall, use_container_width=True)
+    
+    # Tables section
     col_new, col_lost = st.columns(2)
     
     with col_new:
         st.markdown("##### 🆕 New")
-        new_items = compare_df[compare_df['status'] == '🆕 New'].nlargest(15, 'current')
         if not new_items.empty:
             display_df = pd.DataFrame({
+                '#': range(1, len(new_items) + 1),
                 dimension: new_items[dim_col].values,
                 f'Current {metric}': new_items['current'].apply(lambda x: f"${x:,.0f}").values,
             })
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                        height=min(350, 35 * len(display_df) + 38))
         else:
             st.info(f"No new {dimension}s")
     
     with col_lost:
         st.markdown("##### ❌ Lost")
-        lost_items = compare_df[compare_df['status'] == '❌ Lost'].nlargest(15, 'previous')
         if not lost_items.empty:
             display_df = pd.DataFrame({
+                '#': range(1, len(lost_items) + 1),
                 dimension: lost_items[dim_col].values,
                 f'Previous {metric}': lost_items['previous'].apply(lambda x: f"${x:,.0f}").values,
             })
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                        height=min(350, 35 * len(display_df) + 38))
         else:
             st.info(f"No lost {dimension}s")
 
 
-def _render_full_comparison(compare_df, dim_col, dimension):
-    """Render full comparison table."""
+def _render_full_comparison(compare_df, dim_col, dimension, metric):
+    """Render full comparison with comparison chart and table."""
+    
+    # Comparison bar chart
+    col_chart, col_summary = st.columns([3, 1])
+    
+    with col_chart:
+        # Grouped bar chart - Current vs Previous
+        top_15 = compare_df.head(15).copy()
+        
+        if not top_15.empty:
+            chart = build_growth_comparison_chart(
+                data_df=top_15,
+                current_col='current',
+                previous_col='previous',
+                label_col=dim_col,
+                title=f"Top {dimension}s: Current vs Previous {metric}",
+                top_n=15
+            )
+            st.altair_chart(chart, use_container_width=True)
+    
+    with col_summary:
+        # Quick summary stats
+        total_current = compare_df['current'].sum()
+        total_previous = compare_df['previous'].sum()
+        total_change = total_current - total_previous
+        growth_pct = (total_change / total_previous * 100) if total_previous > 0 else 0
+        
+        st.markdown("##### 📊 Summary")
+        st.metric("Total Current", f"${total_current:,.0f}")
+        st.metric("Total Previous", f"${total_previous:,.0f}")
+        st.metric("Net Change", f"${total_change:+,.0f}", f"{growth_pct:+.1f}%")
+        st.metric("Total Entities", f"{len(compare_df):,}")
+    
+    # Full table
+    st.markdown("##### 📋 Complete Comparison List")
     source_df = compare_df.head(50)
     display_df = pd.DataFrame({
+        '#': range(1, len(source_df) + 1),
         dimension: source_df[dim_col].values,
         'Previous': source_df['previous'].apply(lambda x: f"${x:,.0f}").values,
         'Current': source_df['current'].apply(lambda x: f"${x:,.0f}").values,
@@ -607,4 +745,59 @@ def _render_full_comparison(compare_df, dim_col, dimension):
         'Growth %': source_df['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
         'Status': source_df['status'].values,
     })
-    st.dataframe(display_df, hide_index=True, use_container_width=True, height=500)
+    st.dataframe(display_df, hide_index=True, use_container_width=True, height=400)
+
+
+def _render_growth_insights(compare_df, gainers, losers, dim_col, dimension, metric):
+    """Render growth analysis insights."""
+    total_current = compare_df['current'].sum()
+    total_previous = compare_df['previous'].sum()
+    total_change = total_current - total_previous
+    
+    # Status counts
+    new_count = len(compare_df[compare_df['status'] == '🆕 New'])
+    lost_count = len(compare_df[compare_df['status'] == '❌ Lost'])
+    growing_count = len(compare_df[compare_df['status'] == '📈 Growing'])
+    declining_count = len(compare_df[compare_df['status'] == '📉 Declining'])
+    stable_count = len(compare_df[compare_df['status'] == '➡️ Stable'])
+    
+    # Value metrics
+    new_value = compare_df[compare_df['status'] == '🆕 New']['current'].sum()
+    lost_value = compare_df[compare_df['status'] == '❌ Lost']['previous'].sum()
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        top_gainer_name = gainers.iloc[0][dim_col] if not gainers.empty else 'N/A'
+        top_gainer_change = gainers.iloc[0]['change'] if not gainers.empty else 0
+        top_gainer_pct = gainers.iloc[0]['growth_pct'] if not gainers.empty else 0
+        
+        top_decliner_name = losers.iloc[0][dim_col] if not losers.empty else 'N/A'
+        top_decliner_change = losers.iloc[0]['change'] if not losers.empty else 0
+        top_decliner_pct = losers.iloc[0]['growth_pct'] if not losers.empty else 0
+        
+        st.markdown(f"""
+**📊 Growth Summary:**
+- **Total Growth**: ${total_change:+,.0f} ({(total_change/total_previous*100 if total_previous > 0 else 0):+.1f}%)
+- **Net from New/Lost**: ${new_value - lost_value:+,.0f}
+
+**📈 Top Gainer**: {top_gainer_name}
+- Change: ${top_gainer_change:+,.0f} ({top_gainer_pct:+.1f}%)
+
+**📉 Top Decliner**: {top_decliner_name}
+- Change: ${top_decliner_change:+,.0f} ({top_decliner_pct:+.1f}%)
+        """)
+    
+    with col2:
+        st.markdown(f"""
+**📋 Status Breakdown:**
+- 🆕 **New**: {new_count:,} {dimension}s (${new_value:,.0f})
+- ❌ **Lost**: {lost_count:,} {dimension}s (${lost_value:,.0f})
+- 📈 **Growing**: {growing_count:,} {dimension}s (>10% growth)
+- 📉 **Declining**: {declining_count:,} {dimension}s (<-10% decline)
+- ➡️ **Stable**: {stable_count:,} {dimension}s (±10%)
+
+**🎯 Concentration:**
+- Top 10 Gainers contribute: ${gainers.head(10)['change'].sum():+,.0f}
+- Top 10 Decliners contribute: ${losers.head(10)['change'].sum():+,.0f}
+        """)
