@@ -129,7 +129,7 @@ class KPICenterMetrics:
         total_gp = df['gross_profit_by_kpi_center_usd'].sum()
         total_gp1 = df['gp1_by_kpi_center_usd'].sum() if 'gp1_by_kpi_center_usd' in df.columns else 0
         total_customers = df['customer_id'].nunique()
-        total_orders = df['inv_number'].nunique() if 'inv_number' in df.columns else 0
+        total_orders = df['oc_number'].nunique() if 'oc_number' in df.columns else 0
         
         # Calculate percentages
         gp_percent = (total_gp / total_revenue * 100) if total_revenue > 0 else 0

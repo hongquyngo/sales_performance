@@ -553,7 +553,7 @@ class DataProcessor:
             'sales_by_kpi_center_usd': 'sum',
             'gross_profit_by_kpi_center_usd': 'sum',
             'gp1_by_kpi_center_usd': 'sum',
-            'inv_number': pd.Series.nunique,
+            'oc_number': pd.Series.nunique,
             'customer_id': pd.Series.nunique
         }).reset_index()
         
@@ -596,7 +596,7 @@ class DataProcessor:
             'sales_by_kpi_center_usd': 'sum',
             'gross_profit_by_kpi_center_usd': 'sum',
             'gp1_by_kpi_center_usd': 'sum',
-            'inv_number': pd.Series.nunique,
+            'oc_number': pd.Series.nunique,
             'customer_id': pd.Series.nunique
         }).reset_index()
         
