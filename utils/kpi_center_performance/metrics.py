@@ -29,12 +29,13 @@ class KPICenterMetrics:
         by_kpi_center_df = processor.aggregate_by_kpi_center(sales_df)
     """
     
-    # Default weights from kpi_types table (fallback if not provided)
-    # Used for parent rollup when center has no direct assignment
-    DEFAULT_KPI_WEIGHTS = {
-        'gross_profit': 100,
-        'gross_profit_1': 95,
-        'gp1': 95,  # alias
+    # FALLBACK weights - only used when DB doesn't have kpi_types data
+    # UPDATED v5.1.0: Renamed from DEFAULT_KPI_WEIGHTS to clarify it's a fallback
+    # Actual weights should come from kpi_types.default_weight in DB
+    FALLBACK_KPI_WEIGHTS = {
+        'gross_profit': 95,
+        'gross_profit_1': 100,
+        'gp1': 100,  # alias for gross_profit_1
         'revenue': 90,
         'purchase_value': 80,
         'new_business_revenue': 75,
@@ -58,13 +59,25 @@ class KPICenterMetrics:
             targets_df: KPI targets (optional)
             default_weights: Dict mapping kpi_name → default_weight from kpi_types table
                             Used for parent rollup when center has no direct assignment
+                            PRIORITY: DB weights > fallback weights
         """
         self.sales_df = sales_df
         self.targets_df = targets_df if targets_df is not None else pd.DataFrame()
-        # Merge provided default_weights with class defaults
-        self.default_weights = {**self.DEFAULT_KPI_WEIGHTS}
+        
+        # UPDATED v5.1.0: DB weights have PRIORITY over fallback
+        # Start with fallback, then override with DB values
+        self.default_weights = {**self.FALLBACK_KPI_WEIGHTS}
         if default_weights:
-            self.default_weights.update({k.lower(): v for k, v in default_weights.items()})
+            # DB weights override fallback
+            for k, v in default_weights.items():
+                key_lower = k.lower()
+                self.default_weights[key_lower] = v
+                # Also update alias if needed
+                if key_lower == 'gross_profit_1':
+                    self.default_weights['gp1'] = v
+        
+        # DEBUG v5.1.0: Log loaded weights
+        logger.debug(f"[KPICenterMetrics] Initialized with default_weights: {self.default_weights}")
     
     # =========================================================================
     # PERIOD CONTEXT ANALYSIS - DEPRECATED v4.1.0
@@ -345,7 +358,7 @@ class KPICenterMetrics:
         }
     
     # =========================================================================
-    # OVERALL KPI ACHIEVEMENT - UPDATED v5.0.0
+    # OVERALL KPI ACHIEVEMENT - UPDATED v5.1.0
     # =========================================================================
     
     def calculate_overall_kpi_achievement(
@@ -360,7 +373,7 @@ class KPICenterMetrics:
         """
         Calculate weighted average KPI achievement across all assigned KPIs.
         
-        UPDATED v5.0.0: Synced with kpi_parent_rollup_logic.md
+        UPDATED v5.1.0: Added comprehensive debug output + dynamic weights from DB
         
         Two scenarios:
         - Scenario A: Selected centers have direct assignments → use assigned weight
@@ -368,10 +381,21 @@ class KPICenterMetrics:
         
         Formula: Σ(KPI_Achievement × Weight) / Σ(Weights)
         """
+        # DEBUG v5.1.0: Start calculation logging
+        print(f"\n{'='*70}")
+        print(f"📊 OVERALL ACHIEVEMENT CALCULATION - DEBUG v5.1.0")
+        print(f"{'='*70}")
+        print(f"   Period: {period_type} | Year: {year}")
+        print(f"   Date Range: {start_date} → {end_date}")
+        print(f"   Selected KPI Center IDs: {selected_kpi_center_ids}")
+        print(f"   Default Weights from DB: {self.default_weights}")
+        
         if self.targets_df.empty:
+            print(f"   ⚠️ No targets_df - returning None")
             return {'overall_achievement': None, 'kpi_count': 0}
         
         proration = self._calculate_proration(period_type, year, start_date, end_date)
+        print(f"   Proration Factor: {proration:.4f} ({proration*100:.2f}%)")
         
         # KPI column mapping
         kpi_column_map = {
@@ -404,11 +428,23 @@ class KPICenterMetrics:
         use_assigned_weights = is_single_center and has_direct_assignment
         calculation_method = 'assigned_weight' if use_assigned_weights else 'default_weight'
         
+        # DEBUG v5.1.0: Scenario detection
+        print(f"\n   📋 SCENARIO DETECTION:")
+        print(f"      is_single_center: {is_single_center}")
+        print(f"      has_direct_assignment: {has_direct_assignment}")
+        print(f"      calculation_method: {calculation_method}")
+        print(f"      targets_df shape: {self.targets_df.shape}")
+        print(f"      targets_df KPI centers: {self.targets_df['kpi_center_id'].unique().tolist()}")
+        
         # =========================================================
         # Step 1: Aggregate targets & actuals by KPI type
         # Only include actuals from centers WITH that KPI target
         # =========================================================
         kpi_aggregates = {}
+        
+        # DEBUG v5.1.0: KPI breakdown header
+        print(f"\n   📊 KPI BREAKDOWN BY TYPE:")
+        print(f"   {'─'*65}")
         
         for kpi_name in self.targets_df['kpi_name'].unique():
             kpi_lower = kpi_name.lower() if kpi_name else ''
@@ -418,6 +454,7 @@ class KPICenterMetrics:
             total_annual_target = kpi_targets['annual_target_value_numeric'].sum()
             
             if total_annual_target <= 0:
+                print(f"      ⚠️ {kpi_name}: Skipped (target=0)")
                 continue
             
             # Get list of KPI Centers that have THIS KPI target
@@ -428,6 +465,7 @@ class KPICenterMetrics:
             
             # Sum actuals ONLY from centers that have this KPI target
             total_actual = 0
+            actual_source = ""
             if kpi_lower in kpi_column_map:
                 col = kpi_column_map[kpi_lower]
                 if not self.sales_df.empty and col in self.sales_df.columns:
@@ -435,8 +473,10 @@ class KPICenterMetrics:
                         self.sales_df['kpi_center_id'].isin(centers_with_this_kpi)
                     ]
                     total_actual = filtered_sales[col].sum() if not filtered_sales.empty else 0
+                    actual_source = f"sales_df[{col}]"
             elif kpi_lower in ['new_business_revenue', 'num_new_customers', 'num_new_products', 'num_new_combos']:
                 # Sum complex KPIs ONLY from centers that have this KPI target
+                actual_source = "complex_kpis_by_center"
                 if complex_kpis_by_center:
                     for center_id in centers_with_this_kpi:
                         if center_id in complex_kpis_by_center:
@@ -458,6 +498,15 @@ class KPICenterMetrics:
                 weight = self.default_weights.get(kpi_lower, 50)
                 weight_source = 'default'
             
+            # DEBUG v5.1.0: Print each KPI detail
+            print(f"      📌 {kpi_name}:")
+            print(f"         Centers with target: {centers_with_this_kpi}")
+            print(f"         Annual Target: ${total_annual_target:,.0f}")
+            print(f"         Prorated Target: ${total_prorated_target:,.0f}")
+            print(f"         Actual ({actual_source}): ${total_actual:,.0f}" if 'usd' in kpi_lower or kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue'] else f"         Actual ({actual_source}): {total_actual:,.0f}")
+            print(f"         Achievement: {achievement:.2f}%")
+            print(f"         Weight: {weight} ({weight_source})")
+            
             kpi_aggregates[kpi_name] = {
                 'kpi_name': kpi_name,
                 'kpi_lower': kpi_lower,
@@ -471,6 +520,7 @@ class KPICenterMetrics:
             }
         
         if not kpi_aggregates:
+            print(f"   ⚠️ No valid KPI aggregates - returning None")
             return {'overall_achievement': None, 'kpi_count': 0}
         
         # =========================================================
@@ -480,10 +530,18 @@ class KPICenterMetrics:
         total_weight = 0
         kpi_details = []
         
+        # DEBUG v5.1.0: Weighted calculation header
+        print(f"\n   🧮 WEIGHTED CALCULATION:")
+        print(f"   {'─'*65}")
+        
         for kpi_name, data in kpi_aggregates.items():
             weight = data['weight']
-            total_weighted_achievement += data['achievement'] * weight
+            weighted_contrib = data['achievement'] * weight
+            total_weighted_achievement += weighted_contrib
             total_weight += weight
+            
+            # DEBUG v5.1.0: Show contribution
+            print(f"      {kpi_name}: {data['achievement']:.2f}% × {weight} = {weighted_contrib:.2f}")
             
             kpi_details.append({
                 'kpi_name': kpi_name,
@@ -499,6 +557,15 @@ class KPICenterMetrics:
         # =========================================================
         if total_weight > 0:
             overall = total_weighted_achievement / total_weight
+            
+            # DEBUG v5.1.0: Final calculation
+            print(f"   {'─'*65}")
+            print(f"   📊 FINAL CALCULATION:")
+            print(f"      Total Weighted Achievement: {total_weighted_achievement:.2f}")
+            print(f"      Total Weight: {total_weight}")
+            print(f"      Overall = {total_weighted_achievement:.2f} / {total_weight} = {overall:.2f}%")
+            print(f"{'='*70}\n")
+            
             return {
                 'overall_achievement': round(overall, 1),
                 'kpi_count': len(kpi_aggregates),
@@ -506,9 +573,11 @@ class KPICenterMetrics:
                 'kpi_details': kpi_details,
                 'calculation_method': calculation_method,
                 'is_single_center': is_single_center,
-                'has_direct_assignment': has_direct_assignment
+                'has_direct_assignment': has_direct_assignment,
+                'default_weights_used': self.default_weights  # NEW v5.1.0: For tooltip
             }
         
+        print(f"   ⚠️ Total weight = 0 - returning None")
         return {'overall_achievement': None, 'kpi_count': 0}
     
     # NOTE: _get_individual_kpi_center_actual() REMOVED in v4.0.0 - never called

@@ -92,35 +92,63 @@ def render_kpi_cards(
                 delta_color = "normal" if achievement >= 100 else "inverse"
                 kpi_count = overall_achievement.get('kpi_count', 0)
                 calc_method = overall_achievement.get('calculation_method', '')
+                kpi_details = overall_achievement.get('kpi_details', [])
+                total_weight = overall_achievement.get('total_weight', 0)
                 
-                # UPDATED v5.0.0: Show weight source in delta and help text
+                # UPDATED v5.2.0: Show detailed breakdown with actual formula
+                # Build KPI breakdown table
+                breakdown_lines = []
+                total_weighted = 0
+                
+                for kpi in kpi_details:
+                    kpi_name = kpi.get('kpi_name', '')
+                    kpi_achievement = kpi.get('achievement', 0)
+                    kpi_weight = kpi.get('weight', 0)
+                    weighted_value = kpi_achievement * kpi_weight
+                    total_weighted += weighted_value
+                    
+                    # Format KPI name for display
+                    display_name = kpi_name.replace('_', ' ').title()
+                    if display_name == 'Gross Profit':
+                        display_name = 'GP'
+                    elif display_name == 'Gross Profit 1':
+                        display_name = 'GP1'
+                    elif display_name == 'Num New Customers':
+                        display_name = 'New Cust'
+                    elif display_name == 'Num New Products':
+                        display_name = 'New Prod'
+                    elif display_name == 'Num New Combos':
+                        display_name = 'New Combo'
+                    elif display_name == 'New Business Revenue':
+                        display_name = 'New Biz'
+                    
+                    breakdown_lines.append(
+                        f"• {display_name}: {kpi_achievement:.1f}% × {kpi_weight} = {weighted_value:.1f}"
+                    )
+                
+                # Determine weight source label
                 if calc_method == 'assigned_weight':
                     delta_text = f"assigned weight avg of {kpi_count} KPIs"
-                    help_text = (
-                        "**Overall KPI Achievement**\n\n"
-                        "Formula: Σ(KPI Achievement × Assigned Weight) / Σ(Weights)\n\n"
-                        "**Weight Source:** `sales_kpi_center_assignments.weight`\n\n"
-                        "This center has direct KPI assignments with assigned weights."
-                    )
+                    weight_source_text = "**Weight Source:** Assigned weights from KPI assignments"
                 elif calc_method == 'default_weight':
                     delta_text = f"default weight avg of {kpi_count} KPIs"
-                    help_text = (
-                        "**Overall KPI Achievement**\n\n"
-                        "Formula: Σ(KPI Achievement × Default Weight) / Σ(Weights)\n\n"
-                        "**Weight Source:** `kpi_types.default_weight`\n\n"
-                        "**Default Weights:**\n"
-                        "- Gross Profit: 100\n"
-                        "- GP1: 95\n"
-                        "- Revenue: 90\n"
-                        "- Purchase Value: 80\n"
-                        "- New Business Revenue: 75\n"
-                        "- New Customers: 60\n"
-                        "- New Combos: 55\n"
-                        "- New Products/Projects: 50\n\n"
-                        "This is a rollup from child KPI Centers."
-                    )
+                    weight_source_text = "**Weight Source:** Default weights from `kpi_types` table"
                 else:
                     delta_text = f"weighted avg of {kpi_count} KPIs"
+                    weight_source_text = "**Weight Source:** Weighted average"
+                
+                # Build comprehensive help text with actual calculation
+                if breakdown_lines:
+                    help_text = (
+                        "**Overall KPI Achievement**\n\n"
+                        f"{weight_source_text}\n\n"
+                        "**KPI Breakdown:**\n" +
+                        "\n".join(breakdown_lines) +
+                        f"\n\n**Calculation:**\n"
+                        f"= ({total_weighted:.1f}) / {total_weight}\n"
+                        f"= **{achievement:.1f}%**"
+                    )
+                else:
                     help_text = "Weighted average of all KPI achievements"
                 
                 st.metric(
