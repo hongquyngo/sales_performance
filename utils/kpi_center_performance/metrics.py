@@ -956,20 +956,33 @@ class KPICenterMetrics:
         """
         Calculate rolled-up targets for all KPI Centers.
         
-        NEW v3.2.0: Used by My KPIs tab for hierarchy display.
+        UPDATED v5.3.1: Fixed per-KPI STOP logic (synced with Overview tab).
         
-        Logic:
-        - Leaf nodes: Direct targets only
-        - Parent nodes: Sum of all descendants' targets (+ own direct if any)
+        Logic (PER KPI TYPE):
+        - Start from each center
+        - For each KPI type, traverse down the tree:
+          - If child HAS assignment for this KPI → STOP, use that assignment
+          - If child has NO assignment → Continue recursively to its children
+        
+        Example with Revenue KPI for ALL:
+        - ALL (no Revenue assignment) → continue to children
+          - PTV (no Revenue assignment) → continue to children
+            - HAN (has Revenue $X) → STOP, use $X
+            - DAN (has Revenue $Y) → STOP, use $Y
+            - SGN (has Revenue $Z) → STOP, use $Z
+          - OVERSEA (has Revenue $4.4M) → STOP, use $4.4M
+            - (children NOT considered because OVERSEA already STOP)
+        
+        Result: ALL Revenue = HAN + DAN + SGN + OVERSEA (NOT all 7 centers)
         
         Args:
             hierarchy_df: DataFrame with kpi_center_id, level, is_leaf
-            queries_instance: KPICenterQueries instance for descendant lookup
+            queries_instance: KPICenterQueries instance (optional)
             
         Returns:
             Dict[kpi_center_id] = {
                 'targets': List[{kpi_name, annual, monthly, quarterly, unit, weight}],
-                'source': 'Direct' | 'Rollup' | 'Mixed',
+                'source': 'Direct' | 'Rollup',
                 'children_count': int,
                 'children_names': List[str]
             }
@@ -1001,80 +1014,131 @@ class KPICenterMetrics:
             'new_business_revenue': '💼',
         }
         
+        # =====================================================================
+        # Build local children_map from hierarchy_df
+        # =====================================================================
+        children_map = {}
+        all_center_ids = set(hierarchy_df['kpi_center_id'].tolist())
+        
+        for _, row in hierarchy_df.iterrows():
+            center_id = row['kpi_center_id']
+            parent_id = row.get('parent_center_id')
+            
+            if pd.notna(parent_id):
+                parent_id = int(parent_id)
+                if parent_id not in children_map:
+                    children_map[parent_id] = []
+                children_map[parent_id].append(center_id)
+        
+        # =====================================================================
+        # Helper: Get effective centers for a specific KPI (recursive with STOP)
+        # =====================================================================
+        def get_effective_centers_for_kpi(center_id: int, kpi_name: str) -> List[int]:
+            """
+            Recursive function to find centers whose assignments should be used.
+            
+            STOP Logic:
+            - If center has assignment for this KPI → STOP, return [center_id]
+            - If no assignment → recurse to children
+            """
+            # Only consider centers in current hierarchy
+            if center_id not in all_center_ids:
+                return []
+            
+            # Check if this center has assignment for this KPI
+            center_assignment = self.targets_df[
+                (self.targets_df['kpi_center_id'] == center_id) &
+                (self.targets_df['kpi_name'].str.lower() == kpi_name.lower())
+            ]
+            
+            if not center_assignment.empty:
+                # STOP: this center has assignment for this KPI
+                return [center_id]
+            
+            # No assignment for this KPI, recurse to children
+            children = children_map.get(center_id, [])
+            effective_centers = []
+            
+            for child_id in children:
+                child_effective = get_effective_centers_for_kpi(child_id, kpi_name)
+                effective_centers.extend(child_effective)
+            
+            return effective_centers
+        
+        # =====================================================================
+        # Get all unique KPI types from targets
+        # =====================================================================
+        all_kpi_types = self.targets_df['kpi_name'].unique().tolist()
+        
+        # =====================================================================
+        # Process each KPI Center
+        # =====================================================================
         for _, row in hierarchy_df.iterrows():
             kpi_center_id = row['kpi_center_id']
             kpi_center_name = row['kpi_center_name']
             is_leaf = row.get('is_leaf', 1) == 1
             
-            # Get direct targets for this center
+            # Check if center has any direct assignment
             direct_targets = self.targets_df[
                 self.targets_df['kpi_center_id'] == kpi_center_id
-            ].copy()
-            
+            ]
             has_direct = not direct_targets.empty
             
-            # Get descendant targets
-            descendants_targets = pd.DataFrame()
-            children_names = []
-            
-            if not is_leaf and queries_instance:
-                descendants = queries_instance.get_all_descendants(kpi_center_id)
-                if descendants:
-                    descendants_targets = self.targets_df[
-                        self.targets_df['kpi_center_id'].isin(descendants)
-                    ].copy()
-                    
-                    # Get children names for display
-                    children_with_targets = descendants_targets['kpi_center_name'].unique().tolist()
-                    children_names = children_with_targets
-            
-            has_children = not descendants_targets.empty
-            
-            # Determine source
-            if has_direct and has_children:
-                source = 'Mixed'
-            elif has_direct:
-                source = 'Direct'
-            elif has_children:
-                source = 'Rollup'
-            else:
-                continue  # Skip centers with no targets at all
-            
-            # Merge targets: Direct + Sum(Children)
-            all_targets = pd.concat([direct_targets, descendants_targets], ignore_index=True)
-            
-            # Aggregate by kpi_name
+            # Build targets for this center (per KPI type with STOP logic)
             merged_targets = []
-            for kpi_name in all_targets['kpi_name'].unique():
-                kpi_rows = all_targets[all_targets['kpi_name'] == kpi_name]
+            contributing_centers_all = set()  # Track all centers that contribute
+            
+            for kpi_name in all_kpi_types:
+                kpi_lower = kpi_name.lower() if kpi_name else ''
+                
+                # Get effective centers for this KPI using STOP logic
+                effective_center_ids = get_effective_centers_for_kpi(kpi_center_id, kpi_name)
+                
+                if not effective_center_ids:
+                    continue  # No targets for this KPI under this center
+                
+                contributing_centers_all.update(effective_center_ids)
+                
+                # Get targets from effective centers
+                kpi_targets = self.targets_df[
+                    (self.targets_df['kpi_center_id'].isin(effective_center_ids)) &
+                    (self.targets_df['kpi_name'].str.lower() == kpi_lower)
+                ]
+                
+                if kpi_targets.empty:
+                    continue
                 
                 # Sum numeric values
-                annual = kpi_rows['annual_target_value_numeric'].sum() if 'annual_target_value_numeric' in kpi_rows.columns else 0
+                annual = kpi_targets['annual_target_value_numeric'].sum() if 'annual_target_value_numeric' in kpi_targets.columns else 0
                 
-                # Monthly and quarterly might be strings, try to convert
+                if annual <= 0:
+                    continue
+                
+                # Monthly and quarterly
                 monthly = 0
                 quarterly = 0
-                if 'monthly_target_value' in kpi_rows.columns:
+                if 'monthly_target_value' in kpi_targets.columns:
                     try:
-                        monthly = pd.to_numeric(kpi_rows['monthly_target_value'], errors='coerce').sum()
+                        monthly = pd.to_numeric(kpi_targets['monthly_target_value'], errors='coerce').sum()
                     except:
                         monthly = annual / 12
-                if 'quarterly_target_value' in kpi_rows.columns:
+                if 'quarterly_target_value' in kpi_targets.columns:
                     try:
-                        quarterly = pd.to_numeric(kpi_rows['quarterly_target_value'], errors='coerce').sum()
+                        quarterly = pd.to_numeric(kpi_targets['quarterly_target_value'], errors='coerce').sum()
                     except:
                         quarterly = annual / 4
                 
                 # Get unit (should be same for all)
-                unit = kpi_rows['unit_of_measure'].iloc[0] if 'unit_of_measure' in kpi_rows.columns else ''
+                unit = kpi_targets['unit_of_measure'].iloc[0] if 'unit_of_measure' in kpi_targets.columns else ''
                 
-                # Weight only applies to direct assignments
+                # Weight: only if this center has direct assignment for this KPI
                 weight = None
-                if source == 'Direct' and 'weight_numeric' in kpi_rows.columns:
-                    weight = kpi_rows['weight_numeric'].iloc[0]
+                if has_direct:
+                    direct_kpi = direct_targets[direct_targets['kpi_name'].str.lower() == kpi_lower]
+                    if not direct_kpi.empty and 'weight_numeric' in direct_kpi.columns:
+                        weight = direct_kpi['weight_numeric'].iloc[0]
                 
                 # Get display name and icon
-                kpi_lower = kpi_name.lower() if kpi_name else ''
                 display_name = kpi_display_names.get(kpi_lower, kpi_name.replace('_', ' ').title() if kpi_name else '')
                 icon = kpi_icons.get(kpi_lower, '📋')
                 
@@ -1086,21 +1150,41 @@ class KPICenterMetrics:
                     'quarterly_target': quarterly if not pd.isna(quarterly) else annual / 4,
                     'unit': unit,
                     'weight': weight,
-                    'is_currency': kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue']
+                    'is_currency': kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue'],
+                    'effective_centers': len(effective_center_ids)  # How many centers contribute to this KPI
                 })
+            
+            if not merged_targets:
+                continue  # Skip centers with no targets
             
             # Sort by display name
             merged_targets.sort(key=lambda x: x['display_name'])
             
+            # Determine source
+            # Direct: if ALL KPIs come only from this center's direct assignment
+            # Rollup: if ANY KPI comes from children (not just self)
+            is_pure_direct = has_direct and contributing_centers_all == {kpi_center_id}
+            source = 'Direct' if is_pure_direct else 'Rollup'
+            
+            # Get names of contributing centers (excluding self)
+            children_names = []
+            other_centers = contributing_centers_all - {kpi_center_id}
+            if other_centers:
+                children_with_names = hierarchy_df[
+                    hierarchy_df['kpi_center_id'].isin(other_centers)
+                ]['kpi_center_name'].unique().tolist()
+                children_names = children_with_names
+            
+            # Build result
             result[kpi_center_id] = {
                 'kpi_center_id': kpi_center_id,
                 'kpi_center_name': kpi_center_name,
                 'targets': merged_targets,
                 'source': source,
-                'children_count': len(children_names),
-                'children_names': children_names,
                 'level': row.get('level', 0),
-                'is_leaf': is_leaf
+                'is_leaf': is_leaf,
+                'children_count': len(children_names),
+                'children_names': children_names
             }
         
         return result

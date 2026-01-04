@@ -2,10 +2,23 @@
 """
 Streamlit Fragments for KPI Center Performance - KPI & Targets Tab.
 
+VERSION: 5.3.1
+
+CHANGELOG:
+- v5.3.1: Fixed per-KPI STOP logic (synced with Overview tab calculation)
+  - TARGET: Per-KPI STOP - traverse down, stop at first assignment for each KPI
+  - Example: ALL Revenue = HAN + DAN + SGN + OVERSEA (not all 7 centers)
+  - ACTUAL: Always from center + all descendants
+  - Updated popovers with clear examples
+- v5.3.0: Fixed TARGET rollup logic - STOP at assignment, removed "Mixed" concept
+- v5.0.0: Added default_weight from kpi_types for parent rollup
+- v3.3.0: Parents show aggregated KPIs with derived weights
+- v3.2.0: Initial hierarchy rollup support
+
 Contains:
-- kpi_assignments_fragment: KPI assignments with hierarchy rollup
-- kpi_progress_fragment: KPI progress with per-center breakdown
-- kpi_center_ranking_fragment: KPI Center performance ranking
+- kpi_assignments_fragment: KPI assignments (My KPIs tab)
+- kpi_progress_fragment: KPI progress with achievement (Progress tab)
+- kpi_center_ranking_fragment: KPI Center ranking (Ranking tab)
 """
 
 import logging
@@ -54,67 +67,105 @@ def build_hierarchy_groups(
     """
     Group KPI Centers by hierarchy for display.
     
-    Returns list of groups, each containing:
-    - parent: The parent center data (or None for roots)
-    - children: List of child center data
+    v5.3.1: Improved logic using hierarchy_df as source of truth for parent-child relationships.
     
-    Structure:
-    - Root nodes displayed first
-    - Then each parent with its children grouped together
+    Display order example:
+    🏢 ALL (root)
+        🌏 PTV
+            📍 HAN
+            📍 DAN
+        🌏 OVERSEA
+            📍 ROW
+            📍 SEA
+    
+    Returns:
+        List of center dicts with '_indent_level' added for visual hierarchy
     """
     if not centers_data:
         return []
     
-    # Build parent_id lookup from hierarchy_df if available
-    parent_map = {}
+    # Build lookup by kpi_center_id (ensure int keys)
+    centers_by_id = {}
+    for c in centers_data:
+        kpc_id = c.get('kpi_center_id')
+        if kpc_id is not None:
+            centers_by_id[int(kpc_id)] = c
+    
+    available_ids = set(centers_by_id.keys())
+    
+    # Build parent-child relationships from hierarchy_df
+    parent_of = {}  # child_id -> parent_id
+    children_of = {}  # parent_id -> [child_ids]
+    
     if hierarchy_df is not None and not hierarchy_df.empty:
         for _, row in hierarchy_df.iterrows():
             kpc_id = row.get('kpi_center_id')
             parent_id = row.get('parent_center_id')
-            if kpc_id is not None:
-                parent_map[kpc_id] = parent_id if pd.notna(parent_id) else None
+            
+            if kpc_id is None:
+                continue
+            
+            kpc_id = int(kpc_id)
+            
+            if pd.notna(parent_id):
+                parent_id = int(parent_id)
+                parent_of[kpc_id] = parent_id
+                
+                if parent_id not in children_of:
+                    children_of[parent_id] = []
+                if kpc_id not in children_of[parent_id]:
+                    children_of[parent_id].append(kpc_id)
     
-    # Build lookup by kpi_center_id
-    centers_by_id = {c['kpi_center_id']: c for c in centers_data}
-    
-    # Find roots (no parent or parent not in current set)
+    # Find roots in current context (no parent OR parent not in available_ids)
     roots = []
-    children_by_parent = {}
-    
-    for center in centers_data:
-        kpc_id = center['kpi_center_id']
-        parent_id = parent_map.get(kpc_id) or center.get('parent_center_id')
+    for kpc_id, center in centers_by_id.items():
+        parent_id = parent_of.get(kpc_id)
         
-        if parent_id is None or parent_id not in centers_by_id:
-            # This is a root in current context
+        if parent_id is None or parent_id not in available_ids:
             roots.append(center)
-        else:
-            # This is a child
-            if parent_id not in children_by_parent:
-                children_by_parent[parent_id] = []
-            children_by_parent[parent_id].append(center)
     
     # Sort roots by level, then name
     roots.sort(key=lambda x: (x.get('level', 0), x.get('kpi_center_name', '')))
     
     # Build result with recursive grouping
     result = []
+    visited = set()  # Prevent infinite loops
     
-    def add_center_with_children(center, indent_level=0):
+    def add_center_with_children(kpc_id: int, indent_level: int = 0):
         """Recursively add center and its children."""
+        if kpc_id in visited or kpc_id not in centers_by_id:
+            return
+        
+        visited.add(kpc_id)
+        center = centers_by_id[kpc_id]
+        
+        # Add copy with indent level
         center_copy = center.copy()
         center_copy['_indent_level'] = indent_level
         result.append(center_copy)
         
-        # Add children sorted by name
-        children = children_by_parent.get(center['kpi_center_id'], [])
-        children.sort(key=lambda x: x.get('kpi_center_name', ''))
+        # Get children that exist in our data
+        child_ids = children_of.get(kpc_id, [])
+        # Filter to only available children and sort by name
+        available_children = [
+            (cid, centers_by_id[cid].get('kpi_center_name', ''))
+            for cid in child_ids 
+            if cid in available_ids
+        ]
+        available_children.sort(key=lambda x: x[1])
         
-        for child in children:
-            add_center_with_children(child, indent_level + 1)
+        for child_id, _ in available_children:
+            add_center_with_children(child_id, indent_level + 1)
     
+    # Process each root
     for root in roots:
-        add_center_with_children(root, 0)
+        kpc_id = int(root.get('kpi_center_id'))
+        add_center_with_children(kpc_id, 0)
+    
+    # Handle any orphans (in data but not processed - shouldn't happen but safety)
+    for kpc_id in available_ids:
+        if kpc_id not in visited:
+            add_center_with_children(kpc_id, 0)
     
     return result
 
@@ -132,40 +183,70 @@ def kpi_assignments_fragment(
     """
     KPI Assignments fragment with hierarchy rollup support.
     
-    UPDATED v3.2.0: Shows targets for all KPI Centers with hierarchy rollup.
-    - Leaf nodes: Direct assignments with weight
-    - Parent nodes: Aggregated from all descendants (+ own direct if any)
+    UPDATED v5.3.0: Fixed TARGET logic - STOP at assignment, no Mixed concept.
+    
+    Logic:
+    - Direct: Center has assignment → show ONLY assignment target
+    - Rollup: Center has NO assignment → aggregate from children
+    - ACTUAL always comes from center + all descendants (sales at leaf level)
     
     Args:
         rollup_targets: Dict from metrics.calculate_rollup_targets()
-        hierarchy_df: For level filtering (optional)
+        hierarchy_df: For level filtering and hierarchy grouping
         fragment_key: Unique key prefix for widgets
     """
     if not rollup_targets:
         st.info("📋 No KPI assignments found for selected KPI Centers and year")
         return
     
-    # Help popover
+    # Help popover - UPDATED v5.3.1
     col_title, col_help = st.columns([6, 1])
     with col_help:
-        with st.popover("ℹ️"):
+        with st.popover("ℹ️ How it works"):
             st.markdown("""
-**📊 KPI Assignments Explained**
+**📊 KPI Assignments (My KPIs)**
 
-**🎯 Direct Assignment**
-KPIs assigned directly to this KPI Center.
-Weight % is used for calculating Overall Achievement.
+Shows KPI targets assigned to each KPI Center.
 
-**📁 Rollup**
-Aggregated KPI targets from all child KPI Centers.
-Formula: `Parent Target = Sum(All Descendants' Targets)`
+---
 
-**📁 Mixed**
-This KPI Center has both direct assignments AND child centers.
-Targets shown are: `Direct + Sum(Children)`
+**⚠️ Per-KPI STOP Logic**
+
+For **EACH KPI type separately**, traverse down the hierarchy:
+
+1. If center **HAS assignment** for this KPI → **STOP**, use that value
+2. If center **has NO assignment** → Continue to children recursively
+
+---
+
+**Example: Revenue for ALL**
+
+```
+ALL (no Revenue) → continue down
+├── PTV (no Revenue) → continue down
+│   ├── HAN (has $X) → STOP ✓
+│   ├── DAN (has $Y) → STOP ✓
+│   └── SGN (has $Z) → STOP ✓
+└── OVERSEA (has $4.4M) → STOP ✓
+    └── (children skipped - parent STOP)
+```
+
+**Result: ALL Revenue = HAN + DAN + SGN + OVERSEA**
+(NOT all 7 centers!)
+
+---
+
+**Source Types**
+
+| Source | Meaning |
+|--------|---------|
+| 🎯 **Direct** | ALL KPIs from this center only |
+| 📁 **Rollup** | Some KPIs aggregated from children |
+
+---
 
 **Format Notes**
-- Currency values: Rounded to nearest dollar
+- Currency: Rounded to nearest dollar
 - Counts: 1 decimal if value < 10
             """)
     
@@ -216,13 +297,11 @@ Targets shown are: `Direct + Sum(Children)`
         # v5.3.0: Use consistent icons with kpi_center_selector
         icon = get_kpi_center_icon(level, is_leaf)
         
-        # Badge based on source type
+        # v5.3.0: Badge based on source type (Mixed removed - Direct takes priority)
         if source == 'Direct':
-            badge = ""
-        elif source == 'Rollup':
-            badge = f" (Rollup from {children_count} centers)"
-        else:  # Mixed
-            badge = f" (Mixed: Direct + {children_count} children)"
+            badge = ""  # Direct assignment, no extra info needed
+        else:  # Rollup
+            badge = f" (Rollup from {children_count} centers)" if children_count > 0 else ""
         
         # Visual indentation based on hierarchy position
         indent = "　" * indent_level  # Use em-space for better visual
@@ -273,8 +352,8 @@ Targets shown are: `Direct + Sum(Children)`
                 hide_index=True
             )
             
-            # Show children names for rollup
-            if children_names and source in ['Rollup', 'Mixed']:
+            # Show children names for rollup only (Direct uses its own assignment)
+            if children_names and source == 'Rollup':
                 children_str = ', '.join(children_names[:5])
                 if len(children_names) > 5:
                     children_str += f" +{len(children_names) - 5} more"
@@ -282,7 +361,7 @@ Targets shown are: `Direct + Sum(Children)`
 
 
 # =============================================================================
-# KPI PROGRESS FRAGMENT (Progress Tab) - UPDATED v3.3.0
+# KPI PROGRESS FRAGMENT (Progress Tab) - UPDATED v5.3.0
 # =============================================================================
 
 @st.fragment
@@ -296,13 +375,16 @@ def kpi_progress_fragment(
     """
     KPI Progress fragment with per-center breakdown.
     
-    UPDATED v3.3.0: Parents now show aggregated KPIs with target-proportion weights.
-    - Leaf nodes: Direct KPI progress with individual metrics
-    - Parent nodes: Aggregated KPIs from all descendants with derived weights
+    UPDATED v5.3.0: Synced with My KPIs tab - STOP logic for targets.
+    
+    Logic:
+    - Direct Assignment: TARGET from assignment, ACTUAL from center + descendants
+    - Rollup: TARGET from children sum, ACTUAL from children sum
+    - Weight: Assigned (direct) or Default from kpi_types (rollup)
     
     Args:
         progress_data: Dict from metrics.calculate_per_center_progress()
-        hierarchy_df: For level info and filtering
+        hierarchy_df: For level info, filtering, and hierarchy grouping
         period_type: Current period type for display
         year: Current year
         fragment_key: Unique key prefix
@@ -311,7 +393,7 @@ def kpi_progress_fragment(
         st.info("📊 No KPI progress data available")
         return
     
-    # Help popover - UPDATED v5.0.0
+    # Help popover - UPDATED v5.3.1
     col_title, col_help = st.columns([6, 1])
     with col_help:
         with st.popover("ℹ️ How it works"):
@@ -320,47 +402,37 @@ def kpi_progress_fragment(
 
 ---
 
-**🎯 Scenario A: Centers with Direct Assignment**
+**⚠️ Per-KPI STOP Logic for TARGET**
 
-Each KPI has its own target and **assigned weight** from `sales_kpi_center_assignments`.
+For **EACH KPI type**, traverse hierarchy:
 
-`Achievement = Actual / Prorated Target × 100`
+1. Center **HAS assignment** → **STOP**, use that target
+2. Center **has NO assignment** → Continue to children
 
-`Overall = Σ(KPI Achievement × Assigned Weight) / Σ(Assigned Weights)`
+**ACTUAL**: Always from center + ALL descendants
+(sales recorded at leaf level)
 
 ---
 
-**📁 Scenario B: Parent Centers (Rollup)**
+**Example: Revenue for OVERSEA**
 
-Parent centers WITHOUT direct assignment aggregate from children using **default_weight** from `kpi_types`.
+**TARGET** (with STOP):
+- OVERSEA has Revenue = $4.4M → STOP
+- Children targets NOT added
+- **TARGET = $4.4M**
 
-**Step 1:** Aggregate targets & actuals by KPI type from all descendants
+**ACTUAL** (no STOP):
+- Sum ALL descendants' sales
+- **ACTUAL = OVERSEA + PTP + ROSEA + ROW**
 
-⚠️ **Important:** Only children with target for each specific KPI contribute.
+---
 
-**Step 2:** Calculate Achievement per KPI
+**Weight Source**
 
-`KPI Achievement = Total Actual / Total Prorated Target × 100`
-
-**Step 3:** Apply Default Weight from `kpi_types`
-
-| KPI Type | Default Weight |
-|----------|----------------|
-| gross_profit_1 (GP1) | 100 |
-| gross_profit | 95 |
-| revenue | 90 |
-| purchase_value | 80 |
-| new_business_revenue | 75 |
-| num_new_customers | 60 |
-| num_new_combos | 55 |
-| num_new_products | 50 |
-| num_new_projects | 50 |
-
-*Note: KPIs displayed in order of weight (highest first)*
-
-**Step 4:** Calculate Overall
-
-`Overall = Σ(KPI Achievement × Default Weight) / Σ(Default Weights)`
+| Scenario | Weight |
+|----------|--------|
+| 🎯 Direct | Assigned weight from DB |
+| 📁 Rollup | Default from `kpi_types` |
 
 ---
 
@@ -368,11 +440,9 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
 
 | Period | Formula |
 |--------|---------|
-| YTD | Annual × (Days Elapsed / 365) |
+| YTD | Annual × (Days / 365) |
 | QTD | Annual / 4 |
 | MTD | Annual / 12 |
-| LY | Full Annual Target |
-| Custom | Annual × (Days in Range / 365) |
 
 ---
 
@@ -552,7 +622,7 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
 
 
 # =============================================================================
-# KPI CENTER RANKING FRAGMENT - UPDATED v3.2.0 with level grouping
+# KPI CENTER RANKING FRAGMENT - UPDATED v5.3.0
 # =============================================================================
 
 @st.fragment
@@ -566,13 +636,17 @@ def kpi_center_ranking_fragment(
     """
     KPI Center performance ranking table with hierarchy level grouping.
     
-    UPDATED v3.2.0: Group by hierarchy level for fair comparison.
-    - Only shows levels with ≥2 items
-    - Medals for top 3 within each level
+    UPDATED v5.3.0: Synced with Progress tab for achievement calculation.
+    
+    Features:
+    - Group by hierarchy level for fair comparison
+    - Only shows levels with ≥2 items (need comparison)
+    - 🥇🥈🥉 Medals for top 3 within each level
+    - Achievement % from progress_data (same STOP logic)
     
     Args:
         ranking_df: Sales summary by KPI Center
-        progress_data: Dict from metrics.calculate_per_center_progress() for overall achievement
+        progress_data: Dict from metrics.calculate_per_center_progress()
         hierarchy_df: With level info for grouping
         show_targets: Whether to show achievement column
         fragment_key: Unique key prefix
@@ -581,30 +655,53 @@ def kpi_center_ranking_fragment(
         st.info("No ranking data available")
         return
     
-    # Help popover
+    # Help popover - UPDATED v5.3.0
     col_title, col_help = st.columns([6, 1])
     with col_help:
-        with st.popover("ℹ️"):
+        with st.popover("ℹ️ How it works"):
             st.markdown("""
-**🏆 Ranking Explained**
+**🏆 KPI Center Ranking**
+
+---
 
 **Why Group by Level?**
 
 KPI Centers have different scopes:
-- **Level 0/1**: Regional (aggregate multiple sub-regions)
-- **Level 2+**: Individual markets
-- **Leaf**: Smallest units
 
-Comparing ALL together isn't fair because 
-parent totals include children's data.
+| Level | Type | Example |
+|-------|------|---------|
+| 🏢 Level 0 | Root | ALL |
+| 🌏 Level 1 | Region | PTV, OVERSEA |
+| 📍 Level 2+ | Branch/Leaf | HAN, DAN, SGN |
+
+Comparing ALL together isn't fair because parent totals include children's data.
 
 **By grouping by level**, we compare:
-- Parents with parents
-- Leaves with leaves
+- Parents with parents (same scope)
+- Leaves with leaves (individual performance)
 
-**Achievement %**: 
-- Leaf: Weighted average of KPI achievements
-- Parent: Weighted average of children's achievements
+---
+
+**Achievement % Calculation**
+
+Same logic as Progress tab:
+
+**🎯 Direct Assignment:**
+`Achievement = Actual / Prorated Target × 100`
+`Overall = Weighted average using assigned weights`
+
+**📁 Rollup (No Assignment):**
+`Achievement = Aggregated Actual / Aggregated Target × 100`
+`Overall = Weighted average using default weights`
+
+---
+
+**Rank Metrics**
+- **Revenue**: Total sales value
+- **Gross Profit**: Revenue - COGS
+- **GP1**: Gross Profit Level 1
+- **GP %**: Gross Profit / Revenue × 100
+- **Customers**: Unique customer count
             """)
     
     # Rank by dropdown
