@@ -43,7 +43,7 @@ from utils.kpi_center_performance import (
     overview_tab_fragment,
     
     # Fragments - Analysis tab
-    top_performers_fragment,
+    analysis_tab_fragment,
     
     # Fragments - KPI & Targets tab
     kpi_assignments_fragment,
@@ -516,12 +516,13 @@ def main():
     # =========================================================================
     
     with tab3:
-        top_performers_fragment(
+        analysis_tab_fragment(
             sales_df=sales_df,
+            prev_sales_df=prev_sales_df,
             filter_values=active_filters,
             metrics_calculator=metrics_calc
         )
-    
+        
     # =========================================================================
     # TAB 4: BACKLOG
     # =========================================================================

@@ -158,7 +158,7 @@ from .sales_detail.fragments import (
 )
 
 # Analysis fragments
-from .analysis.fragments import top_performers_fragment
+from .analysis.fragments import analysis_tab_fragment
 
 # Backlog fragments
 from .backlog.fragments import (
@@ -290,7 +290,7 @@ __all__ = [
     'sales_detail_tab_fragment',
     
     # Fragments - Analysis
-    'top_performers_fragment',
+    'analysis_tab_fragment',
     
     # Fragments - Backlog
     'backlog_list_fragment',
