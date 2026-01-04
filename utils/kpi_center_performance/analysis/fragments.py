@@ -2,9 +2,11 @@
 """
 Streamlit Fragments for KPI Center Performance - Analysis Tab.
 
-VERSION: 6.1.0
+VERSION: 6.2.0
 
-Optimized for performance with proper data caching.
+Changes:
+- v6.2.0: Added @st.fragment for partial rerun, added detail data table next to chart
+- v6.1.0: Optimized for performance with proper data caching.
 """
 
 import logging
@@ -29,7 +31,9 @@ def analysis_tab_fragment(
     fragment_key: str = "analysis"
 ):
     """
-    Main Analysis Tab - NOT a fragment to avoid rerun issues.
+    Main Analysis Tab entry point.
+    
+    Uses @st.fragment on sub-tabs for partial rerun when widgets change.
     
     Args:
         sales_df: Current period sales data
@@ -147,8 +151,9 @@ def _aggregate_dimension(sales_df: pd.DataFrame, dimension: str) -> pd.DataFrame
 # TOP PERFORMERS TAB
 # =============================================================================
 
+@st.fragment
 def _top_performers_tab(agg_data: Dict, key_prefix: str):
-    """Unified Top Performers Analysis with cached data."""
+    """Unified Top Performers Analysis with cached data. Uses @st.fragment for partial rerun."""
     
     # Header row with slider
     col_tabs, col_slider = st.columns([4, 2])
@@ -223,7 +228,7 @@ def _render_metric_view(
     metric_label: str,
     threshold: float
 ):
-    """Render complete view for dimension + metric."""
+    """Render complete view for dimension + metric with chart and data table."""
     
     if agg_df.empty or agg_df[metric].sum() == 0:
         st.warning(f"No {metric_label} data available")
@@ -239,15 +244,23 @@ def _render_metric_view(
     # Metrics cards
     _render_metrics_cards(top_df, agg_df, dimension_label, metric, metric_label, threshold, total_value, total_count)
     
-    # Pareto chart
-    chart = build_pareto_chart(
-        data_df=top_df,
-        value_col=metric,
-        label_col=dimension,
-        title=f"Top {dimension_label}s by {metric_label}",
-        metric_type=metric
-    )
-    st.altair_chart(chart, use_container_width=True)
+    # Chart (left) + Data Table (right)
+    col_chart, col_table = st.columns([3, 2])
+    
+    with col_chart:
+        # Pareto chart
+        chart = build_pareto_chart(
+            data_df=top_df,
+            value_col=metric,
+            label_col=dimension,
+            title=f"Top {dimension_label}s by {metric_label}",
+            metric_type=metric
+        )
+        st.altair_chart(chart, use_container_width=True)
+    
+    with col_table:
+        # Data table
+        _render_detail_table(top_df, dimension, dimension_label, metric, metric_label)
     
     # Insights
     _render_insights(top_df, agg_df, dimension, dimension_label, metric, metric_label, threshold, total_value)
@@ -289,6 +302,43 @@ def _prepare_top_performers(
         top_df = sorted_df.copy()
     
     return top_df, total_value, total_count
+
+
+def _render_detail_table(
+    top_df: pd.DataFrame,
+    dimension: str,
+    dimension_label: str,
+    metric: str,
+    metric_label: str
+):
+    """Render detail data table for top performers."""
+    st.markdown(f"##### 📋 Top {dimension_label}s Detail")
+    
+    # Prepare display DataFrame
+    display_df = pd.DataFrame({
+        '#': range(1, len(top_df) + 1),
+        dimension_label: top_df[dimension].values,
+        metric_label: top_df[metric].apply(lambda x: f"${x:,.0f}").values,
+        '% Share': top_df['percent_contribution'].apply(lambda x: f"{x:.1f}%").values,
+        'Cumul.%': top_df['cumulative_percent'].apply(lambda x: f"{x:.1%}").values,
+    })
+    
+    # Add GP Margin if both revenue and gross_profit available
+    if 'revenue' in top_df.columns and 'gross_profit' in top_df.columns and metric in ['revenue', 'gross_profit']:
+        display_df['GP%'] = (top_df['gross_profit'] / top_df['revenue'].replace(0, float('nan')) * 100).apply(
+            lambda x: f"{x:.1f}%" if pd.notna(x) else "-"
+        ).values
+    
+    # Add orders if available
+    if 'orders' in top_df.columns:
+        display_df['Orders'] = top_df['orders'].apply(lambda x: f"{x:,}").values
+    
+    st.dataframe(
+        display_df,
+        hide_index=True,
+        use_container_width=True,
+        height=min(400, 35 * len(display_df) + 38)  # Dynamic height based on rows
+    )
 
 
 def _render_metrics_cards(
@@ -385,12 +435,13 @@ def _render_insights(
 # GROWTH ANALYSIS TAB
 # =============================================================================
 
+@st.fragment
 def _growth_analysis_tab(
     sales_df: pd.DataFrame,
     prev_sales_df: pd.DataFrame = None,
     key_prefix: str = "growth"
 ):
-    """Year-over-Year growth analysis."""
+    """Year-over-Year growth analysis. Uses @st.fragment for partial rerun."""
     
     st.markdown("#### 📈 Growth Analysis (YoY)")
     
