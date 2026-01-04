@@ -473,9 +473,27 @@ class ComplexKPICalculator:
         num_new_customers = new_customers_df['split_rate_percent'].sum() / 100 if not new_customers_df.empty and 'split_rate_percent' in new_customers_df.columns else 0
         num_new_products = new_products_df['split_rate_percent'].sum() / 100 if not new_products_df.empty and 'split_rate_percent' in new_products_df.columns else 0
         
+        # NEW v4.7.0: Calculate num_new_combos (distinct customer-product pairs)
+        if not new_business_detail_df.empty and 'combo_key' in new_business_detail_df.columns:
+            num_new_combos = new_business_detail_df['combo_key'].nunique()
+        elif not new_business_detail_df.empty and 'customer_id' in new_business_detail_df.columns and 'product_key' in new_business_detail_df.columns:
+            num_new_combos = new_business_detail_df.groupby(['customer_id', 'product_key']).ngroups
+        else:
+            num_new_combos = 0
+        
+        # NEW v4.7.0: Calculate new_combos_by_center
+        if not new_business_detail_df.empty and 'kpi_center_id' in new_business_detail_df.columns:
+            new_combos_by_center = new_business_detail_df.groupby('kpi_center_id').agg(
+                combo_count=('combo_key', 'nunique') if 'combo_key' in new_business_detail_df.columns 
+                           else ('customer_id', 'count')
+            ).reset_index()
+        else:
+            new_combos_by_center = pd.DataFrame(columns=['kpi_center_id', 'combo_count'])
+        
         # DEBUG v4.6.1: Track weighted counts
         print(f"   🔍 [DEBUG complex_kpi_calculator] num_new_customers = {num_new_customers:.2f}")
         print(f"   🔍 [DEBUG complex_kpi_calculator] num_new_products = {num_new_products:.2f}")
+        print(f"   🔍 [DEBUG complex_kpi_calculator] num_new_combos = {num_new_combos}")
         if not new_customers_df.empty and 'split_rate_percent' in new_customers_df.columns:
             null_count = new_customers_df['split_rate_percent'].isna().sum()
             print(f"   🔍 [DEBUG] new_customers_df: {len(new_customers_df)} rows, {null_count} NULL split_rate")
@@ -485,7 +503,7 @@ class ComplexKPICalculator:
             print(f"   📊 [calculate_all] Total: {elapsed:.3f}s")
             print(f"      → New Customers: {num_new_customers:.0f}")
             print(f"      → New Products: {num_new_products:.0f}")
-            print(f"      → New Combos: {len(new_business_detail_df):,}")
+            print(f"      → New Combos: {num_new_combos:,}")
             print(f"      → New Business Revenue: ${new_business_df['new_business_revenue'].iloc[0]:,.0f}" if not new_business_df.empty else "      → New Business Revenue: $0")
         
         return {
@@ -498,8 +516,11 @@ class ComplexKPICalculator:
             'new_customers_by_center': new_customers_by_center,
             'new_products_by_center': new_products_by_center,
             'new_business_by_center': new_business_by_center,
+            # NEW v4.7.0: New combos by center
+            'new_combos_by_center': new_combos_by_center,
             # Summary counts
             'num_new_customers': num_new_customers,
             'num_new_products': num_new_products,
+            'num_new_combos': num_new_combos,  # NEW v4.7.0
             'new_business_revenue': new_business_df['new_business_revenue'].iloc[0] if not new_business_df.empty else 0,
         }

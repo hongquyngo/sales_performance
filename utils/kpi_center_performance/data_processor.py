@@ -480,6 +480,7 @@ class DataProcessor:
         # DEBUG v4.6.1: Track what's being returned
         print(f"   🔍 [DEBUG data_processor] num_new_customers = {results.get('num_new_customers', 'NOT_FOUND')}")
         print(f"   🔍 [DEBUG data_processor] num_new_products = {results.get('num_new_products', 'NOT_FOUND')}")
+        print(f"   🔍 [DEBUG data_processor] num_new_combos = {results.get('num_new_combos', 'NOT_FOUND')}")
         
         return {
             'new_customers_df': results.get('new_customers', pd.DataFrame()),
@@ -493,9 +494,12 @@ class DataProcessor:
             'new_customers_by_center_df': results.get('new_customers_by_center', pd.DataFrame()),
             'new_products_by_center_df': results.get('new_products_by_center', pd.DataFrame()),
             'new_business_by_center_df': results.get('new_business_by_center', pd.DataFrame()),
+            # NEW v4.7.0: New combos by center
+            'new_combos_by_center_df': results.get('new_combos_by_center', pd.DataFrame()),
             # v4.6.1: Propagate pre-calculated weighted counts (single source of truth)
             'num_new_customers': results.get('num_new_customers', 0),
             'num_new_products': results.get('num_new_products', 0),
+            'num_new_combos': results.get('num_new_combos', 0),  # NEW v4.7.0
             'new_business_revenue': results.get('new_business_revenue', 0),
         }
     

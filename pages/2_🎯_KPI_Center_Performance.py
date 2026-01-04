@@ -364,14 +364,17 @@ def main():
         # v4.6.1: Use pre-calculated values from data_processor (single source of truth)
         'num_new_customers': data.get('num_new_customers', 0) or calculate_weighted_count(new_customers_df),
         'num_new_products': data.get('num_new_products', 0) or calculate_weighted_count(new_products_df),
+        'num_new_combos': data.get('num_new_combos', 0),  # NEW v4.7.0
         'new_business_revenue': data.get('new_business_revenue', 0) or (new_business_df['new_business_revenue'].sum() if not new_business_df.empty and 'new_business_revenue' in new_business_df.columns else 0),
     }
     
     # DEBUG v4.6.1: Track what's being used
     print(f"   🔍 [DEBUG main_page] data.get('num_new_customers') = {data.get('num_new_customers', 'NOT_FOUND')}")
     print(f"   🔍 [DEBUG main_page] data.get('num_new_products') = {data.get('num_new_products', 'NOT_FOUND')}")
+    print(f"   🔍 [DEBUG main_page] data.get('num_new_combos') = {data.get('num_new_combos', 'NOT_FOUND')}")
     print(f"   🔍 [DEBUG main_page] complex_kpis['num_new_customers'] = {complex_kpis['num_new_customers']}")
     print(f"   🔍 [DEBUG main_page] complex_kpis['num_new_products'] = {complex_kpis['num_new_products']}")
+    print(f"   🔍 [DEBUG main_page] complex_kpis['num_new_combos'] = {complex_kpis['num_new_combos']}")
     
     # Build complex_kpis_by_center for Overall Achievement
     complex_kpis_by_center = {}

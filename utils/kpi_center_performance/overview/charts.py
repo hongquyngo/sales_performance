@@ -2,6 +2,9 @@
 """
 Overview Tab Charts for KPI Center Performance
 
+VERSION: 4.7.0
+CHANGELOG:
+- v4.7.0: Added New Combos column to render_kpi_cards (4 columns total)
 """
 
 import logging
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# KPI CARDS - UPDATED v3.3.2
+# KPI CARDS - UPDATED v4.7.0
 # =============================================================================
 
 def render_kpi_cards(
@@ -30,12 +33,15 @@ def render_kpi_cards(
     show_backlog: bool = True,
     new_customers_df: pd.DataFrame = None,
     new_products_df: pd.DataFrame = None,
+    new_combos_detail_df: pd.DataFrame = None,  # NEW v4.7.0
     new_business_df: pd.DataFrame = None,
     new_business_detail_df: pd.DataFrame = None
 ):
     """
     Render KPI summary cards using Streamlit metrics.
     SYNCED with Salesperson page layout.
+    
+    UPDATED v4.7.0: Added New Combos column (4 columns total)
     """
     # =========================================================================
     # 💰 PERFORMANCE SECTION
@@ -175,26 +181,26 @@ def render_kpi_cards(
                     |--------|------------|----------|
                     | New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
                     | New Products | Products with **first sale ever** in period | 5 years |
-                    | New Business Revenue | Revenue from **first product-customer combo** | 5 years |
+                    | New Combos | Unique **customer-product pairs** with first sale in period | 5 years |
+                    | New Business Revenue | Revenue from **new combos** | 5 years |
                     
                     **Counting Method:**
-                    - Values are **proportionally counted** based on split %
-                    - Example: If KPI Center has 50% split on a new customer, they get 0.5 new customer credit
+                    - **New Customers/Products**: Weighted by split % (e.g., 50% split = 0.5 credit)
+                    - **New Combos**: Distinct count of customer-product pairs
+                    - **New Business Revenue**: Sum of sales from new combos
                     
                     **"New" Definitions:**
-                    - **New Customer**: Customer has NEVER purchased from the company before (globally, any KPI Center). Credit goes to KPI Center who made the first sale.
-                    - **New Product**: Product has NEVER been sold to ANY customer before. Credit goes to KPI Center who introduced it.
-                    - **New Business Revenue**: Revenue from first time a specific product is sold to a specific customer.
+                    - **New Customer**: Customer has NEVER purchased from the company before (globally, any KPI Center)
+                    - **New Product**: Product has NEVER been sold to ANY customer before
+                    - **New Combo**: A specific product sold to a specific customer for the FIRST TIME
+                    - **New Business Revenue**: Total revenue from all new combos in period
+                    
+                    **Relationship:** New Combos → generate → New Business Revenue
                     
                     **Lookback Period:** 5 years from period start date
-                    
-                    **Formula Summary:**
-                    - New Customer Count = Σ(split_rate / 100) for each first-time customer
-                    - New Product Count = Σ(split_rate / 100) for each first-time product
-                    - New Business Revenue = Σ(sales_by_kpi_center_usd) for first customer-product combos
                     """)
             
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)  # UPDATED v4.7.0: 4 columns
             
             # ---------------------------------------------------------
             # NEW CUSTOMERS with Detail Popover - UPDATED v2.7.0
@@ -366,9 +372,137 @@ def render_kpi_cards(
                         st.caption("")
             
             # ---------------------------------------------------------
-            # NEW BUSINESS REVENUE with Detail Popover - SYNCED v2.6.0
+            # NEW COMBOS with Detail Popover - NEW v4.7.0
             # ---------------------------------------------------------
             with col3:
+                new_combos = complex_kpis.get('num_new_combos', 0)
+                
+                metric_col, btn_col = st.columns([4, 1])
+                
+                with metric_col:
+                    achievement = complex_kpis.get('new_combos_achievement')
+                    if achievement:
+                        delta_str = f"{achievement:.0f}% of target"
+                    else:
+                        delta_str = f"{new_combos} cust-prod pairs"
+                    
+                    st.metric(
+                        label="New Combos",
+                        value=f"{new_combos:,}",
+                        delta=delta_str,
+                        delta_color="off" if not achievement else ("normal" if achievement >= 100 else "inverse"),
+                        help="Unique customer-product combinations with first sale in period (5-year lookback)."
+                    )
+                
+                with btn_col:
+                    # Use new_combos_detail_df if provided, else fallback to new_business_detail_df
+                    combos_df = new_combos_detail_df if new_combos_detail_df is not None else new_business_detail_df
+                    
+                    if combos_df is not None and not combos_df.empty:
+                        with st.popover("📋"):
+                            st.markdown('<div style="min-width:750px"><b>📋 New Combos Detail</b></div>', unsafe_allow_html=True)
+                            
+                            display_df = combos_df.copy()
+                            
+                            # Count unique combos
+                            if 'combo_key' in display_df.columns:
+                                unique_combos = display_df['combo_key'].nunique()
+                            elif 'customer_id' in display_df.columns and 'product_key' in display_df.columns:
+                                unique_combos = display_df.groupby(['customer_id', 'product_key']).ngroups
+                            else:
+                                unique_combos = len(display_df)
+                            
+                            # Sort options - use selectbox directly (no nested columns)
+                            sort_by = st.selectbox(
+                                "Sort by",
+                                ["Revenue (high → low)", "First Sale (recent → old)"],
+                                key="new_combos_sort",
+                                label_visibility="collapsed"
+                            )
+                            
+                            st.caption(f"Total: {unique_combos} unique customer-product combinations")
+                            
+                            # Format customer
+                            if 'customer_code' in display_df.columns and 'customer' in display_df.columns:
+                                display_df['customer_display'] = display_df.apply(
+                                    lambda row: f"{row['customer']} | {row['customer_code']}" 
+                                        if pd.notna(row.get('customer_code')) and row.get('customer_code')
+                                        else str(row['customer']),
+                                    axis=1
+                                )
+                            elif 'customer' in display_df.columns:
+                                display_df['customer_display'] = display_df['customer']
+                            else:
+                                display_df['customer_display'] = 'N/A'
+                            
+                            # Format product
+                            def format_product(row):
+                                parts = []
+                                if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                                    parts.append(str(row['pt_code']))
+                                if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                                    parts.append(str(row['product_pn']))
+                                return ' | '.join(parts) if parts else 'N/A'
+                            
+                            display_df['product_display'] = display_df.apply(format_product, axis=1)
+                            
+                            # Select columns
+                            display_cols = ['customer_display', 'product_display', 'kpi_center', 
+                                            'period_revenue', 'first_sale_date']
+                            available_cols = [c for c in display_cols if c in display_df.columns]
+                            
+                            # Fallback column names
+                            if 'period_revenue' not in display_df.columns and 'sales_by_kpi_center_usd' in display_df.columns:
+                                display_df['period_revenue'] = display_df['sales_by_kpi_center_usd']
+                                if 'period_revenue' not in available_cols:
+                                    available_cols.append('period_revenue')
+                            
+                            if 'first_sale_date' not in display_df.columns and 'first_combo_date' in display_df.columns:
+                                display_df['first_sale_date'] = display_df['first_combo_date']
+                                if 'first_sale_date' not in available_cols:
+                                    available_cols.append('first_sale_date')
+                            
+                            if available_cols:
+                                display_df = display_df[available_cols].copy()
+                                
+                                # Apply sorting
+                                if sort_by == "Revenue (high → low)" and 'period_revenue' in display_df.columns:
+                                    display_df = display_df.sort_values('period_revenue', ascending=False)
+                                elif sort_by == "First Sale (recent → old)" and 'first_sale_date' in display_df.columns:
+                                    display_df = display_df.sort_values('first_sale_date', ascending=False)
+                                
+                                # Format values
+                                if 'period_revenue' in display_df.columns:
+                                    display_df['period_revenue'] = display_df['period_revenue'].apply(
+                                        lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                                    )
+                                
+                                if 'first_sale_date' in display_df.columns:
+                                    display_df['first_sale_date'] = pd.to_datetime(display_df['first_sale_date']).dt.strftime('%Y-%m-%d')
+                                
+                                # Rename columns
+                                col_rename = {
+                                    'customer_display': 'Customer',
+                                    'product_display': 'Product',
+                                    'kpi_center': 'KPI Center',
+                                    'period_revenue': 'Revenue',
+                                    'first_sale_date': 'First Sale'
+                                }
+                                display_df = display_df.rename(columns=col_rename)
+                                
+                                st.dataframe(
+                                    display_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    height=min(400, len(display_df) * 35 + 40)
+                                )
+                    else:
+                        st.caption("")
+            
+            # ---------------------------------------------------------
+            # NEW BUSINESS REVENUE with Detail Popover - SYNCED v2.6.0
+            # ---------------------------------------------------------
+            with col4:
                 new_biz_rev = complex_kpis.get('new_business_revenue', 0)
                 
                 metric_col, btn_col = st.columns([4, 1])
@@ -1413,4 +1547,3 @@ def build_gap_analysis_chart(
     chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(**chart_props)
     
     return chart
-
