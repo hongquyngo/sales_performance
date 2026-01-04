@@ -361,9 +361,10 @@ def main():
     new_business_df = data.get('new_business_df', pd.DataFrame())
     
     complex_kpis = {
-        'num_new_customers': calculate_weighted_count(new_customers_df),
-        'num_new_products': calculate_weighted_count(new_products_df),
-        'new_business_revenue': new_business_df['new_business_revenue'].sum() if not new_business_df.empty and 'new_business_revenue' in new_business_df.columns else 0,
+        # v4.6.1: Use pre-calculated values from data_processor (single source of truth)
+        'num_new_customers': data.get('num_new_customers', 0) or calculate_weighted_count(new_customers_df),
+        'num_new_products': data.get('num_new_products', 0) or calculate_weighted_count(new_products_df),
+        'new_business_revenue': data.get('new_business_revenue', 0) or (new_business_df['new_business_revenue'].sum() if not new_business_df.empty and 'new_business_revenue' in new_business_df.columns else 0),
     }
     
     # Build complex_kpis_by_center for Overall Achievement
