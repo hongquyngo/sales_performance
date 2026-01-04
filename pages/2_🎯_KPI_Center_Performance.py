@@ -155,7 +155,7 @@ def calculate_weighted_count(df: pd.DataFrame, split_col: str = 'split_rate_perc
         return 0.0
     if split_col not in df.columns:
         return float(len(df))
-    return df[split_col].fillna(100).sum() / 100
+    return df[split_col].fillna(0).sum() / 100  # Fix: NULL split_rate should not get credit
 
 
 def get_selected_kpi_types(filter_values: dict, kpi_center_df: pd.DataFrame) -> list:
