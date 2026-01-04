@@ -19,6 +19,107 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# ICON CONSTANTS - Synced with kpi_center_selector.py
+# =============================================================================
+ICON_ROOT = "🏢"      # Root/Company level (level 0)
+ICON_REGION = "🌏"    # Region level (level 1)
+ICON_BRANCH = "📍"    # Branch/Leaf level
+ICON_FOLDER = "📁"    # Has children (non-leaf)
+
+
+def get_kpi_center_icon(level: int, is_leaf: bool) -> str:
+    """
+    Get appropriate icon for KPI Center based on level and leaf status.
+    Synced with kpi_center_selector.py for consistency.
+    
+    Args:
+        level: Hierarchy level (0=root, 1=region, 2+=branch)
+        is_leaf: Whether this is a leaf node (no children)
+        
+    Returns:
+        Emoji icon string
+    """
+    if level == 0:
+        return ICON_ROOT if not is_leaf else ICON_BRANCH
+    elif level == 1:
+        return ICON_REGION if not is_leaf else ICON_BRANCH
+    else:
+        return ICON_FOLDER if not is_leaf else ICON_BRANCH
+
+
+def build_hierarchy_groups(
+    centers_data: list,
+    hierarchy_df: pd.DataFrame = None
+) -> list:
+    """
+    Group KPI Centers by hierarchy for display.
+    
+    Returns list of groups, each containing:
+    - parent: The parent center data (or None for roots)
+    - children: List of child center data
+    
+    Structure:
+    - Root nodes displayed first
+    - Then each parent with its children grouped together
+    """
+    if not centers_data:
+        return []
+    
+    # Build parent_id lookup from hierarchy_df if available
+    parent_map = {}
+    if hierarchy_df is not None and not hierarchy_df.empty:
+        for _, row in hierarchy_df.iterrows():
+            kpc_id = row.get('kpi_center_id')
+            parent_id = row.get('parent_center_id')
+            if kpc_id is not None:
+                parent_map[kpc_id] = parent_id if pd.notna(parent_id) else None
+    
+    # Build lookup by kpi_center_id
+    centers_by_id = {c['kpi_center_id']: c for c in centers_data}
+    
+    # Find roots (no parent or parent not in current set)
+    roots = []
+    children_by_parent = {}
+    
+    for center in centers_data:
+        kpc_id = center['kpi_center_id']
+        parent_id = parent_map.get(kpc_id) or center.get('parent_center_id')
+        
+        if parent_id is None or parent_id not in centers_by_id:
+            # This is a root in current context
+            roots.append(center)
+        else:
+            # This is a child
+            if parent_id not in children_by_parent:
+                children_by_parent[parent_id] = []
+            children_by_parent[parent_id].append(center)
+    
+    # Sort roots by level, then name
+    roots.sort(key=lambda x: (x.get('level', 0), x.get('kpi_center_name', '')))
+    
+    # Build result with recursive grouping
+    result = []
+    
+    def add_center_with_children(center, indent_level=0):
+        """Recursively add center and its children."""
+        center_copy = center.copy()
+        center_copy['_indent_level'] = indent_level
+        result.append(center_copy)
+        
+        # Add children sorted by name
+        children = children_by_parent.get(center['kpi_center_id'], [])
+        children.sort(key=lambda x: x.get('kpi_center_name', ''))
+        
+        for child in children:
+            add_center_with_children(child, indent_level + 1)
+    
+    for root in roots:
+        add_center_with_children(root, 0)
+    
+    return result
+
+
+# =============================================================================
 # KPI ASSIGNMENTS FRAGMENT (My KPIs Tab) - UPDATED v3.2.0
 # =============================================================================
 
@@ -98,6 +199,9 @@ Targets shown are: `Direct + Sum(Children)`
         st.info("No KPI Centers found for selected level")
         return
     
+    # v5.3.0: Apply hierarchy grouping for better organization
+    sorted_centers = build_hierarchy_groups(sorted_centers, hierarchy_df)
+    
     # Display each KPI Center
     for center_data in sorted_centers:
         kpi_center_name = center_data['kpi_center_name']
@@ -107,22 +211,23 @@ Targets shown are: `Direct + Sum(Children)`
         children_count = center_data.get('children_count', 0)
         children_names = center_data.get('children_names', [])
         targets = center_data.get('targets', [])
+        indent_level = center_data.get('_indent_level', 0)
         
-        # Icon based on source
+        # v5.3.0: Use consistent icons with kpi_center_selector
+        icon = get_kpi_center_icon(level, is_leaf)
+        
+        # Badge based on source type
         if source == 'Direct':
-            icon = "🎯"
             badge = ""
         elif source == 'Rollup':
-            icon = "📁"
             badge = f" (Rollup from {children_count} centers)"
         else:  # Mixed
-            icon = "📁"
             badge = f" (Mixed: Direct + {children_count} children)"
         
-        # Indentation based on level
-        indent = "  " * level
+        # Visual indentation based on hierarchy position
+        indent = "　" * indent_level  # Use em-space for better visual
         
-        with st.expander(f"{indent}{icon} {kpi_center_name}{badge}", expanded=(level == 0 or is_leaf)):
+        with st.expander(f"{indent}{icon} {kpi_center_name}{badge}", expanded=(indent_level == 0 or is_leaf)):
             if not targets:
                 st.caption("No KPIs assigned")
                 continue
@@ -285,23 +390,22 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
         key=f"{fragment_key}_view"
     )
     
-    # Sort by level, then by overall achievement (descending)
-    sorted_centers = sorted(
-        progress_data.values(),
-        key=lambda x: (x.get('level', 0), -(x.get('overall', 0) or 0))
-    )
-    
-    # Filter by view
+    # Filter by view first
+    filtered_centers = list(progress_data.values())
     if selected_view == 'Leaf Only':
-        sorted_centers = [c for c in sorted_centers if c.get('is_leaf', True)]
+        filtered_centers = [c for c in filtered_centers if c.get('is_leaf', True)]
     elif selected_view == 'Parents Only':
-        sorted_centers = [c for c in sorted_centers if not c.get('is_leaf', True)]
+        filtered_centers = [c for c in filtered_centers if not c.get('is_leaf', True)]
     
-    if not sorted_centers:
+    if not filtered_centers:
         st.info("No KPI Centers found for selected view")
         return
     
-    # Display each KPI Center
+    # v5.3.0: Group by hierarchy for better visualization
+    # Uses build_hierarchy_groups() to arrange: parent → children
+    sorted_centers = build_hierarchy_groups(filtered_centers, hierarchy_df)
+    
+    # Display each KPI Center with hierarchy grouping
     for center_data in sorted_centers:
         kpi_center_id = center_data['kpi_center_id']
         kpi_center_name = center_data['kpi_center_name']
@@ -310,9 +414,13 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
         overall = center_data.get('overall')
         source = center_data.get('source', 'Direct')
         kpis = center_data.get('kpis', [])
+        indent_level = center_data.get('_indent_level', 0)
         
-        # Icon
-        icon = "🎯" if is_leaf else "📁"
+        # v5.3.0: Use consistent icons with kpi_center_selector
+        icon = get_kpi_center_icon(level, is_leaf)
+        
+        # Visual indent based on hierarchy position
+        indent_str = "&nbsp;&nbsp;&nbsp;&nbsp;" * indent_level
         
         # Overall badge
         if overall is not None:
@@ -329,8 +437,13 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
             overall_badge = "N/A"
             badge_type = "off"
         
-        # Header with overall
-        st.markdown(f"### {icon} {kpi_center_name}")
+        # Header with overall - different sizes based on indent
+        if indent_level == 0:
+            st.markdown(f"### {icon} {kpi_center_name}")
+        elif indent_level == 1:
+            st.markdown(f"#### {indent_str}{icon} {kpi_center_name}", unsafe_allow_html=True)
+        else:
+            st.markdown(f"##### {indent_str}{icon} {kpi_center_name}", unsafe_allow_html=True)
         
         # Overall achievement metric
         col_overall, col_spacer = st.columns([2, 4])

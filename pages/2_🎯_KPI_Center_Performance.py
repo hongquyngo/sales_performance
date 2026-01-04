@@ -569,11 +569,13 @@ def main():
                 kpi_type=active_filters.get('kpi_type', 'TERRITORY')
             )
             
+            # v5.3.0: Only show selected center + descendants (not ancestors)
+            # - Leaf node: show only itself
+            # - Parent node: show itself + all children
             selected_kpc_ids = active_filters.get('kpi_center_ids', [])
             if selected_kpc_ids:
                 all_relevant_ids = set(selected_kpc_ids)
                 for kpc_id in selected_kpc_ids:
-                    all_relevant_ids.update(queries.get_ancestors(kpc_id, include_self=True))
                     all_relevant_ids.update(queries.get_all_descendants(kpc_id, include_self=True))
                 hierarchy_df = hierarchy_df[hierarchy_df['kpi_center_id'].isin(all_relevant_ids)]
             
