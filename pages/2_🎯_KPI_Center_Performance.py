@@ -343,8 +343,15 @@ def main():
     
     with timer("Metrics: KPICenterMetrics init"):
         # v5.0.0: Pass default_weights from DB for parent rollup calculations
+        # v5.2.0: Pass hierarchy_df for recursive rollup with stop condition
         default_weights = loader.get_default_weights()
-        metrics_calc = KPICenterMetrics(sales_df, targets_df, default_weights=default_weights)
+        hierarchy_df = unified_cache.get('hierarchy_df', pd.DataFrame())
+        metrics_calc = KPICenterMetrics(
+            sales_df, 
+            targets_df, 
+            default_weights=default_weights,
+            hierarchy_df=hierarchy_df
+        )
     
     with timer("Metrics: calculate_overview_metrics"):
         overview_metrics = metrics_calc.calculate_overview_metrics(

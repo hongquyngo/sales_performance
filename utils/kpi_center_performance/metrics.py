@@ -49,7 +49,8 @@ class KPICenterMetrics:
         self, 
         sales_df: pd.DataFrame, 
         targets_df: pd.DataFrame = None,
-        default_weights: Dict[str, int] = None
+        default_weights: Dict[str, int] = None,
+        hierarchy_df: pd.DataFrame = None  # NEW v5.2.0: For recursive rollup
     ):
         """
         Initialize with data.
@@ -60,9 +61,11 @@ class KPICenterMetrics:
             default_weights: Dict mapping kpi_name → default_weight from kpi_types table
                             Used for parent rollup when center has no direct assignment
                             PRIORITY: DB weights > fallback weights
+            hierarchy_df: KPI Center hierarchy (NEW v5.2.0) - needed for recursive rollup
         """
         self.sales_df = sales_df
         self.targets_df = targets_df if targets_df is not None else pd.DataFrame()
+        self.hierarchy_df = hierarchy_df if hierarchy_df is not None else pd.DataFrame()
         
         # UPDATED v5.1.0: DB weights have PRIORITY over fallback
         # Start with fallback, then override with DB values
@@ -76,8 +79,159 @@ class KPICenterMetrics:
                 if key_lower == 'gross_profit_1':
                     self.default_weights['gp1'] = v
         
+        # NEW v5.2.0: Build parent-children map for recursive rollup
+        self._children_map = self._build_children_map()
+        
         # DEBUG v5.1.0: Log loaded weights
         logger.debug(f"[KPICenterMetrics] Initialized with default_weights: {self.default_weights}")
+    
+    def _build_children_map(self) -> Dict[int, List[int]]:
+        """
+        Build a map of parent_id → [child_ids] from hierarchy_df.
+        
+        NEW v5.2.0: Used for recursive rollup calculation.
+        """
+        children_map = {}
+        if self.hierarchy_df.empty:
+            return children_map
+        
+        for _, row in self.hierarchy_df.iterrows():
+            parent_id = row.get('parent_center_id')
+            center_id = row.get('kpi_center_id')
+            
+            if pd.notna(parent_id) and center_id:
+                parent_id = int(parent_id)
+                center_id = int(center_id)
+                if parent_id not in children_map:
+                    children_map[parent_id] = []
+                children_map[parent_id].append(center_id)
+        
+        return children_map
+    
+    def _get_effective_centers_for_kpi(
+        self,
+        root_center_id: int,
+        kpi_name: str,
+        selected_center_ids: List[int]
+    ) -> List[int]:
+        """
+        Get list of center IDs whose assignments should be used for rollup.
+        
+        NEW v5.2.0: Implements recursive rollup with STOP condition.
+        
+        Logic:
+        - If center has assignment for this KPI → STOP, return [center_id]
+        - If center has no assignment → recursively get from children
+        - Only consider centers within selected_center_ids
+        
+        Args:
+            root_center_id: Starting center ID for rollup
+            kpi_name: KPI type name (e.g., 'revenue', 'gross_profit')
+            selected_center_ids: List of center IDs in current selection
+            
+        Returns:
+            List of center IDs whose assignments should be aggregated
+        """
+        # Check if this center is in selection
+        if root_center_id not in selected_center_ids:
+            return []
+        
+        # Check if this center has assignment for this KPI
+        if not self.targets_df.empty:
+            center_assignments = self.targets_df[
+                (self.targets_df['kpi_center_id'] == root_center_id) &
+                (self.targets_df['kpi_name'].str.lower() == kpi_name.lower())
+            ]
+            if not center_assignments.empty:
+                # STOP condition: this center has assignment, use it directly
+                return [root_center_id]
+        
+        # No assignment for this center, recurse to children
+        children = self._children_map.get(root_center_id, [])
+        effective_centers = []
+        
+        for child_id in children:
+            if child_id in selected_center_ids:
+                child_effective = self._get_effective_centers_for_kpi(
+                    child_id, kpi_name, selected_center_ids
+                )
+                effective_centers.extend(child_effective)
+        
+        return effective_centers
+    
+    def _find_root_centers(self, selected_center_ids: List[int]) -> List[int]:
+        """
+        Find root center(s) in the selection - centers without parent in selection.
+        
+        NEW v5.2.0: Used to start recursive rollup from correct level.
+        """
+        if not selected_center_ids or self.hierarchy_df.empty:
+            return selected_center_ids
+        
+        roots = []
+        for center_id in selected_center_ids:
+            # Find parent of this center
+            center_row = self.hierarchy_df[self.hierarchy_df['kpi_center_id'] == center_id]
+            if center_row.empty:
+                roots.append(center_id)
+                continue
+            
+            parent_id = center_row['parent_center_id'].iloc[0]
+            # If parent is not in selection, this is a root
+            if pd.isna(parent_id) or int(parent_id) not in selected_center_ids:
+                roots.append(center_id)
+        
+        return roots
+    
+    def _get_all_descendants(self, center_id: int, selected_center_ids: List[int]) -> List[int]:
+        """
+        Get all descendants of a center that are in the selection.
+        
+        NEW v5.2.1: Used to get actual values from children when parent has assignment.
+        
+        Args:
+            center_id: Parent center ID
+            selected_center_ids: List of centers in current selection
+            
+        Returns:
+            List of descendant center IDs (excluding the center itself)
+        """
+        descendants = []
+        children = self._children_map.get(center_id, [])
+        
+        for child_id in children:
+            if child_id in selected_center_ids:
+                descendants.append(child_id)
+                # Recursive get grandchildren
+                descendants.extend(self._get_all_descendants(child_id, selected_center_ids))
+        
+        return descendants
+    
+    def _get_center_name(self, center_id: int) -> str:
+        """
+        Get center name from hierarchy_df.
+        
+        NEW v5.2.1: For better debug output.
+        """
+        if self.hierarchy_df.empty:
+            return str(center_id)
+        
+        row = self.hierarchy_df[self.hierarchy_df['kpi_center_id'] == center_id]
+        if row.empty:
+            return str(center_id)
+        
+        # Try different possible column names
+        name = None
+        for col in ['kpi_center_name', 'kpi_center', 'name']:
+            if col in row.columns:
+                name = row[col].iloc[0]
+                if name:
+                    break
+        
+        if name is None:
+            name = str(center_id)
+        
+        return f"{name}({center_id})"
     
     # =========================================================================
     # PERIOD CONTEXT ANALYSIS - DEPRECATED v4.1.0
@@ -358,7 +512,7 @@ class KPICenterMetrics:
         }
     
     # =========================================================================
-    # OVERALL KPI ACHIEVEMENT - UPDATED v5.1.0
+    # OVERALL KPI ACHIEVEMENT - UPDATED v5.2.0
     # =========================================================================
     
     def calculate_overall_kpi_achievement(
@@ -368,26 +522,36 @@ class KPICenterMetrics:
         start_date: date = None,
         end_date: date = None,
         complex_kpis_by_center: Dict = None,
-        selected_kpi_center_ids: List[int] = None  # NEW v5.0.0: For checking assignment
+        selected_kpi_center_ids: List[int] = None
     ) -> Dict:
         """
         Calculate weighted average KPI achievement across all assigned KPIs.
         
-        UPDATED v5.1.0: Added comprehensive debug output + dynamic weights from DB
+        UPDATED v5.2.0: Correct recursive rollup logic with STOP condition.
         
-        Two scenarios:
-        - Scenario A: Selected centers have direct assignments → use assigned weight
-        - Scenario B: Rollup/aggregation (no assignments) → use default_weight from kpi_types
+        For EACH KPI type:
+        - Start from root center
+        - If child has assignment for this KPI → STOP, use that assignment
+        - If child has NO assignment → Recursively rollup from its children
+        
+        Example (Gross Profit):
+        - ALL (no GP) → check children [PTV, OVERSEA]
+          - PTV (no GP) → check children [HAN, DAN, SGN] → all have GP → SUM them
+          - OVERSEA (HAS GP!) → STOP, use OVERSEA's value directly
+        - Result: HAN + DAN + SGN + OVERSEA (NOT including PTP, ROSEA, ROW)
         
         Formula: Σ(KPI_Achievement × Weight) / Σ(Weights)
         """
-        # DEBUG v5.1.0: Start calculation logging
+        # DEBUG v5.2.1: Start calculation logging
         print(f"\n{'='*70}")
-        print(f"📊 OVERALL ACHIEVEMENT CALCULATION - DEBUG v5.1.0")
+        print(f"📊 OVERALL ACHIEVEMENT CALCULATION - DEBUG v5.2.1 (Recursive Rollup)")
         print(f"{'='*70}")
         print(f"   Period: {period_type} | Year: {year}")
         print(f"   Date Range: {start_date} → {end_date}")
-        print(f"   Selected KPI Center IDs: {selected_kpi_center_ids}")
+        
+        # Show center names for better readability
+        selected_names = [self._get_center_name(c) for c in (selected_kpi_center_ids or [])]
+        print(f"   Selected KPI Centers: {selected_names}")
         print(f"   Default Weights from DB: {self.default_weights}")
         
         if self.targets_df.empty:
@@ -405,12 +569,14 @@ class KPICenterMetrics:
             'gp1': 'gp1_by_kpi_center_usd',
         }
         
+        # Find root centers (centers without parent in selection)
+        root_centers = self._find_root_centers(selected_kpi_center_ids or [])
+        root_names = [self._get_center_name(c) for c in root_centers]
+        print(f"\n   🌳 ROOT CENTERS: {root_names}")
+        
         # =========================================================
         # Determine Scenario: Check if it's direct assignment or rollup
         # =========================================================
-        # Scenario A: Single center with direct assignment → use assigned weights
-        # Scenario B: Multiple centers or parent rollup → use default_weight
-        
         is_single_center = (
             selected_kpi_center_ids is not None and 
             len(selected_kpi_center_ids) == 1
@@ -424,61 +590,87 @@ class KPICenterMetrics:
             ]
             has_direct_assignment = not direct_assignments.empty
         
-        # Determine calculation method
         use_assigned_weights = is_single_center and has_direct_assignment
         calculation_method = 'assigned_weight' if use_assigned_weights else 'default_weight'
         
-        # DEBUG v5.1.0: Scenario detection
         print(f"\n   📋 SCENARIO DETECTION:")
         print(f"      is_single_center: {is_single_center}")
         print(f"      has_direct_assignment: {has_direct_assignment}")
         print(f"      calculation_method: {calculation_method}")
-        print(f"      targets_df shape: {self.targets_df.shape}")
-        print(f"      targets_df KPI centers: {self.targets_df['kpi_center_id'].unique().tolist()}")
         
         # =========================================================
-        # Step 1: Aggregate targets & actuals by KPI type
-        # Only include actuals from centers WITH that KPI target
+        # Step 1: For EACH KPI type, find effective centers using recursive rollup
         # =========================================================
         kpi_aggregates = {}
         
-        # DEBUG v5.1.0: KPI breakdown header
-        print(f"\n   📊 KPI BREAKDOWN BY TYPE:")
+        # Get all unique KPI names from targets
+        all_kpi_names = self.targets_df['kpi_name'].unique()
+        
+        print(f"\n   📊 KPI BREAKDOWN BY TYPE (Recursive Rollup v5.2.1):")
         print(f"   {'─'*65}")
         
-        for kpi_name in self.targets_df['kpi_name'].unique():
+        for kpi_name in all_kpi_names:
             kpi_lower = kpi_name.lower() if kpi_name else ''
             
-            # Get targets for this KPI
-            kpi_targets = self.targets_df[self.targets_df['kpi_name'] == kpi_name]
+            # Find effective centers for THIS KPI using recursive rollup
+            # These are centers whose ASSIGNMENT should be used for TARGET
+            target_centers = []
+            for root_id in root_centers:
+                centers = self._get_effective_centers_for_kpi(
+                    root_id, kpi_name, selected_kpi_center_ids or []
+                )
+                target_centers.extend(centers)
+            
+            # Remove duplicates while preserving order
+            target_centers = list(dict.fromkeys(target_centers))
+            
+            if not target_centers:
+                print(f"      ⚠️ {kpi_name}: Skipped (no effective centers)")
+                continue
+            
+            # =========================================================
+            # NEW v5.2.1: For ACTUAL, include target_center + all descendants
+            # Because sales are recorded at child level, not parent level
+            # =========================================================
+            actual_centers = []
+            for center_id in target_centers:
+                actual_centers.append(center_id)
+                # Add all descendants of this center
+                descendants = self._get_all_descendants(center_id, selected_kpi_center_ids or [])
+                actual_centers.extend(descendants)
+            
+            # Remove duplicates
+            actual_centers = list(dict.fromkeys(actual_centers))
+            
+            # Get targets ONLY from target_centers (assignment level)
+            kpi_targets = self.targets_df[
+                (self.targets_df['kpi_name'] == kpi_name) &
+                (self.targets_df['kpi_center_id'].isin(target_centers))
+            ]
             total_annual_target = kpi_targets['annual_target_value_numeric'].sum()
             
             if total_annual_target <= 0:
                 print(f"      ⚠️ {kpi_name}: Skipped (target=0)")
                 continue
             
-            # Get list of KPI Centers that have THIS KPI target
-            centers_with_this_kpi = kpi_targets['kpi_center_id'].unique().tolist()
-            
             # Prorated target
             total_prorated_target = total_annual_target * proration
             
-            # Sum actuals ONLY from centers that have this KPI target
+            # Sum actuals from actual_centers (includes descendants for parent assignments)
             total_actual = 0
             actual_source = ""
             if kpi_lower in kpi_column_map:
                 col = kpi_column_map[kpi_lower]
                 if not self.sales_df.empty and col in self.sales_df.columns:
                     filtered_sales = self.sales_df[
-                        self.sales_df['kpi_center_id'].isin(centers_with_this_kpi)
+                        self.sales_df['kpi_center_id'].isin(actual_centers)
                     ]
                     total_actual = filtered_sales[col].sum() if not filtered_sales.empty else 0
                     actual_source = f"sales_df[{col}]"
             elif kpi_lower in ['new_business_revenue', 'num_new_customers', 'num_new_products', 'num_new_combos']:
-                # Sum complex KPIs ONLY from centers that have this KPI target
                 actual_source = "complex_kpis_by_center"
                 if complex_kpis_by_center:
-                    for center_id in centers_with_this_kpi:
+                    for center_id in actual_centers:
                         if center_id in complex_kpis_by_center:
                             total_actual += complex_kpis_by_center[center_id].get(kpi_lower, 0)
             
@@ -487,23 +679,28 @@ class KPICenterMetrics:
             
             # Get weight based on scenario
             if use_assigned_weights:
-                # Scenario A: Use assigned weight from the single center
-                assigned_weight = kpi_targets['weight_numeric'].iloc[0] if 'weight_numeric' in kpi_targets.columns else None
+                assigned_weight = kpi_targets['weight_numeric'].iloc[0] if 'weight_numeric' in kpi_targets.columns and len(kpi_targets) > 0 else None
                 if assigned_weight is None or pd.isna(assigned_weight):
                     assigned_weight = self.default_weights.get(kpi_lower, 50)
                 weight = assigned_weight
                 weight_source = 'assigned'
             else:
-                # Scenario B: Use default_weight from kpi_types
                 weight = self.default_weights.get(kpi_lower, 50)
                 weight_source = 'default'
             
-            # DEBUG v5.1.0: Print each KPI detail
+            # DEBUG v5.2.1: Print each KPI detail with center NAMES
+            target_names = [self._get_center_name(c) for c in target_centers]
+            actual_names = [self._get_center_name(c) for c in actual_centers]
+            
             print(f"      📌 {kpi_name}:")
-            print(f"         Centers with target: {centers_with_this_kpi}")
+            print(f"         Target from: {target_names}")
+            print(f"         Actual from: {actual_names}")
             print(f"         Annual Target: ${total_annual_target:,.0f}")
             print(f"         Prorated Target: ${total_prorated_target:,.0f}")
-            print(f"         Actual ({actual_source}): ${total_actual:,.0f}" if 'usd' in kpi_lower or kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue'] else f"         Actual ({actual_source}): {total_actual:,.0f}")
+            if 'usd' in kpi_lower or kpi_lower in ['revenue', 'gross_profit', 'gross_profit_1', 'gp1', 'new_business_revenue']:
+                print(f"         Actual ({actual_source}): ${total_actual:,.0f}")
+            else:
+                print(f"         Actual ({actual_source}): {total_actual:,.0f}")
             print(f"         Achievement: {achievement:.2f}%")
             print(f"         Weight: {weight} ({weight_source})")
             
@@ -516,7 +713,8 @@ class KPICenterMetrics:
                 'achievement': achievement,
                 'weight': weight,
                 'weight_source': weight_source,
-                'centers_count': len(centers_with_this_kpi)
+                'target_centers': target_centers,
+                'actual_centers': actual_centers
             }
         
         if not kpi_aggregates:
@@ -525,22 +723,24 @@ class KPICenterMetrics:
         
         # =========================================================
         # Step 2: Calculate weighted achievement
+        # Sort by weight (highest first) for better display
         # =========================================================
         total_weighted_achievement = 0
         total_weight = 0
         kpi_details = []
         
-        # DEBUG v5.1.0: Weighted calculation header
-        print(f"\n   🧮 WEIGHTED CALCULATION:")
+        print(f"\n   🧮 WEIGHTED CALCULATION (sorted by weight):")
         print(f"   {'─'*65}")
         
-        for kpi_name, data in kpi_aggregates.items():
+        # Sort by weight descending
+        sorted_kpis = sorted(kpi_aggregates.items(), key=lambda x: -x[1]['weight'])
+        
+        for kpi_name, data in sorted_kpis:
             weight = data['weight']
             weighted_contrib = data['achievement'] * weight
             total_weighted_achievement += weighted_contrib
             total_weight += weight
             
-            # DEBUG v5.1.0: Show contribution
             print(f"      {kpi_name}: {data['achievement']:.2f}% × {weight} = {weighted_contrib:.2f}")
             
             kpi_details.append({
@@ -549,7 +749,9 @@ class KPICenterMetrics:
                 'weight': weight,
                 'weight_source': data['weight_source'],
                 'actual': data['actual'],
-                'prorated_target': data['prorated_target']
+                'prorated_target': data['prorated_target'],
+                'target_centers': data['target_centers'],
+                'actual_centers': data['actual_centers']
             })
         
         # =========================================================
@@ -558,7 +760,6 @@ class KPICenterMetrics:
         if total_weight > 0:
             overall = total_weighted_achievement / total_weight
             
-            # DEBUG v5.1.0: Final calculation
             print(f"   {'─'*65}")
             print(f"   📊 FINAL CALCULATION:")
             print(f"      Total Weighted Achievement: {total_weighted_achievement:.2f}")
@@ -574,7 +775,7 @@ class KPICenterMetrics:
                 'calculation_method': calculation_method,
                 'is_single_center': is_single_center,
                 'has_direct_assignment': has_direct_assignment,
-                'default_weights_used': self.default_weights  # NEW v5.1.0: For tooltip
+                'default_weights_used': self.default_weights
             }
         
         print(f"   ⚠️ Total weight = 0 - returning None")
@@ -1068,6 +1269,9 @@ class KPICenterMetrics:
             # Calculate overall
             overall = total_weighted_achievement / total_weight if total_weight > 0 else None
             
+            # Sort KPIs by weight (highest first) for better display
+            kpis.sort(key=lambda x: -x['weight'])
+            
             result[kpi_center_id] = {
                 'kpi_center_id': kpi_center_id,
                 'kpi_center_name': kpi_center_name,
@@ -1118,9 +1322,17 @@ class KPICenterMetrics:
                 if has_direct_assignment:
                     # =============================================================
                     # Scenario A: Parent has direct assignment → use assigned weight
+                    # UPDATED v5.2.1: Actual from parent + ALL descendants
+                    # (because sales are recorded at child level)
                     # =============================================================
+                    
+                    # Get ALL descendants (children, grandchildren, etc.)
+                    all_descendants = queries_instance.get_leaf_descendants(kpi_center_id)
+                    actual_centers = [kpi_center_id] + (all_descendants if all_descendants else [])
+                    
+                    # Get sales from parent + all descendants
                     parent_sales = self.sales_df[
-                        self.sales_df['kpi_center_id'] == kpi_center_id
+                        self.sales_df['kpi_center_id'].isin(actual_centers)
                     ] if not self.sales_df.empty else pd.DataFrame()
                     
                     kpis = []
@@ -1142,14 +1354,17 @@ class KPICenterMetrics:
                         
                         prorated_target = annual_target * proration
                         
-                        # Get actual value
+                        # Get actual value from parent + all descendants
                         actual = 0
                         if kpi_lower in kpi_column_map:
                             col = kpi_column_map[kpi_lower]
                             if not parent_sales.empty and col in parent_sales.columns:
                                 actual = parent_sales[col].sum()
-                        elif complex_kpis_by_center and kpi_center_id in complex_kpis_by_center:
-                            actual = complex_kpis_by_center[kpi_center_id].get(kpi_lower, 0)
+                        elif complex_kpis_by_center:
+                            # Sum from all actual_centers
+                            for cid in actual_centers:
+                                if cid in complex_kpis_by_center:
+                                    actual += complex_kpis_by_center[cid].get(kpi_lower, 0)
                         
                         achievement = (actual / prorated_target * 100) if prorated_target > 0 else 0
                         
@@ -1165,7 +1380,8 @@ class KPICenterMetrics:
                             'achievement': achievement,
                             'weight': weight,
                             'weight_source': 'assigned',
-                            'is_currency': kpi_lower in currency_kpis
+                            'is_currency': kpi_lower in currency_kpis,
+                            'contributing_centers': len(actual_centers)  # NEW v5.2.1
                         })
                         
                         total_weighted_achievement += achievement * weight
@@ -1173,7 +1389,8 @@ class KPICenterMetrics:
                     
                     if kpis:
                         overall = total_weighted_achievement / total_weight if total_weight > 0 else None
-                        kpis.sort(key=lambda x: x['display_name'])
+                        # Sort KPIs by weight (highest first) for better display
+                        kpis.sort(key=lambda x: -x['weight'])
                         
                         result[kpi_center_id] = {
                             'kpi_center_id': kpi_center_id,
@@ -1184,7 +1401,8 @@ class KPICenterMetrics:
                             'overall': overall,
                             'total_weight': total_weight,
                             'source': 'Direct',  # Parent with direct assignment
-                            'calculation_method': 'assigned_weight'
+                            'calculation_method': 'assigned_weight',
+                            'children_count': len(all_descendants) if all_descendants else 0  # NEW v5.2.1
                         }
                         continue
                 
@@ -1302,8 +1520,8 @@ class KPICenterMetrics:
                 # Calculate overall
                 overall = total_weighted_achievement / total_weight if total_weight > 0 else None
                 
-                # Sort KPIs by display name
-                kpis.sort(key=lambda x: x['display_name'])
+                # Sort KPIs by weight (highest first) for better display
+                kpis.sort(key=lambda x: -x['weight'])
                 
                 # Collect children summary for display
                 children_summary = []

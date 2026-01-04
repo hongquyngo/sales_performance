@@ -241,8 +241,8 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
 
 | KPI Type | Default Weight |
 |----------|----------------|
-| gross_profit | 100 |
-| gross_profit_1 | 95 |
+| gross_profit_1 (GP1) | 100 |
+| gross_profit | 95 |
 | revenue | 90 |
 | purchase_value | 80 |
 | new_business_revenue | 75 |
@@ -250,6 +250,8 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
 | num_new_combos | 55 |
 | num_new_products | 50 |
 | num_new_projects | 50 |
+
+*Note: KPIs displayed in order of weight (highest first)*
 
 **Step 4:** Calculate Overall
 
@@ -352,8 +354,11 @@ Parent centers WITHOUT direct assignment aggregate from children using **default
                 st.caption(f"📊 Rollup from {children_count} child KPI Centers | Weight: Default (from kpi_types)")
         
         # Show KPI progress for BOTH leaf and parent nodes (NEW v3.3.0)
+        # UPDATED v5.2.1: KPIs pre-sorted by weight in metrics.py
         if kpis:
-            for kpi in kpis:
+            # Ensure sorted by weight (highest first) for display
+            sorted_kpis = sorted(kpis, key=lambda x: -x.get('weight', 0))
+            for kpi in sorted_kpis:
                 display_name = kpi.get('display_name', '')
                 actual = kpi.get('actual', 0)
                 prorated_target = kpi.get('prorated_target', 0)
