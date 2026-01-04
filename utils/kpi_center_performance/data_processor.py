@@ -477,6 +477,10 @@ class DataProcessor:
         )
         
         # Map to expected keys
+        # DEBUG v4.6.1: Track what's being returned
+        print(f"   🔍 [DEBUG data_processor] num_new_customers = {results.get('num_new_customers', 'NOT_FOUND')}")
+        print(f"   🔍 [DEBUG data_processor] num_new_products = {results.get('num_new_products', 'NOT_FOUND')}")
+        
         return {
             'new_customers_df': results.get('new_customers', pd.DataFrame()),
             'new_customers_detail_df': results.get('new_customers_detail', pd.DataFrame()),

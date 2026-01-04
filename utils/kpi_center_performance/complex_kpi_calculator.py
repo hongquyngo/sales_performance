@@ -473,6 +473,13 @@ class ComplexKPICalculator:
         num_new_customers = new_customers_df['split_rate_percent'].sum() / 100 if not new_customers_df.empty and 'split_rate_percent' in new_customers_df.columns else 0
         num_new_products = new_products_df['split_rate_percent'].sum() / 100 if not new_products_df.empty and 'split_rate_percent' in new_products_df.columns else 0
         
+        # DEBUG v4.6.1: Track weighted counts
+        print(f"   🔍 [DEBUG complex_kpi_calculator] num_new_customers = {num_new_customers:.2f}")
+        print(f"   🔍 [DEBUG complex_kpi_calculator] num_new_products = {num_new_products:.2f}")
+        if not new_customers_df.empty and 'split_rate_percent' in new_customers_df.columns:
+            null_count = new_customers_df['split_rate_percent'].isna().sum()
+            print(f"   🔍 [DEBUG] new_customers_df: {len(new_customers_df)} rows, {null_count} NULL split_rate")
+        
         elapsed = time.perf_counter() - start_time
         if DEBUG_TIMING:
             print(f"   📊 [calculate_all] Total: {elapsed:.3f}s")
