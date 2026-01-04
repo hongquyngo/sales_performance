@@ -93,16 +93,31 @@ def render_kpi_cards(
                 kpi_count = overall_achievement.get('kpi_count', 0)
                 calc_method = overall_achievement.get('calculation_method', '')
                 
-                # UPDATED v3.3.1: More descriptive delta and help text
-                if calc_method == 'target_proportion':
-                    delta_text = f"target-weighted avg of {kpi_count} KPIs"
+                # UPDATED v5.0.0: Show weight source in delta and help text
+                if calc_method == 'assigned_weight':
+                    delta_text = f"assigned weight avg of {kpi_count} KPIs"
                     help_text = (
                         "**Overall KPI Achievement**\n\n"
-                        "Formula: Σ(KPI Achievement × Derived Weight)\n\n"
-                        "**Weight Derivation:**\n"
-                        "- Currency KPIs (Revenue, GP, New Business): Weight = Target Proportion × 80%\n"
-                        "- Count KPIs (New Customers, New Products): Equal split of 20%\n\n"
-                        "**Note:** Only actuals from KPI Centers WITH that specific target are included."
+                        "Formula: Σ(KPI Achievement × Assigned Weight) / Σ(Weights)\n\n"
+                        "**Weight Source:** `sales_kpi_center_assignments.weight`\n\n"
+                        "This center has direct KPI assignments with assigned weights."
+                    )
+                elif calc_method == 'default_weight':
+                    delta_text = f"default weight avg of {kpi_count} KPIs"
+                    help_text = (
+                        "**Overall KPI Achievement**\n\n"
+                        "Formula: Σ(KPI Achievement × Default Weight) / Σ(Weights)\n\n"
+                        "**Weight Source:** `kpi_types.default_weight`\n\n"
+                        "**Default Weights:**\n"
+                        "- Gross Profit: 100\n"
+                        "- GP1: 95\n"
+                        "- Revenue: 90\n"
+                        "- Purchase Value: 80\n"
+                        "- New Business Revenue: 75\n"
+                        "- New Customers: 60\n"
+                        "- New Combos: 55\n"
+                        "- New Products/Projects: 50\n\n"
+                        "This is a rollup from child KPI Centers."
                     )
                 else:
                     delta_text = f"weighted avg of {kpi_count} KPIs"

@@ -146,6 +146,7 @@ class UnifiedDataLoader:
             'backlog_raw_df': pd.DataFrame(),
             'targets_raw_df': pd.DataFrame(),
             'hierarchy_df': pd.DataFrame(),
+            'kpi_types_df': pd.DataFrame(),  # NEW v5.0.0: KPI Types with default_weight
             '_loaded_at': None,
             '_lookback_start': None,
             '_lookback_end': None,
@@ -221,12 +222,22 @@ class UnifiedDataLoader:
             # =====================================================================
             # 4. HIERARCHY DATA
             # =====================================================================
-            progress_bar.progress(90, text="🏢 Loading hierarchy...")
+            progress_bar.progress(85, text="🏢 Loading hierarchy...")
             start = time.perf_counter()
             data['hierarchy_df'] = self._load_hierarchy()
             elapsed = time.perf_counter() - start
             if DEBUG_TIMING:
                 print(f"   📊 SQL [hierarchy]: {elapsed:.3f}s → {len(data['hierarchy_df']):,} rows")
+            
+            # =====================================================================
+            # 5. KPI TYPES DATA - NEW v5.0.0 for default_weight
+            # =====================================================================
+            progress_bar.progress(95, text="⚖️ Loading KPI types...")
+            start = time.perf_counter()
+            data['kpi_types_df'] = self._load_kpi_types()
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [kpi_types]: {elapsed:.3f}s → {len(data['kpi_types_df']):,} rows")
             
             progress_bar.progress(100, text="✅ Data loaded successfully!")
             
@@ -258,7 +269,8 @@ class UnifiedDataLoader:
             f"Unified data loaded: sales={len(data['sales_raw_df'])}, "
             f"backlog={len(data['backlog_raw_df'])}, "
             f"targets={len(data['targets_raw_df'])}, "
-            f"hierarchy={len(data['hierarchy_df'])}"
+            f"hierarchy={len(data['hierarchy_df'])}, "
+            f"kpi_types={len(data['kpi_types_df'])}"
         )
         
         return data
@@ -511,6 +523,35 @@ class UnifiedDataLoader:
             logger.error(f"Error loading hierarchy: {e}")
             return pd.DataFrame()
     
+    def _load_kpi_types(self) -> pd.DataFrame:
+        """
+        Load KPI Types with default_weight for rollup calculations.
+        
+        NEW v5.0.0: Used for calculating Overall Achievement for parent
+        KPI Centers that don't have direct assignments.
+        
+        Returns:
+            DataFrame with columns: id, name, description, uom, default_weight
+        """
+        query = """
+            SELECT 
+                id AS kpi_type_id,
+                name AS kpi_name,
+                description,
+                uom AS unit_of_measure,
+                COALESCE(default_weight, 50) AS default_weight
+            FROM kpi_types
+            WHERE delete_flag = 0 OR delete_flag IS NULL
+            ORDER BY default_weight DESC, name
+        """
+        
+        try:
+            df = pd.read_sql(text(query), self.engine)
+            return df
+        except Exception as e:
+            logger.error(f"Error loading kpi_types: {e}")
+            return pd.DataFrame()
+    
     # =========================================================================
     # EXTRACT FILTER OPTIONS (from cached data)
     # =========================================================================
@@ -729,6 +770,33 @@ class UnifiedDataLoader:
             queue.extend(children)
         
         return descendants
+    
+    def get_default_weights(self) -> Dict[str, int]:
+        """
+        Get default_weight dict from cached kpi_types.
+        
+        NEW v5.0.0: Used for parent rollup calculations.
+        
+        Returns:
+            Dict mapping kpi_name (lowercase) → default_weight
+            e.g., {'revenue': 90, 'gross_profit': 100, ...}
+        """
+        cache = st.session_state.get(CACHE_KEY_UNIFIED)
+        if not cache:
+            return {}
+        
+        kpi_types_df = cache.get('kpi_types_df', pd.DataFrame())
+        if kpi_types_df.empty:
+            return {}
+        
+        # Build dict: kpi_name (lowercase) → default_weight
+        default_weights = {}
+        for _, row in kpi_types_df.iterrows():
+            kpi_name = row.get('kpi_name', '')
+            if kpi_name:
+                default_weights[kpi_name.lower()] = int(row.get('default_weight', 50))
+        
+        return default_weights
     
     def expand_kpi_center_ids_with_children(
         self,

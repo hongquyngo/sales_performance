@@ -342,7 +342,9 @@ def main():
         print(f"\n📈 CALCULATING METRICS...")
     
     with timer("Metrics: KPICenterMetrics init"):
-        metrics_calc = KPICenterMetrics(sales_df, targets_df)
+        # v5.0.0: Pass default_weights from DB for parent rollup calculations
+        default_weights = loader.get_default_weights()
+        metrics_calc = KPICenterMetrics(sales_df, targets_df, default_weights=default_weights)
     
     with timer("Metrics: calculate_overview_metrics"):
         overview_metrics = metrics_calc.calculate_overview_metrics(
@@ -417,12 +419,14 @@ def main():
     # =========================================================================
     
     with timer("Metrics: calculate_overall_kpi_achievement"):
+        # v5.0.0: Pass selected_kpi_center_ids for scenario detection (assigned vs default weight)
         overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
             period_type=active_filters['period_type'],
             year=active_filters['year'],
             start_date=active_filters['start_date'],
             end_date=active_filters['end_date'],
-            complex_kpis_by_center=complex_kpis_by_center
+            complex_kpis_by_center=complex_kpis_by_center,
+            selected_kpi_center_ids=active_filters.get('kpi_center_ids', [])
         )
     
     # =========================================================================

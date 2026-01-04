@@ -206,7 +206,7 @@ def kpi_progress_fragment(
         st.info("📊 No KPI progress data available")
         return
     
-    # Help popover - UPDATED v3.3.0
+    # Help popover - UPDATED v5.0.0
     col_title, col_help = st.columns([6, 1])
     with col_help:
         with st.popover("ℹ️ How it works"):
@@ -215,62 +215,45 @@ def kpi_progress_fragment(
 
 ---
 
-**🎯 Leaf KPI Centers (Direct)**
+**🎯 Scenario A: Centers with Direct Assignment**
 
-Each KPI has its own target and weight assigned.
+Each KPI has its own target and **assigned weight** from `sales_kpi_center_assignments`.
 
 `Achievement = Actual / Prorated Target × 100`
 
-`Overall = Σ(KPI Achievement × Assigned Weight) / Σ(Weights)`
+`Overall = Σ(KPI Achievement × Assigned Weight) / Σ(Assigned Weights)`
 
 ---
 
-**📁 Parent KPI Centers (Aggregated)**
+**📁 Scenario B: Parent Centers (Rollup)**
 
-**Step 1:** Aggregate targets & actuals by KPI type
+Parent centers WITHOUT direct assignment aggregate from children using **default_weight** from `kpi_types`.
 
-⚠️ **Important:** Only children with target for each specific KPI contribute to that KPI's calculation.
+**Step 1:** Aggregate targets & actuals by KPI type from all descendants
 
-| KPI | Target | Actual |
-|-----|--------|--------|
-| Revenue | Sum from centers with Revenue target | Sum from same centers |
-| New Business | Sum from centers with NB target | Sum from same centers |
-
-*Example: If A has Revenue target but not New Business, A's actual only counts for Revenue, not New Business.*
+⚠️ **Important:** Only children with target for each specific KPI contribute.
 
 **Step 2:** Calculate Achievement per KPI
 
 `KPI Achievement = Total Actual / Total Prorated Target × 100`
 
-**Step 3:** Derive Weight from Target Proportion
+**Step 3:** Apply Default Weight from `kpi_types`
 
-For **currency KPIs** (Revenue, GP, New Business):
-```
-Weight = KPI Target / Total Currency Targets × 80%
-```
-
-For **count KPIs** (New Customers, New Products):
-```
-Weight = Equal split of remaining 20%
-```
+| KPI Type | Default Weight |
+|----------|----------------|
+| gross_profit | 100 |
+| gross_profit_1 | 95 |
+| revenue | 90 |
+| purchase_value | 80 |
+| new_business_revenue | 75 |
+| num_new_customers | 60 |
+| num_new_combos | 55 |
+| num_new_products | 50 |
+| num_new_projects | 50 |
 
 **Step 4:** Calculate Overall
 
-`Overall = Σ(KPI Achievement × Derived Weight) / 100`
-
----
-
-**Why Target-Proportion Weights?**
-
-- Larger business units have proportional impact
-- Fair comparison regardless of team size
-- Consistent with financial reporting standards
-
-**Why Only Include Centers With Target?**
-
-- Centers without a KPI target are not evaluated on that KPI
-- Prevents unfair inclusion of actuals from unassigned centers
-- More accurate performance measurement
+`Overall = Σ(KPI Achievement × Default Weight) / Σ(Default Weights)`
 
 ---
 
@@ -281,6 +264,7 @@ Weight = Equal split of remaining 20%
 | YTD | Annual × (Days Elapsed / 365) |
 | QTD | Annual / 4 |
 | MTD | Annual / 12 |
+| LY | Full Annual Target |
 | Custom | Annual × (Days in Range / 365) |
 
 ---
@@ -361,8 +345,11 @@ Weight = Equal split of remaining 20%
         # Show source indicator for parents
         if not is_leaf:
             children_count = center_data.get('children_count', 0)
-            calculation_method = center_data.get('calculation_method', 'target_proportion')
-            st.caption(f"📊 Aggregated from {children_count} child KPI Centers | Weight: Target Proportion")
+            calculation_method = center_data.get('calculation_method', 'default_weight')
+            if calculation_method == 'assigned_weight':
+                st.caption(f"🎯 Direct assignment | Weight: Assigned")
+            else:
+                st.caption(f"📊 Rollup from {children_count} child KPI Centers | Weight: Default (from kpi_types)")
         
         # Show KPI progress for BOTH leaf and parent nodes (NEW v3.3.0)
         if kpis:
@@ -387,9 +374,10 @@ Weight = Equal split of remaining 20%
                     prorated_str = f"{prorated_target:,.1f}" if prorated_target < 10 else f"{prorated_target:,.0f}"
                     annual_str = f"{annual_target:,.0f}"
                 
-                # KPI name with weight - show weight source for parents
-                if not is_leaf and weight_source == 'target_proportion':
-                    st.markdown(f"**{display_name}** ({weight:.1f}% derived)")
+                # KPI name with weight - show weight source
+                weight_source = kpi.get('weight_source', 'assigned')
+                if weight_source == 'default':
+                    st.markdown(f"**{display_name}** ({weight:.0f} default)")
                 else:
                     st.markdown(f"**{display_name}** ({weight:.0f}%)")
                 
