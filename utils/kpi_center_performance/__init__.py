@@ -2,8 +2,12 @@
 """
 KPI Center Performance Module
 
-VERSION: 4.6.0
+VERSION: 5.0.0
 CHANGELOG:
+- v5.0.0: New single-selection KPI Center tree selector
+  - Prevents parent-child double counting
+  - "Include sub-centers" toggle
+  - Search filter for large trees
 - v4.6.0: Added overview_tab_fragment as main Overview tab entry point
 """
 
@@ -48,6 +52,15 @@ from .filters import (
     apply_number_filter,
     # Cache helpers (updated to use new architecture)
     clear_data_cache,
+)
+
+# KPI Center Selector - NEW v5.0.0
+from .kpi_center_selector import (
+    KPICenterNode,
+    KPICenterSelection,
+    KPICenterTreeBuilder,
+    render_kpi_center_selector,
+    get_kpi_center_selection_ids,
 )
 
 # =============================================================================
@@ -239,6 +252,13 @@ __all__ = [
     'apply_number_filter',
     'clear_data_cache',
     
+    # KPI Center Selector - NEW v5.0.0
+    'KPICenterNode',
+    'KPICenterSelection',
+    'KPICenterTreeBuilder',
+    'render_kpi_center_selector',
+    'get_kpi_center_selection_ids',
+    
     # Chart Functions (v4.3.0 - direct exports)
     'empty_chart',
     'convert_pipeline_to_backlog_metrics',
@@ -315,4 +335,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '4.6.0'
+__version__ = '5.0.0'

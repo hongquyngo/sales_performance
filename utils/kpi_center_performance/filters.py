@@ -2,12 +2,23 @@
 """
 Sidebar Filter Components for KPI Center Performance
 
+VERSION: 5.0.0
+CHANGELOG:
+- v5.0.0: Replaced multiselect with single-selection tree component
+  - Prevents parent-child double counting
+  - New "Include sub-centers" toggle
+  - Search filter for large trees
+  - Uses new kpi_center_selector.py component
+- v4.1.0: Added analyze_period() with full period context
+- v2.15.0: Auto-uncheck "Only with KPI" when no assignments
+- v2.14.0: Added kpi_type parameter to assignment filter
+- v2.12.0: Added hierarchy display with tree visualization
 """
 
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
@@ -964,83 +975,64 @@ class KPICenterFilters:
                         )
                     
                     # =========================================================
-                    # 3. KPI CENTER FILTER (filtered by KPI Type) - UPDATED v2.15.0
+                    # 3. KPI CENTER FILTER - UPDATED v5.0.0 (Single Selection)
                     # =========================================================
-                    st.markdown("**🎯 KPI Center**")
+                    # NEW v5.0.0: Single selection with tree hierarchy
+                    # Prevents parent-child double counting
+                    
+                    from .kpi_center_selector import render_kpi_center_selector
                     
                     filtered_kc_df = kpi_center_df.copy()
                     kpi_center_ids_local = []
+                    include_children_local = True
                     
                     if not kpi_center_df.empty:
                         # Filter by KPI Type
                         if 'kpi_type' in kpi_center_df.columns and kpi_type_filter_local:
                             filtered_kc_df = filtered_kc_df[filtered_kc_df['kpi_type'] == kpi_type_filter_local]
                         
-                        # Filter by KPI assignment (only if checkbox checked AND we have IDs)
-                        # v2.15.0: No need for fallback - checkbox auto-unchecks if no assignments
+                        # Build allowed IDs set for "Only with KPI" filter
+                        allowed_ids_set = None
                         if only_with_kpi_local and kpi_center_ids_with_kpi:
-                            filtered_kc_df = filtered_kc_df[
-                                filtered_kc_df['kpi_center_id'].isin(kpi_center_ids_with_kpi)
-                            ]
-                        
-                        # Show info about filtered count
-                        total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
-                        filtered_count = len(filtered_kc_df)
-                        hidden_count = total_in_type - filtered_count
-                        
-                        if hidden_count > 0:
-                            st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
+                            allowed_ids_set = set(kpi_center_ids_with_kpi)
+                            
+                            # Show info about filtered count
+                            total_in_type = len(kpi_center_df[kpi_center_df['kpi_type'] == kpi_type_filter_local]) if 'kpi_type' in kpi_center_df.columns else len(kpi_center_df)
+                            filtered_count = len([x for x in filtered_kc_df['kpi_center_id'] if x in allowed_ids_set])
+                            hidden_count = total_in_type - filtered_count
+                            
+                            if hidden_count > 0:
+                                st.caption(f"📋 {filtered_count} with KPI in {current_year} ({hidden_count} hidden)")
                     
                     if filtered_kc_df.empty:
                         st.warning(f"No KPI Centers for type '{kpi_type_filter_local}'")
                     else:
-                        # =====================================================
-                        # BUILD HIERARCHY DISPLAY - NEW v2.12.0
-                        # =====================================================
-                        hierarchy_options, display_to_id, id_to_display = _build_hierarchy_display_options(
-                            filtered_kc_df,
-                            kpi_type_filter=None  # Already filtered above
-                        )
-                        
-                        # Add 'All' option at the beginning
-                        options = ['All'] + hierarchy_options
-                        
-                        # Track previous KPI Type to detect changes
+                        # Track previous KPI Type to detect changes and reset selection
                         prev_kpi_type = st.session_state.get('_prev_kpi_type', None)
                         
                         if prev_kpi_type != kpi_type_filter_local:
-                            # KPI Type changed → reset to All
-                            st.session_state.frag_kpi_center = ['All']
+                            # KPI Type changed → reset selection
                             st.session_state._prev_kpi_type = kpi_type_filter_local
+                            # Reset selector state
+                            if 'kpc_sel_select' in st.session_state:
+                                del st.session_state['kpc_sel_select']
+                            if 'kpc_sel_include_children' in st.session_state:
+                                del st.session_state['kpc_sel_include_children']
                             # Also reset Entity when KPI Type changes
                             st.session_state.frag_entity = ['All']
-                        elif 'frag_kpi_center' not in st.session_state:
-                            st.session_state.frag_kpi_center = ['All']
                         
-                        # Validate current selection against available options
-                        current_selection = st.session_state.frag_kpi_center
-                        valid_selection = [s for s in current_selection if s in options]
-                        if not valid_selection:
-                            valid_selection = ['All']
-                        if valid_selection != current_selection:
-                            st.session_state.frag_kpi_center = valid_selection
-                        
-                        selected_display_names = st.multiselect(
-                            "Select KPI Centers",
-                            options=options,
-                            key="frag_kpi_center",
-                            label_visibility="collapsed"
+                        # Render tree selector component
+                        selection = render_kpi_center_selector(
+                            hierarchy_df=filtered_kc_df,
+                            kpi_type_filter=None,  # Already filtered above
+                            allowed_ids=allowed_ids_set,
+                            key_prefix="kpc_sel",
+                            show_search=(len(filtered_kc_df) > 10)
                         )
                         
-                        # Convert display names back to IDs
-                        if 'All' in selected_display_names or not selected_display_names:
-                            kpi_center_ids_local = list(display_to_id.values())
-                        else:
-                            kpi_center_ids_local = [
-                                display_to_id[name] 
-                                for name in selected_display_names 
-                                if name in display_to_id
-                            ]
+                        # Get selected IDs
+                        kpi_center_ids_local = selection.expanded_ids
+                        include_children_local = selection.include_children
                     
                     st.divider()
                     
@@ -1287,14 +1279,30 @@ class KPICenterFilters:
                 kpi_check_years = list(range(start_date.year, end_date.year + 1))
             
             # =================================================================
-            # EXPAND KPI CENTER IDs WITH CHILDREN
+            # KPI CENTER IDs - UPDATED v5.0.0
             # =================================================================
-            kpi_center_ids_selected = kpi_center_ids.copy()
-            kpi_center_ids_expanded = _expand_kpi_center_ids_with_children(kpi_center_ids)
+            # NEW v5.0.0: Component already handles expansion via "Include sub-centers" toggle
+            # kpi_center_ids now contains expanded IDs if toggle is on
+            # No need to call _expand_kpi_center_ids_with_children() again
             
-            if len(kpi_center_ids_expanded) > len(kpi_center_ids_selected):
-                children_added = len(kpi_center_ids_expanded) - len(kpi_center_ids_selected)
-                logger.debug(f"KPI Centers: {len(kpi_center_ids_selected)} selected + {children_added} children = {len(kpi_center_ids_expanded)} total")
+            # Get include_children flag from session state (set by component)
+            include_children = st.session_state.get('kpc_sel_include_children', True)
+            
+            # For backward compatibility:
+            # - kpi_center_ids_selected: The single selected ID (for UI display)
+            # - kpi_center_ids_expanded: All IDs to query (selected + children if toggled)
+            # - kpi_center_ids: Same as expanded (for backward compat)
+            
+            if kpi_center_ids:
+                # Extract single selected ID from expanded list (it's the first one that's a parent)
+                # For now, use first ID as "selected" - component ensures single selection
+                kpi_center_ids_selected = [kpi_center_ids[0]] if kpi_center_ids else []
+            else:
+                kpi_center_ids_selected = []
+            
+            kpi_center_ids_expanded = kpi_center_ids.copy()
+            
+            logger.debug(f"KPI Centers: selected={len(kpi_center_ids_selected)}, expanded={len(kpi_center_ids_expanded)}, include_children={include_children}")
             
             # Build filter values dict
             filter_values = {
@@ -1311,6 +1319,7 @@ class KPICenterFilters:
                 'show_yoy': True,
                 'only_with_kpi': only_with_kpi,
                 'kpi_check_years': kpi_check_years,
+                'include_children': include_children,  # NEW v5.0.0
             }
             
             return filter_values, submitted
