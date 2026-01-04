@@ -292,16 +292,17 @@ def _render_top_performers_content(top_data, group_col, group_by, metric, metric
         display_df[group_by] = top_data[group_col].values
         
         # Format currency columns - handle NaN/inf
-        display_df['Revenue'] = top_data['revenue'].fillna(0).apply(lambda x: f"${x:,.0f}")
-        display_df['GP'] = top_data['gross_profit'].fillna(0).apply(lambda x: f"${x:,.0f}")
+        # IMPORTANT: Use .values to avoid index alignment issues
+        display_df['Revenue'] = top_data['revenue'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+        display_df['GP'] = top_data['gross_profit'].fillna(0).apply(lambda x: f"${x:,.0f}").values
         
         if show_margin:
-            display_df['GP %'] = top_data['gp_margin'].fillna(0).apply(lambda x: f"{x:.1f}%")
+            display_df['GP %'] = top_data['gp_margin'].fillna(0).apply(lambda x: f"{x:.1f}%").values
         
-        display_df['GP1'] = top_data['gp1'].fillna(0).apply(lambda x: f"${x:,.0f}")
-        display_df['Orders'] = top_data['orders'].fillna(0).astype(int)
-        display_df['% Share'] = top_data['percent'].fillna(0).apply(lambda x: f"{x:.1f}%")
-        display_df['Cum %'] = top_data['cumulative_percent'].fillna(0).apply(lambda x: f"{x:.1f}%")
+        display_df['GP1'] = top_data['gp1'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+        display_df['Orders'] = top_data['orders'].fillna(0).astype(int).values
+        display_df['% Share'] = top_data['percent'].fillna(0).apply(lambda x: f"{x:.1f}%").values
+        display_df['Cum %'] = top_data['cumulative_percent'].fillna(0).apply(lambda x: f"{x:.1f}%").values
         
         st.dataframe(
             display_df.head(20),
@@ -564,15 +565,16 @@ def _render_mix_view(sales_df: pd.DataFrame, dimension: str, dimension_label: st
     
     with col_table:
         # Build display DataFrame with formatted values
+        # IMPORTANT: Use .values to avoid index alignment issues
         source_df = agg_df.head(15)
         display_df = pd.DataFrame()
         display_df['#'] = range(1, len(source_df) + 1)
         display_df[dimension_label] = source_df[dimension].values
-        display_df['Revenue'] = source_df['revenue'].fillna(0).apply(lambda x: f"${x:,.0f}")
-        display_df['GP'] = source_df['gross_profit'].fillna(0).apply(lambda x: f"${x:,.0f}")
-        display_df['GP %'] = source_df['gp_margin'].fillna(0).apply(lambda x: f"{x:.1f}%")
-        display_df['Orders'] = source_df['orders'].fillna(0).astype(int)
-        display_df['% Mix'] = source_df['percent'].fillna(0).apply(lambda x: f"{x:.1f}%")
+        display_df['Revenue'] = source_df['revenue'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+        display_df['GP'] = source_df['gross_profit'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+        display_df['GP %'] = source_df['gp_margin'].fillna(0).apply(lambda x: f"{x:.1f}%").values
+        display_df['Orders'] = source_df['orders'].fillna(0).astype(int).values
+        display_df['% Mix'] = source_df['percent'].fillna(0).apply(lambda x: f"{x:.1f}%").values
         
         st.dataframe(display_df, hide_index=True, use_container_width=True, height=380)
     
@@ -728,10 +730,10 @@ def _render_top_movers(compare_df, dim_col, dimension, metric):
         if not gainers.empty:
             display_df = pd.DataFrame()
             display_df[dimension] = gainers[dim_col].values
-            display_df['Previous'] = gainers['previous'].fillna(0).apply(lambda x: f"${x:,.0f}")
-            display_df['Current'] = gainers['current'].fillna(0).apply(lambda x: f"${x:,.0f}")
-            display_df['Change'] = gainers['change'].fillna(0).apply(lambda x: f"${x:+,.0f}")
-            display_df['Growth %'] = gainers['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%")
+            display_df['Previous'] = gainers['previous'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+            display_df['Current'] = gainers['current'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+            display_df['Change'] = gainers['change'].fillna(0).apply(lambda x: f"${x:+,.0f}").values
+            display_df['Growth %'] = gainers['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%").values
             st.dataframe(display_df, hide_index=True, use_container_width=True)
         else:
             st.info("No gainers in this period")
@@ -742,10 +744,10 @@ def _render_top_movers(compare_df, dim_col, dimension, metric):
         if not losers.empty:
             display_df = pd.DataFrame()
             display_df[dimension] = losers[dim_col].values
-            display_df['Previous'] = losers['previous'].fillna(0).apply(lambda x: f"${x:,.0f}")
-            display_df['Current'] = losers['current'].fillna(0).apply(lambda x: f"${x:,.0f}")
-            display_df['Change'] = losers['change'].fillna(0).apply(lambda x: f"${x:+,.0f}")
-            display_df['Growth %'] = losers['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%")
+            display_df['Previous'] = losers['previous'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+            display_df['Current'] = losers['current'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+            display_df['Change'] = losers['change'].fillna(0).apply(lambda x: f"${x:+,.0f}").values
+            display_df['Growth %'] = losers['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%").values
             st.dataframe(display_df, hide_index=True, use_container_width=True)
         else:
             st.info("No decliners in this period")
@@ -761,7 +763,7 @@ def _render_new_and_lost(compare_df, dim_col, dimension, metric):
         if not new_items.empty:
             display_df = pd.DataFrame()
             display_df[dimension] = new_items[dim_col].values
-            display_df[f'Current {metric}'] = new_items['current'].fillna(0).apply(lambda x: f"${x:,.0f}")
+            display_df[f'Current {metric}'] = new_items['current'].fillna(0).apply(lambda x: f"${x:,.0f}").values
             st.dataframe(display_df, hide_index=True, use_container_width=True)
         else:
             st.info(f"No new {dimension}s")
@@ -772,7 +774,7 @@ def _render_new_and_lost(compare_df, dim_col, dimension, metric):
         if not lost_items.empty:
             display_df = pd.DataFrame()
             display_df[dimension] = lost_items[dim_col].values
-            display_df[f'Previous {metric}'] = lost_items['previous'].fillna(0).apply(lambda x: f"${x:,.0f}")
+            display_df[f'Previous {metric}'] = lost_items['previous'].fillna(0).apply(lambda x: f"${x:,.0f}").values
             st.dataframe(display_df, hide_index=True, use_container_width=True)
         else:
             st.info(f"No lost {dimension}s")
@@ -783,10 +785,10 @@ def _render_full_comparison(compare_df, dim_col, dimension):
     source_df = compare_df.head(50)
     display_df = pd.DataFrame()
     display_df[dimension] = source_df[dim_col].values
-    display_df['Previous'] = source_df['previous'].fillna(0).apply(lambda x: f"${x:,.0f}")
-    display_df['Current'] = source_df['current'].fillna(0).apply(lambda x: f"${x:,.0f}")
-    display_df['Change'] = source_df['change'].fillna(0).apply(lambda x: f"${x:+,.0f}")
-    display_df['Growth %'] = source_df['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%")
+    display_df['Previous'] = source_df['previous'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+    display_df['Current'] = source_df['current'].fillna(0).apply(lambda x: f"${x:,.0f}").values
+    display_df['Change'] = source_df['change'].fillna(0).apply(lambda x: f"${x:+,.0f}").values
+    display_df['Growth %'] = source_df['growth_pct'].fillna(0).apply(lambda x: f"{x:+.1f}%").values
     display_df['Status'] = source_df['status'].values
     
     st.dataframe(display_df, hide_index=True, use_container_width=True, height=500)
