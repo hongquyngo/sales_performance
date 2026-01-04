@@ -115,7 +115,7 @@ MONTH_ORDER = [
 # PERIOD DEFINITIONS
 # =============================================================================
 
-PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'Custom']
+PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'LY', 'Custom']
 
 # KPI Center Types - REMOVED v4.1.0 (unused)
 

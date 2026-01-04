@@ -873,6 +873,10 @@ class KPICenterFilters:
             mtd_start = date(current_year, today.month, 1)
             mtd_end = today
             
+            # Last Year (LY) - Full previous year
+            ly_start = date(current_year - 1, 1, 1)
+            ly_end = date(current_year - 1, 12, 31)
+            
             with st.sidebar:
                 st.header("🎯 KPI Center Filters")
                 
@@ -1105,13 +1109,14 @@ class KPICenterFilters:
                     
                     period_type_local = st.radio(
                         "Period",
-                        options=['YTD', 'QTD', 'MTD', 'Custom'],
+                        options=['YTD', 'QTD', 'MTD', 'LY', 'Custom'],
                         key="frag_period_type",
                         horizontal=True,
                         help=(
                             f"**YTD** (Year to Date): Jan 01 → {ytd_end.strftime('%b %d, %Y')}\n\n"
                             f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
                             f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                            f"**LY** (Last Year): {ly_start.strftime('%b %d, %Y')} → {ly_end.strftime('%b %d, %Y')}\n\n"
                             f"**Custom**: Select any date range using Start/End inputs below"
                         )
                     )
@@ -1129,6 +1134,9 @@ class KPICenterFilters:
                     elif period_type_local == 'MTD':
                         display_start = mtd_start
                         display_end = mtd_end
+                    elif period_type_local == 'LY':
+                        display_start = ly_start
+                        display_end = ly_end
                     else:  # Custom
                         # Use stored custom dates or defaults
                         display_start = st.session_state.get('frag_custom_start', default_start_date)
@@ -1191,6 +1199,9 @@ class KPICenterFilters:
                     elif period_type_local == 'MTD':
                         final_start = mtd_start
                         final_end = mtd_end
+                    elif period_type_local == 'LY':
+                        final_start = ly_start
+                        final_end = ly_end
                     else:  # Custom
                         final_start = start_date_input
                         final_end = end_date_input
@@ -1266,6 +1277,8 @@ class KPICenterFilters:
             # =================================================================
             if period_type in ['YTD', 'QTD', 'MTD']:
                 year = current_year
+            elif period_type == 'LY':
+                year = current_year - 1
             else:
                 year = start_date.year
             
@@ -1274,6 +1287,8 @@ class KPICenterFilters:
             # =================================================================
             if period_type in ['YTD', 'QTD', 'MTD']:
                 kpi_check_years = [current_year]
+            elif period_type == 'LY':
+                kpi_check_years = [current_year - 1]
             else:
                 # Custom: include all years in range
                 kpi_check_years = list(range(start_date.year, end_date.year + 1))
