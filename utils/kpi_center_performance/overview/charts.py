@@ -447,6 +447,22 @@ def render_kpi_cards(
                             
                             display_df = combos_df.copy()
                             
+                            # FIXED v5.3.2: Dedupe by combo_key to ensure unique customer-product pairs
+                            # This is a fallback in case new_combos_detail_df was not properly deduplicated
+                            if 'combo_key' in display_df.columns and len(display_df) > display_df['combo_key'].nunique():
+                                # Aggregate revenue columns, keep first for other columns
+                                agg_dict = {}
+                                for col in display_df.columns:
+                                    if col == 'combo_key':
+                                        continue
+                                    elif col in ['sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 
+                                                 'gp1_by_kpi_center_usd', 'period_revenue']:
+                                        agg_dict[col] = 'sum'
+                                    else:
+                                        agg_dict[col] = 'first'
+                                if agg_dict:
+                                    display_df = display_df.groupby('combo_key', as_index=False).agg(agg_dict)
+                            
                             # Count unique combos
                             if 'combo_key' in display_df.columns:
                                 unique_combos = display_df['combo_key'].nunique()

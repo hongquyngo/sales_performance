@@ -481,6 +481,38 @@ class ComplexKPICalculator:
         else:
             num_new_combos = 0
         
+        # NEW v5.3.2: Create new_combos_detail_df with UNIQUE combos (deduplicated)
+        # This is for display purposes - each combo should appear only once
+        if not new_business_detail_df.empty and 'combo_key' in new_business_detail_df.columns:
+            # Group by combo_key and aggregate
+            agg_dict = {}
+            
+            # Revenue columns - sum
+            for col in ['sales_by_kpi_center_usd', 'gross_profit_by_kpi_center_usd', 'gp1_by_kpi_center_usd']:
+                if col in new_business_detail_df.columns:
+                    agg_dict[col] = 'sum'
+            
+            # First occurrence columns - first
+            for col in ['customer_id', 'customer', 'customer_code', 'product_id', 'product_pn', 
+                        'pt_code', 'brand', 'kpi_center_id', 'kpi_center', 'first_combo_date',
+                        'legal_entity_id', 'legal_entity']:
+                if col in new_business_detail_df.columns:
+                    agg_dict[col] = 'first'
+            
+            if agg_dict:
+                new_combos_detail_df = new_business_detail_df.groupby('combo_key', as_index=False).agg(agg_dict)
+                # Add combo_key back as column if needed
+                if 'combo_key' not in new_combos_detail_df.columns:
+                    new_combos_detail_df = new_business_detail_df.groupby('combo_key').agg(agg_dict).reset_index()
+            else:
+                # Fallback: just dedupe on combo_key, keep first row
+                new_combos_detail_df = new_business_detail_df.drop_duplicates(subset=['combo_key'], keep='first').copy()
+        else:
+            new_combos_detail_df = pd.DataFrame()
+        
+        if DEBUG_TIMING:
+            print(f"   📊 [new_combos_detail] Created {len(new_combos_detail_df):,} unique combos from {len(new_business_detail_df):,} rows")
+        
         # NEW v4.7.0: Calculate new_combos_by_center
         if not new_business_detail_df.empty and 'kpi_center_id' in new_business_detail_df.columns:
             new_combos_by_center = new_business_detail_df.groupby('kpi_center_id').agg(
@@ -513,6 +545,7 @@ class ComplexKPICalculator:
             'new_products_detail': new_products_df,  # Alias for compatibility
             'new_business': new_business_df,
             'new_business_detail': new_business_detail_df,
+            'new_combos_detail': new_combos_detail_df,  # NEW v5.3.2: Deduplicated combos for display
             'new_customers_by_center': new_customers_by_center,
             'new_products_by_center': new_products_by_center,
             'new_business_by_center': new_business_by_center,

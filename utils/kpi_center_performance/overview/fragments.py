@@ -849,7 +849,7 @@ def overview_tab_fragment(
         overall_achievement=overall_achievement,
         new_customers_df=data.get('new_customers_detail_df'),
         new_products_df=data.get('new_products_detail_df'),
-        new_combos_detail_df=data.get('new_business_detail_df'),  # NEW v4.7.0: Use new_business_detail_df for combos
+        new_combos_detail_df=data.get('new_combos_detail_df'),  # FIXED v5.3.2: Use deduplicated new_combos_detail_df
         new_business_df=data.get('new_business_df'),
         new_business_detail_df=data.get('new_business_detail_df')
     )

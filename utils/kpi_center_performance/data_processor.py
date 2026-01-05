@@ -489,6 +489,7 @@ class DataProcessor:
             'new_products_detail_df': results.get('new_products_detail', pd.DataFrame()),
             'new_business_df': results.get('new_business', pd.DataFrame()),
             'new_business_detail_df': results.get('new_business_detail', pd.DataFrame()),
+            'new_combos_detail_df': results.get('new_combos_detail', pd.DataFrame()),  # NEW v5.3.2: Deduplicated
             '_complex_kpi_calculator': calculator,
             # v4.5.0: Propagate *_by_center to avoid duplicate calculation in main page
             'new_customers_by_center_df': results.get('new_customers_by_center', pd.DataFrame()),
