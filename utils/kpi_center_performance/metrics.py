@@ -575,26 +575,30 @@ class KPICenterMetrics:
         print(f"\n   🌳 ROOT CENTERS: {root_names}")
         
         # =========================================================
-        # Determine Scenario: Check if it's direct assignment or rollup
+        # Determine Scenario: Check if ROOT center has direct assignment
+        # FIXED v5.3.2: Check ROOT center, not all expanded centers
+        # 
+        # When user selects "OVERSEA + include sub-centers":
+        # - selected_kpi_center_ids = [OVERSEA, PTP, ROSEA, ROW, SEA] (5 centers)
+        # - BUT root_centers = [OVERSEA] (1 root)
+        # - OVERSEA has assignment → use assigned weights
         # =========================================================
-        is_single_center = (
-            selected_kpi_center_ids is not None and 
-            len(selected_kpi_center_ids) == 1
-        )
+        is_single_root = len(root_centers) == 1
         
         has_direct_assignment = False
-        if is_single_center:
-            center_id = selected_kpi_center_ids[0]
+        if is_single_root:
+            root_id = root_centers[0]
             direct_assignments = self.targets_df[
-                self.targets_df['kpi_center_id'] == center_id
+                self.targets_df['kpi_center_id'] == root_id
             ]
             has_direct_assignment = not direct_assignments.empty
         
-        use_assigned_weights = is_single_center and has_direct_assignment
+        use_assigned_weights = is_single_root and has_direct_assignment
         calculation_method = 'assigned_weight' if use_assigned_weights else 'default_weight'
         
-        print(f"\n   📋 SCENARIO DETECTION:")
-        print(f"      is_single_center: {is_single_center}")
+        print(f"\n   📋 SCENARIO DETECTION (v5.3.2 - Root-based):")
+        print(f"      root_centers: {root_names}")
+        print(f"      is_single_root: {is_single_root}")
         print(f"      has_direct_assignment: {has_direct_assignment}")
         print(f"      calculation_method: {calculation_method}")
         
@@ -678,8 +682,19 @@ class KPICenterMetrics:
             achievement = (total_actual / total_prorated_target * 100) if total_prorated_target > 0 else 0
             
             # Get weight based on scenario
+            # FIXED v5.3.2: Get weight from ROOT center's assignment, not from kpi_targets
             if use_assigned_weights:
-                assigned_weight = kpi_targets['weight_numeric'].iloc[0] if 'weight_numeric' in kpi_targets.columns and len(kpi_targets) > 0 else None
+                # Get weight from ROOT center's assignment for this KPI
+                root_id = root_centers[0]
+                root_kpi_assignment = self.targets_df[
+                    (self.targets_df['kpi_center_id'] == root_id) &
+                    (self.targets_df['kpi_name'].str.lower() == kpi_lower)
+                ]
+                if not root_kpi_assignment.empty and 'weight_numeric' in root_kpi_assignment.columns:
+                    assigned_weight = root_kpi_assignment['weight_numeric'].iloc[0]
+                else:
+                    assigned_weight = None
+                
                 if assigned_weight is None or pd.isna(assigned_weight):
                     assigned_weight = self.default_weights.get(kpi_lower, 50)
                 weight = assigned_weight
@@ -773,9 +788,10 @@ class KPICenterMetrics:
                 'total_weight': total_weight,
                 'kpi_details': kpi_details,
                 'calculation_method': calculation_method,
-                'is_single_center': is_single_center,
+                'is_single_root': is_single_root,  # FIXED v5.3.2
                 'has_direct_assignment': has_direct_assignment,
-                'default_weights_used': self.default_weights
+                'default_weights_used': self.default_weights,
+                'root_centers': root_centers  # NEW v5.3.2
             }
         
         print(f"   ⚠️ Total weight = 0 - returning None")

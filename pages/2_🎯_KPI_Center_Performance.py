@@ -567,7 +567,7 @@ def main():
             st.info("No KPI targets assigned for selected KPI Centers and year")
         else:
             hierarchy_df = queries.get_hierarchy_with_levels(
-                kpi_type=active_filters.get('kpi_type', 'TERRITORY')
+                kpi_type=active_filters.get('kpi_type_filter', 'TERRITORY')
             )
             
             # v5.3.0: Only show selected center + descendants (not ancestors)
