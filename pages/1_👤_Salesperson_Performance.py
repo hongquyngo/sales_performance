@@ -10,6 +10,13 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v3.5.0: UPDATED My KPIs tab with professional layout
+          - Header with "How it works" popover explaining each column
+          - ALL rollup section showing aggregated targets (when multiple salespeople)
+          - KPI icons for each type (💰 Revenue, 📈 GP, 👥 Customers, etc.)
+          - Formatted values (currency vs numbers)
+          - Total Weight summary at bottom of each person's section
+          - Collapsible sections per salesperson
 - v3.4.0: UPDATED - Dynamic KPI Type Weights from Database
           - KPI type default_weight now loaded from kpi_types table
           - New function: get_kpi_type_weights_cached() in queries.py
@@ -2163,20 +2170,181 @@ with tab4:
         kpi_tab1, kpi_tab2, kpi_tab3 = st.tabs(["📊 My KPIs", "📈 Progress", "🏆 Ranking"])
         
         with kpi_tab1:
-            st.markdown("#### 📊 KPI Assignments")
+            # =================================================================
+            # MY KPIs - Professional Layout (Updated v3.5.0)
+            # =================================================================
             
-            # Group by salesperson
-            for sales_id in targets_df['employee_id'].unique():
-                sales_targets = targets_df[targets_df['employee_id'] == sales_id]
-                sales_name = sales_targets['employee_name'].iloc[0]
-                
-                with st.expander(f"👤 {sales_name}", expanded=True):
-                    kpi_display = sales_targets[['kpi_name', 'annual_target_value', 
-                                                 'monthly_target_value', 'quarterly_target_value',
-                                                 'unit_of_measure', 'weight_numeric']].copy()
-                    kpi_display.columns = ['KPI', 'Annual Target', 'Monthly', 'Quarterly', 'Unit', 'Weight %']
+            # KPI Icons mapping
+            kpi_icons = {
+                'revenue': '💰',
+                'gross_profit': '📈',
+                'gross_profit_1': '📊',
+                'gp1': '📊',
+                'num_new_customers': '👥',
+                'new_customers': '👥',
+                'num_new_products': '📦',
+                'new_products': '📦',
+                'new_business_revenue': '🚀',
+                'num_new_projects': '🎯',
+                'num_new_combos': '🔗',
+                'purchase_value': '🛒',
+            }
+            
+            # Header row with title and help button
+            col_header, col_help = st.columns([4, 1])
+            with col_header:
+                st.markdown("### 📊 KPI Assignments")
+            with col_help:
+                with st.popover("ℹ️ How it works"):
+                    st.markdown("""
+                    **KPI Assignments** hiển thị các mục tiêu KPI được gán cho mỗi salesperson.
                     
-                    st.dataframe(kpi_display, use_container_width=True, hide_index=True)
+                    **Columns:**
+                    - **KPI**: Loại KPI (Revenue, GP, New Customers, etc.)
+                    - **Annual Target**: Mục tiêu cả năm
+                    - **Monthly**: Mục tiêu hàng tháng (= Annual / 12)
+                    - **Quarterly**: Mục tiêu hàng quý (= Annual / 4)
+                    - **Unit**: Đơn vị (USD, customer, product, etc.)
+                    - **Weight %**: Trọng số của KPI trong Overall Achievement
+                    
+                    **Lưu ý:**
+                    - Weight % dùng để tính Overall Achievement cá nhân
+                    - Tổng Weight không nhất thiết = 100%
+                    """)
+            
+            st.markdown("")
+            
+            # Get unique salespeople
+            unique_salespeople = targets_df[['employee_id', 'employee_name']].drop_duplicates()
+            num_salespeople = len(unique_salespeople)
+            
+            # If multiple salespeople, show summary card first
+            if num_salespeople > 1:
+                with st.container(border=True):
+                    st.markdown(f"##### 📋 ALL (Rollup from {num_salespeople} salespeople)")
+                    
+                    # Aggregate targets by KPI type
+                    all_kpis_agg = targets_df.groupby('kpi_name').agg({
+                        'annual_target_value_numeric': 'sum',
+                        'monthly_target_value': lambda x: x.astype(str).iloc[0] if len(x) > 0 else '',
+                        'quarterly_target_value': lambda x: x.astype(str).iloc[0] if len(x) > 0 else '',
+                        'unit_of_measure': 'first'
+                    }).reset_index()
+                    
+                    # Recalculate monthly/quarterly from annual
+                    all_kpis_agg['monthly_calc'] = all_kpis_agg['annual_target_value_numeric'] / 12
+                    all_kpis_agg['quarterly_calc'] = all_kpis_agg['annual_target_value_numeric'] / 4
+                    
+                    # Build display data
+                    display_rows = []
+                    for _, kpi_row in all_kpis_agg.iterrows():
+                        kpi_name = kpi_row['kpi_name']
+                        kpi_lower = kpi_name.lower().replace(' ', '_')
+                        icon = kpi_icons.get(kpi_lower, '📌')
+                        unit = kpi_row['unit_of_measure'] or ''
+                        annual = kpi_row['annual_target_value_numeric']
+                        monthly = kpi_row['monthly_calc']
+                        quarterly = kpi_row['quarterly_calc']
+                        
+                        # Format based on unit
+                        if 'USD' in str(unit).upper() or 'usd' in str(unit).lower():
+                            annual_fmt = f"${annual:,.0f}"
+                            monthly_fmt = f"${monthly:,.0f}"
+                            quarterly_fmt = f"${quarterly:,.0f}"
+                        else:
+                            annual_fmt = f"{annual:,.1f}" if annual % 1 != 0 else f"{annual:,.0f}"
+                            monthly_fmt = f"{monthly:,.1f}"
+                            quarterly_fmt = f"{quarterly:,.1f}"
+                        
+                        display_rows.append({
+                            'KPI': f"{icon} {kpi_name.replace('_', ' ').title()}",
+                            'Annual Target': annual_fmt,
+                            'Monthly': monthly_fmt,
+                            'Quarterly': quarterly_fmt,
+                            'Unit': unit
+                        })
+                    
+                    if display_rows:
+                        df_display = pd.DataFrame(display_rows)
+                        st.dataframe(
+                            df_display,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                'KPI': st.column_config.TextColumn('KPI', width='medium'),
+                                'Annual Target': st.column_config.TextColumn('Annual Target', width='small'),
+                                'Monthly': st.column_config.TextColumn('Monthly', width='small'),
+                                'Quarterly': st.column_config.TextColumn('Quarterly', width='small'),
+                                'Unit': st.column_config.TextColumn('Unit', width='small'),
+                            }
+                        )
+                    
+                    # Show aggregated from note
+                    names = unique_salespeople['employee_name'].tolist()
+                    names_str = ', '.join(names[:5])
+                    if len(names) > 5:
+                        names_str += f" +{len(names)-5} more"
+                    st.caption(f"📊 Aggregated from: {names_str}")
+                
+                st.markdown("")
+            
+            # Individual salesperson sections
+            for idx, (_, sales_row) in enumerate(unique_salespeople.iterrows()):
+                sales_id = sales_row['employee_id']
+                sales_name = sales_row['employee_name']
+                sales_targets = targets_df[targets_df['employee_id'] == sales_id]
+                
+                # Calculate total weight for this person
+                total_weight = sales_targets['weight_numeric'].sum()
+                
+                with st.expander(f"👤 {sales_name}", expanded=(num_salespeople == 1 or idx == 0)):
+                    # Build formatted display data
+                    display_rows = []
+                    for _, kpi_row in sales_targets.iterrows():
+                        kpi_name = kpi_row['kpi_name']
+                        kpi_lower = kpi_name.lower().replace(' ', '_')
+                        icon = kpi_icons.get(kpi_lower, '📌')
+                        unit = kpi_row['unit_of_measure'] or ''
+                        weight = kpi_row['weight_numeric']
+                        
+                        # Get values
+                        annual = kpi_row['annual_target_value']
+                        monthly = kpi_row['monthly_target_value']
+                        quarterly = kpi_row['quarterly_target_value']
+                        
+                        # Format weight with color indicator
+                        if pd.notna(weight):
+                            weight_fmt = f"{weight:.0f}%"
+                        else:
+                            weight_fmt = "-"
+                        
+                        display_rows.append({
+                            'KPI': f"{icon} {kpi_name.replace('_', ' ').title()}",
+                            'Annual Target': annual if pd.notna(annual) else '-',
+                            'Monthly': monthly if pd.notna(monthly) else '-',
+                            'Quarterly': quarterly if pd.notna(quarterly) else '-',
+                            'Unit': unit,
+                            'Weight %': weight_fmt
+                        })
+                    
+                    if display_rows:
+                        df_display = pd.DataFrame(display_rows)
+                        st.dataframe(
+                            df_display,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                'KPI': st.column_config.TextColumn('KPI', width='medium'),
+                                'Annual Target': st.column_config.TextColumn('Annual Target', width='small'),
+                                'Monthly': st.column_config.TextColumn('Monthly', width='small'),
+                                'Quarterly': st.column_config.TextColumn('Quarterly', width='small'),
+                                'Unit': st.column_config.TextColumn('Unit', width='small'),
+                                'Weight %': st.column_config.TextColumn('Weight %', width='small'),
+                            }
+                        )
+                        
+                        # Show total weight
+                        st.caption(f"📐 Total Weight: **{total_weight:.0f}%** (sum of all KPI weights for Overall Achievement calculation)")
         
         with kpi_tab2:
             # =================================================================
