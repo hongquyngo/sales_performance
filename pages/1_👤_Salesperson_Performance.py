@@ -1809,8 +1809,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         year=active_filters['year'],
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=data.get('new_business', pd.DataFrame()),
-        kpi_type_weights=data.get('kpi_type_weights')
+        new_business_df=data.get('new_business', pd.DataFrame())
     )
     
     if not salesperson_summary.empty:
@@ -2276,8 +2275,7 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame()),
-                kpi_type_weights=data.get('kpi_type_weights')
+                new_business_df=data.get('new_business', pd.DataFrame())
             )
             
             # Get overall achievement data
@@ -2319,8 +2317,7 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame()),
-                kpi_type_weights=data.get('kpi_type_weights')
+                new_business_df=data.get('new_business', pd.DataFrame())
             )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,

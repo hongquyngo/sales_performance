@@ -1896,8 +1896,10 @@ def kpi_progress_fragment(
         if is_single_person and not salesperson_summary_df.empty:
             person_name = salesperson_summary_df.iloc[0].get('sales_name', 'Salesperson')
             st.markdown(f"### 🎯 {person_name}'s KPI Achievement")
+            st.caption("📐 Overall uses **individual KPI assignment weights**")
         else:
             st.markdown("### 🎯 Team Overall Achievement")
+            st.caption("📐 Overall uses **KPI Type default weights** (aggregated across selected employees)")
         
         # Summary cards row
         col1, col2, col3, col4 = st.columns(4)
@@ -1906,6 +1908,12 @@ def kpi_progress_fragment(
         overall_pct = overall_achievement_data.get('overall_achievement')
         style = _get_achievement_style(overall_pct)
         
+        # Different help text for Team vs Individual
+        if is_single_person:
+            overall_help = "Individual Overall: Weighted avg using assigned KPI weights. Formula: Σ(KPI_Achievement × assignment_weight) / Σ(assignment_weight)"
+        else:
+            overall_help = "Team Overall: Weighted avg using KPI Type default weights. Formula: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight). Actual and targets aggregated across all selected employees."
+        
         with col1:
             if overall_pct is not None:
                 st.metric(
@@ -1913,7 +1921,7 @@ def kpi_progress_fragment(
                     value=f"{overall_pct:.1f}%",
                     delta=style['status'],
                     delta_color="normal" if overall_pct >= 100 else ("off" if overall_pct >= 80 else "inverse"),
-                    help="Weighted average of all KPI achievements. Formula: Σ(KPI_Achievement × Weight) / Σ(Weight)"
+                    help=overall_help
                 )
             else:
                 st.metric(
@@ -1954,7 +1962,7 @@ def kpi_progress_fragment(
                     value=f"{total_weight:.0f}%",
                     delta="sum of weights",
                     delta_color="off",
-                    help="Sum of all KPI weights for this person"
+                    help="Sum of individual KPI assignment weights for this person (from sales_employee_kpi_assignments)"
                 )
             else:
                 st.metric(
@@ -2112,6 +2120,7 @@ def kpi_progress_fragment(
             
             with col_ind_header:
                 st.markdown("### 👥 Individual Performance")
+                st.caption("📐 Each person's Overall uses their **individual KPI assignment weights**")
             
             with col_ind_toggle:
                 expand_all = st.checkbox(
@@ -2186,19 +2195,21 @@ def kpi_progress_fragment(
                     
                     with col_s2:
                         gp = row.get('gross_profit', 0) or 0
+                        gp_pct = row.get('gp_percent', 0) or 0
                         gp_ach = row.get('gp_achievement')
                         if gp_ach is not None and not pd.isna(gp_ach):
-                            st.metric("Gross Profit", f"${gp:,.0f}", f"{gp_ach:.1f}% ach")
+                            st.metric("Gross Profit", f"${gp:,.0f} ({gp_pct:.1f}%)", f"{gp_ach:.1f}% ach")
                         else:
-                            st.metric("Gross Profit", f"${gp:,.0f}")
+                            st.metric("Gross Profit", f"${gp:,.0f} ({gp_pct:.1f}%)")
                     
                     with col_s3:
                         gp1 = row.get('gp1', 0) or 0
+                        gp1_pct = row.get('gp1_percent', 0) or 0
                         gp1_ach = row.get('gp1_achievement')
                         if gp1_ach is not None and not pd.isna(gp1_ach):
-                            st.metric("GP1", f"${gp1:,.0f}", f"{gp1_ach:.1f}% ach")
+                            st.metric("GP1", f"${gp1:,.0f} ({gp1_pct:.1f}%)", f"{gp1_ach:.1f}% ach")
                         else:
-                            st.metric("GP1", f"${gp1:,.0f}")
+                            st.metric("GP1", f"${gp1:,.0f} ({gp1_pct:.1f}%)")
                     
                     with col_s4:
                         customers = row.get('customers', 0) or 0

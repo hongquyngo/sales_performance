@@ -10,6 +10,13 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.9.2: REVERTED Individual Overall to use weight_numeric from assignment
+          - Team Overall: Uses default_weight from kpi_types table
+          - Individual Overall: Uses weight_numeric from sales_employee_kpi_assignments
+          - Different formulas are now clearly distinguished:
+            * Team: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
+            * Individual: Σ(KPI_Achievement × assignment_weight) / Σ(assignment_weight)
+          - Removed kpi_type_weights parameter from aggregate_by_salesperson()
 - v2.9.1: FIXED Complex KPI actual calculation bug in calculate_overall_kpi_achievement()
           - Bug: Used team-wide actual (e.g., 351 new products from 15 people)
                  but compared to target from only 1 person (20 products)
@@ -19,8 +26,6 @@ CHANGELOG:
           - Uses sales_id column to filter actual by employees with target
 - v2.9.0: UPDATED kpi_type_weights to load dynamically from database
           - calculate_overall_kpi_achievement() now accepts kpi_type_weights parameter
-          - aggregate_by_salesperson() now accepts kpi_type_weights parameter
-          - Fallback to hardcoded weights if parameter not provided
           - Requires: queries.get_kpi_type_weights_cached() to load from kpi_types table
 - v2.8.0: CHANGED Overall Achievement formula to use KPI Type default_weight
           - Old formula: Σ(Individual_Employee_Achievement × Individual_Weight) / Σ(Weight)
@@ -1764,16 +1769,21 @@ class SalespersonMetrics:
         complex_kpis: Dict = None,
         new_customers_df: pd.DataFrame = None,
         new_products_df: pd.DataFrame = None,
-        new_business_df: pd.DataFrame = None,
-        kpi_type_weights: Dict[str, int] = None
+        new_business_df: pd.DataFrame = None
     ) -> pd.DataFrame:
         """
         Aggregate metrics by salesperson for ranking and comparison.
         
         FIXED v2.7.0: Now calculates WEIGHTED OVERALL Achievement per salesperson
-        using the same formula as calculate_overall_kpi_achievement().
         
-        UPDATED v2.9.0: kpi_type_weights loaded dynamically from database
+        REVERTED v2.9.2: Individual Overall uses weight_numeric from assignment
+                         (NOT default_weight - that's for Team Overall only)
+        
+        Individual vs Team Overall Achievement:
+        - Individual: Uses weight_numeric from sales_employee_kpi_assignments
+          Formula: Σ(KPI_Achievement × assignment_weight) / Σ(assignment_weight)
+        - Team: Uses default_weight from kpi_types table
+          Formula: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
         
         Args:
             period_type: Period type for target proration ('YTD', 'QTD', 'MTD', 'LY', 'Custom')
@@ -1782,7 +1792,6 @@ class SalespersonMetrics:
             new_customers_df: Raw new customers DataFrame with sales_id column
             new_products_df: Raw new products DataFrame with sales_id column
             new_business_df: Raw new business DataFrame with sales_id column
-            kpi_type_weights: Dict of KPI name -> default_weight from database
         
         Returns:
             DataFrame with per-salesperson metrics including overall_achievement
@@ -1792,21 +1801,6 @@ class SalespersonMetrics:
         
         if year is None:
             year = datetime.now().year
-        
-        # Fallback weights if not provided
-        if kpi_type_weights is None:
-            kpi_type_weights = {
-                'revenue': 90,
-                'gross_profit': 95,
-                'num_new_customers': 60,
-                'new_business_revenue': 75,
-                'num_new_projects': 50,
-                'num_new_products': 50,
-                'purchase_value': 80,
-                'gross_profit_1': 100,
-                'num_new_combos': 55,
-            }
-            logger.warning("kpi_type_weights not provided to aggregate_by_salesperson, using fallback")
         
         df = self.sales_df.copy()
         
@@ -1918,8 +1912,9 @@ class SalespersonMetrics:
             
             # =========================================================
             # CALCULATE WEIGHTED OVERALL Achievement per salesperson
-            # UPDATED v2.8.0: Use KPI_TYPE_DEFAULT_WEIGHTS for consistency
-            # Formula: Σ(KPI_Achievement × default_weight) / Σ(default_weight)
+            # REVERTED v2.9.2: Use weight_numeric from assignment
+            # (NOT default_weight - that's for Team Overall only)
+            # Formula: Σ(KPI_Achievement × assignment_weight) / Σ(assignment_weight)
             # =========================================================
             
             kpi_column_map = {
@@ -1980,13 +1975,16 @@ class SalespersonMetrics:
                         # Unknown KPI type, skip
                         continue
                     
-                    # Get default_weight from kpi_type_weights (loaded from database)
-                    default_weight = kpi_type_weights.get(kpi_name, 50)
+                    # REVERTED v2.9.2: Use weight_numeric from individual assignment
+                    # (NOT default_weight - that's for Team Overall only)
+                    individual_weight = kpi_row.get('weight_numeric', 50)
+                    if pd.isna(individual_weight) or individual_weight <= 0:
+                        individual_weight = 50  # Fallback
                     
                     # Calculate achievement
                     achievement = (actual / prorated_target) * 100
-                    weighted_sum += achievement * default_weight
-                    total_weight += default_weight
+                    weighted_sum += achievement * individual_weight
+                    total_weight += individual_weight
                 
                 if total_weight > 0:
                     overall_achievements.append(round(weighted_sum / total_weight, 1))

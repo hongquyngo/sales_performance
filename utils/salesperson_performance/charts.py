@@ -153,7 +153,7 @@ class SalespersonCharts:
                         value=f"{achievement:.1f}%",
                         delta=f"weighted avg of {kpi_count} KPIs",
                         delta_color=delta_color,
-                        help="Weighted average of all KPI achievements. Formula: Σ(KPI_Achievement × Weight) / Σ Weight. Each KPI's target is prorated based on period type."
+                        help="Team Overall: Weighted avg using KPI Type default weights. Formula: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight). Actual and targets aggregated across all selected employees."
                     )
                 elif metrics.get('revenue_achievement') is not None:
                     # Fallback to revenue achievement if no overall
