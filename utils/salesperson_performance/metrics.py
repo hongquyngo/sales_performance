@@ -10,23 +10,21 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.9.3: FIXED calculate_overall_kpi_achievement() for single person mode
+          - Bug: Single person showed Total Weight = 260 (default_weight sum)
+                 but should show 100 (assignment weight_numeric sum)
+          - Fix: Detect single person (unique employee_id = 1) and use weight_numeric
+          - Returns `is_single_person` flag for UI to show correct help text
+          - Single: Σ(Achievement × assignment_weight) / Σ(assignment_weight)
+          - Team: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
 - v2.9.2: REVERTED Individual Overall to use weight_numeric from assignment
           - Team Overall: Uses default_weight from kpi_types table
           - Individual Overall: Uses weight_numeric from sales_employee_kpi_assignments
-          - Different formulas are now clearly distinguished:
-            * Team: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
-            * Individual: Σ(KPI_Achievement × assignment_weight) / Σ(assignment_weight)
           - Removed kpi_type_weights parameter from aggregate_by_salesperson()
 - v2.9.1: FIXED Complex KPI actual calculation bug in calculate_overall_kpi_achievement()
-          - Bug: Used team-wide actual (e.g., 351 new products from 15 people)
-                 but compared to target from only 1 person (20 products)
-                 Result: 351/20 = 1758% instead of correct 25%
+          - Bug: Used team-wide actual vs single person's target
           - Fix: Filter actual to only employees who have that specific KPI target
-          - Now accepts new_customers_df, new_products_df, new_business_df parameters
-          - Uses sales_id column to filter actual by employees with target
 - v2.9.0: UPDATED kpi_type_weights to load dynamically from database
-          - calculate_overall_kpi_achievement() now accepts kpi_type_weights parameter
-          - Requires: queries.get_kpi_type_weights_cached() to load from kpi_types table
 - v2.8.0: CHANGED Overall Achievement formula to use KPI Type default_weight
           - Old formula: Σ(Individual_Employee_Achievement × Individual_Weight) / Σ(Weight)
           - New formula: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
@@ -856,6 +854,16 @@ class SalespersonMetrics:
         # Complex KPI names for reference
         complex_kpi_names = {'num_new_customers', 'num_new_products', 'new_business_revenue'}
         
+        # FIXED v2.9.3: Detect single person to use weight_numeric instead of default_weight
+        unique_employees = self.targets_df['employee_id'].nunique()
+        is_single_person = unique_employees == 1
+        
+        if DEBUG_METRICS_TIMING:
+            if is_single_person:
+                print(f"   👤 Single person mode: using weight_numeric from KPI assignment")
+            else:
+                print(f"   👥 Team mode ({unique_employees} people): using default_weight from kpi_types")
+        
         # =====================================================================
         # STEP 1: Calculate aggregate metrics for each KPI TYPE
         # =====================================================================
@@ -892,7 +900,8 @@ class SalespersonMetrics:
                     'target_annual_sum': 0,
                     'target_prorated_sum': 0,
                     'employee_count': 0,
-                    'employee_ids': []  # Track employees with this KPI for complex KPI filtering
+                    'employee_ids': [],  # Track employees with this KPI for complex KPI filtering
+                    'weight_numeric': 0  # For single person mode - store assignment weight
                 }
             
             # For sales-based KPIs, get actual per employee and accumulate
@@ -910,6 +919,12 @@ class SalespersonMetrics:
             kpi_type_aggregates[kpi_name]['target_annual_sum'] += annual_target
             kpi_type_aggregates[kpi_name]['target_prorated_sum'] += prorated_target
             kpi_type_aggregates[kpi_name]['employee_count'] += 1
+            
+            # Store weight_numeric for single person mode
+            assignment_weight = row.get('weight_numeric', 50)
+            if pd.isna(assignment_weight) or assignment_weight <= 0:
+                assignment_weight = 50
+            kpi_type_aggregates[kpi_name]['weight_numeric'] = assignment_weight
         
         # FIXED v2.9.1: Calculate actual for complex KPIs using filtered data
         # Now we have employee_ids list for each complex KPI, filter actual to only those employees
@@ -935,12 +950,17 @@ class SalespersonMetrics:
             else:
                 kpi_achievement = 0
             
-            # Get default_weight from kpi_type_weights (loaded from database)
-            default_weight = kpi_type_weights.get(kpi_name, 50)  # Default to 50 if not found
-            
-            # DEBUG: Check if key was found
-            if DEBUG_METRICS_TIMING and kpi_name not in kpi_type_weights:
-                print(f"      ⚠️ Key '{kpi_name}' not found in kpi_type_weights, using default=50")
+            # FIXED v2.9.3: Choose weight source based on single person vs team
+            if is_single_person:
+                # Single person: use weight_numeric from KPI assignment
+                weight = data.get('weight_numeric', 50)
+            else:
+                # Team: use default_weight from kpi_types table
+                weight = kpi_type_weights.get(kpi_name, 50)
+                
+                # DEBUG: Check if key was found
+                if DEBUG_METRICS_TIMING and kpi_name not in kpi_type_weights:
+                    print(f"      ⚠️ Key '{kpi_name}' not found in kpi_type_weights, using default=50")
             
             kpi_details.append({
                 'kpi_name': kpi_name,
@@ -948,13 +968,15 @@ class SalespersonMetrics:
                 'target_annual': data['target_annual_sum'],
                 'target_prorated': data['target_prorated_sum'],
                 'achievement': round(kpi_achievement, 1),
-                'default_weight': default_weight,
+                'weight': weight,  # Renamed from default_weight to be generic
+                'default_weight': weight,  # Keep for backward compatibility
                 'employee_count': data['employee_count']
             })
         
         # =====================================================================
-        # STEP 3: Calculate OVERALL using KPI Type Achievement × default_weight
-        # Formula: Overall = Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
+        # STEP 3: Calculate OVERALL using KPI Achievement × Weight
+        # Single person: Σ(Achievement × assignment_weight) / Σ(assignment_weight)
+        # Team: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
         # =====================================================================
         
         weighted_sum = 0
@@ -962,17 +984,19 @@ class SalespersonMetrics:
         
         # DEBUG: Print KPI details for verification
         if DEBUG_METRICS_TIMING:
-            print(f"\n   📊 [Overall Achievement Calculation - v2.9.0]")
+            weight_source = "assignment_weight" if is_single_person else "default_weight"
+            print(f"\n   📊 [Overall Achievement Calculation - v2.9.3]")
+            print(f"   Weight source: {weight_source}")
             print(f"   {'KPI Type':<25} {'Achievement':>12} {'Weight':>10} {'Weighted':>12}")
             print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
         
         for kpi in kpi_details:
-            kpi_weighted = kpi['achievement'] * kpi['default_weight']
+            kpi_weighted = kpi['achievement'] * kpi['weight']
             weighted_sum += kpi_weighted
-            total_weight += kpi['default_weight']
+            total_weight += kpi['weight']
             
             if DEBUG_METRICS_TIMING:
-                print(f"   {kpi['kpi_name']:<25} {kpi['achievement']:>11.1f}% {kpi['default_weight']:>10} {kpi_weighted:>12.1f}")
+                print(f"   {kpi['kpi_name']:<25} {kpi['achievement']:>11.1f}% {kpi['weight']:>10} {kpi_weighted:>12.1f}")
         
         if DEBUG_METRICS_TIMING:
             print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
@@ -987,7 +1011,8 @@ class SalespersonMetrics:
             'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
             'kpi_details': kpi_details,
             'kpi_count': len(kpi_details),
-            'total_weight': total_weight
+            'total_weight': total_weight,
+            'is_single_person': is_single_person  # NEW v2.9.3: For UI to show correct help text
         }
 
     # =========================================================================
