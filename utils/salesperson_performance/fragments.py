@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.5.0 - Export fragment for no-reload export
+VERSION: 2.6.0 - Fixed Achievement % consistency
 
 CHANGELOG:
+- v2.6.0: FIXED Achievement % consistency in export_report_fragment
+          - Bug: aggregate_by_salesperson() used ANNUAL target
+          - Fix: Now passes period_type and year for prorated calculation
+          - Table Achievement % now matches Overall Achievement
 - v2.5.0: ADDED export_report_fragment
           - Generates Excel report without reloading entire page
           - Two-step: Generate → Download
@@ -1546,7 +1550,11 @@ def export_report_fragment(
             with st.spinner("Generating Excel report..."):
                 try:
                     # Calculate additional data needed for export
-                    salesperson_summary_df = metrics_calc.aggregate_by_salesperson()
+                    # FIXED v2.6.0: Pass period_type and year for prorated target calculation
+                    salesperson_summary_df = metrics_calc.aggregate_by_salesperson(
+                        period_type=filter_values.get('period_type', 'YTD'),
+                        year=filter_values.get('year', datetime.now().year)
+                    )
                     monthly_df = metrics_calc.prepare_monthly_summary()
                     
                     # Prepare backlog by month

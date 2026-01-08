@@ -10,6 +10,13 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.6.0: FIXED Achievement consistency in aggregate_by_salesperson()
+          - Bug: Used ANNUAL target instead of PRORATED target
+          - Result: Table Achievement % differed from Overall Achievement
+          - Fix: Added period_type, year parameters to aggregate_by_salesperson()
+          - Now uses same proration logic as calculate_overall_kpi_achievement()
+          - Added GP1 Achievement calculation
+          - Dropped annual target columns from output (only prorated)
 - v2.5.0: FIXED weighted average calculation in calculate_overall_kpi_achievement()
           - Old bug: Used mean weight across salespeople (incorrect when weights differ)
           - New fix: Calculates at individual employee level
@@ -549,7 +556,8 @@ class SalespersonMetrics:
         - YTD: annual × (elapsed_months / 12)
         - QTD: annual / 4
         - MTD: annual / 12
-        - Custom: annual × (days_in_period / 365)
+        - LY: annual (full year)
+        - Custom: annual (full year)
         """
         if self.targets_df.empty:
             return None
@@ -578,6 +586,10 @@ class SalespersonMetrics:
         
         elif period_type == 'MTD':
             return annual_target / 12
+        
+        elif period_type == 'LY':
+            # Last Year = full annual target
+            return annual_target
         
         else:
             # For custom, return full annual
@@ -1661,15 +1673,29 @@ class SalespersonMetrics:
     # SALESPERSON AGGREGATION
     # =========================================================================
     
-    def aggregate_by_salesperson(self) -> pd.DataFrame:
+    def aggregate_by_salesperson(
+        self,
+        period_type: str = 'YTD',
+        year: int = None
+    ) -> pd.DataFrame:
         """
         Aggregate metrics by salesperson for ranking and comparison.
         
+        FIXED v2.6.0: Now uses PRORATED targets instead of annual targets
+        to be consistent with Overall Achievement calculation.
+        
+        Args:
+            period_type: Period type for target proration ('YTD', 'QTD', 'MTD', 'LY', 'Custom')
+            year: Year for elapsed months calculation (used for YTD proration)
+        
         Returns:
-            DataFrame with per-salesperson metrics
+            DataFrame with per-salesperson metrics including prorated achievements
         """
         if self.sales_df.empty:
             return pd.DataFrame()
+        
+        if year is None:
+            year = datetime.now().year
         
         df = self.sales_df.copy()
         
@@ -1688,31 +1714,65 @@ class SalespersonMetrics:
         by_sales['gp_percent'] = (by_sales['gross_profit'] / by_sales['revenue'] * 100).round(2)
         by_sales['gp1_percent'] = (by_sales['gp1'] / by_sales['revenue'] * 100).round(2)
         
+        # Calculate proration factor based on period type
+        # FIXED v2.6.0: Use same proration logic as calculate_overall_kpi_achievement
+        if period_type == 'YTD':
+            elapsed_months = self.get_elapsed_months(year)
+            proration_factor = elapsed_months / 12
+        elif period_type == 'QTD':
+            proration_factor = 1 / 4  # 3 months / 12
+        elif period_type == 'MTD':
+            proration_factor = 1 / 12  # 1 month / 12
+        elif period_type == 'LY':
+            proration_factor = 1.0  # Full year
+        else:  # Custom - use full year as default
+            proration_factor = 1.0
+        
         # Add targets if available
         if not self.targets_df.empty:
-            # Get revenue targets
+            # Get revenue targets with proration
             revenue_targets = self.targets_df[
                 self.targets_df['kpi_name'].str.lower() == 'revenue'
             ][['employee_id', 'annual_target_value_numeric']].copy()
-            revenue_targets.columns = ['sales_id', 'revenue_target']
+            revenue_targets.columns = ['sales_id', 'revenue_target_annual']
             
             by_sales = by_sales.merge(revenue_targets, on='sales_id', how='left')
             
-            # Calculate achievement
+            # Apply proration to get prorated target
+            by_sales['revenue_target'] = by_sales['revenue_target_annual'] * proration_factor
+            
+            # Calculate achievement using PRORATED target
             by_sales['revenue_achievement'] = (
                 by_sales['revenue'] / by_sales['revenue_target'] * 100
             ).round(1)
             
-            # GP targets
+            # GP targets with proration
             gp_targets = self.targets_df[
                 self.targets_df['kpi_name'].str.lower() == 'gross_profit'
             ][['employee_id', 'annual_target_value_numeric']].copy()
-            gp_targets.columns = ['sales_id', 'gp_target']
+            gp_targets.columns = ['sales_id', 'gp_target_annual']
             
             by_sales = by_sales.merge(gp_targets, on='sales_id', how='left')
+            by_sales['gp_target'] = by_sales['gp_target_annual'] * proration_factor
             by_sales['gp_achievement'] = (
                 by_sales['gross_profit'] / by_sales['gp_target'] * 100
             ).round(1)
+            
+            # GP1 targets with proration (NEW)
+            gp1_targets = self.targets_df[
+                self.targets_df['kpi_name'].str.lower() == 'gross_profit_1'
+            ][['employee_id', 'annual_target_value_numeric']].copy()
+            gp1_targets.columns = ['sales_id', 'gp1_target_annual']
+            
+            by_sales = by_sales.merge(gp1_targets, on='sales_id', how='left')
+            by_sales['gp1_target'] = by_sales['gp1_target_annual'] * proration_factor
+            by_sales['gp1_achievement'] = (
+                by_sales['gp1'] / by_sales['gp1_target'] * 100
+            ).round(1)
+            
+            # Drop annual target columns (keep only prorated)
+            cols_to_drop = ['revenue_target_annual', 'gp_target_annual', 'gp1_target_annual']
+            by_sales = by_sales.drop(columns=[c for c in cols_to_drop if c in by_sales.columns], errors='ignore')
         
         return by_sales.sort_values('revenue', ascending=False)
     

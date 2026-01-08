@@ -10,6 +10,11 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v3.2.0: FIXED Achievement % consistency between Overview and Table
+          - Bug: Table used ANNUAL target, Overview used PRORATED target
+          - Fix: aggregate_by_salesperson() now accepts period_type and year
+          - Table Achievement % now matches Overall Achievement calculation
+          - Added LY (Last Year) period type support
 - v3.1.0: PERFORMANCE - Sidebar options from lookback data
           - Extract sidebar options from lookback_df instead of 3 SQL queries
           - Before: 3 SQL queries = 7.33s (salesperson 3.18s + entity 2.31s + date 1.83s)
@@ -64,7 +69,7 @@ CHANGELOG:
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 3.1.0
+Version: 3.2.0
 """
 
 import streamlit as st
@@ -1767,7 +1772,11 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
     
     # Summary table
     st.subheader("📋 Performance by Salesperson")
-    salesperson_summary = metrics_calc.aggregate_by_salesperson()
+    # FIXED v3.2.0: Pass period_type and year for prorated target calculation
+    salesperson_summary = metrics_calc.aggregate_by_salesperson(
+        period_type=active_filters['period_type'],
+        year=active_filters['year']
+    )
     
     if not salesperson_summary.empty:
         display_cols = ['sales_name', 'revenue', 'gross_profit', 'gp1', 'gp_percent', 'customers', 'invoices']
@@ -2327,7 +2336,11 @@ with tab4:
         
         with kpi_tab3:
             # Use fragment to prevent page rerun on dropdown change
-            salesperson_summary = metrics_calc.aggregate_by_salesperson()
+            # FIXED v3.2.0: Pass period_type and year for prorated target calculation
+            salesperson_summary = metrics_calc.aggregate_by_salesperson(
+                period_type=active_filters['period_type'],
+                year=active_filters['year']
+            )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,
                 fragment_key="team_ranking"
