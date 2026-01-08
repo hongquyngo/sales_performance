@@ -10,6 +10,13 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v3.3.0: NEW - Hierarchical KPI Progress Layout (Option A)
+          - Section 1: Team/Individual Overall Achievement summary
+          - Section 2: KPI Breakdown by Type with sorting options
+          - Section 3: Individual Performance expandable cards (when >1 person)
+          - New kpi_progress_fragment with color-coded achievements
+          - Overall Achievement now prominently displayed
+          - Best performer highlight in team view
 - v3.2.0: FIXED Achievement % consistency between Overview and Table
           - Bug: Table showed only Revenue Achievement
           - Fix: Table now shows WEIGHTED OVERALL Achievement (same as Overview)
@@ -71,7 +78,7 @@ CHANGELOG:
           - Session state management for applied filters vs form values
           - Significant performance improvement for filter changes
 
-Version: 3.2.0
+Version: 3.3.0
 """
 
 import streamlit as st
@@ -169,6 +176,7 @@ from utils.salesperson_performance.fragments import (
     export_report_fragment,
     backlog_by_etd_fragment,
     team_ranking_fragment,
+    kpi_progress_fragment,
 )
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -2150,56 +2158,17 @@ with tab4:
                     st.dataframe(kpi_display, use_container_width=True, hide_index=True)
         
         with kpi_tab2:
-            st.markdown("#### 📈 KPI Progress")
-            
             # =================================================================
-            # EXPLANATORY NOTE - NEW v2.4.0
-            # =================================================================
-            with st.expander("ℹ️ How KPI Progress is calculated", expanded=False):
-                st.markdown(f"""
-                **📐 Calculation Method**
-                
-                Achievement % is calculated using **Prorated Target** based on the selected period type:
-                
-                | Period Type | Target Proration |
-                |-------------|------------------|
-                | **YTD** | Annual Target × (Elapsed Months / 12) |
-                | **QTD** | Annual Target / 4 |
-                | **MTD** | Annual Target / 12 |
-                | **Custom** | Annual Target (full year) |
-                
-                **Current Settings:** {active_filters['period_type']} for {active_filters['year']}
-                
-                **📊 Why Prorated?**
-                
-                Using prorated targets allows fair comparison:
-                - In June (YTD), achieving 50% of annual target = 100% achievement
-                - This is consistent with how **Overall Achievement** is calculated
-                
-                **👥 Employee Filtering**
-                
-                Each KPI only counts actuals from employees who have that specific KPI target assigned.
-                This ensures accurate achievement measurement when viewing multiple salespeople.
-                """)
-            
-            # =================================================================
-            # DYNAMIC KPI Progress - Show ALL assigned KPIs
-            # FIXED v2.4.0: 
-            # 1. Use prorated target instead of annual target for achievement
-            # 2. Complex KPIs now filter by employees with target
+            # KPI Progress - Using new Hierarchical Card Layout (v3.3.0)
             # =================================================================
             
-            # Map KPI names to column names in sales_df
+            # Prepare KPI progress data (same logic as before, but passed to fragment)
             kpi_column_map = {
                 'revenue': 'sales_by_split_usd',
                 'gross_profit': 'gross_profit_by_split_usd',
                 'gross_profit_1': 'gp1_by_split_usd',
             }
-            
-            # Complex KPIs that need special handling (query fresh for each)
             complex_kpi_names = ['num_new_customers', 'num_new_products', 'new_business_revenue']
-            
-            # Display name mapping for better UI
             kpi_display_names = {
                 'revenue': 'Revenue',
                 'gross_profit': 'Gross Profit',
@@ -2209,21 +2178,17 @@ with tab4:
                 'new_business_revenue': 'New Business Revenue',
                 'num_new_projects': 'New Projects',
             }
-            
-            # KPIs that should show currency format
             currency_kpis = ['revenue', 'gross_profit', 'gross_profit_1', 'new_business_revenue']
             
-            # Get unique KPI types from targets
+            # Build KPI progress data
             kpi_progress = []
             sales_df = data['sales']
             
             for kpi_name in targets_df['kpi_name'].str.lower().unique():
-                # Get employees who have this specific KPI target
                 employees_with_target = targets_df[
                     targets_df['kpi_name'].str.lower() == kpi_name
                 ]['employee_id'].unique().tolist()
                 
-                # Get target for this KPI (sum of all employees with this target)
                 kpi_target = targets_df[
                     targets_df['kpi_name'].str.lower() == kpi_name
                 ]['annual_target_value_numeric'].sum()
@@ -2231,9 +2196,7 @@ with tab4:
                 if kpi_target <= 0:
                     continue
                 
-                # Calculate actual value - ONLY from employees who have this KPI target
                 if kpi_name in kpi_column_map:
-                    # For sales-based KPIs: filter sales_df by employees with target
                     col_name = kpi_column_map[kpi_name]
                     if not sales_df.empty and col_name in sales_df.columns:
                         filtered_sales = sales_df[sales_df['sales_id'].isin(employees_with_target)]
@@ -2241,25 +2204,16 @@ with tab4:
                     else:
                         actual = 0
                 elif kpi_name in complex_kpi_names:
-                    # =============================================================
-                    # UPDATED v3.0.0: Use Pandas calculator instead of SQL query
-                    # ComplexKPICalculator is already loaded and cached
-                    # Just recalculate with filtered employee_ids (instant)
-                    # =============================================================
                     cache_key = f"complex_kpi_{kpi_name}_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(sorted(employees_with_target))}"
                     if cache_key not in st.session_state:
-                        # Get calculator from cached data
                         calc = st.session_state.get('raw_cached_data', {}).get('_complex_kpi_calculator')
                         if calc is not None:
-                            # Recalculate with specific employee_ids (instant - data in memory)
                             result = calc.calculate_all(
                                 start_date=active_filters['start_date'],
                                 end_date=active_filters['end_date'],
                                 employee_ids=employees_with_target
                             )
                             summary = result.get('summary', {})
-                            
-                            # Map KPI name to summary field
                             if kpi_name == 'num_new_customers':
                                 actual = summary.get('num_new_customers', 0)
                             elif kpi_name == 'num_new_products':
@@ -2270,30 +2224,17 @@ with tab4:
                                 actual = 0
                         else:
                             actual = 0
-                            logger.warning("ComplexKPICalculator not found in cached data")
-                        
                         st.session_state[cache_key] = actual
-                        if DEBUG_TIMING:
-                            print(f"   📊 Complex KPI [{kpi_name}] calculated (Pandas): {actual}")
                     else:
                         actual = st.session_state[cache_key]
-                        if DEBUG_TIMING:
-                            print(f"   ♻️ Complex KPI [{kpi_name}] from cache: {actual}")
                 else:
                     actual = 0
                 
-                # Get display name
                 display_name = kpi_display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
-                
-                # Get prorated target
                 prorated_target = metrics_calc._get_prorated_target(kpi_name, active_filters['period_type'], active_filters['year'])
                 if prorated_target is None:
-                    prorated_target = kpi_target  # Fallback to annual
+                    prorated_target = kpi_target
                 
-                # =============================================================
-                # FIXED v2.4.0: Use prorated_target instead of kpi_target
-                # This makes Achievement % consistent with Overall Achievement
-                # =============================================================
                 achievement = (actual / prorated_target * 100) if prorated_target and prorated_target > 0 else 0
                 
                 kpi_progress.append({
@@ -2307,42 +2248,41 @@ with tab4:
                     'employee_count': len(employees_with_target)
                 })
             
-            if kpi_progress:
-                # Sort by KPI name for consistent ordering
-                kpi_progress.sort(key=lambda x: x['KPI'])
-                
-                # Display with progress bars
-                for row in kpi_progress:
-                    col_k1, col_k2 = st.columns([1, 3])
-                    
-                    with col_k1:
-                        st.markdown(f"**{row['KPI']}**")
-                        achievement = row['Achievement %']
-                        if achievement >= 100:
-                            st.success(f"✅ {achievement:.1f}%")
-                        elif achievement >= 80:
-                            st.warning(f"🟡 {achievement:.1f}%")
-                        else:
-                            st.error(f"🔴 {achievement:.1f}%")
-                    
-                    with col_k2:
-                        st.progress(min(achievement / 100, 1.0))
-                        
-                        # =============================================================
-                        # FIXED v2.4.0: Show prorated target in caption (not annual)
-                        # =============================================================
-                        if row['is_currency']:
-                            st.caption(
-                                f"${row['Actual']:,.0f} / ${row['Target (Prorated)']:,.0f} prorated "
-                                f"(${row['Target (Annual)']:,.0f} annual) • {row['employee_count']} people"
-                            )
-                        else:
-                            st.caption(
-                                f"{row['Actual']:.1f} / {row['Target (Prorated)']:,.0f} prorated "
-                                f"({row['Target (Annual)']:,.0f} annual) • {row['employee_count']} people"
-                            )
-            else:
-                st.info("No KPI targets assigned for selected salespeople")
+            # Get salesperson summary for individual performance section
+            salesperson_summary = metrics_calc.aggregate_by_salesperson(
+                period_type=active_filters['period_type'],
+                year=active_filters['year'],
+                new_customers_df=data['new_customers'],
+                new_products_df=data['new_products'],
+                new_business_df=data.get('new_business', pd.DataFrame())
+            )
+            
+            # Get overall achievement data
+            overall_achievement_data = metrics_calc.calculate_overall_kpi_achievement(
+                overview_metrics=overview_metrics,
+                complex_kpis=complex_kpis,
+                period_type=active_filters['period_type'],
+                year=active_filters['year']
+            )
+            
+            # Get complex KPI calculator for per-person calculation
+            complex_kpi_calc = st.session_state.get('raw_cached_data', {}).get('_complex_kpi_calculator')
+            
+            # Render the new hierarchical KPI progress fragment
+            kpi_progress_fragment(
+                targets_df=targets_df,
+                sales_df=data['sales'],
+                salesperson_summary_df=salesperson_summary,
+                overall_achievement_data=overall_achievement_data,
+                kpi_progress_data=kpi_progress,
+                period_type=active_filters['period_type'],
+                year=active_filters['year'],
+                selected_employee_ids=active_filters['employee_ids'],
+                complex_kpi_calculator=complex_kpi_calc,
+                start_date=active_filters['start_date'],
+                end_date=active_filters['end_date'],
+                fragment_key="kpi_progress"
+            )
         
         with kpi_tab3:
             # Use fragment to prevent page rerun on dropdown change

@@ -32,6 +32,9 @@ from .filters import SalespersonFilters
 from .charts import SalespersonCharts
 from .export import SalespersonExport
 
+# Fragments
+from .fragments import kpi_progress_fragment
+
 # Constants
 from .constants import (
     COLORS,
@@ -55,6 +58,9 @@ __all__ = [
     'SalespersonCharts',
     'SalespersonExport',
     
+    # Fragments
+    'kpi_progress_fragment',
+    
     # Constants
     'COLORS',
     'MONTH_ORDER',
@@ -68,4 +74,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '1.0.0'
+__version__ = '3.3.0'

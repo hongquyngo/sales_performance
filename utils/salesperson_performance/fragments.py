@@ -1775,6 +1775,511 @@ def team_ranking_fragment(
 
 
 # =============================================================================
+# FRAGMENT: KPI PROGRESS - Hierarchical Card Layout (NEW v3.3.0)
+# =============================================================================
+
+def _get_achievement_style(achievement: float) -> Dict[str, str]:
+    """
+    Get color and icon based on achievement percentage.
+    
+    Returns:
+        Dict with 'color', 'icon', 'status', 'bg_color'
+    """
+    if achievement is None:
+        return {
+            'color': '#6c757d',  # Gray
+            'icon': '⚪',
+            'status': 'N/A',
+            'bg_color': '#f8f9fa'
+        }
+    elif achievement >= 100:
+        return {
+            'color': '#28a745',  # Green
+            'icon': '✅',
+            'status': 'On Track',
+            'bg_color': '#d4edda'
+        }
+    elif achievement >= 80:
+        return {
+            'color': '#ffc107',  # Yellow
+            'icon': '🟡',
+            'status': 'Needs Push',
+            'bg_color': '#fff3cd'
+        }
+    elif achievement >= 50:
+        return {
+            'color': '#fd7e14',  # Orange
+            'icon': '🟠',
+            'status': 'At Risk',
+            'bg_color': '#ffe5d0'
+        }
+    else:
+        return {
+            'color': '#dc3545',  # Red
+            'icon': '🔴',
+            'status': 'Critical',
+            'bg_color': '#f8d7da'
+        }
+
+
+def _get_rank_emoji(rank: int) -> str:
+    """Get emoji for rank position."""
+    if rank == 1:
+        return "🥇"
+    elif rank == 2:
+        return "🥈"
+    elif rank == 3:
+        return "🥉"
+    else:
+        return f"#{rank}"
+
+
+@st.fragment
+def kpi_progress_fragment(
+    # Data
+    targets_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    salesperson_summary_df: pd.DataFrame,
+    
+    # Overall achievement
+    overall_achievement_data: Dict,
+    
+    # KPI progress data (list of dicts with KPI breakdown)
+    kpi_progress_data: List[Dict],
+    
+    # Filter context
+    period_type: str,
+    year: int,
+    selected_employee_ids: List[int],
+    
+    # Optional: Complex KPI calculator for per-person calculation
+    complex_kpi_calculator = None,
+    start_date = None,
+    end_date = None,
+    
+    # Fragment key
+    fragment_key: str = "kpi_progress"
+):
+    """
+    KPI Progress Fragment with Hierarchical Card Layout.
+    
+    NEW v3.3.0: Comprehensive view with:
+    - Section 1: Team/Individual Overall Achievement summary
+    - Section 2: KPI Breakdown by Type with sorting
+    - Section 3: Individual Performance cards (when >1 person selected)
+    
+    Args:
+        targets_df: KPI target assignments
+        sales_df: Sales data
+        salesperson_summary_df: Per-salesperson summary from aggregate_by_salesperson()
+        overall_achievement_data: Dict with overall_achievement, kpi_count, kpi_details
+        kpi_progress_data: List of dicts with KPI type breakdown
+        period_type: YTD/QTD/MTD/LY/Custom
+        year: Selected year
+        selected_employee_ids: List of selected employee IDs
+        complex_kpi_calculator: ComplexKPICalculator for per-person complex KPIs
+        start_date: Period start date
+        end_date: Period end date
+        fragment_key: Unique key prefix
+    """
+    from datetime import date as date_type
+    
+    num_people = len(selected_employee_ids) if selected_employee_ids else 0
+    is_single_person = num_people == 1
+    
+    # =========================================================================
+    # SECTION 1: TEAM/INDIVIDUAL OVERALL ACHIEVEMENT
+    # =========================================================================
+    
+    with st.container(border=True):
+        # Header
+        if is_single_person and not salesperson_summary_df.empty:
+            person_name = salesperson_summary_df.iloc[0].get('sales_name', 'Salesperson')
+            st.markdown(f"### 🎯 {person_name}'s KPI Achievement")
+        else:
+            st.markdown("### 🎯 Team Overall Achievement")
+        
+        # Summary cards row
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # Overall Achievement
+        overall_pct = overall_achievement_data.get('overall_achievement')
+        style = _get_achievement_style(overall_pct)
+        
+        with col1:
+            if overall_pct is not None:
+                st.metric(
+                    label="Overall Achievement",
+                    value=f"{overall_pct:.1f}%",
+                    delta=style['status'],
+                    delta_color="normal" if overall_pct >= 100 else ("off" if overall_pct >= 80 else "inverse"),
+                    help="Weighted average of all KPI achievements. Formula: Σ(KPI_Achievement × Weight) / Σ(Weight)"
+                )
+            else:
+                st.metric(
+                    label="Overall Achievement",
+                    value="N/A",
+                    delta="No targets",
+                    delta_color="off"
+                )
+        
+        # People count or KPI count
+        with col2:
+            kpi_count = overall_achievement_data.get('kpi_count', 0)
+            if is_single_person:
+                st.metric(
+                    label="Assigned KPIs",
+                    value=f"{kpi_count}",
+                    delta="types",
+                    delta_color="off",
+                    help="Number of KPI types assigned"
+                )
+            else:
+                st.metric(
+                    label="People",
+                    value=f"{num_people}",
+                    delta="selected",
+                    delta_color="off",
+                    help="Number of salespeople selected"
+                )
+        
+        # KPI types or total weight
+        with col3:
+            total_weight = overall_achievement_data.get('total_weight', 0)
+            kpi_count = overall_achievement_data.get('kpi_count', 0)
+            
+            if is_single_person:
+                st.metric(
+                    label="Total Weight",
+                    value=f"{total_weight:.0f}%",
+                    delta="sum of weights",
+                    delta_color="off",
+                    help="Sum of all KPI weights for this person"
+                )
+            else:
+                st.metric(
+                    label="KPI Types",
+                    value=f"{kpi_count}",
+                    delta="tracked",
+                    delta_color="off",
+                    help="Number of unique KPI types assigned across team"
+                )
+        
+        # Best performer (team mode) or Gap to 100% (single mode)
+        with col4:
+            if is_single_person:
+                # Show gap to target
+                if overall_pct is not None:
+                    gap = 100 - overall_pct
+                    if gap <= 0:
+                        st.metric(
+                            label="Status",
+                            value="On Track! 🎉",
+                            delta=f"+{abs(gap):.1f}% above",
+                            delta_color="normal"
+                        )
+                    else:
+                        st.metric(
+                            label="Gap to Target",
+                            value=f"{gap:.1f}%",
+                            delta="remaining",
+                            delta_color="inverse"
+                        )
+                else:
+                    st.metric(label="Gap", value="N/A", delta_color="off")
+            else:
+                # Show best performer
+                if not salesperson_summary_df.empty and 'overall_achievement' in salesperson_summary_df.columns:
+                    valid_df = salesperson_summary_df[
+                        salesperson_summary_df['overall_achievement'].notna()
+                    ]
+                    if not valid_df.empty:
+                        best_idx = valid_df['overall_achievement'].idxmax()
+                        best_row = valid_df.loc[best_idx]
+                        best_name = best_row.get('sales_name', 'Unknown')
+                        best_pct = best_row.get('overall_achievement', 0)
+                        
+                        display_name = best_name[:12] + "..." if len(str(best_name)) > 12 else best_name
+                        
+                        st.metric(
+                            label="Top Performer 🏆",
+                            value=f"{best_pct:.1f}%",
+                            delta=display_name,
+                            delta_color="off",
+                            help=f"Best overall achievement: {best_name}"
+                        )
+                    else:
+                        st.metric(label="Top Performer", value="N/A", delta_color="off")
+                else:
+                    st.metric(label="Top Performer", value="N/A", delta_color="off")
+        
+        # Overall progress bar
+        if overall_pct is not None:
+            st.markdown("")
+            progress_value = min(overall_pct / 100, 1.0)
+            st.progress(progress_value)
+            
+            if overall_pct >= 100:
+                st.success(f"✅ Target achieved! ({overall_pct:.1f}%)")
+            elif overall_pct >= 80:
+                st.warning(f"🟡 Almost there - {100 - overall_pct:.1f}% to go")
+            elif overall_pct >= 50:
+                st.info(f"🟠 Making progress - {100 - overall_pct:.1f}% gap to close")
+            else:
+                st.error(f"🔴 Needs attention - {100 - overall_pct:.1f}% below target")
+    
+    # =========================================================================
+    # SECTION 2: KPI BREAKDOWN BY TYPE
+    # =========================================================================
+    
+    st.markdown("")
+    
+    with st.container(border=True):
+        col_header, col_sort = st.columns([4, 1])
+        
+        with col_header:
+            st.markdown("### 📊 KPI Breakdown by Type")
+        
+        with col_sort:
+            sort_option = st.selectbox(
+                "Sort by",
+                options=["Achievement %", "KPI Name", "Gap to Target"],
+                index=0,
+                key=f"{fragment_key}_sort",
+                label_visibility="collapsed"
+            )
+        
+        if not kpi_progress_data:
+            st.info("No KPI targets assigned for selected salespeople")
+        else:
+            # Sort data
+            kpi_list = list(kpi_progress_data)
+            
+            if sort_option == "Achievement %":
+                kpi_list.sort(key=lambda x: x.get('Achievement %', 0), reverse=True)
+            elif sort_option == "KPI Name":
+                kpi_list.sort(key=lambda x: x.get('KPI', ''))
+            elif sort_option == "Gap to Target":
+                kpi_list.sort(key=lambda x: 100 - x.get('Achievement %', 0), reverse=True)
+            
+            # Display each KPI
+            for row in kpi_list:
+                achievement = row.get('Achievement %', 0)
+                kpi_style = _get_achievement_style(achievement)
+                
+                col_kpi, col_progress = st.columns([1, 3])
+                
+                with col_kpi:
+                    st.markdown(f"**{row['KPI']}**")
+                    
+                    if achievement >= 100:
+                        st.success(f"✅ {achievement:.1f}%")
+                    elif achievement >= 80:
+                        st.warning(f"🟡 {achievement:.1f}%")
+                    elif achievement >= 50:
+                        st.info(f"🟠 {achievement:.1f}%")
+                    else:
+                        st.error(f"🔴 {achievement:.1f}%")
+                
+                with col_progress:
+                    st.progress(min(achievement / 100, 1.0))
+                    
+                    if row.get('is_currency', False):
+                        actual_str = f"${row['Actual']:,.0f}"
+                        target_str = f"${row['Target (Prorated)']:,.0f}"
+                        annual_str = f"${row['Target (Annual)']:,.0f}"
+                    else:
+                        actual_str = f"{row['Actual']:.1f}"
+                        target_str = f"{row['Target (Prorated)']:,.0f}"
+                        annual_str = f"{row['Target (Annual)']:,.0f}"
+                    
+                    st.caption(
+                        f"{actual_str} / {target_str} prorated "
+                        f"({annual_str} annual) • {row.get('employee_count', 0)} people"
+                    )
+                
+                st.markdown("---")
+    
+    # =========================================================================
+    # SECTION 3: INDIVIDUAL PERFORMANCE (Only when multiple people selected)
+    # =========================================================================
+    
+    if not is_single_person and not salesperson_summary_df.empty and num_people > 1:
+        st.markdown("")
+        
+        with st.container(border=True):
+            col_ind_header, col_ind_toggle = st.columns([4, 1])
+            
+            with col_ind_header:
+                st.markdown("### 👥 Individual Performance")
+            
+            with col_ind_toggle:
+                expand_all = st.checkbox(
+                    "Expand All",
+                    value=False,
+                    key=f"{fragment_key}_expand_all"
+                )
+            
+            # Sort by overall achievement
+            sorted_df = salesperson_summary_df.copy()
+            if 'overall_achievement' in sorted_df.columns:
+                sorted_df = sorted_df.sort_values(
+                    'overall_achievement', 
+                    ascending=False, 
+                    na_position='last'
+                )
+            else:
+                sorted_df = sorted_df.sort_values('revenue', ascending=False)
+            
+            sorted_df = sorted_df.reset_index(drop=True)
+            
+            # Calculate proration factor for individual KPI display
+            today = date_type.today()
+            if period_type == 'YTD':
+                elapsed_months = today.month if year == today.year else 12
+                proration_factor = elapsed_months / 12
+            elif period_type == 'QTD':
+                proration_factor = 1 / 4
+            elif period_type == 'MTD':
+                proration_factor = 1 / 12
+            else:
+                proration_factor = 1.0
+            
+            kpi_column_map = {
+                'revenue': ('revenue', True),
+                'gross_profit': ('gross_profit', True),
+                'gross_profit_1': ('gp1', True),
+            }
+            
+            # Display each salesperson
+            for idx, row in sorted_df.iterrows():
+                sales_id = row.get('sales_id')
+                sales_name = row.get('sales_name', 'Unknown')
+                overall_ach = row.get('overall_achievement')
+                
+                rank_emoji = _get_rank_emoji(idx + 1)
+                person_style = _get_achievement_style(overall_ach)
+                
+                if overall_ach is not None:
+                    expander_title = f"{rank_emoji} {sales_name} — Overall: {overall_ach:.1f}% {person_style['icon']}"
+                else:
+                    expander_title = f"{rank_emoji} {sales_name} — No KPI targets"
+                
+                with st.expander(expander_title, expanded=expand_all):
+                    # Get this person's KPI assignments
+                    person_targets = targets_df[targets_df['employee_id'] == sales_id]
+                    
+                    if person_targets.empty:
+                        st.info("No KPI targets assigned to this person")
+                        continue
+                    
+                    # Summary metrics row
+                    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                    
+                    with col_s1:
+                        revenue = row.get('revenue', 0) or 0
+                        rev_ach = row.get('revenue_achievement')
+                        if rev_ach is not None and not pd.isna(rev_ach):
+                            st.metric("Revenue", f"${revenue:,.0f}", f"{rev_ach:.1f}% ach")
+                        else:
+                            st.metric("Revenue", f"${revenue:,.0f}")
+                    
+                    with col_s2:
+                        gp = row.get('gross_profit', 0) or 0
+                        gp_ach = row.get('gp_achievement')
+                        if gp_ach is not None and not pd.isna(gp_ach):
+                            st.metric("Gross Profit", f"${gp:,.0f}", f"{gp_ach:.1f}% ach")
+                        else:
+                            st.metric("Gross Profit", f"${gp:,.0f}")
+                    
+                    with col_s3:
+                        gp1 = row.get('gp1', 0) or 0
+                        gp1_ach = row.get('gp1_achievement')
+                        if gp1_ach is not None and not pd.isna(gp1_ach):
+                            st.metric("GP1", f"${gp1:,.0f}", f"{gp1_ach:.1f}% ach")
+                        else:
+                            st.metric("GP1", f"${gp1:,.0f}")
+                    
+                    with col_s4:
+                        customers = row.get('customers', 0) or 0
+                        st.metric("Customers", f"{customers}")
+                    
+                    # KPI Progress Bars
+                    st.markdown("##### 📋 KPI Progress")
+                    
+                    for _, kpi_row in person_targets.iterrows():
+                        kpi_name = kpi_row['kpi_name'].lower()
+                        annual_target = kpi_row['annual_target_value_numeric']
+                        weight = kpi_row['weight_numeric']
+                        
+                        if annual_target <= 0:
+                            continue
+                        
+                        prorated_target = annual_target * proration_factor
+                        
+                        # Get actual value
+                        if kpi_name in kpi_column_map:
+                            col_name, is_currency = kpi_column_map[kpi_name]
+                            actual = row.get(col_name, 0) or 0
+                        else:
+                            actual = 0
+                            is_currency = kpi_name == 'new_business_revenue'
+                            
+                            # Try complex KPI calculator
+                            if complex_kpi_calculator is not None and start_date and end_date:
+                                try:
+                                    result = complex_kpi_calculator.calculate_all(
+                                        start_date=start_date,
+                                        end_date=end_date,
+                                        employee_ids=[sales_id]
+                                    )
+                                    summary = result.get('summary', {})
+                                    
+                                    if kpi_name == 'num_new_customers':
+                                        actual = summary.get('num_new_customers', 0)
+                                    elif kpi_name == 'num_new_products':
+                                        actual = summary.get('num_new_products', 0)
+                                    elif kpi_name == 'new_business_revenue':
+                                        actual = summary.get('new_business_revenue', 0)
+                                except Exception:
+                                    pass
+                        
+                        # Calculate achievement
+                        if prorated_target > 0:
+                            kpi_achievement = (actual / prorated_target) * 100
+                        else:
+                            kpi_achievement = 0
+                        
+                        # Display name
+                        display_names = {
+                            'revenue': 'Revenue',
+                            'gross_profit': 'Gross Profit',
+                            'gross_profit_1': 'GP1',
+                            'num_new_customers': 'New Customers',
+                            'num_new_products': 'New Products',
+                            'new_business_revenue': 'New Business Revenue',
+                        }
+                        display_name = display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
+                        
+                        # Render mini progress
+                        col_k1, col_k2, col_k3 = st.columns([2, 3, 1])
+                        
+                        with col_k1:
+                            st.markdown(f"**{display_name}**")
+                            if is_currency:
+                                st.caption(f"${actual:,.0f} / ${prorated_target:,.0f}")
+                            else:
+                                st.caption(f"{actual:.1f} / {prorated_target:.1f}")
+                        
+                        with col_k2:
+                            st.progress(min(kpi_achievement / 100, 1.0))
+                        
+                        with col_k3:
+                            kpi_style = _get_achievement_style(kpi_achievement)
+                            st.markdown(f"{kpi_style['icon']} **{kpi_achievement:.1f}%**")
+
+
+# =============================================================================
 # EXPORT ALL FRAGMENTS
 # =============================================================================
 
@@ -1787,4 +2292,5 @@ __all__ = [
     'export_report_fragment',
     'backlog_by_etd_fragment',
     'team_ranking_fragment',
+    'kpi_progress_fragment',
 ]
