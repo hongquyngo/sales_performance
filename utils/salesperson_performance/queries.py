@@ -8,11 +8,17 @@ Handles all database interactions:
 - KPI targets from sales_employee_kpi_assignments_view
 - Backlog data from backlog_by_salesperson_looker_view
 - Lookup data (salespeople list, entities, years)
+- KPI type weights from kpi_types table (NEW v3.2.0)
 
 All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.2.0: ADDED get_kpi_type_weights() and get_kpi_type_weights_cached()
+          - Dynamically load KPI type default_weight from kpi_types table
+          - Used for Team Overall Achievement calculation
+          - Cached for 1 hour (KPI types rarely change)
+          - Fallback to hardcoded weights if database unavailable
 - v3.1.0: UPDATED get_lookback_sales_data() for sidebar options
           - Added columns: sales_email, legal_entity_id, legal_entity, inv_number, invoice_year
           - Enables extraction of sidebar options from lookback data
@@ -61,7 +67,7 @@ VERSION: 3.1.0
 
 import logging
 from datetime import date, datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import pandas as pd
 import streamlit as st
 from sqlalchemy import text
@@ -689,6 +695,44 @@ class SalespersonQueries:
         return self._execute_query(query, params, "sales_split_data")
     
     # =========================================================================
+    # KPI TYPE WEIGHTS (Dynamic from Database)
+    # =========================================================================
+    
+    def get_kpi_type_weights(self) -> Dict[str, int]:
+        """
+        Load KPI type default weights from kpi_types table.
+        
+        NEW v3.2.0: Dynamic loading for Team Overall Achievement calculation
+        
+        Returns:
+            Dict mapping kpi_name (lowercase) to default_weight
+            Example: {'revenue': 90, 'gross_profit': 95, 'gross_profit_1': 100, ...}
+        """
+        query = """
+            SELECT 
+                LOWER(name) as kpi_name,
+                COALESCE(default_weight, 50) as default_weight
+            FROM kpi_types
+            WHERE delete_flag = 0
+        """
+        
+        try:
+            df = self._execute_query(query, {}, "kpi_type_weights")
+            
+            if df.empty:
+                logger.warning("No KPI types found in database, using fallback weights")
+                return _get_fallback_kpi_weights()
+            
+            # Convert to dict
+            weights = dict(zip(df['kpi_name'], df['default_weight'].astype(int)))
+            logger.info(f"Loaded {len(weights)} KPI type weights from database")
+            return weights
+            
+        except Exception as e:
+            logger.error(f"Error loading KPI type weights: {e}")
+            return _get_fallback_kpi_weights()
+    
+    # =========================================================================
     # HELPER METHODS
     # =========================================================================
     
@@ -800,3 +844,70 @@ def _get_sales_data_cached(
     except Exception as e:
         logger.error(f"Error in cached sales query: {e}")
         return pd.DataFrame()
+
+
+# =============================================================================
+# KPI TYPE WEIGHTS - CACHED (Module-level for performance)
+# =============================================================================
+
+# Fallback weights if database query fails
+_FALLBACK_KPI_TYPE_WEIGHTS = {
+    'revenue': 90,
+    'gross_profit': 95,
+    'num_new_customers': 60,
+    'new_business_revenue': 75,
+    'num_new_projects': 50,
+    'num_new_products': 50,
+    'purchase_value': 80,
+    'gross_profit_1': 100,
+    'num_new_combos': 55,
+}
+
+
+def _get_fallback_kpi_weights() -> Dict[str, int]:
+    """Return fallback KPI weights when database is unavailable."""
+    logger.warning("Using fallback KPI type weights")
+    return _FALLBACK_KPI_TYPE_WEIGHTS.copy()
+
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour (KPI types rarely change)
+def get_kpi_type_weights_cached() -> Dict[str, int]:
+    """
+    Cached version of KPI type weights query.
+    
+    KPI types rarely change, so cache for 1 hour.
+    This eliminates repeated database queries for the same data.
+    
+    Returns:
+        Dict mapping kpi_name (lowercase) to default_weight
+    """
+    start_time = time.perf_counter()
+    engine = get_db_engine()
+    
+    query = """
+        SELECT 
+            LOWER(name) as kpi_name,
+            COALESCE(default_weight, 50) as default_weight
+        FROM kpi_types
+        WHERE delete_flag = 0
+    """
+    
+    try:
+        df = pd.read_sql(text(query), engine)
+        elapsed = time.perf_counter() - start_time
+        
+        if DEBUG_QUERY_TIMING:
+            print(f"   📊 SQL [kpi_type_weights]: {elapsed:.3f}s → {len(df):,} rows")
+        
+        if df.empty:
+            logger.warning("No KPI types found in database, using fallback weights")
+            return _get_fallback_kpi_weights()
+        
+        # Convert to dict
+        weights = dict(zip(df['kpi_name'], df['default_weight'].astype(int)))
+        logger.info(f"Loaded {len(weights)} KPI type weights from database (cached)")
+        return weights
+        
+    except Exception as e:
+        logger.error(f"Error loading KPI type weights: {e}")
+        return _get_fallback_kpi_weights()

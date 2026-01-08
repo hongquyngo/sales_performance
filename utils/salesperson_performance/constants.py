@@ -154,6 +154,25 @@ CHART_WIDTH = 800
 CHART_HEIGHT = 400
 
 # =====================================================================
+# KPI TYPE DEFAULT WEIGHTS - FALLBACK VALUES
+# These are used only when database query fails
+# Primary source: kpi_types table via queries.get_kpi_type_weights_cached()
+# Formula: Overall = Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
+# =====================================================================
+
+KPI_TYPE_DEFAULT_WEIGHTS_FALLBACK = {
+    'revenue': 90,
+    'gross_profit': 95,
+    'num_new_customers': 60,
+    'new_business_revenue': 75,
+    'num_new_projects': 50,
+    'num_new_products': 50,
+    'purchase_value': 80,
+    'gross_profit_1': 100,
+    'num_new_combos': 55,
+}
+
+# =====================================================================
 # CACHE SETTINGS
 # =====================================================================
 

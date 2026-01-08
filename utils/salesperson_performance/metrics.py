@@ -10,6 +10,25 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.9.1: FIXED Complex KPI actual calculation bug in calculate_overall_kpi_achievement()
+          - Bug: Used team-wide actual (e.g., 351 new products from 15 people)
+                 but compared to target from only 1 person (20 products)
+                 Result: 351/20 = 1758% instead of correct 25%
+          - Fix: Filter actual to only employees who have that specific KPI target
+          - Now accepts new_customers_df, new_products_df, new_business_df parameters
+          - Uses sales_id column to filter actual by employees with target
+- v2.9.0: UPDATED kpi_type_weights to load dynamically from database
+          - calculate_overall_kpi_achievement() now accepts kpi_type_weights parameter
+          - aggregate_by_salesperson() now accepts kpi_type_weights parameter
+          - Fallback to hardcoded weights if parameter not provided
+          - Requires: queries.get_kpi_type_weights_cached() to load from kpi_types table
+- v2.8.0: CHANGED Overall Achievement formula to use KPI Type default_weight
+          - Old formula: Σ(Individual_Employee_Achievement × Individual_Weight) / Σ(Weight)
+          - New formula: Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
+          - KPI_Type_Achievement = aggregate actual / aggregate prorated target
+          - default_weight from kpi_types table (revenue=90, gp1=100, etc.)
+          - More intuitive and easier to verify manually
+          - aggregate_by_salesperson() also updated to use default_weight
 - v2.7.0: ADDED overall_achievement per salesperson in aggregate_by_salesperson()
           - New column: overall_achievement = weighted avg of ALL KPIs
           - Same formula as calculate_overall_kpi_achievement() but per-person
@@ -718,7 +737,7 @@ class SalespersonMetrics:
         return round(actual / target * 100, 1)
     
     # =========================================================================
-    # OVERALL KPI ACHIEVEMENT (Weighted Average)
+    # OVERALL KPI ACHIEVEMENT (Weighted Average by KPI Type)
     # =========================================================================
     
     def calculate_overall_kpi_achievement(
@@ -726,37 +745,35 @@ class SalespersonMetrics:
         overview_metrics: Dict,
         complex_kpis: Dict = None,
         period_type: str = 'YTD',
-        year: int = None
+        year: int = None,
+        kpi_type_weights: Dict[str, int] = None,
+        new_customers_df: pd.DataFrame = None,
+        new_products_df: pd.DataFrame = None,
+        new_business_df: pd.DataFrame = None
     ) -> Dict:
         """
-        Calculate overall weighted KPI achievement.
+        Calculate overall weighted KPI achievement using KPI Type default weights.
         
-        Formula: Overall = Σ (KPI_Achievement × Weight) / Σ Weight
+        UPDATED v2.8.0: Simplified formula using KPI Type level aggregation
+        UPDATED v2.9.0: kpi_type_weights loaded dynamically from database
+        FIXED v2.9.1: Complex KPIs now correctly filter actual by employees with target
+                      - Bug: Used team-wide actual (351 products) vs 1 person's target (20)
+                      - Fix: Filter actual to only employees who have that KPI target
         
-        FIXED v2.3.0: Now calculates actuals from ONLY employees who have
-        each specific KPI target assigned.
-        
-        Supports KPIs:
-        - revenue (kpi_type_id: 1)
-        - gross_profit (kpi_type_id: 2)
-        - num_new_customers (kpi_type_id: 3)
-        - new_business_revenue (kpi_type_id: 4)
-        - num_new_projects (kpi_type_id: 5)
-        - num_new_products (kpi_type_id: 6)
-        - gross_profit_1 (kpi_type_id: 8) - GP1 = GP - Broker Commission * 1.2
+        Formula: Overall = Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
         
         Args:
             overview_metrics: Basic metrics from calculate_overview_metrics()
-            complex_kpis: Complex KPIs from calculate_complex_kpis()
+            complex_kpis: Complex KPIs from calculate_complex_kpis() (for backward compat)
             period_type: Period type for target proration
             year: Year for calculation
+            kpi_type_weights: Dict of KPI name -> default_weight from database
+            new_customers_df: Raw new customers DataFrame with sales_id for filtering
+            new_products_df: Raw new products DataFrame with sales_id for filtering
+            new_business_df: Raw new business DataFrame with sales_id for filtering
             
         Returns:
-            Dict with:
-            - overall_achievement: Weighted average %
-            - kpi_details: List of individual KPI achievements
-            - kpi_count: Number of KPIs with targets
-            - total_weight: Sum of weights used
+            Dict with overall_achievement, kpi_details, kpi_count, total_weight
         """
         _start_time = time.perf_counter()
         
@@ -771,44 +788,82 @@ class SalespersonMetrics:
         if year is None:
             year = datetime.now().year
         
+        # Fallback weights if not provided
+        if kpi_type_weights is None:
+            kpi_type_weights = {
+                'revenue': 90,
+                'gross_profit': 95,
+                'num_new_customers': 60,
+                'new_business_revenue': 75,
+                'num_new_projects': 50,
+                'num_new_products': 50,
+                'purchase_value': 80,
+                'gross_profit_1': 100,
+                'num_new_combos': 55,
+            }
+            logger.warning("kpi_type_weights not provided, using fallback values")
+            if DEBUG_METRICS_TIMING:
+                print(f"   ⚠️ WARNING: kpi_type_weights not provided, using FALLBACK")
+        else:
+            if DEBUG_METRICS_TIMING:
+                print(f"   ✅ kpi_type_weights loaded from database: {len(kpi_type_weights)} types")
+                print(f"      Keys: {list(kpi_type_weights.keys())}")
+        
         # Map KPI names to value columns for sales-based KPIs
-        # These will be calculated using _get_actual_for_kpi (filtered by employees with target)
         kpi_column_map = {
             'revenue': 'sales_by_split_usd',
             'gross_profit': 'gross_profit_by_split_usd',
             'gross_profit_1': 'gp1_by_split_usd',
         }
         
-        # Complex KPIs use pre-calculated values (already filtered in queries)
-        complex_kpi_values = {}
-        if complex_kpis:
-            complex_kpi_values = {
-                'num_new_customers': complex_kpis.get('new_customer_count', 0),
-                'num_new_products': complex_kpis.get('new_product_count', 0),
-                'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
-            }
+        # FIXED v2.9.1: Pre-calculate complex KPI actual per employee (filtered by those with target)
+        # Previously: Used team-wide actual which was wrong when only some employees had target
+        def get_complex_kpi_actual_for_employees(kpi_name: str, employee_ids: List[int]) -> float:
+            """Get complex KPI actual filtered to only specific employees."""
+            if not employee_ids:
+                return 0
+            
+            if kpi_name == 'num_new_customers' and new_customers_df is not None and not new_customers_df.empty:
+                if 'sales_id' in new_customers_df.columns:
+                    filtered = new_customers_df[new_customers_df['sales_id'].isin(employee_ids)]
+                    return filtered['split_rate_percent'].sum() / 100 if not filtered.empty else 0
+                    
+            elif kpi_name == 'num_new_products' and new_products_df is not None and not new_products_df.empty:
+                if 'sales_id' in new_products_df.columns:
+                    filtered = new_products_df[new_products_df['sales_id'].isin(employee_ids)]
+                    return filtered['split_rate_percent'].sum() / 100 if not filtered.empty else 0
+                    
+            elif kpi_name == 'new_business_revenue' and new_business_df is not None and not new_business_df.empty:
+                if 'sales_id' in new_business_df.columns:
+                    filtered = new_business_df[new_business_df['sales_id'].isin(employee_ids)]
+                    return filtered['new_business_revenue'].sum() if not filtered.empty else 0
+            
+            # Fallback to old behavior if dataframes not provided
+            if complex_kpis:
+                return complex_kpis.get({
+                    'num_new_customers': 'new_customer_count',
+                    'num_new_products': 'new_product_count',
+                    'new_business_revenue': 'new_business_revenue'
+                }.get(kpi_name, ''), 0)
+            
+            return 0
+        
+        # Complex KPI names for reference
+        complex_kpi_names = {'num_new_customers', 'num_new_products', 'new_business_revenue'}
         
         # =====================================================================
-        # FIXED v2.5.0: Calculate at INDIVIDUAL employee level
-        # Old bug: Used mean weight across salespeople
-        # New: Overall = Σ(Individual_Achievement × Individual_Weight) / Σ(Weight)
+        # STEP 1: Calculate aggregate metrics for each KPI TYPE
         # =====================================================================
         
-        weighted_sum = 0
-        total_weight = 0
-        kpi_details = []
+        # Group targets by KPI type
+        kpi_type_aggregates = {}
         
-        # Track KPIs we've already processed (for summary)
-        processed_kpis = {}
-        
-        # Iterate through each employee's KPI assignment
         for _, row in self.targets_df.iterrows():
             employee_id = row['employee_id']
             kpi_name = row['kpi_name'].lower()
             annual_target = row['annual_target_value_numeric']
-            weight = row['weight_numeric']
             
-            if annual_target <= 0 or weight <= 0:
+            if annual_target <= 0:
                 continue
             
             # Prorate target based on period
@@ -825,63 +880,62 @@ class SalespersonMetrics:
             if prorated_target <= 0:
                 continue
             
-            # Get actual value for THIS SPECIFIC EMPLOYEE
+            # Aggregate by KPI type first (we'll calculate actual later for complex KPIs)
+            if kpi_name not in kpi_type_aggregates:
+                kpi_type_aggregates[kpi_name] = {
+                    'actual_sum': 0,
+                    'target_annual_sum': 0,
+                    'target_prorated_sum': 0,
+                    'employee_count': 0,
+                    'employee_ids': []  # Track employees with this KPI for complex KPI filtering
+                }
+            
+            # For sales-based KPIs, get actual per employee and accumulate
             if kpi_name in kpi_column_map:
-                # Sales-based KPIs: get actual for this specific employee
                 actual = self._get_individual_employee_actual(
                     employee_id, 
                     kpi_column_map[kpi_name]
                 )
-            elif kpi_name in complex_kpi_values:
-                # Complex KPIs: use proportional share based on target
-                # (Since complex KPIs are aggregated, we distribute based on target proportion)
-                total_target_for_kpi = self.targets_df[
-                    self.targets_df['kpi_name'].str.lower() == kpi_name
-                ]['annual_target_value_numeric'].sum()
-                
-                if total_target_for_kpi > 0:
-                    proportion = annual_target / total_target_for_kpi
-                    actual = complex_kpi_values[kpi_name] * proportion
-                else:
-                    actual = 0
-            else:
-                actual = 0
+                kpi_type_aggregates[kpi_name]['actual_sum'] += actual
             
-            # Calculate individual achievement
-            achievement = (actual / prorated_target) * 100
+            # For complex KPIs, just track employee IDs (we'll calculate actual after grouping)
+            if kpi_name in complex_kpi_names:
+                kpi_type_aggregates[kpi_name]['employee_ids'].append(employee_id)
             
-            # Add to weighted sum
-            weighted_sum += achievement * weight
-            total_weight += weight
-            
-            # Track for KPI details (aggregate by kpi_name for summary)
-            if kpi_name not in processed_kpis:
-                processed_kpis[kpi_name] = {
-                    'actual_sum': 0,
-                    'target_annual_sum': 0,
-                    'target_prorated_sum': 0,
-                    'weight_sum': 0,
-                    'weighted_achievement_sum': 0,
-                    'employee_count': 0
-                }
-            
-            processed_kpis[kpi_name]['actual_sum'] += actual
-            processed_kpis[kpi_name]['target_annual_sum'] += annual_target
-            processed_kpis[kpi_name]['target_prorated_sum'] += prorated_target
-            processed_kpis[kpi_name]['weight_sum'] += weight
-            processed_kpis[kpi_name]['weighted_achievement_sum'] += achievement * weight
-            processed_kpis[kpi_name]['employee_count'] += 1
+            kpi_type_aggregates[kpi_name]['target_annual_sum'] += annual_target
+            kpi_type_aggregates[kpi_name]['target_prorated_sum'] += prorated_target
+            kpi_type_aggregates[kpi_name]['employee_count'] += 1
         
-        # Build KPI details for output
-        for kpi_name, data in processed_kpis.items():
+        # FIXED v2.9.1: Calculate actual for complex KPIs using filtered data
+        # Now we have employee_ids list for each complex KPI, filter actual to only those employees
+        for kpi_name in complex_kpi_names:
+            if kpi_name in kpi_type_aggregates:
+                employee_ids = kpi_type_aggregates[kpi_name]['employee_ids']
+                actual = get_complex_kpi_actual_for_employees(kpi_name, employee_ids)
+                kpi_type_aggregates[kpi_name]['actual_sum'] = actual
+                
+                if DEBUG_METRICS_TIMING:
+                    print(f"      📊 Complex KPI '{kpi_name}': actual={actual:.1f} from {len(employee_ids)} employees with target")
+        
+        # =====================================================================
+        # STEP 2: Calculate achievement for each KPI TYPE and build kpi_details
+        # =====================================================================
+        
+        kpi_details = []
+        
+        for kpi_name, data in kpi_type_aggregates.items():
             # Calculate aggregate achievement for this KPI type
             if data['target_prorated_sum'] > 0:
                 kpi_achievement = (data['actual_sum'] / data['target_prorated_sum']) * 100
             else:
                 kpi_achievement = 0
             
-            # Calculate effective weight (sum of individual weights)
-            effective_weight = data['weight_sum']
+            # Get default_weight from kpi_type_weights (loaded from database)
+            default_weight = kpi_type_weights.get(kpi_name, 50)  # Default to 50 if not found
+            
+            # DEBUG: Check if key was found
+            if DEBUG_METRICS_TIMING and kpi_name not in kpi_type_weights:
+                print(f"      ⚠️ Key '{kpi_name}' not found in kpi_type_weights, using default=50")
             
             kpi_details.append({
                 'kpi_name': kpi_name,
@@ -889,16 +943,40 @@ class SalespersonMetrics:
                 'target_annual': data['target_annual_sum'],
                 'target_prorated': data['target_prorated_sum'],
                 'achievement': round(kpi_achievement, 1),
-                'weight': effective_weight,  # Total weight, not mean
+                'default_weight': default_weight,
                 'employee_count': data['employee_count']
             })
         
-        # Calculate overall weighted average
+        # =====================================================================
+        # STEP 3: Calculate OVERALL using KPI Type Achievement × default_weight
+        # Formula: Overall = Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
+        # =====================================================================
+        
+        weighted_sum = 0
+        total_weight = 0
+        
+        # DEBUG: Print KPI details for verification
+        if DEBUG_METRICS_TIMING:
+            print(f"\n   📊 [Overall Achievement Calculation - v2.9.0]")
+            print(f"   {'KPI Type':<25} {'Achievement':>12} {'Weight':>10} {'Weighted':>12}")
+            print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
+        
+        for kpi in kpi_details:
+            kpi_weighted = kpi['achievement'] * kpi['default_weight']
+            weighted_sum += kpi_weighted
+            total_weight += kpi['default_weight']
+            
+            if DEBUG_METRICS_TIMING:
+                print(f"   {kpi['kpi_name']:<25} {kpi['achievement']:>11.1f}% {kpi['default_weight']:>10} {kpi_weighted:>12.1f}")
+        
+        if DEBUG_METRICS_TIMING:
+            print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
+            print(f"   {'TOTAL':<25} {'':<12} {total_weight:>10} {weighted_sum:>12.1f}")
+        
         overall_achievement = (weighted_sum / total_weight) if total_weight > 0 else None
         
         if DEBUG_METRICS_TIMING:
-            _elapsed = time.perf_counter() - _start_time
-            print(f"   📊 [overall_kpi_achievement] {len(kpi_details)} KPIs in {_elapsed:.3f}s")
+            print(f"\n   🎯 Overall = {weighted_sum:.1f} / {total_weight} = {overall_achievement:.1f}%" if overall_achievement else "   🎯 Overall = N/A")
         
         return {
             'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
@@ -906,7 +984,7 @@ class SalespersonMetrics:
             'kpi_count': len(kpi_details),
             'total_weight': total_weight
         }
-    
+
     # =========================================================================
     # PIPELINE & FORECAST METRICS (NEW v2.4.0)
     # =========================================================================
@@ -1686,13 +1764,16 @@ class SalespersonMetrics:
         complex_kpis: Dict = None,
         new_customers_df: pd.DataFrame = None,
         new_products_df: pd.DataFrame = None,
-        new_business_df: pd.DataFrame = None
+        new_business_df: pd.DataFrame = None,
+        kpi_type_weights: Dict[str, int] = None
     ) -> pd.DataFrame:
         """
         Aggregate metrics by salesperson for ranking and comparison.
         
         FIXED v2.7.0: Now calculates WEIGHTED OVERALL Achievement per salesperson
         using the same formula as calculate_overall_kpi_achievement().
+        
+        UPDATED v2.9.0: kpi_type_weights loaded dynamically from database
         
         Args:
             period_type: Period type for target proration ('YTD', 'QTD', 'MTD', 'LY', 'Custom')
@@ -1701,20 +1782,31 @@ class SalespersonMetrics:
             new_customers_df: Raw new customers DataFrame with sales_id column
             new_products_df: Raw new products DataFrame with sales_id column
             new_business_df: Raw new business DataFrame with sales_id column
+            kpi_type_weights: Dict of KPI name -> default_weight from database
         
         Returns:
-            DataFrame with per-salesperson metrics including:
-            - revenue, gross_profit, gp1, gp_percent, customers, invoices
-            - revenue_target, gp_target, gp1_target (prorated)
-            - revenue_achievement, gp_achievement, gp1_achievement
-            - overall_achievement: weighted average of ALL KPIs per salesperson
-              Formula: Σ(KPI_Achievement × Weight) / Σ(Weight)
+            DataFrame with per-salesperson metrics including overall_achievement
         """
         if self.sales_df.empty:
             return pd.DataFrame()
         
         if year is None:
             year = datetime.now().year
+        
+        # Fallback weights if not provided
+        if kpi_type_weights is None:
+            kpi_type_weights = {
+                'revenue': 90,
+                'gross_profit': 95,
+                'num_new_customers': 60,
+                'new_business_revenue': 75,
+                'num_new_projects': 50,
+                'num_new_products': 50,
+                'purchase_value': 80,
+                'gross_profit_1': 100,
+                'num_new_combos': 55,
+            }
+            logger.warning("kpi_type_weights not provided to aggregate_by_salesperson, using fallback")
         
         df = self.sales_df.copy()
         
@@ -1826,7 +1918,8 @@ class SalespersonMetrics:
             
             # =========================================================
             # CALCULATE WEIGHTED OVERALL Achievement per salesperson
-            # Using ACTUAL per-salesperson values for complex KPIs
+            # UPDATED v2.8.0: Use KPI_TYPE_DEFAULT_WEIGHTS for consistency
+            # Formula: Σ(KPI_Achievement × default_weight) / Σ(default_weight)
             # =========================================================
             
             kpi_column_map = {
@@ -1855,12 +1948,19 @@ class SalespersonMetrics:
                 # Get this salesperson's complex KPI values
                 sp_complex_kpis = per_salesperson_complex_kpis.get(sales_id, {})
                 
+                # Group by KPI type to avoid double-counting (shouldn't happen but safe)
+                processed_kpi_types = set()
+                
                 for _, kpi_row in employee_kpis.iterrows():
                     kpi_name = kpi_row['kpi_name'].lower()
                     annual_target = kpi_row['annual_target_value_numeric']
-                    weight = kpi_row['weight_numeric']
                     
-                    if annual_target <= 0 or weight <= 0:
+                    # Skip if already processed this KPI type
+                    if kpi_name in processed_kpi_types:
+                        continue
+                    processed_kpi_types.add(kpi_name)
+                    
+                    if annual_target <= 0:
                         continue
                     
                     prorated_target = annual_target * proration_factor
@@ -1880,10 +1980,13 @@ class SalespersonMetrics:
                         # Unknown KPI type, skip
                         continue
                     
+                    # Get default_weight from kpi_type_weights (loaded from database)
+                    default_weight = kpi_type_weights.get(kpi_name, 50)
+                    
                     # Calculate achievement
                     achievement = (actual / prorated_target) * 100
-                    weighted_sum += achievement * weight
-                    total_weight += weight
+                    weighted_sum += achievement * default_weight
+                    total_weight += default_weight
                 
                 if total_weight > 0:
                     overall_achievements.append(round(weighted_sum / total_weight, 1))

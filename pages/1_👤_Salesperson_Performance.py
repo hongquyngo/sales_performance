@@ -10,6 +10,12 @@
 5. Setup - Sales split, customer/product portfolio
 
 CHANGELOG:
+- v3.4.0: UPDATED - Dynamic KPI Type Weights from Database
+          - KPI type default_weight now loaded from kpi_types table
+          - New function: get_kpi_type_weights_cached() in queries.py
+          - Cached for 1 hour (KPI types rarely change)
+          - Fallback to hardcoded weights if database unavailable
+          - Overall Achievement formula: Σ(KPI_Achievement × default_weight) / Σ(default_weight)
 - v3.3.0: NEW - Hierarchical KPI Progress Layout (Option A)
           - Section 1: Team/Individual Overall Achievement summary
           - Section 2: KPI Breakdown by Type with sorting options
@@ -166,6 +172,9 @@ from utils.salesperson_performance.complex_kpi_calculator import (
     ComplexKPICalculator,
     calculate_lookback_start,
 )
+
+# NEW v3.2.0: Dynamic KPI type weights from database
+from utils.salesperson_performance.queries import get_kpi_type_weights_cached
 
 from utils.salesperson_performance.fragments import (
     monthly_trend_fragment,
@@ -567,6 +576,14 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                     targets_list.append(t)
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         print(f"   → Targets rows: {len(data['targets']):,}")
+        
+        # =====================================================================
+        # PHASE 1.5: KPI Type Weights (for Overall Achievement calculation)
+        # NEW v3.2.0: Dynamic loading from database
+        # =====================================================================
+        with timer("DB: get_kpi_type_weights"):
+            data['kpi_type_weights'] = get_kpi_type_weights_cached()
+        print(f"   → KPI type weights: {len(data['kpi_type_weights'])} types")
         
         # =====================================================================
         # PHASE 2: Complex KPIs - Using Pandas Calculator (v3.0.0)
@@ -1231,7 +1248,11 @@ with timer("Metrics: calculate_overall_kpi_achievement"):
         overview_metrics=overview_metrics,
         complex_kpis=complex_kpis,
         period_type=active_filters['period_type'],
-        year=active_filters['year']
+        year=active_filters['year'],
+        kpi_type_weights=data.get('kpi_type_weights'),
+        new_customers_df=data['new_customers'],
+        new_products_df=data['new_products'],
+        new_business_df=data.get('new_business', pd.DataFrame())
     )
 
 # Print timing summary before rendering
@@ -1788,7 +1809,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         year=active_filters['year'],
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=data.get('new_business', pd.DataFrame())
+        new_business_df=data.get('new_business', pd.DataFrame()),
+        kpi_type_weights=data.get('kpi_type_weights')
     )
     
     if not salesperson_summary.empty:
@@ -2254,7 +2276,8 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame())
+                new_business_df=data.get('new_business', pd.DataFrame()),
+                kpi_type_weights=data.get('kpi_type_weights')
             )
             
             # Get overall achievement data
@@ -2262,7 +2285,11 @@ with tab4:
                 overview_metrics=overview_metrics,
                 complex_kpis=complex_kpis,
                 period_type=active_filters['period_type'],
-                year=active_filters['year']
+                year=active_filters['year'],
+                kpi_type_weights=data.get('kpi_type_weights'),
+                new_customers_df=data['new_customers'],
+                new_products_df=data['new_products'],
+                new_business_df=data.get('new_business', pd.DataFrame())
             )
             
             # Get complex KPI calculator for per-person calculation
@@ -2292,7 +2319,8 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame())
+                new_business_df=data.get('new_business', pd.DataFrame()),
+                kpi_type_weights=data.get('kpi_type_weights')
             )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,
