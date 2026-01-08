@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.6.0 - Fixed Achievement % consistency
+VERSION: 2.7.0 - Use overall_achievement for consistent KPI display
 
 CHANGELOG:
+- v2.7.0: UPDATED team_ranking_fragment to use overall_achievement
+          - Now uses overall_achievement directly if available
+          - Falls back to average of revenue + GP achievement if not
+          - Consistent with Overview Achievement and Performance table
 - v2.6.0: FIXED Achievement % consistency in export_report_fragment
           - Bug: aggregate_by_salesperson() used ANNUAL target
           - Fix: Now passes period_type and year for prorated calculation
@@ -1550,10 +1554,11 @@ def export_report_fragment(
             with st.spinner("Generating Excel report..."):
                 try:
                     # Calculate additional data needed for export
-                    # FIXED v2.6.0: Pass period_type and year for prorated target calculation
+                    # FIXED v2.7.0: Pass period_type, year, and complex_kpis for accurate overall achievement
                     salesperson_summary_df = metrics_calc.aggregate_by_salesperson(
                         period_type=filter_values.get('period_type', 'YTD'),
-                        year=filter_values.get('year', datetime.now().year)
+                        year=filter_values.get('year', datetime.now().year),
+                        complex_kpis=complex_kpis
                     )
                     monthly_df = metrics_calc.prepare_monthly_summary()
                     
@@ -1671,8 +1676,12 @@ def team_ranking_fragment(
         ranking_df['gp1'] / ranking_df['revenue'] * 100
     ).round(2).fillna(0)
     
-    # Calculate KPI Achievement (weighted average of revenue & GP achievement)
-    if 'revenue_achievement' in ranking_df.columns and 'gp_achievement' in ranking_df.columns:
+    # UPDATED v2.7.0: Use overall_achievement directly if available
+    # This is the weighted average of ALL KPIs (Revenue, GP, GP1) calculated in metrics
+    if 'overall_achievement' in ranking_df.columns:
+        ranking_df['kpi_achievement'] = ranking_df['overall_achievement'].fillna(0)
+    elif 'revenue_achievement' in ranking_df.columns and 'gp_achievement' in ranking_df.columns:
+        # Fallback: average of revenue & GP achievement
         ranking_df['kpi_achievement'] = ranking_df.apply(
             lambda row: (
                 (row['revenue_achievement'] + row['gp_achievement']) / 2

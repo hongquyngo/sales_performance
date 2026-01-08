@@ -10,6 +10,12 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.7.0: ADDED overall_achievement per salesperson in aggregate_by_salesperson()
+          - New column: overall_achievement = weighted avg of ALL KPIs
+          - Same formula as calculate_overall_kpi_achievement() but per-person
+          - Formula: Σ(KPI_Achievement × Weight) / Σ(Weight)
+          - Includes Revenue, GP, GP1 achievements weighted by their KPI weights
+          - Table "Performance by Salesperson" now shows same Achievement % as Overview
 - v2.6.0: FIXED Achievement consistency in aggregate_by_salesperson()
           - Bug: Used ANNUAL target instead of PRORATED target
           - Result: Table Achievement % differed from Overall Achievement
@@ -1676,20 +1682,29 @@ class SalespersonMetrics:
     def aggregate_by_salesperson(
         self,
         period_type: str = 'YTD',
-        year: int = None
+        year: int = None,
+        complex_kpis: Dict = None
     ) -> pd.DataFrame:
         """
         Aggregate metrics by salesperson for ranking and comparison.
         
-        FIXED v2.6.0: Now uses PRORATED targets instead of annual targets
-        to be consistent with Overall Achievement calculation.
+        FIXED v2.7.0: Now calculates WEIGHTED OVERALL Achievement per salesperson
+        using the same formula as calculate_overall_kpi_achievement().
         
         Args:
             period_type: Period type for target proration ('YTD', 'QTD', 'MTD', 'LY', 'Custom')
             year: Year for elapsed months calculation (used for YTD proration)
+            complex_kpis: Optional dict from calculate_complex_kpis() containing:
+                - new_customer_count, new_product_count, new_business_revenue
+                Used to calculate overall achievement including complex KPIs
         
         Returns:
-            DataFrame with per-salesperson metrics including prorated achievements
+            DataFrame with per-salesperson metrics including:
+            - revenue, gross_profit, gp1, gp_percent, customers, invoices
+            - revenue_target, gp_target, gp1_target (prorated)
+            - revenue_achievement, gp_achievement, gp1_achievement
+            - overall_achievement: weighted average of ALL KPIs (including complex KPIs)
+              Formula: Σ(KPI_Achievement × Weight) / Σ(Weight)
         """
         if self.sales_df.empty:
             return pd.DataFrame()
@@ -1769,6 +1784,100 @@ class SalespersonMetrics:
             by_sales['gp1_achievement'] = (
                 by_sales['gp1'] / by_sales['gp1_target'] * 100
             ).round(1)
+            
+            # =========================================================
+            # FIXED v2.7.0: Calculate WEIGHTED OVERALL Achievement per salesperson
+            # SAME LOGIC as calculate_overall_kpi_achievement() - including complex KPIs
+            # Formula: Overall = Σ(KPI_Achievement × Weight) / Σ(Weight)
+            # =========================================================
+            
+            # Map KPI names to actual columns (for sales-based KPIs)
+            kpi_column_map = {
+                'revenue': 'revenue',
+                'gross_profit': 'gross_profit',
+                'gross_profit_1': 'gp1',
+            }
+            
+            # Complex KPIs values (aggregated totals - will be distributed by target proportion)
+            complex_kpi_values = {}
+            if complex_kpis:
+                complex_kpi_values = {
+                    'num_new_customers': complex_kpis.get('new_customer_count', 0),
+                    'num_new_products': complex_kpis.get('new_product_count', 0),
+                    'new_business_revenue': complex_kpis.get('new_business_revenue', 0),
+                }
+            
+            # Pre-calculate total targets for each complex KPI (for proportion calculation)
+            complex_kpi_total_targets = {}
+            for kpi_name in complex_kpi_values.keys():
+                total = self.targets_df[
+                    self.targets_df['kpi_name'].str.lower() == kpi_name
+                ]['annual_target_value_numeric'].sum()
+                complex_kpi_total_targets[kpi_name] = total
+            
+            # Calculate overall achievement for each salesperson
+            overall_achievements = []
+            
+            for _, row in by_sales.iterrows():
+                sales_id = row['sales_id']
+                
+                # Get all KPI assignments for this employee
+                employee_kpis = self.targets_df[
+                    self.targets_df['employee_id'] == sales_id
+                ]
+                
+                if employee_kpis.empty:
+                    overall_achievements.append(None)
+                    continue
+                
+                weighted_sum = 0
+                total_weight = 0
+                
+                for _, kpi_row in employee_kpis.iterrows():
+                    kpi_name = kpi_row['kpi_name'].lower()
+                    annual_target = kpi_row['annual_target_value_numeric']
+                    weight = kpi_row['weight_numeric']
+                    
+                    if annual_target <= 0 or weight <= 0:
+                        continue
+                    
+                    prorated_target = annual_target * proration_factor
+                    
+                    if prorated_target <= 0:
+                        continue
+                    
+                    # Get actual value for this KPI
+                    if kpi_name in kpi_column_map:
+                        # Sales-based KPIs: get from aggregated row
+                        actual_col = kpi_column_map[kpi_name]
+                        actual = row[actual_col] if actual_col in row.index else 0
+                    elif kpi_name in complex_kpi_values:
+                        # Complex KPIs: distribute by target proportion
+                        # Same logic as calculate_overall_kpi_achievement
+                        total_target_for_kpi = complex_kpi_total_targets.get(kpi_name, 0)
+                        if total_target_for_kpi > 0:
+                            proportion = annual_target / total_target_for_kpi
+                            actual = complex_kpi_values[kpi_name] * proportion
+                        else:
+                            actual = 0
+                    else:
+                        # Unknown KPI type, skip
+                        continue
+                    
+                    # Calculate achievement for this KPI
+                    achievement = (actual / prorated_target) * 100
+                    
+                    # Add to weighted sum
+                    weighted_sum += achievement * weight
+                    total_weight += weight
+                
+                # Calculate overall weighted achievement
+                if total_weight > 0:
+                    overall_achievements.append(round(weighted_sum / total_weight, 1))
+                else:
+                    overall_achievements.append(None)
+            
+            by_sales['overall_achievement'] = overall_achievements
             
             # Drop annual target columns (keep only prorated)
             cols_to_drop = ['revenue_target_annual', 'gp_target_annual', 'gp1_target_annual']

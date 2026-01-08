@@ -11,9 +11,11 @@
 
 CHANGELOG:
 - v3.2.0: FIXED Achievement % consistency between Overview and Table
-          - Bug: Table used ANNUAL target, Overview used PRORATED target
-          - Fix: aggregate_by_salesperson() now accepts period_type and year
-          - Table Achievement % now matches Overall Achievement calculation
+          - Bug: Table showed only Revenue Achievement
+          - Fix: Table now shows WEIGHTED OVERALL Achievement (same as Overview)
+          - aggregate_by_salesperson() returns new column: overall_achievement
+          - overall_achievement = Σ(KPI_Achievement × Weight) / Σ(Weight)
+          - Includes Revenue, GP, GP1 weighted by their KPI weights
           - Added LY (Last Year) period type support
 - v3.1.0: PERFORMANCE - Sidebar options from lookback data
           - Extract sidebar options from lookback_df instead of 3 SQL queries
@@ -1772,20 +1774,22 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
     
     # Summary table
     st.subheader("📋 Performance by Salesperson")
-    # FIXED v3.2.0: Pass period_type and year for prorated target calculation
+    # FIXED v3.2.0: Pass period_type, year, and complex_kpis for accurate overall achievement
     salesperson_summary = metrics_calc.aggregate_by_salesperson(
         period_type=active_filters['period_type'],
-        year=active_filters['year']
+        year=active_filters['year'],
+        complex_kpis=complex_kpis
     )
     
     if not salesperson_summary.empty:
         display_cols = ['sales_name', 'revenue', 'gross_profit', 'gp1', 'gp_percent', 'customers', 'invoices']
-        if 'revenue_achievement' in salesperson_summary.columns:
-            display_cols.append('revenue_achievement')
+        # UPDATED v3.2.0: Use overall_achievement (weighted avg of all KPIs) instead of revenue_achievement
+        if 'overall_achievement' in salesperson_summary.columns:
+            display_cols.append('overall_achievement')
         
         display_df = salesperson_summary[[c for c in display_cols if c in salesperson_summary.columns]].copy()
         display_df.columns = ['Salesperson', 'Revenue', 'Gross Profit', 'GP1', 'GP %', 'Customers', 'Invoices'] + \
-                            (['Achievement %'] if 'revenue_achievement' in display_cols else [])
+                            (['Achievement %'] if 'overall_achievement' in display_cols else [])
         
         st.dataframe(
             display_df.style.format({
@@ -2336,10 +2340,11 @@ with tab4:
         
         with kpi_tab3:
             # Use fragment to prevent page rerun on dropdown change
-            # FIXED v3.2.0: Pass period_type and year for prorated target calculation
+            # FIXED v3.2.0: Pass period_type, year, and complex_kpis for accurate overall achievement
             salesperson_summary = metrics_calc.aggregate_by_salesperson(
                 period_type=active_filters['period_type'],
-                year=active_filters['year']
+                year=active_filters['year'],
+                complex_kpis=complex_kpis
             )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,

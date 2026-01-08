@@ -13,6 +13,10 @@ Creates professional Excel reports with:
 Uses openpyxl for formatting capabilities.
 
 CHANGELOG:
+- v2.2.0: UPDATED By Salesperson sheet to use overall_achievement
+          - Prefer overall_achievement over revenue_achievement
+          - overall_achievement = weighted avg of all KPIs (same as Overview)
+          - Conditional formatting now works with overall_achievement
 - v2.0.0: ADDED Comprehensive Export with full data
           - New create_comprehensive_report() method
           - Pipeline & Forecast sheet with Revenue/GP/GP1 metrics
@@ -22,7 +26,7 @@ CHANGELOG:
           - Export button moved to main page level
 - v1.0.0: Initial version with basic export
 
-VERSION: 2.0.0
+VERSION: 2.2.0
 """
 
 import logging
@@ -980,10 +984,15 @@ class SalespersonExport:
         # Add target columns if present
         if 'revenue_target' in df.columns:
             all_columns.append(('revenue_target', 'Revenue Target', 15))
-            all_columns.append(('revenue_achievement', 'Achievement %', 14))
         if 'gp_target' in df.columns:
             all_columns.append(('gp_target', 'GP Target', 15))
-            all_columns.append(('gp_achievement', 'GP Achievement %', 14))
+        
+        # UPDATED v2.2.0: Prefer overall_achievement over revenue_achievement
+        # overall_achievement = weighted average of all KPIs (same as Overview)
+        if 'overall_achievement' in df.columns:
+            all_columns.append(('overall_achievement', 'Achievement %', 14))
+        elif 'revenue_achievement' in df.columns:
+            all_columns.append(('revenue_achievement', 'Achievement %', 14))
         
         # Filter to available columns
         columns = [(c, h, w) for c, h, w in all_columns if c in df.columns]
@@ -1015,7 +1024,7 @@ class SalespersonExport:
                 if col_name in ['revenue', 'gross_profit', 'gp1', 'revenue_target', 'gp_target']:
                     cell.number_format = self.currency_format
                     cell.alignment = self.right_align
-                elif col_name in ['gp_percent', 'revenue_achievement', 'gp_achievement']:
+                elif col_name in ['gp_percent', 'revenue_achievement', 'gp_achievement', 'overall_achievement']:
                     cell.alignment = self.right_align
                 elif col_name in ['customers', 'invoices']:
                     cell.alignment = self.center_align
@@ -1042,10 +1051,17 @@ class SalespersonExport:
                 cell.alignment = self.center_align
         
         # Add conditional formatting for achievement column
-        if 'revenue_achievement' in df.columns:
+        # UPDATED v2.2.0: Support both overall_achievement and revenue_achievement
+        achievement_col_name = None
+        if 'overall_achievement' in df.columns:
+            achievement_col_name = 'overall_achievement'
+        elif 'revenue_achievement' in df.columns:
+            achievement_col_name = 'revenue_achievement'
+        
+        if achievement_col_name:
             achievement_col = None
             for col_idx, (col_name, _, _) in enumerate(columns, 1):
-                if col_name == 'revenue_achievement':
+                if col_name == achievement_col_name:
                     achievement_col = get_column_letter(col_idx)
                     break
             
