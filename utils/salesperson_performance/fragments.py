@@ -1516,8 +1516,12 @@ def export_report_fragment(
     backlog_detail_df: pd.DataFrame,
     backlog_by_month_df: pd.DataFrame,
     targets_df: pd.DataFrame,
+    # NEW v2.7.0: Raw complex KPI dataframes for per-salesperson calculation
+    new_customers_df: pd.DataFrame = None,
+    new_products_df: pd.DataFrame = None,
+    new_business_df: pd.DataFrame = None,
     # Metrics calculator
-    metrics_calc,  # SalespersonMetrics instance
+    metrics_calc = None,  # SalespersonMetrics instance
     fragment_key: str = "export"
 ):
     """
@@ -1554,11 +1558,13 @@ def export_report_fragment(
             with st.spinner("Generating Excel report..."):
                 try:
                     # Calculate additional data needed for export
-                    # FIXED v2.7.0: Pass period_type, year, and complex_kpis for accurate overall achievement
+                    # FIXED v2.7.0: Pass raw dataframes for per-salesperson calculation
                     salesperson_summary_df = metrics_calc.aggregate_by_salesperson(
                         period_type=filter_values.get('period_type', 'YTD'),
                         year=filter_values.get('year', datetime.now().year),
-                        complex_kpis=complex_kpis
+                        new_customers_df=new_customers_df,
+                        new_products_df=new_products_df,
+                        new_business_df=new_business_df
                     )
                     monthly_df = metrics_calc.prepare_monthly_summary()
                     

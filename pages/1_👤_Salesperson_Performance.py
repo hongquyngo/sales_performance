@@ -1774,11 +1774,13 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
     
     # Summary table
     st.subheader("📋 Performance by Salesperson")
-    # FIXED v3.2.0: Pass period_type, year, and complex_kpis for accurate overall achievement
+    # FIXED v3.2.0: Pass raw dataframes for per-salesperson complex KPI calculation
     salesperson_summary = metrics_calc.aggregate_by_salesperson(
         period_type=active_filters['period_type'],
         year=active_filters['year'],
-        complex_kpis=complex_kpis
+        new_customers_df=data['new_customers'],
+        new_products_df=data['new_products'],
+        new_business_df=data.get('new_business', pd.DataFrame())
     )
     
     if not salesperson_summary.empty:
@@ -1828,6 +1830,10 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         backlog_detail_df=data['backlog_detail'],
         backlog_by_month_df=prepared_backlog_by_month,
         targets_df=data['targets'],
+        # NEW v3.2.0: Pass raw dataframes for per-salesperson achievement
+        new_customers_df=data['new_customers'],
+        new_products_df=data['new_products'],
+        new_business_df=data.get('new_business', pd.DataFrame()),
         metrics_calc=metrics_calc,
         fragment_key="export"
     )
@@ -2340,11 +2346,13 @@ with tab4:
         
         with kpi_tab3:
             # Use fragment to prevent page rerun on dropdown change
-            # FIXED v3.2.0: Pass period_type, year, and complex_kpis for accurate overall achievement
+            # FIXED v3.2.0: Pass raw dataframes for per-salesperson complex KPI calculation
             salesperson_summary = metrics_calc.aggregate_by_salesperson(
                 period_type=active_filters['period_type'],
                 year=active_filters['year'],
-                complex_kpis=complex_kpis
+                new_customers_df=data['new_customers'],
+                new_products_df=data['new_products'],
+                new_business_df=data.get('new_business', pd.DataFrame())
             )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,
