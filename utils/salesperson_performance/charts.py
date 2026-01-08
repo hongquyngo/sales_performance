@@ -12,6 +12,10 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 
 CHANGELOG:
+- v1.3.1: UPDATED tooltips and Help for service products exclusion
+          - New Products and New Combos now exclude service products
+          - Added note in Help popover about is_service=1 filter
+          - Updated individual metric tooltips
 - v1.3.0: ADDED New Combos metric to NEW BUSINESS section
           - Added new_combos_detail_df parameter to render_kpi_cards()
           - Changed layout from 3 columns to 4 columns
@@ -343,8 +347,8 @@ class SalespersonCharts:
 | Metric | Definition | Lookback |
 |--------|------------|----------|
 | New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
-| New Products | Products with **first sale ever** in period | 5 years |
-| New Combos | Unique **customer-product pairs** with first sale in period | 5 years |
+| New Products | Products with **first sale ever** in period *(excl. services)* | 5 years |
+| New Combos | Unique **customer-product pairs** with first sale in period *(excl. services)* | 5 years |
 | New Business Revenue | Revenue from **new combos** | 5 years |
 
 **Counting Method:**
@@ -357,6 +361,11 @@ class SalespersonCharts:
 - **New Product**: Product has NEVER been sold to ANY customer before
 - **New Combo**: A specific product sold to a specific customer for the FIRST TIME
 - **New Business Revenue**: Total revenue from all new combos in period
+
+**⚠️ Service Products Exclusion:**
+- **New Products** and **New Combos** exclude products marked as "Service" (`is_service=1`)
+- This ensures only physical products are counted for new business development
+- New Customers and New Business Revenue are NOT affected by this filter
 
 **Relationship:** New Combos → generate → New Business Revenue
 
@@ -456,7 +465,7 @@ class SalespersonCharts:
                             label="New Products",
                             value=f"{complex_kpis['new_product_count']:.1f}",
                             delta=delta_str,
-                            help="Products with first-ever sale to ANY customer in period (5-year lookback)."
+                            help="Products with first-ever sale to ANY customer in period (5-year lookback). Excludes service products."
                         )
                     
                     with btn_col:
@@ -531,7 +540,7 @@ class SalespersonCharts:
                             value=f"{num_new_combos:,}",
                             delta=delta_str,
                             delta_color="off",
-                            help="Unique customer-product pairs with first sale in period (5-year lookback). These combos generate New Business Revenue."
+                            help="Unique customer-product pairs with first sale in period (5-year lookback). Excludes service products. These combos generate New Business Revenue."
                         )
                     
                     with btn_col:

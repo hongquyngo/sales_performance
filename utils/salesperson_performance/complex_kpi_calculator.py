@@ -10,6 +10,11 @@ Performance Comparison:
 - Pandas: ~0.3s (in-memory groupby + filter)
 
 CHANGELOG:
+- v1.2.0: EXCLUDE service products from New Products and New Combos
+          - Added is_service check in _precalculate_first_dates()
+          - Products with is_service=1 are excluded from New Products count
+          - Combos with service products are excluded from New Combos count
+          - New Customers NOT affected (counts customers, not products)
 - v1.1.0: ADDED calculate_new_combos_detail() method
           - Returns deduplicated list of new customer-product combos
           - Used for New Combos metric display in Overview tab
@@ -21,7 +26,7 @@ CHANGELOG:
           - calculate_new_business_revenue(): First customer-product combos
           - calculate_new_business_detail(): Line-by-line combo detail
 
-VERSION: 1.1.0
+VERSION: 1.2.0
 """
 
 import logging
@@ -158,19 +163,27 @@ class ComplexKPICalculator:
         """
         Pre-calculate first invoice/sale dates for each entity.
         This is done once during initialization for performance.
+        
+        UPDATED v1.2.0: Exclude service products (is_service=1) from 
+        New Products and New Combos calculations.
         """
         start_time = time.perf_counter()
         
         df = self._df
         
         # 1. First invoice date per customer (globally - any salesperson)
+        # Note: Customers are NOT filtered by is_service
         self._first_customer_dates = df.groupby('customer_id').agg(
             first_invoice_date=('inv_date', 'min')
         ).reset_index()
         
         # 2. First sale date per product_key (globally)
+        # UPDATED v1.2.0: Exclude service products
         if 'product_key' in df.columns:
             valid_products = df[df['product_key'].notna()]
+            # Exclude service products if is_service column exists
+            if 'is_service' in valid_products.columns:
+                valid_products = valid_products[valid_products['is_service'] != 1]
             self._first_product_dates = valid_products.groupby('product_key').agg(
                 first_sale_date=('inv_date', 'min')
             ).reset_index()
@@ -178,8 +191,12 @@ class ComplexKPICalculator:
             self._first_product_dates = pd.DataFrame(columns=['product_key', 'first_sale_date'])
         
         # 3. First date per customer-product combo
+        # UPDATED v1.2.0: Exclude service products
         if 'combo_key' in df.columns:
             valid_combos = df[df['combo_key'].notna() & (df['combo_key'] != '|')]
+            # Exclude service products if is_service column exists
+            if 'is_service' in valid_combos.columns:
+                valid_combos = valid_combos[valid_combos['is_service'] != 1]
             self._first_combo_dates = valid_combos.groupby(['customer_id', 'product_key']).agg(
                 first_combo_date=('inv_date', 'min')
             ).reset_index()
@@ -292,9 +309,12 @@ class ComplexKPICalculator:
         """
         Get products with first sale ever in period (any customer).
         
+        UPDATED v1.2.0: Excludes service products (is_service=1)
+        
         A product is "new" if:
         - Its first sale ever (globally, any customer, any salesperson)
         - Falls within the specified date range
+        - Product is NOT a service (is_service=0)
         
         Credit is given to all salespeople who sold on the first day.
         
@@ -363,7 +383,7 @@ class ComplexKPICalculator:
         return result
     
     # =========================================================================
-    # NEW COMBOS DETAIL - NEW v1.1.0
+    # NEW COMBOS DETAIL - NEW v1.1.0, UPDATED v1.2.0
     # =========================================================================
     
     def calculate_new_combos_detail(
@@ -378,9 +398,12 @@ class ComplexKPICalculator:
         NEW v1.1.0: Distinct from new_business_detail which includes revenue.
         This returns unique combos for the New Combos metric display.
         
+        UPDATED v1.2.0: Excludes service products (is_service=1)
+        
         A combo is "new" if:
         - First time this specific product is sold to this specific customer
         - The first sale falls within the specified date range
+        - Product is NOT a service (is_service=0)
         
         Args:
             start_date: Period start date

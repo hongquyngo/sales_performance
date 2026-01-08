@@ -254,32 +254,35 @@ class SalespersonQueries:
         # Simple SELECT - no WHERE on employee_ids for global first dates
         # Include legacy_code for product_key calculation
         # UPDATED v3.1.0: Added sales_email, legal_entity_id, legal_entity, inv_number, invoice_year
+        # UPDATED v3.2.0: Added is_service from products table to filter service products
         query = """
             SELECT 
-                sales_id,
-                sales_name,
-                sales_email,
-                split_rate_percent,
-                inv_date,
-                inv_number,
-                invoice_year,
-                legal_entity_id,
-                legal_entity,
-                customer,
-                customer_id,
-                customer_code,
-                customer_type,
-                product_id,
-                product_pn,
-                pt_code,
-                package_size,
-                legacy_code,
-                brand,
-                sales_by_split_usd,
-                gross_profit_by_split_usd,
-                gp1_by_split_usd
-            FROM unified_sales_by_salesperson_view
-            WHERE inv_date >= :lookback_start
+                v.sales_id,
+                v.sales_name,
+                v.sales_email,
+                v.split_rate_percent,
+                v.inv_date,
+                v.inv_number,
+                v.invoice_year,
+                v.legal_entity_id,
+                v.legal_entity,
+                v.customer,
+                v.customer_id,
+                v.customer_code,
+                v.customer_type,
+                v.product_id,
+                v.product_pn,
+                v.pt_code,
+                v.package_size,
+                v.legacy_code,
+                v.brand,
+                v.sales_by_split_usd,
+                v.gross_profit_by_split_usd,
+                v.gp1_by_split_usd,
+                COALESCE(p.is_service, 0) AS is_service
+            FROM unified_sales_by_salesperson_view v
+            LEFT JOIN products p ON v.product_id = p.id
+            WHERE v.inv_date >= :lookback_start
         """
         
         params = {'lookback_start': lookback_start}
