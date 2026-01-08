@@ -631,6 +631,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # Unpack results (maintain same data structure as before)
         data['new_customers'] = complex_kpis_result['new_customers']
         data['new_products'] = complex_kpis_result['new_products']
+        data['new_combos_detail'] = complex_kpis_result['new_combos_detail']  # NEW v1.1.0
         data['new_business'] = complex_kpis_result['new_business']
         data['new_business_detail'] = complex_kpis_result['new_business_detail']
         
@@ -639,6 +640,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         
         print(f"   → New customers: {len(data['new_customers']):,} rows")
         print(f"   → New products: {len(data['new_products']):,} rows")
+        print(f"   → New combos detail: {len(data['new_combos_detail']):,} rows")  # NEW v1.1.0
         print(f"   → New business: {len(data['new_business']):,} rows")
         print(f"   → New business detail: {len(data['new_business_detail']):,} rows")
         
@@ -867,6 +869,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         # Update filtered data with recalculated Complex KPIs
         filtered['new_customers'] = complex_kpis_result['new_customers']
         filtered['new_products'] = complex_kpis_result['new_products']
+        filtered['new_combos_detail'] = complex_kpis_result['new_combos_detail']  # NEW v1.1.0
         filtered['new_business'] = complex_kpis_result['new_business']
         filtered['new_business_detail'] = complex_kpis_result['new_business_detail']
     
@@ -1173,11 +1176,17 @@ if DEBUG_TIMING:
     print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
     print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
 
+# NEW v1.1.0: Get new_combos_detail for New Combos metric
+fresh_new_combos_detail_df = data.get('new_combos_detail', pd.DataFrame())
+if DEBUG_TIMING:
+    print(f"   ♻️ Using cached new_combos_detail ({len(fresh_new_combos_detail_df)} rows)")
+
 with timer("Metrics: calculate_complex_kpis"):
     complex_kpis = metrics_calc.calculate_complex_kpis(
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=fresh_new_business_df  # Use fresh data instead of cached
+        new_business_df=fresh_new_business_df,  # Use fresh data instead of cached
+        new_combos_detail_df=fresh_new_combos_detail_df  # NEW v1.1.0
     )
 
 with timer("Metrics: calculate_backlog_metrics"):
@@ -1307,7 +1316,9 @@ with tab1:
         new_products_df=data['new_products'],
         new_business_df=fresh_new_business_df,
         # NEW v1.5.0: Pass combo detail for New Business popup
-        new_business_detail_df=fresh_new_business_detail_df
+        new_business_detail_df=fresh_new_business_detail_df,
+        # NEW v1.3.0: Pass new combos detail for New Combos popup
+        new_combos_detail_df=fresh_new_combos_detail_df
     )
     
     st.divider()

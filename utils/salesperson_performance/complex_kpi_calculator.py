@@ -10,13 +10,18 @@ Performance Comparison:
 - Pandas: ~0.3s (in-memory groupby + filter)
 
 CHANGELOG:
+- v1.1.0: ADDED calculate_new_combos_detail() method
+          - Returns deduplicated list of new customer-product combos
+          - Used for New Combos metric display in Overview tab
+          - Distinct from new_business_detail (which has revenue per combo)
+          - Updated calculate_all() to include new_combos_detail
 - v1.0.0: Initial implementation
           - calculate_new_customers(): Customers new to COMPANY in period
           - calculate_new_products(): Products first sold ever in period
           - calculate_new_business_revenue(): First customer-product combos
           - calculate_new_business_detail(): Line-by-line combo detail
 
-VERSION: 1.0.0
+VERSION: 1.1.0
 """
 
 import logging
@@ -39,7 +44,8 @@ class ComplexKPICalculator:
     Complex KPIs:
     1. New Customers - Customers with first invoice to COMPANY in period
     2. New Products - Products with first sale ever (any customer) in period
-    3. New Business Revenue - Revenue from first customer-product combos
+    3. New Combos - Unique customer-product pairs with first sale in period (NEW v1.1.0)
+    4. New Business Revenue - Revenue from first customer-product combos
     
     Usage:
         # Load lookback data once (cached in session_state)
@@ -357,6 +363,100 @@ class ComplexKPICalculator:
         return result
     
     # =========================================================================
+    # NEW COMBOS DETAIL - NEW v1.1.0
+    # =========================================================================
+    
+    def calculate_new_combos_detail(
+        self,
+        start_date: date,
+        end_date: date,
+        employee_ids: Optional[List[int]] = None
+    ) -> pd.DataFrame:
+        """
+        Get deduplicated list of new customer-product combos.
+        
+        NEW v1.1.0: Distinct from new_business_detail which includes revenue.
+        This returns unique combos for the New Combos metric display.
+        
+        A combo is "new" if:
+        - First time this specific product is sold to this specific customer
+        - The first sale falls within the specified date range
+        
+        Args:
+            start_date: Period start date
+            end_date: Period end date
+            employee_ids: Optional list of employee IDs to filter results
+            
+        Returns:
+            DataFrame with columns:
+            - customer_id, customer, customer_code
+            - product_key, product_pn, brand
+            - sales_id, sales_name
+            - first_combo_date
+        """
+        start_time = time.perf_counter()
+        
+        if self._df.empty or self._first_combo_dates is None:
+            return pd.DataFrame()
+        
+        # Convert dates
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        
+        # Step 1: Identify new combos (first sale within period)
+        new_combos = self._first_combo_dates[
+            (self._first_combo_dates['first_combo_date'] >= start_ts) &
+            (self._first_combo_dates['first_combo_date'] <= end_ts)
+        ].copy()
+        
+        if new_combos.empty:
+            return pd.DataFrame()
+        
+        # Step 2: Get details for these combos from sales data
+        # Join to get combo details
+        df_period = self._df[
+            (self._df['inv_date'] >= start_ts) & 
+            (self._df['inv_date'] <= end_ts)
+        ]
+        
+        combo_details = df_period.merge(
+            new_combos,
+            on=['customer_id', 'product_key'],
+            how='inner'
+        )
+        
+        # Filter to only rows on first combo date (credit to first sellers)
+        combo_details = combo_details[
+            combo_details['inv_date'] == combo_details['first_combo_date']
+        ]
+        
+        # Step 3: Filter by employee_ids if provided
+        if employee_ids:
+            combo_details = combo_details[combo_details['sales_id'].isin(employee_ids)]
+        
+        if combo_details.empty:
+            return pd.DataFrame()
+        
+        # Step 4: Deduplicate - one row per combo + salesperson
+        result = combo_details.groupby(['customer_id', 'product_key', 'sales_id']).agg({
+            'customer': 'first',
+            'customer_code': 'first',
+            'product_pn': 'first',
+            'brand': 'first',
+            'sales_name': 'first',
+            'first_combo_date': 'first'
+        }).reset_index()
+        
+        # Sort by date descending
+        result = result.sort_values('first_combo_date', ascending=False)
+        
+        elapsed = time.perf_counter() - start_time
+        if DEBUG_TIMING:
+            print(f"   📊 [new_combos_detail] {len(result):,} rows in {elapsed:.3f}s")
+        
+        return result
+    
+    # =========================================================================
     # NEW BUSINESS REVENUE (Aggregated)
     # =========================================================================
     
@@ -549,6 +649,8 @@ class ComplexKPICalculator:
         """
         Calculate all Complex KPIs at once.
         
+        UPDATED v1.1.0: Added new_combos_detail to output.
+        
         Args:
             start_date: Period start date
             end_date: Period end date
@@ -558,22 +660,25 @@ class ComplexKPICalculator:
             Dict with:
             - new_customers: DataFrame
             - new_products: DataFrame
+            - new_combos_detail: DataFrame (NEW v1.1.0)
             - new_business: DataFrame (aggregated)
-            - new_business_detail: DataFrame (line-by-line)
+            - new_business_detail: DataFrame (line-by-line with revenue)
             - summary: Dict with counts
         """
         start_time = time.perf_counter()
         
         new_customers = self.calculate_new_customers(start_date, end_date, employee_ids)
         new_products = self.calculate_new_products(start_date, end_date, employee_ids)
+        new_combos_detail = self.calculate_new_combos_detail(start_date, end_date, employee_ids)
         new_business = self.calculate_new_business_revenue(start_date, end_date, employee_ids)
         new_business_detail = self.calculate_new_business_detail(start_date, end_date, employee_ids)
         
         # Summary counts
+        # UPDATED v1.1.0: num_new_combos from new_combos_detail (unique combos)
         summary = {
             'num_new_customers': len(new_customers['customer_id'].unique()) if not new_customers.empty else 0,
             'num_new_products': len(new_products['product_key'].unique()) if not new_products.empty else 0,
-            'num_new_combos': new_business['new_combos_count'].sum() if not new_business.empty else 0,
+            'num_new_combos': len(new_combos_detail) if not new_combos_detail.empty else 0,
             'new_business_revenue': new_business['new_business_revenue'].sum() if not new_business.empty else 0,
             'new_business_gp': new_business['new_business_gp'].sum() if not new_business.empty else 0,
         }
@@ -589,6 +694,7 @@ class ComplexKPICalculator:
         return {
             'new_customers': new_customers,
             'new_products': new_products,
+            'new_combos_detail': new_combos_detail,
             'new_business': new_business,
             'new_business_detail': new_business_detail,
             'summary': summary

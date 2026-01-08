@@ -665,15 +665,19 @@ class SalespersonMetrics:
         self,
         new_customers_df: pd.DataFrame,
         new_products_df: pd.DataFrame,
-        new_business_df: pd.DataFrame
+        new_business_df: pd.DataFrame,
+        new_combos_detail_df: pd.DataFrame = None  # NEW v1.1.0
     ) -> Dict:
         """
         Calculate complex KPIs with proportional split counting.
+        
+        UPDATED v1.1.0: Added num_new_combos from new_combos_detail_df
         
         Args:
             new_customers_df: New customers data
             new_products_df: New products data
             new_business_df: New business revenue data
+            new_combos_detail_df: New combos detail data (NEW v1.1.0)
             
         Returns:
             Dict with complex KPI metrics
@@ -690,6 +694,12 @@ class SalespersonMetrics:
         else:
             new_product_count = 0
         
+        # NEW v1.1.0: New combos count (distinct count, not weighted)
+        if new_combos_detail_df is not None and not new_combos_detail_df.empty:
+            num_new_combos = len(new_combos_detail_df)
+        else:
+            num_new_combos = 0
+        
         # New business revenue (already split in query)
         if not new_business_df.empty:
             new_business_revenue = new_business_df['new_business_revenue'].sum()
@@ -701,20 +711,24 @@ class SalespersonMetrics:
         # Get targets for complex KPIs
         customer_target = self._get_kpi_target_value('num_new_customers')
         product_target = self._get_kpi_target_value('num_new_products')
+        combo_target = self._get_kpi_target_value('num_new_combos')  # NEW v1.1.0
         business_target = self._get_kpi_target_value('new_business_revenue')
         
         return {
             'new_customer_count': round(new_customer_count, 1),
             'new_product_count': round(new_product_count, 1),
+            'num_new_combos': num_new_combos,  # NEW v1.1.0
             'new_business_revenue': new_business_revenue,
             'new_business_gp': new_business_gp,
             
             'new_customer_target': customer_target,
             'new_product_target': product_target,
+            'new_combo_target': combo_target,  # NEW v1.1.0
             'new_business_target': business_target,
             
             'new_customer_achievement': self._calc_achievement(new_customer_count, customer_target),
             'new_product_achievement': self._calc_achievement(new_product_count, product_target),
+            'new_combo_achievement': self._calc_achievement(num_new_combos, combo_target),  # NEW v1.1.0
             'new_business_achievement': self._calc_achievement(new_business_revenue, business_target),
         }
     

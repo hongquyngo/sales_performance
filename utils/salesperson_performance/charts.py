@@ -12,6 +12,11 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 
 CHANGELOG:
+- v1.3.0: ADDED New Combos metric to NEW BUSINESS section
+          - Added new_combos_detail_df parameter to render_kpi_cards()
+          - Changed layout from 3 columns to 4 columns
+          - Added New Combos metric with popover detail
+          - Updated Help popover with New Combos definition
 - v1.2.1: FIXED KeyError 'amount' in build_cumulative_yoy_chart()
           - Bug: When current_df or previous_df is empty, calc_cumulative() 
             returned empty DataFrame without columns, causing KeyError on line 1051
@@ -72,7 +77,9 @@ class SalespersonCharts:
         new_products_df: pd.DataFrame = None,
         new_business_df: pd.DataFrame = None,
         # NEW v1.5.0: Line-by-line new business combo detail
-        new_business_detail_df: pd.DataFrame = None
+        new_business_detail_df: pd.DataFrame = None,
+        # NEW v1.3.0: New combos detail for popup
+        new_combos_detail_df: pd.DataFrame = None
     ):
         """
         Render KPI summary cards using Streamlit metrics with visual grouping.
@@ -82,7 +89,7 @@ class SalespersonCharts:
           Row 1: Revenue, GP (value), GP1 (value), Overall Achievement
           Row 2: Customers, GP%, GP1%, Orders
         - 📦 PIPELINE & FORECAST: Backlog, In-Period, Forecast, GAP
-        - 🆕 NEW BUSINESS: New Customers, New Products, New Business Revenue
+        - 🆕 NEW BUSINESS: New Customers, New Products, New Combos, New Business Revenue
         
         Args:
             metrics: Overview metrics dict
@@ -96,6 +103,7 @@ class SalespersonCharts:
             new_products_df: DataFrame with new product details for popup (optional)
             new_business_df: DataFrame with new business revenue by salesperson (optional)
             new_business_detail_df: DataFrame with new business combo detail (optional, v1.5.0)
+            new_combos_detail_df: DataFrame with new combos detail for popup (optional, v1.3.0)
         """
         # =====================================================================
         # 💰 PERFORMANCE SECTION
@@ -320,7 +328,7 @@ class SalespersonCharts:
                         )
         
         # =====================================================================
-        # 🆕 NEW BUSINESS SECTION (UPDATED v1.2.0 with Detail Popovers)
+        # 🆕 NEW BUSINESS SECTION (UPDATED v1.3.0 with New Combos)
         # =====================================================================
         if show_complex and complex_kpis:
             with st.container(border=True):
@@ -330,32 +338,33 @@ class SalespersonCharts:
                 with col_help:
                     with st.popover("ℹ️ Help"):
                         st.markdown("""
-                        **🆕 New Business Metrics Definitions**
-                        
-                        | Metric | Definition | Lookback |
-                        |--------|------------|----------|
-                        | New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
-                        | New Products | Products with **first sale ever** in period | 5 years |
-                        | New Business Revenue | Revenue from **first product-customer combo** | 5 years |
-                        
-                        **Counting Method:**
-                        - Values are **proportionally counted** based on split %
-                        - Example: If salesperson has 50% split on a new customer, they get 0.5 new customer credit
-                        
-                        **"New" Definitions:**
-                        - **New Customer**: Customer has NEVER purchased from the company before (globally, any salesperson). Credit goes to salesperson who made the first sale.
-                        - **New Product**: Product has NEVER been sold to ANY customer before. Credit goes to salesperson who introduced it.
-                        - **New Business Revenue**: Revenue from first time a specific product is sold to a specific customer.
-                        
-                        **Lookback Period:** 5 years from period start date
-                        
-                        **Formula Summary:**
-                        - New Customer Count = Σ(split_rate / 100) for each first-time customer
-                        - New Product Count = Σ(split_rate / 100) for each first-time product
-                        - New Business Revenue = Σ(sales_by_split_usd) for first customer-product combos
+**🆕 New Business Metrics Definitions**
+
+| Metric | Definition | Lookback |
+|--------|------------|----------|
+| New Customers | Customers with **first invoice to COMPANY** in period | 5 years |
+| New Products | Products with **first sale ever** in period | 5 years |
+| New Combos | Unique **customer-product pairs** with first sale in period | 5 years |
+| New Business Revenue | Revenue from **new combos** | 5 years |
+
+**Counting Method:**
+- **New Customers/Products**: Weighted by split % (e.g., 50% split = 0.5 credit)
+- **New Combos**: Distinct count of customer-product pairs
+- **New Business Revenue**: Sum of sales from new combos
+
+**"New" Definitions:**
+- **New Customer**: Customer has NEVER purchased from the company before (globally, any salesperson)
+- **New Product**: Product has NEVER been sold to ANY customer before
+- **New Combo**: A specific product sold to a specific customer for the FIRST TIME
+- **New Business Revenue**: Total revenue from all new combos in period
+
+**Relationship:** New Combos → generate → New Business Revenue
+
+**Lookback Period:** 5 years from period start date
                         """)
                 
-                col9, col10, col11 = st.columns(3)
+                # UPDATED v1.3.0: 4 columns instead of 3
+                col9, col10, col11, col12 = st.columns(4)
                 
                 # ---------------------------------------------------------
                 # NEW CUSTOMERS with Detail Popover
@@ -506,10 +515,80 @@ class SalespersonCharts:
                             st.caption("")
                 
                 # ---------------------------------------------------------
+                # NEW COMBOS with Detail Popover (NEW v1.3.0)
+                # ---------------------------------------------------------
+                with col11:
+                    metric_col, btn_col = st.columns([4, 1])
+                    
+                    with metric_col:
+                        # Get num_new_combos from complex_kpis
+                        num_new_combos = complex_kpis.get('num_new_combos', 0)
+                        achievement = complex_kpis.get('new_combo_achievement')
+                        delta_str = f"{num_new_combos} cust-prod pairs"
+                        
+                        st.metric(
+                            label="New Combos",
+                            value=f"{num_new_combos:,}",
+                            delta=delta_str,
+                            delta_color="off",
+                            help="Unique customer-product pairs with first sale in period (5-year lookback). These combos generate New Business Revenue."
+                        )
+                    
+                    with btn_col:
+                        if new_combos_detail_df is not None and not new_combos_detail_df.empty:
+                            with st.popover("📋"):
+                                st.markdown('<div style="min-width:700px"><b>📋 New Combos Detail</b></div>', unsafe_allow_html=True)
+                                st.caption(f"Customer-Product Pairs | Total: {len(new_combos_detail_df)} records")
+                                
+                                display_df = new_combos_detail_df.copy()
+                                
+                                # Format customer display
+                                if 'customer_code' in display_df.columns:
+                                    display_df['customer_display'] = display_df.apply(
+                                        lambda row: f"{row['customer']} | {row['customer_code']}" 
+                                            if pd.notna(row.get('customer_code')) and row.get('customer_code')
+                                            else str(row['customer']),
+                                        axis=1
+                                    )
+                                else:
+                                    display_df['customer_display'] = display_df['customer']
+                                
+                                # Select display columns
+                                display_cols = ['customer_display', 'product_pn', 'brand', 'sales_name', 'first_combo_date']
+                                available_cols = [c for c in display_cols if c in display_df.columns]
+                                
+                                if available_cols:
+                                    display_df = display_df[available_cols].copy()
+                                    
+                                    if 'first_combo_date' in display_df.columns:
+                                        display_df = display_df.sort_values('first_combo_date', ascending=False)
+                                        display_df['first_combo_date'] = pd.to_datetime(
+                                            display_df['first_combo_date']
+                                        ).dt.strftime('%Y-%m-%d')
+                                    
+                                    col_rename = {
+                                        'customer_display': 'Customer',
+                                        'product_pn': 'Product',
+                                        'brand': 'Brand',
+                                        'sales_name': 'Salesperson',
+                                        'first_combo_date': 'First Sale'
+                                    }
+                                    display_df = display_df.rename(columns=col_rename)
+                                    
+                                    st.dataframe(
+                                        display_df,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                        height=min(400, len(display_df) * 35 + 40)
+                                    )
+                        else:
+                            st.caption("")
+                
+                # ---------------------------------------------------------
                 # NEW BUSINESS REVENUE with Detail Popover
                 # UPDATED v1.5.0: Show line-by-line combo detail
                 # ---------------------------------------------------------
-                with col11:
+                with col12:
                     metric_col, btn_col = st.columns([4, 1])
                     
                     with metric_col:
