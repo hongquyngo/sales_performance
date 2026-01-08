@@ -3,7 +3,7 @@
 Sidebar Filter Components for Salesperson Performance
 
 Renders filter UI elements:
-- Period selector (YTD/QTD/MTD/Custom) with radio buttons
+- Period selector (YTD/QTD/MTD/LY/Custom) with radio buttons
 - Year selector
 - Salesperson selector (role-based) with KPI filter option
 - Entity selector
@@ -12,6 +12,10 @@ Renders filter UI elements:
 - Metric view selector
 
 CHANGELOG:
+- v2.1.0: ADDED Last Year (LY) period type
+          - Quick selection for full previous year (Jan 1 - Dec 31)
+          - Automatically sets year to last year
+          - Useful for YoY comparison analysis
 - v2.0.0: REFACTORED - All filters inside st.form to prevent rerun on every change
           - ALL widgets (period type, dates, KPI checkbox, etc.) inside form
           - Date inputs ALWAYS enabled, but only used when "Custom" is selected
@@ -620,6 +624,11 @@ class SalespersonFilters:
         mtd_start = date(current_year, today.month, 1)
         mtd_end = today
         
+        # NEW v2.1.0: Last Year (LY) - full previous year
+        last_year = current_year - 1
+        ly_start = date(last_year, 1, 1)
+        ly_end = date(last_year, 12, 31)
+        
         with st.sidebar:
             st.header("🎛️ Filters")
             
@@ -639,13 +648,14 @@ class SalespersonFilters:
                     f"**YTD** (Year to Date): {ytd_start.strftime('%b %d')} → {ytd_end.strftime('%b %d, %Y')}\n\n"
                     f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
                     f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                    f"**LY** (Last Year): {ly_start.strftime('%b %d')} → {ly_end.strftime('%b %d, %Y')}\n\n"
                     f"**Custom**: Select any date range using Start/End inputs"
                 )
                 
                 # Period type radio
                 period_type = st.radio(
                     "Period",
-                    options=['YTD', 'QTD', 'MTD', 'Custom'],
+                    options=['YTD', 'QTD', 'MTD', 'LY', 'Custom'],
                     index=0,  # Default to YTD
                     horizontal=True,
                     key="form_period_type",
@@ -840,6 +850,11 @@ class SalespersonFilters:
             start_date = mtd_start
             end_date = mtd_end
             year = current_year
+        elif period_type == 'LY':
+            # NEW v2.1.0: Last Year - full previous year
+            start_date = ly_start
+            end_date = ly_end
+            year = last_year
         else:  # Custom
             start_date = start_date_input
             end_date = end_date_input
@@ -966,6 +981,12 @@ class SalespersonFilters:
         elif period_type == 'MTD':
             start = date(year, today.month, 1)
             end = today
+        
+        elif period_type == 'LY':
+            # Last Year - full previous year
+            last_year = today.year - 1
+            start = date(last_year, 1, 1)
+            end = date(last_year, 12, 31)
         
         else:  # Custom
             start = date(year, 1, 1)

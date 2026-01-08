@@ -10,6 +10,7 @@ Centralized configuration for:
 - Period definitions
 
 CHANGELOG:
+- v1.2.0: Added 'LY' (Last Year) period type for quick last year selection
 - v1.1.0: Added gross_profit_1 KPI type support (GP1 = GP - Broker Commission * 1.2)
 """
 
@@ -76,7 +77,8 @@ MONTH_ORDER = [
 # PERIOD DEFINITIONS
 # =====================================================================
 
-PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'Custom']
+# UPDATED v1.2.0: Added 'LY' for Last Year quick selection
+PERIOD_TYPES = ['YTD', 'QTD', 'MTD', 'LY', 'Custom']
 
 QUARTER_MONTHS = {
     1: [1, 2, 3],
