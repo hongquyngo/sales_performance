@@ -12,6 +12,17 @@ Renders filter UI elements:
 - Metric view selector
 
 CHANGELOG:
+- v2.3.0: REFACTOR - Hybrid form approach for responsive period selection
+          - Period type radio moved OUTSIDE form → UI updates immediately
+          - Date inputs + other filters remain INSIDE form → apply on submit
+          - Trade-off: Period change causes quick UI rerun (~0.1s) but no data reload
+          - Fixes UX issue where Custom date picker wasn't visible until Apply clicked
+          - Disabled date_input for non-Custom shows correct calculated dates
+- v2.2.0: FIX - KPI assignment checkbox and LY date display
+          - Bug 1: "Only with KPI assignment" always used current_year instead of 
+            period-specific year (e.g., LY should check 2025 KPIs, not 2026)
+          - Bug 2: Date inputs didn't update when selecting LY/YTD/QTD/MTD
+          - Fix: Calculate selected_year based on period_type before KPI filtering
 - v2.1.0: ADDED Last Year (LY) period type
           - Quick selection for full previous year (Jan 1 - Dec 31)
           - Automatically sets year to last year
@@ -36,6 +47,8 @@ CHANGELOG:
           - apply_multiselect_filter(): Apply filter logic to DataFrame
           - FilterResult dataclass for clean return values
 - v1.1.0: Added exclude_internal_revenue checkbox to filter out internal company revenue
+
+VERSION: 2.3.0
 """
 
 import logging
@@ -633,54 +646,109 @@ class SalespersonFilters:
             st.header("🎛️ Filters")
             
             # =================================================================
-            # ALL FILTERS INSIDE FORM - NO RERUN UNTIL "Apply Filters" CLICKED
+            # HYBRID APPROACH v2.3.0:
+            # - Period type OUTSIDE form → UI updates immediately when changed
+            # - Date inputs + other filters INSIDE form → only apply on submit
+            # 
+            # Trade-off: Period change causes quick UI rerun (~0.1s) but no data reload
+            # =================================================================
+            
+            # =============================================================
+            # PERIOD TYPE - OUTSIDE FORM (immediate UI response)
+            # =============================================================
+            st.markdown("**📅 Date Range**")
+            st.caption("Applies to Sales data. Backlog shows full pipeline.")
+            
+            # Build detailed tooltip with exact date ranges
+            period_help = (
+                f"**YTD** (Year to Date): {ytd_start.strftime('%b %d')} → {ytd_end.strftime('%b %d, %Y')}\n\n"
+                f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
+                f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
+                f"**LY** (Last Year): {ly_start.strftime('%b %d')} → {ly_end.strftime('%b %d, %Y')}\n\n"
+                f"**Custom**: Select any date range using Start/End inputs"
+            )
+            
+            # Period type radio - OUTSIDE FORM for immediate UI update
+            period_type = st.radio(
+                "Period",
+                options=['YTD', 'QTD', 'MTD', 'LY', 'Custom'],
+                index=0,  # Default to YTD
+                horizontal=True,
+                key="sidebar_period_type",  # Changed key to avoid conflict
+                help=period_help
+            )
+            
+            # =============================================================
+            # Determine year and dates based on period_type
+            # =============================================================
+            if period_type == 'YTD':
+                selected_year = current_year
+                display_start = ytd_start
+                display_end = ytd_end
+            elif period_type == 'QTD':
+                selected_year = current_year
+                display_start = qtd_start
+                display_end = qtd_end
+            elif period_type == 'MTD':
+                selected_year = current_year
+                display_start = mtd_start
+                display_end = mtd_end
+            elif period_type == 'LY':
+                selected_year = last_year
+                display_start = ly_start
+                display_end = ly_end
+            else:  # Custom
+                selected_year = default_start_date.year
+                display_start = default_start_date
+                display_end = default_end_date
+            
+            # =================================================================
+            # FORM: Date inputs + all other filters
             # =================================================================
             with st.form("sidebar_filter_form", border=False):
                 
-                # =============================================================
-                # DATE RANGE SECTION
-                # =============================================================
-                st.markdown("**📅 Date Range**")
-                st.caption("Applies to Sales data. Backlog shows full pipeline.")
-                
-                # Build detailed tooltip with exact date ranges
-                period_help = (
-                    f"**YTD** (Year to Date): {ytd_start.strftime('%b %d')} → {ytd_end.strftime('%b %d, %Y')}\n\n"
-                    f"**QTD** (Q{current_quarter} to Date): {qtd_start.strftime('%b %d')} → {qtd_end.strftime('%b %d, %Y')}\n\n"
-                    f"**MTD** ({today.strftime('%B')} to Date): {mtd_start.strftime('%b %d')} → {mtd_end.strftime('%b %d, %Y')}\n\n"
-                    f"**LY** (Last Year): {ly_start.strftime('%b %d')} → {ly_end.strftime('%b %d, %Y')}\n\n"
-                    f"**Custom**: Select any date range using Start/End inputs"
-                )
-                
-                # Period type radio
-                period_type = st.radio(
-                    "Period",
-                    options=['YTD', 'QTD', 'MTD', 'LY', 'Custom'],
-                    index=0,  # Default to YTD
-                    horizontal=True,
-                    key="form_period_type",
-                    help=period_help
-                )
-                
-                # Date inputs - ALWAYS ENABLED
-                # Values only used when period_type is "Custom"
+                # Date range display/input based on period type
                 col_start, col_end = st.columns(2)
                 
-                with col_start:
-                    start_date_input = st.date_input(
-                        "Start",
-                        value=default_start_date,
-                        key="form_start_date",
-                        help="Start date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                    )
-                
-                with col_end:
-                    end_date_input = st.date_input(
-                        "End",
-                        value=default_end_date,
-                        key="form_end_date",
-                        help="End date for Custom mode. Ignored when YTD/QTD/MTD is selected."
-                    )
+                if period_type == 'Custom':
+                    # Custom mode: Editable date inputs
+                    with col_start:
+                        start_date_input = st.date_input(
+                            "Start",
+                            value=default_start_date,
+                            key="form_start_date",
+                            help="Select start date for custom period."
+                        )
+                    
+                    with col_end:
+                        end_date_input = st.date_input(
+                            "End",
+                            value=default_end_date,
+                            key="form_end_date",
+                            help="Select end date for custom period."
+                        )
+                else:
+                    # Non-Custom: Show calculated dates (read-only)
+                    start_date_input = display_start
+                    end_date_input = display_end
+                    
+                    with col_start:
+                        st.date_input(
+                            "Start",
+                            value=display_start,
+                            key="form_start_date",
+                            disabled=True,
+                            help=f"Auto-calculated for {period_type}"
+                        )
+                    
+                    with col_end:
+                        st.date_input(
+                            "End",
+                            value=display_end,
+                            key="form_end_date",
+                            disabled=True,
+                            help=f"Auto-calculated for {period_type}"
+                        )
                 
                 st.divider()
                 
@@ -692,13 +760,13 @@ class SalespersonFilters:
                     value=True,
                     key="form_only_with_kpi",
                     help=(
-                        "Show only salespeople who have KPI targets assigned for the selected period. "
+                        f"Show only salespeople who have KPI targets assigned for {selected_year}. "
                         "Uncheck to include all salespeople (including managers without individual KPI)."
                     )
                 )
                 
-                # Pre-fetch KPI employee IDs for filtering
-                kpi_check_years = [current_year]
+                # FIX v2.2.0: Use selected_year based on period_type, not hardcoded current_year
+                kpi_check_years = [selected_year]
                 kpi_employee_ids = []
                 filtered_salesperson_df = salesperson_df.copy()
                 
