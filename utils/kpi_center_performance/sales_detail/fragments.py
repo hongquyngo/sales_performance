@@ -79,7 +79,7 @@ def sales_detail_tab_fragment(
         )
     
     with col_f3:
-        product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
+        product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())
         product_filter = render_multiselect_filter(
             label="Product",
             options=product_options,
