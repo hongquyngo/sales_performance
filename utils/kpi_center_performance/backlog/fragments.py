@@ -98,7 +98,7 @@ def backlog_tab_fragment(
         )
     
     with col_bf3:
-        product_options = sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100] if 'product_pn' in backlog_df.columns else []
+        product_options = sorted(backlog_df['product_pn'].dropna().unique().tolist()) if 'product_pn' in backlog_df.columns else []
         product_filter = render_multiselect_filter(
             label="Product",
             options=product_options,
