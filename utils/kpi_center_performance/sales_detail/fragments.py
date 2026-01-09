@@ -418,19 +418,41 @@ def sales_detail_fragment(
     # Export filtered view button
     st.caption("💡 For full report with all data, use **Export Report** section")
     if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help="Export only the filtered transactions shown above"):
-        from ..export import KPICenterExport
+        from io import BytesIO
         
-        exporter = KPICenterExport()
-        excel_bytes = exporter.create_report(
-            summary_df=pd.DataFrame(),
-            monthly_df=pd.DataFrame(),
-            metrics=overview_metrics or {},
-            filters=filter_values or {},
-            detail_df=filtered_df
-        )
+        # Prepare export data
+        export_df = filtered_df.copy()
+        
+        # Select and rename columns for export
+        export_columns = {
+            'inv_date': 'Date',
+            'inv_number': 'Invoice#',
+            'oc_number': 'OC#',
+            'customer_po_number': 'Customer PO',
+            'customer': 'Customer',
+            'product_pn': 'Product Code',
+            'product_name': 'Product Name',
+            'brand': 'Brand',
+            'total_revenue_usd': 'Total Revenue (USD)',
+            'total_gp_usd': 'Total GP (USD)',
+            'split_rate_percent': 'Split %',
+            'sales_by_kpi_center_usd': 'Revenue (Split)',
+            'gross_profit_by_kpi_center_usd': 'GP (Split)',
+            'gp1_by_kpi_center_usd': 'GP1 (Split)',
+            'kpi_center': 'KPI Center',
+        }
+        
+        available_export_cols = {k: v for k, v in export_columns.items() if k in export_df.columns}
+        export_df = export_df[list(available_export_cols.keys())].rename(columns=available_export_cols)
+        
+        # Create Excel file
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            export_df.to_excel(writer, sheet_name='Filtered Sales', index=False)
+        
         st.download_button(
             label="⬇️ Download Filtered Data",
-            data=excel_bytes,
+            data=buffer.getvalue(),
             file_name=f"kpi_center_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
