@@ -824,10 +824,17 @@ def sales_detail_fragment(
     ]
     available_cols = [c for c in display_columns if c in filtered_df.columns]
     
-    st.markdown(f"**Showing {len(filtered_df):,} transactions** (of {len(sales_df):,} total)")
+    # Prepare display dataframe (limit 500 rows for UI performance)
+    DISPLAY_LIMIT = 500
+    total_filtered = len(filtered_df)
+    display_detail = filtered_df[available_cols].head(DISPLAY_LIMIT).copy()
     
-    # Prepare display dataframe
-    display_detail = filtered_df[available_cols].head(500).copy()
+    # Show transaction count with warning if truncated
+    if total_filtered > DISPLAY_LIMIT:
+        st.markdown(f"**Showing {DISPLAY_LIMIT:,} of {total_filtered:,} transactions** (filtered from {len(sales_df):,} total)")
+        st.warning(f"⚠️ Display limited to {DISPLAY_LIMIT:,} rows for performance. Click **Export Filtered View** below to download all {total_filtered:,} transactions.")
+    else:
+        st.markdown(f"**Showing {total_filtered:,} transactions** (of {len(sales_df):,} total)")
     
     # =================================================================
     # Configure columns with tooltips using st.column_config
@@ -929,17 +936,21 @@ def sales_detail_fragment(
     
     # Export filtered view button (quick export of current filtered data)
     st.caption("💡 For full report with all data, use **Export Report** in Overview tab")
-    if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help="Export only the filtered transactions shown above"):
+    
+    # Dynamic help text based on whether data is truncated
+    export_help = f"Export all {total_filtered:,} filtered transactions to Excel" if total_filtered > DISPLAY_LIMIT else "Export the filtered transactions shown above"
+    
+    if st.button("📥 Export Filtered View", key=f"{fragment_key}_export", help=export_help):
         exporter = SalespersonExport()
         excel_bytes = exporter.create_report(
             summary_df=pd.DataFrame(),
             monthly_df=pd.DataFrame(),
             metrics=overview_metrics,
             filters=filter_values,
-            detail_df=filtered_df
+            detail_df=filtered_df  # Export ALL filtered data, not just displayed 500
         )
         st.download_button(
-            label="⬇️ Download Filtered Data",
+            label=f"⬇️ Download {total_filtered:,} Transactions",
             data=excel_bytes,
             file_name=f"sales_filtered_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1246,15 +1257,23 @@ def backlog_list_fragment(
     
     filtered_backlog['oc_po_display'] = filtered_backlog.apply(format_oc_po, axis=1)
     
-    st.markdown(f"**Showing {len(filtered_backlog):,} backlog items** (of {len(backlog_df):,} total)")
+    # Display with column configuration (limit 200 rows for UI performance)
+    BACKLOG_DISPLAY_LIMIT = 200
+    total_backlog_filtered = len(filtered_backlog)
     
-    # Display with column configuration
     backlog_display_cols = ['oc_po_display', 'oc_date', 'etd', 'customer', 'product_display', 'brand',
                            'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
                            'days_until_etd', 'pending_type', 'sales_name']
     available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
     
-    display_bl = filtered_backlog[available_bl_cols].head(200).copy()
+    display_bl = filtered_backlog[available_bl_cols].head(BACKLOG_DISPLAY_LIMIT).copy()
+    
+    # Show count with warning if truncated
+    if total_backlog_filtered > BACKLOG_DISPLAY_LIMIT:
+        st.markdown(f"**Showing {BACKLOG_DISPLAY_LIMIT:,} of {total_backlog_filtered:,} backlog items** (filtered from {len(backlog_df):,} total)")
+        st.warning(f"⚠️ Display limited to {BACKLOG_DISPLAY_LIMIT:,} rows. Use **Export Report** in Overview tab to download all {total_backlog_filtered:,} items.")
+    else:
+        st.markdown(f"**Showing {total_backlog_filtered:,} backlog items** (of {len(backlog_df):,} total)")
     
     # Column configuration
     column_config = {
@@ -1496,8 +1515,10 @@ def backlog_by_etd_fragment(
 
 
 # =============================================================================
-# FRAGMENT: EXPORT REPORT (NEW v2.4.0)
-# Generates Excel report without reloading entire page
+# FRAGMENT: EXPORT REPORT (UPDATED v2.5.0)
+# Generates Excel report fully synchronized with UI
+# - v2.5.0: Added Overall Achievement, KPI Breakdown, Multi-year Backlog
+# - v2.4.0: Initial fragment version
 # =============================================================================
 
 @st.fragment
@@ -1522,26 +1543,29 @@ def export_report_fragment(
     new_business_df: pd.DataFrame = None,
     # Metrics calculator
     metrics_calc = None,  # SalespersonMetrics instance
+    # NEW v2.5.0: KPI type weights for Overall Achievement calculation
+    kpi_type_weights: Dict[str, int] = None,
     fragment_key: str = "export"
 ):
     """
     Fragment for Excel export - runs independently without page reload.
     
-    NEW v2.4.0: Moved export to fragment to avoid full page reload.
+    UPDATED v2.5.0: Full sync with UI - includes Overall Achievement & KPI Breakdown.
     """
     from .export import SalespersonExport
     
     with st.expander("📥 Export Report", expanded=False):
         st.markdown("""
-**Export includes 8 sheets:**
-- Summary & KPIs
+**Export includes 9 sheets (synced with UI):**
+- Summary & KPIs (with Overall Achievement) ✨
+- KPI Breakdown (NEW) ✨
 - Pipeline & Forecast  
 - By Salesperson
 - Monthly Trend
 - Sales Detail
 - Backlog Summary
 - Backlog Detail
-- Backlog by ETD
+- Backlog by ETD (Multi-year) ✨
         """)
         
         col_exp1, col_exp2 = st.columns([1, 1])
@@ -1557,8 +1581,9 @@ def export_report_fragment(
         if generate_clicked:
             with st.spinner("Generating Excel report..."):
                 try:
-                    # Calculate additional data needed for export
-                    # FIXED v2.7.0: Pass raw dataframes for per-salesperson calculation
+                    # ==========================================================
+                    # STEP 1: Calculate Salesperson Summary
+                    # ==========================================================
                     salesperson_summary_df = metrics_calc.aggregate_by_salesperson(
                         period_type=filter_values.get('period_type', 'YTD'),
                         year=filter_values.get('year', datetime.now().year),
@@ -1568,15 +1593,72 @@ def export_report_fragment(
                     )
                     monthly_df = metrics_calc.prepare_monthly_summary()
                     
-                    # Prepare backlog by month
-                    prepared_backlog_by_month = None
-                    if not backlog_by_month_df.empty:
-                        prepared_backlog_by_month = metrics_calc.prepare_backlog_by_month(
-                            backlog_by_month_df=backlog_by_month_df,
-                            year=filter_values.get('year', datetime.now().year)
+                    # ==========================================================
+                    # STEP 2: Calculate Overall Achievement (NEW v2.5.0)
+                    # This syncs with UI's Overview tab KPI Progress
+                    # ==========================================================
+                    overall_achievement_data = None
+                    try:
+                        overall_achievement_data = metrics_calc.calculate_overall_kpi_achievement(
+                            overview_metrics=overview_metrics,
+                            complex_kpis=complex_kpis,
+                            period_type=filter_values.get('period_type', 'YTD'),
+                            year=filter_values.get('year', datetime.now().year),
+                            kpi_type_weights=kpi_type_weights,
+                            new_customers_df=new_customers_df,
+                            new_products_df=new_products_df,
+                            new_business_df=new_business_df
                         )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Could not calculate overall achievement: {e}")
                     
-                    # Generate comprehensive report
+                    # ==========================================================
+                    # STEP 3: Prepare Backlog by Month (Multi-year support)
+                    # ==========================================================
+                    prepared_backlog_by_month = None
+                    prepared_backlog_by_month_multiyear = None
+                    
+                    if not backlog_by_month_df.empty:
+                        # Check if multi-year data exists
+                        if 'etd_year' in backlog_by_month_df.columns:
+                            unique_years = backlog_by_month_df['etd_year'].dropna().unique()
+                            
+                            if len(unique_years) > 1:
+                                # Multi-year: use prepare_backlog_by_month_multiyear if available
+                                if hasattr(metrics_calc, 'prepare_backlog_by_month_multiyear'):
+                                    prepared_backlog_by_month_multiyear = metrics_calc.prepare_backlog_by_month_multiyear(
+                                        backlog_by_month_df=backlog_by_month_df,
+                                        include_empty_months=False
+                                    )
+                                else:
+                                    # Fallback: create simple multi-year format
+                                    prepared_backlog_by_month_multiyear = backlog_by_month_df.copy()
+                                    if 'etd_month' in prepared_backlog_by_month_multiyear.columns:
+                                        prepared_backlog_by_month_multiyear['year_month'] = (
+                                            prepared_backlog_by_month_multiyear['etd_month'].astype(str) + "'" +
+                                            prepared_backlog_by_month_multiyear['etd_year'].astype(str).str[-2:]
+                                        )
+                                        prepared_backlog_by_month_multiyear['sort_order'] = (
+                                            prepared_backlog_by_month_multiyear['etd_year'] * 100 +
+                                            prepared_backlog_by_month_multiyear['etd_month']
+                                        )
+                            else:
+                                # Single year: use legacy method
+                                prepared_backlog_by_month = metrics_calc.prepare_backlog_by_month(
+                                    backlog_by_month_df=backlog_by_month_df,
+                                    year=filter_values.get('year', datetime.now().year)
+                                )
+                        else:
+                            # Fallback to single year
+                            prepared_backlog_by_month = metrics_calc.prepare_backlog_by_month(
+                                backlog_by_month_df=backlog_by_month_df,
+                                year=filter_values.get('year', datetime.now().year)
+                            )
+                    
+                    # ==========================================================
+                    # STEP 4: Generate Comprehensive Report
+                    # ==========================================================
                     exporter = SalespersonExport()
                     excel_bytes = exporter.create_comprehensive_report(
                         # Summary metrics
@@ -1585,6 +1667,9 @@ def export_report_fragment(
                         pipeline_metrics=pipeline_forecast_metrics,
                         filters=filter_values,
                         yoy_metrics=yoy_metrics,
+                        
+                        # NEW v2.5.0: Overall Achievement (synced with UI)
+                        overall_achievement_data=overall_achievement_data,
                         
                         # Salesperson & Monthly
                         salesperson_summary_df=salesperson_summary_df,
@@ -1598,17 +1683,21 @@ def export_report_fragment(
                         backlog_detail_df=backlog_detail_df,
                         backlog_by_month_df=prepared_backlog_by_month,
                         in_period_backlog_analysis=in_period_backlog_analysis,
+                        
+                        # NEW v2.5.0: Multi-year backlog support
+                        backlog_by_month_multiyear_df=prepared_backlog_by_month_multiyear,
                     )
                     
                     # Store in session state for download button
                     st.session_state[f'{fragment_key}_excel_bytes'] = excel_bytes
                     st.session_state[f'{fragment_key}_ready'] = True
-                    st.success("✅ Report generated!")
+                    st.success("✅ Report generated with full UI sync!")
                     
                 except Exception as e:
                     st.error(f"Error generating report: {str(e)}")
                     import logging
-                    logging.getLogger(__name__).error(f"Export error: {e}")
+                    import traceback
+                    logging.getLogger(__name__).error(f"Export error: {e}\n{traceback.format_exc()}")
         
         # Show download button if report is ready
         with col_exp2:

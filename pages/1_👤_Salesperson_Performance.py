@@ -1882,6 +1882,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         new_products_df=data['new_products'],
         new_business_df=data.get('new_business', pd.DataFrame()),
         metrics_calc=metrics_calc,
+        # NEW v2.5.0: Add kpi_type_weights for synced Overall Achievement
+        kpi_type_weights=data.get('kpi_type_weights', {}),
         fragment_key="export"
     )
 
