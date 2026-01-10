@@ -7,91 +7,8 @@
 2. Sales Detail - Transaction list, pivot analysis
 3. Backlog - Backlog detail, ETD analysis, risk
 4. KPI & Targets - KPI assignments, progress, ranking
-5. Setup - Sales split, customer/product portfolio
+5. Setup - Sales split
 
-CHANGELOG:
-- v3.5.0: UPDATED My KPIs tab with professional layout
-          - Header with "How it works" popover explaining each column
-          - ALL rollup section showing aggregated targets (when multiple salespeople)
-          - KPI icons for each type (💰 Revenue, 📈 GP, 👥 Customers, etc.)
-          - Formatted values (currency vs numbers)
-          - Total Weight summary at bottom of each person's section
-          - Collapsible sections per salesperson
-- v3.4.0: UPDATED - Dynamic KPI Type Weights from Database
-          - KPI type default_weight now loaded from kpi_types table
-          - New function: get_kpi_type_weights_cached() in queries.py
-          - Cached for 1 hour (KPI types rarely change)
-          - Fallback to hardcoded weights if database unavailable
-          - Overall Achievement formula: Σ(KPI_Achievement × default_weight) / Σ(default_weight)
-- v3.3.0: NEW - Hierarchical KPI Progress Layout (Option A)
-          - Section 1: Team/Individual Overall Achievement summary
-          - Section 2: KPI Breakdown by Type with sorting options
-          - Section 3: Individual Performance expandable cards (when >1 person)
-          - New kpi_progress_fragment with color-coded achievements
-          - Overall Achievement now prominently displayed
-          - Best performer highlight in team view
-- v3.2.0: FIXED Achievement % consistency between Overview and Table
-          - Bug: Table showed only Revenue Achievement
-          - Fix: Table now shows WEIGHTED OVERALL Achievement (same as Overview)
-          - aggregate_by_salesperson() returns new column: overall_achievement
-          - overall_achievement = Σ(KPI_Achievement × Weight) / Σ(Weight)
-          - Includes Revenue, GP, GP1 weighted by their KPI weights
-          - Added LY (Last Year) period type support
-- v3.1.0: PERFORMANCE - Sidebar options from lookback data
-          - Extract sidebar options from lookback_df instead of 3 SQL queries
-          - Before: 3 SQL queries = 7.33s (salesperson 3.18s + entity 2.31s + date 1.83s)
-          - After: Pandas extraction = ~0.01s (reuses lookback data)
-          - Savings: 7.32s on first load (99.9% reduction)
-          - New module: sidebar_options_extractor.py
-          - Lookback data loaded once, reused for both sidebar and Complex KPIs
-- v3.0.0: PERFORMANCE - Pandas-based Complex KPI Calculator
-          - Replaced 4 SQL CTEs with single query + Pandas processing
-          - Initial load: 14.76s → ~3.0s (80% faster)
-          - Filter change: 14.76s → ~0.1s (99% faster, instant recalculation)
-          - New module: complex_kpi_calculator.py
-          - ComplexKPICalculator pre-calculates first dates on init
-          - calculate_all() returns new_customers, new_products, new_business
-          - Lookback data cached in _lookback_df for exclude_internal toggle
-- v2.6.1: FIXED new_business_detail caching for salesperson filter change
-          - Root cause: new_business_detail_ was cleared on every filter change,
-            and query was called with selected employee_ids instead of all accessible
-          - Fix: Load new_business_detail in load_data_for_year_range() with all
-            accessible employees, filter client-side like other data
-          - Added sales_id to query output for client-side filtering
-          - Impact: Salesperson change: 2.6s → <0.1s
-- v2.5.1: FIXED Backlog by ETD not filtering by selected salesperson
-          - Root cause: backlog_by_month query aggregates by etd_year/etd_month
-            without sales_id column, so client-side filter cannot work
-          - Fix: Added _prepare_backlog_by_month_from_detail() helper function
-            that aggregates from backlog_detail (which has sales_id and is
-            properly filtered by filter_data_client_side)
-          - backlog_by_etd_fragment now receives correctly filtered data
-- v2.4.0: ADDED Comprehensive Excel Export (Fragment-based)
-          - Export button in Overview tab (no page reload!)
-          - Uses @st.fragment to run independently
-          - Includes: Summary, Pipeline & Forecast, By Salesperson, Monthly, 
-            Sales Detail, Backlog Summary, Backlog Detail, Backlog by ETD
-          - Professional formatting with conditional colors
-- v2.3.0: IMPROVED naming convention and Help text
-          - Renamed "In-Period Backlog" → "In-Period (KPI)" in Overview
-          - Renamed "Forecast" → "Forecast (KPI)" in Overview
-          - Renamed "Target (Prorated)" → "Target" in Overview
-          - Updated all Help popovers with consistent English text
-          - Added clear distinction between Overview (KPI-filtered) vs Backlog Tab (all employees)
-          - Improved help text explaining KPI filtering logic
-- v2.2.0: FIXED Backlog data mismatch between Overview and Backlog Tab
-          - Removed LIMIT from get_backlog_detail() call (was limit=2000)
-          - Fixed Overview Total Backlog orders count source
-            (was using in-period orders, now uses summary backlog_orders)
-          - Pass total_backlog_df to backlog_list_fragment for accurate totals
-          - Backlog Tab now uses aggregated totals instead of sum from detail
-- v2.1.0: REFACTORED - Smart data caching and deferred filter execution
-          - All sidebar filters inside st.form (no rerun until "Apply Filters" clicked)
-          - Smart year range caching: only reload when date range expands
-          - Session state management for applied filters vs form values
-          - Significant performance improvement for filter changes
-
-Version: 3.3.0
 """
 
 import streamlit as st
@@ -101,6 +18,8 @@ import pandas as pd
 import time
 from contextlib import contextmanager
 from functools import wraps
+
+from utils.salesperson_performance.setup import setup_tab_fragment
 
 # =============================================================================
 # DEBUG TIMING UTILITIES
@@ -244,46 +163,6 @@ def _clean_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
                     pass
     
     return df_clean
-
-
-def _is_period_active(period_str: str, today_str: str) -> bool:
-    """
-    Check if today falls within the effective period.
-    
-    Args:
-        period_str: Period string in format "YYYY-MM-DD -> YYYY-MM-DD"
-        today_str: Today's date in format "YYYY-MM-DD"
-    
-    Returns:
-        True if period is active (today is within range)
-    """
-    if not period_str or ' -> ' not in str(period_str):
-        return True  # No period defined = always active
-    try:
-        start, end = str(period_str).split(' -> ')
-        return start.strip() <= today_str <= end.strip()
-    except:
-        return True
-
-
-def _is_period_expired(period_str: str, today_str: str) -> bool:
-    """
-    Check if the effective period has ended.
-    
-    Args:
-        period_str: Period string in format "YYYY-MM-DD -> YYYY-MM-DD"
-        today_str: Today's date in format "YYYY-MM-DD"
-    
-    Returns:
-        True if period has expired (end date < today)
-    """
-    if not period_str or ' -> ' not in str(period_str):
-        return False  # No period defined = never expired
-    try:
-        _, end = str(period_str).split(' -> ')
-        return end.strip() < today_str
-    except:
-        return False
 
 
 def _prepare_backlog_by_month_from_detail(backlog_detail_df: pd.DataFrame) -> pd.DataFrame:
@@ -2510,127 +2389,13 @@ with tab4:
 # =============================================================================
 
 with tab5:
-    st.subheader("⚙️ Setup & Reference")
-    
-    # Sub-tabs
-    setup_tab1, setup_tab2, setup_tab3 = st.tabs(["👥 Sales Split", "📋 My Customers", "📦 My Products"])
-    
-    with setup_tab1:
-        st.markdown("#### 👥 Sales Split Assignments")
-        
-        sales_split_df = data['sales_split']
-        
-        if sales_split_df.empty:
-            st.info("No sales split data available")
-        else:
-            # Filter options
-            col_sp1, col_sp2 = st.columns(2)
-            with col_sp1:
-                split_status = st.selectbox("Status", ['All', 'Active', 'Expired'], key="split_status")
-            with col_sp2:
-                split_sales = st.selectbox("Salesperson", 
-                                          ['All'] + sorted(sales_split_df['sales_name'].dropna().unique().tolist()),
-                                          key="split_sales")
-            
-            filtered_split = sales_split_df.copy()
-            
-            # Filter by effective period status
-            if split_status in ['Active', 'Expired']:
-                today_str = date.today().strftime('%Y-%m-%d')
-                if split_status == 'Active':
-                    filtered_split = filtered_split[
-                        filtered_split['effective_period'].apply(
-                            lambda x: _is_period_active(x, today_str)
-                        )
-                    ]
-                elif split_status == 'Expired':
-                    filtered_split = filtered_split[
-                        filtered_split['effective_period'].apply(
-                            lambda x: _is_period_expired(x, today_str)
-                        )
-                    ]
-            
-            # Filter by salesperson
-            if split_sales != 'All':
-                filtered_split = filtered_split[filtered_split['sales_name'] == split_sales]
-            
-            # Show record count
-            st.caption(f"📊 Showing {len(filtered_split):,} split assignments")
-            
-            # Display
-            split_display_cols = [c for c in ['customer', 'product_pn', 'split_percentage', 
-                                              'effective_period', 'approval_status', 'sales_name'] 
-                                 if c in filtered_split.columns]
-            
-            if split_display_cols:
-                st.dataframe(
-                    filtered_split[split_display_cols].head(200),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=400
-                )
-    
-    with setup_tab2:
-        st.markdown("#### 📋 Customer Portfolio")
-        
-        sales_df = data['sales']
-        
-        if not sales_df.empty:
-            # Aggregate by customer
-            customer_portfolio = sales_df.groupby(['customer_id', 'customer']).agg({
-                'sales_by_split_usd': 'sum',
-                'gross_profit_by_split_usd': 'sum',
-                'inv_number': pd.Series.nunique,
-                'inv_date': 'max'
-            }).reset_index()
-            
-            customer_portfolio.columns = ['ID', 'Customer', 'Revenue', 'GP', 'Invoices', 'Last Invoice']
-            customer_portfolio['GP %'] = (customer_portfolio['GP'] / customer_portfolio['Revenue'] * 100).round(1)
-            customer_portfolio = customer_portfolio.sort_values('Revenue', ascending=False)
-            
-            st.dataframe(
-                customer_portfolio.style.format({
-                    'Revenue': '${:,.0f}',
-                    'GP': '${:,.0f}',
-                    'GP %': '{:.1f}%'
-                }),
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
-        else:
-            st.info("No customer data available")
-    
-    with setup_tab3:
-        st.markdown("#### 📦 Product Portfolio")
-        
-        sales_df = data['sales']
-        
-        if not sales_df.empty:
-            # Aggregate by brand
-            brand_portfolio = sales_df.groupby('brand').agg({
-                'sales_by_split_usd': 'sum',
-                'gross_profit_by_split_usd': 'sum',
-                'product_pn': pd.Series.nunique,
-                'customer_id': pd.Series.nunique
-            }).reset_index()
-            
-            brand_portfolio.columns = ['Brand', 'Revenue', 'GP', 'Products', 'Customers']
-            brand_portfolio['GP %'] = (brand_portfolio['GP'] / brand_portfolio['Revenue'] * 100).round(1)
-            brand_portfolio = brand_portfolio.sort_values('Revenue', ascending=False)
-            
-            st.dataframe(
-                brand_portfolio.style.format({
-                    'Revenue': '${:,.0f}',
-                    'GP': '${:,.0f}',
-                    'GP %': '{:.1f}%'
-                }),
-                use_container_width=True,
-                hide_index=True,
-                height=400
-            )
-        else:
-            st.info("No product data available")
+    setup_tab_fragment(
+        sales_split_df=data['sales_split'],
+        sales_df=data['sales'],
+        active_filters=active_filters,
+        fragment_key="setup"
+    )
+
 
 # =============================================================================
 # FOOTER
