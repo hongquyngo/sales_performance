@@ -1,182 +1,1311 @@
 # utils/salesperson_performance/setup/fragments.py
 """
-Streamlit Fragments for Setup Tab
+UI Fragments for Setup Tab - Salesperson Performance
 
-Uses @st.fragment to enable partial reruns for filter-heavy sections.
-Each fragment only reruns when its internal widgets change,
-NOT when sidebar filters or other sections change.
+3 Sub-tabs:
+1. Split Rules - CRUD for sales_split_by_customer_product
+2. KPI Assignments - CRUD for sales_employee_kpi_assignments
+3. Salespeople - List/manage salespeople
 
-Main Entry Point:
-- setup_tab_fragment: Renders the complete Setup & Reference tab
-
-VERSION: 1.0.0
+v1.0.0 - Initial version based on KPI Center Performance setup pattern
 """
 
 import streamlit as st
 import pandas as pd
-from typing import Dict, Optional, Any
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Any
 
-from .sales_split import render_sales_split_tab
-from .customer_portfolio import render_customer_portfolio_tab
-from .product_portfolio import render_product_portfolio_tab
+from .queries import SalespersonSetupQueries
 
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+KPI_ICONS = {
+    'revenue': '💰',
+    'gross_profit': '📈',
+    'gross_profit_1': '📊',
+    'gp1': '📊',
+    'num_new_customers': '👥',
+    'num_new_products': '📦',
+    'new_business_revenue': '💼',
+    'num_new_projects': '🎯',
+}
+
+STATUS_ICONS = {
+    'ACTIVE': '🟢',
+    'INACTIVE': '🟡',
+    'TERMINATED': '🔴',
+    'ON_LEAVE': '🟠',
+}
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def format_currency(value: float, decimals: int = 0) -> str:
+    """Format value as USD currency."""
+    if pd.isna(value) or value == 0:
+        return "$0"
+    if decimals > 0:
+        return f"${value:,.{decimals}f}"
+    return f"${value:,.0f}"
+
+
+def format_percentage(value: float, decimals: int = 0) -> str:
+    """Format as percentage."""
+    if pd.isna(value):
+        return "0%"
+    return f"{value:.{decimals}f}%"
+
+
+def get_status_display(status: str) -> tuple:
+    """Get status badge with icon and color."""
+    status_map = {
+        'ok': ('✅ OK', 'green'),
+        'incomplete_split': ('⚠️ Under 100%', 'orange'),
+        'over_100_split': ('🔴 Over 100%', 'red')
+    }
+    return status_map.get(status, (status, 'gray'))
+
+
+def get_period_warning(valid_to) -> tuple:
+    """Get period status: (icon, text, delta_color for st.metric)."""
+    if pd.isna(valid_to):
+        return ("🟢", "No End Date", "off")
+    
+    try:
+        valid_to_dt = pd.to_datetime(valid_to)
+        days_until = (valid_to_dt - pd.Timestamp.now()).days
+        
+        if days_until < 0:
+            return ("⚫", "EXPIRED", "inverse")
+        elif days_until <= 7:
+            return ("🔴", f"{days_until}d left", "inverse")
+        elif days_until <= 30:
+            return ("🟠", f"{days_until}d left", "off")
+        else:
+            return ("🟢", "Active", "normal")
+    except:
+        return ("❓", "Unknown", "off")
+
+
+# =============================================================================
+# MAIN SETUP TAB FRAGMENT
+# =============================================================================
 
 @st.fragment
 def setup_tab_fragment(
-    sales_split_df: pd.DataFrame,
-    sales_df: pd.DataFrame,
-    active_filters: Optional[Dict] = None,
-    show_summary: bool = True,
+    sales_split_df: pd.DataFrame = None,
+    sales_df: pd.DataFrame = None,
+    active_filters: Dict = None,
     fragment_key: str = "setup"
 ):
     """
+    Main fragment for Setup tab with 3 sub-tabs.
     
-    This is the main entry point for the Setup tab. It uses @st.fragment
-    to prevent unnecessary reruns when other parts of the page change.
-    
-            )
+    Args:
+        sales_split_df: Pre-loaded split data (optional, for backward compatibility)
+        sales_df: Pre-loaded sales data (optional)
+        active_filters: Dict of active filters from sidebar
+        fragment_key: Unique key for fragment
     """
-    st.subheader("⚙️ Setup & Reference")
+    st.subheader("⚙️ Salesperson Configuration")
     
-    # Create sub-tabs
-    setup_tab1, setup_tab2, setup_tab3 = st.tabs([
-        "👥 Sales Split",
-        "📋 My Customers",
-        "📦 My Products"
+    # Initialize queries with user context
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    # Get user role for permission check
+    user_role = st.session_state.get('user_role', 'viewer')
+    user_role_lower = str(user_role).lower() if user_role else ''
+    can_edit = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
+    can_approve = user_role_lower == 'admin'
+    
+    # Get year from filters
+    current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
+    
+    # Get issue counts for tab badges
+    split_stats = setup_queries.get_split_summary_stats()
+    split_critical = split_stats.get('over_100_count', 0)
+    
+    assignment_issues = setup_queries.get_assignment_issues_summary(current_year)
+    assign_critical = assignment_issues.get('no_assignment_count', 0) + assignment_issues.get('weight_issues_count', 0)
+    
+    # Dynamic tab names with badges
+    split_tab_name = f"📋 Split Rules{' 🔴' if split_critical > 0 else ''}"
+    assign_tab_name = f"🎯 KPI Assignments{' ⚠️' if assign_critical > 0 else ''}"
+    
+    # Create 3 sub-tabs
+    tab1, tab2, tab3 = st.tabs([
+        split_tab_name,
+        assign_tab_name, 
+        "👥 Salespeople"
     ])
     
-    # Tab 1: Sales Split
-    with setup_tab1:
-        render_sales_split_tab(
-            sales_split_df=sales_split_df,
-            key_prefix=f"{fragment_key}_split"
-        )
-    
-    # Tab 2: My Customers
-    with setup_tab2:
-        render_customer_portfolio_tab(
-            sales_df=sales_df,
-            show_summary=show_summary,
-            key_prefix=f"{fragment_key}_customer"
-        )
-    
-    # Tab 3: My Products
-    with setup_tab3:
-        render_product_portfolio_tab(
-            sales_df=sales_df,
-            show_summary=show_summary,
-            key_prefix=f"{fragment_key}_product"
-        )
-
-
-@st.fragment
-def sales_split_fragment(
-    sales_split_df: pd.DataFrame,
-    fragment_key: str = "split"
-):
-    """
-    Standalone fragment for Sales Split tab only.
-    
-    Use this when you need just the Sales Split functionality
-    without the other portfolio tabs.
-    
-    Args:
-        sales_split_df: Sales split DataFrame
-        fragment_key: Unique key prefix for widgets
-    """
-    render_sales_split_tab(
-        sales_split_df=sales_split_df,
-        key_prefix=fragment_key
-    )
-
-
-@st.fragment
-def customer_portfolio_fragment(
-    sales_df: pd.DataFrame,
-    show_summary: bool = True,
-    fragment_key: str = "customer"
-):
-    """
-    Standalone fragment for Customer Portfolio tab only.
-    
-    Args:
-        sales_df: Sales DataFrame
-        show_summary: Whether to show summary metrics
-        fragment_key: Unique key prefix for widgets
-    """
-    render_customer_portfolio_tab(
-        sales_df=sales_df,
-        show_summary=show_summary,
-        key_prefix=fragment_key
-    )
-
-
-@st.fragment
-def product_portfolio_fragment(
-    sales_df: pd.DataFrame,
-    show_summary: bool = True,
-    fragment_key: str = "product"
-):
-    """
-    Standalone fragment for Product Portfolio tab only.
-    
-    Args:
-        sales_df: Sales DataFrame
-        show_summary: Whether to show summary metrics
-        fragment_key: Unique key prefix for widgets
-    """
-    render_product_portfolio_tab(
-        sales_df=sales_df,
-        show_summary=show_summary,
-        key_prefix=fragment_key
-    )
-
-
-# =============================================================================
-# COMBINED PORTFOLIO FRAGMENT
-# =============================================================================
-
-@st.fragment
-def portfolio_tabs_fragment(
-    sales_df: pd.DataFrame,
-    show_summary: bool = True,
-    fragment_key: str = "portfolio"
-):
-    """
-    Fragment combining Customer and Product portfolio tabs.
-    
-    Useful when you want portfolio analysis without Sales Split.
-    
-    Args:
-        sales_df: Sales DataFrame
-        show_summary: Whether to show summary metrics
-        fragment_key: Unique key prefix for widgets
-    """
-    tab1, tab2 = st.tabs(["📋 Customers", "📦 Products"])
-    
     with tab1:
-        render_customer_portfolio_tab(
-            sales_df=sales_df,
-            show_summary=show_summary,
-            key_prefix=f"{fragment_key}_customer"
+        split_rules_section(
+            setup_queries=setup_queries,
+            employee_ids=active_filters.get('employee_ids') if active_filters else None,
+            can_edit=can_edit,
+            can_approve=can_approve
         )
     
     with tab2:
-        render_product_portfolio_tab(
-            sales_df=sales_df,
-            show_summary=show_summary,
-            key_prefix=f"{fragment_key}_product"
+        kpi_assignments_section(
+            setup_queries=setup_queries,
+            employee_ids=active_filters.get('employee_ids') if active_filters else None,
+            can_edit=can_edit,
+            current_year=current_year
+        )
+    
+    with tab3:
+        salespeople_section(
+            setup_queries=setup_queries,
+            can_edit=can_edit
         )
 
 
 # =============================================================================
-# EXPORT
+# SPLIT RULES SECTION
 # =============================================================================
 
-__all__ = [
-    'setup_tab_fragment',
-    'sales_split_fragment',
-    'customer_portfolio_fragment',
-    'product_portfolio_fragment',
-    'portfolio_tabs_fragment',
-]
+@st.fragment
+def split_rules_section(
+    setup_queries: SalespersonSetupQueries,
+    employee_ids: List[int] = None,
+    can_edit: bool = False,
+    can_approve: bool = False
+):
+    """
+    Split Rules sub-tab with CRUD operations and comprehensive filters.
+    """
+    
+    # =========================================================================
+    # HELPER: Build query params from filter state
+    # =========================================================================
+    def get_current_filter_params():
+        """Build query params from current filter state."""
+        params = {}
+        
+        # Period filters
+        period_type = st.session_state.get('sp_split_period_type', 'full_year')
+        period_year = st.session_state.get('sp_split_period_year', date.today().year)
+        
+        if period_type == 'ytd':
+            params['period_start'] = date(period_year, 1, 1)
+            params['period_end'] = date.today()
+        elif period_type == 'full_year':
+            params['period_year'] = period_year
+        elif period_type == 'custom':
+            custom_start = st.session_state.get('sp_split_period_start')
+            custom_end = st.session_state.get('sp_split_period_end')
+            if custom_start:
+                params['period_start'] = custom_start
+            if custom_end:
+                params['period_end'] = custom_end
+        
+        # Entity filters
+        if employee_ids:
+            params['employee_ids'] = employee_ids
+        
+        brand_filter = st.session_state.get('sp_split_brand_filter', [])
+        if brand_filter:
+            params['brand_ids'] = brand_filter
+        
+        # Rule attribute filters
+        status_filter = st.session_state.get('sp_split_status_filter')
+        if status_filter and status_filter != 'all':
+            params['status_filter'] = status_filter
+        
+        approval_filter = st.session_state.get('sp_split_approval_filter')
+        if approval_filter and approval_filter != 'all':
+            params['approval_filter'] = approval_filter
+        
+        split_min = st.session_state.get('sp_split_pct_min')
+        split_max = st.session_state.get('sp_split_pct_max')
+        if split_min is not None and split_min > 0:
+            params['split_min'] = split_min
+        if split_max is not None and split_max < 100:
+            params['split_max'] = split_max
+        
+        # System filters
+        include_deleted = st.session_state.get('sp_split_show_deleted', False)
+        params['include_deleted'] = include_deleted
+        
+        return params
+    
+    # =========================================================================
+    # FILTERS
+    # =========================================================================
+    with st.expander("🔍 Filters", expanded=True):
+        
+        # ROW 1: Period Filters
+        st.markdown("##### 📅 Validity Period")
+        
+        p_col1, p_col2, p_col3, p_col4 = st.columns([1, 1, 1, 1])
+        
+        with p_col1:
+            available_years = setup_queries.get_split_rule_years()
+            current_year = date.today().year
+            
+            period_year = st.selectbox(
+                "Year",
+                options=available_years,
+                index=available_years.index(current_year) if current_year in available_years else 0,
+                key="sp_split_period_year"
+            )
+        
+        with p_col2:
+            period_type_options = {
+                'ytd': f'📊 YTD {period_year}',
+                'full_year': f'📅 Full Year {period_year}',
+                'custom': '🔧 Custom Range',
+                'all': '📋 All Periods'
+            }
+            period_type = st.selectbox(
+                "Period Type",
+                options=list(period_type_options.keys()),
+                format_func=lambda x: period_type_options[x],
+                index=1,
+                key="sp_split_period_type"
+            )
+        
+        with p_col3:
+            default_start = date(period_year, 1, 1)
+            period_start = st.date_input(
+                "From",
+                value=default_start,
+                disabled=(period_type != 'custom'),
+                key="sp_split_period_start"
+            )
+        
+        with p_col4:
+            default_end = date(period_year, 12, 31)
+            period_end = st.date_input(
+                "To",
+                value=default_end,
+                disabled=(period_type != 'custom'),
+                key="sp_split_period_end"
+            )
+        
+        st.divider()
+        
+        # ROW 2: Entity Filters
+        st.markdown("##### 🏢 Entity Filters")
+        
+        e_col1, e_col2, e_col3 = st.columns(3)
+        
+        with e_col1:
+            brands_df = setup_queries.get_brands_for_dropdown()
+            brand_options = brands_df['brand_id'].tolist() if not brands_df.empty else []
+            
+            brand_filter = st.multiselect(
+                "Brand",
+                options=brand_options,
+                format_func=lambda x: brands_df[brands_df['brand_id'] == x]['brand_name'].iloc[0] if not brands_df.empty else str(x),
+                placeholder="All Brands",
+                key="sp_split_brand_filter"
+            )
+        
+        with e_col2:
+            customer_search = st.text_input(
+                "🔍 Search Customer",
+                placeholder="Company code or name...",
+                key="sp_split_customer_search"
+            )
+        
+        with e_col3:
+            product_search = st.text_input(
+                "🔍 Search Product",
+                placeholder="PT code or name...",
+                key="sp_split_product_search"
+            )
+        
+        st.divider()
+        
+        # ROW 3: Rule Attributes
+        st.markdown("##### 📊 Rule Attributes")
+        
+        r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+        
+        with r_col1:
+            split_min = st.number_input(
+                "Split % Min",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=10,
+                key="sp_split_pct_min"
+            )
+        
+        with r_col2:
+            split_max = st.number_input(
+                "Split % Max",
+                min_value=0,
+                max_value=100,
+                value=100,
+                step=10,
+                key="sp_split_pct_max"
+            )
+        
+        with r_col3:
+            status_options = {
+                'all': '📋 All Status',
+                'ok': '✅ OK (=100%)',
+                'incomplete_split': '⚠️ Under 100%',
+                'over_100_split': '🔴 Over 100%'
+            }
+            status_filter = st.selectbox(
+                "Split Status",
+                options=list(status_options.keys()),
+                format_func=lambda x: status_options[x],
+                key="sp_split_status_filter"
+            )
+        
+        with r_col4:
+            approval_options = {
+                'all': '📋 All',
+                'approved': '✅ Approved',
+                'pending': '⏳ Pending'
+            }
+            approval_filter = st.selectbox(
+                "Approval Status",
+                options=list(approval_options.keys()),
+                format_func=lambda x: approval_options[x],
+                key="sp_split_approval_filter"
+            )
+        
+        st.divider()
+        
+        # ROW 4: System Filters
+        sys_col1, sys_col2, sys_col3 = st.columns([2, 1, 1])
+        
+        with sys_col1:
+            show_deleted = st.checkbox(
+                "🗑️ Show deleted rules",
+                value=False,
+                key="sp_split_show_deleted",
+                help="Include soft-deleted rules"
+            )
+        
+        with sys_col2:
+            if st.button("🔄 Reset Filters", use_container_width=True):
+                keys_to_reset = [
+                    'sp_split_period_year', 'sp_split_period_type', 'sp_split_period_start', 'sp_split_period_end',
+                    'sp_split_brand_filter', 'sp_split_customer_search', 'sp_split_product_search',
+                    'sp_split_pct_min', 'sp_split_pct_max', 'sp_split_status_filter', 'sp_split_approval_filter',
+                    'sp_split_show_deleted'
+                ]
+                for key in keys_to_reset:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun(scope="fragment")
+        
+        with sys_col3:
+            active_filter_count = sum([
+                period_type != 'all',
+                len(brand_filter) > 0,
+                bool(customer_search),
+                bool(product_search),
+                split_min > 0,
+                split_max < 100,
+                status_filter != 'all',
+                approval_filter != 'all',
+                show_deleted
+            ])
+            st.metric("Active Filters", active_filter_count)
+    
+    # =========================================================================
+    # GET FILTER PARAMS
+    # =========================================================================
+    query_params = get_current_filter_params()
+    
+    # =========================================================================
+    # SUMMARY METRICS
+    # =========================================================================
+    stats = setup_queries.get_split_summary_stats(
+        period_year=query_params.get('period_year'),
+        period_start=query_params.get('period_start'),
+        period_end=query_params.get('period_end'),
+        include_deleted=query_params.get('include_deleted', False)
+    )
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric(
+            label="Total Rules",
+            value=f"{stats['total_rules']:,}",
+            help="Total split rules matching current filters"
+        )
+    with col2:
+        st.metric(
+            label="✅ OK",
+            value=f"{stats['ok_count']:,}",
+            delta=f"{stats['ok_count']/max(stats['total_rules'],1)*100:.0f}%" if stats['total_rules'] > 0 else None,
+            delta_color="off",
+            help="Rules where total split = 100%"
+        )
+    with col3:
+        st.metric(
+            label="⚠️ Under 100%",
+            value=f"{stats['incomplete_count']:,}",
+            delta_color="off",
+            help="Rules where total split < 100%"
+        )
+    with col4:
+        st.metric(
+            label="🔴 Over 100%",
+            value=f"{stats['over_100_count']:,}",
+            delta_color="off",
+            help="Rules where total split > 100% - needs fix!"
+        )
+    with col5:
+        st.metric(
+            label="⏳ Pending",
+            value=f"{stats['pending_count']:,}",
+            help="Rules awaiting approval"
+        )
+    
+    st.divider()
+    
+    # =========================================================================
+    # TOOLBAR
+    # =========================================================================
+    if can_edit:
+        if st.button("➕ Add Split Rule", type="primary"):
+            st.session_state['sp_show_add_split_form'] = True
+    
+    # =========================================================================
+    # ADD/EDIT FORMS
+    # =========================================================================
+    if st.session_state.get('sp_show_add_split_form', False):
+        _render_split_form(setup_queries, can_approve, mode='add')
+    
+    if st.session_state.get('sp_edit_split_id'):
+        _render_split_form(setup_queries, can_approve, mode='edit', 
+                          rule_id=st.session_state['sp_edit_split_id'])
+    
+    # =========================================================================
+    # GET DATA WITH FILTERS
+    # =========================================================================
+    split_df = setup_queries.get_sales_split_data(**query_params)
+    
+    # Client-side text search
+    if not split_df.empty:
+        if customer_search:
+            search_lower = customer_search.lower()
+            mask = (
+                split_df['customer_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
+                split_df['company_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
+            )
+            split_df = split_df[mask]
+        
+        if product_search:
+            search_lower = product_search.lower()
+            mask = (
+                split_df['product_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
+                split_df['pt_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
+            )
+            split_df = split_df[mask]
+    
+    if split_df.empty:
+        st.info("No split rules found matching the filters")
+        return
+    
+    # =========================================================================
+    # RESULTS SUMMARY
+    # =========================================================================
+    period_desc = ""
+    if period_type == 'ytd':
+        period_desc = f"YTD {period_year} (Jan 1 - Today)"
+    elif period_type == 'full_year':
+        period_desc = f"Full Year {period_year}"
+    elif period_type == 'custom':
+        period_desc = f"{period_start} to {period_end}"
+    else:
+        period_desc = "All Periods"
+    
+    st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
+    
+    # =========================================================================
+    # DATA TABLE
+    # =========================================================================
+    display_df = split_df.copy()
+    
+    display_df['ID'] = display_df['split_id'].apply(lambda x: f"#{x}")
+    display_df['Salesperson'] = display_df['salesperson_name']
+    display_df['Customer'] = display_df['customer_display']
+    display_df['Product'] = display_df['product_display']
+    display_df['Split'] = display_df['split_percentage'].apply(lambda x: f"{x:.0f}%")
+    display_df['Status'] = display_df['split_status'].apply(lambda x: get_status_display(x)[0])
+    display_df['Approved'] = display_df.apply(
+        lambda r: f"✅ {r.get('approved_by_name', '').strip() if pd.notna(r.get('approved_by_name')) else ''}" if r.get('is_approved') else '⏳ Pending',
+        axis=1
+    )
+    
+    show_deleted_flag = st.session_state.get('sp_split_show_deleted', False)
+    
+    if show_deleted_flag and 'delete_flag' in display_df.columns:
+        display_df['Deleted'] = display_df['delete_flag'].apply(lambda x: '🗑️' if x else '')
+    
+    columns_to_show = [
+        'ID', 'Salesperson', 'Customer', 'Product', 'brand',
+        'Split', 'effective_period', 'Status', 'Approved'
+    ]
+    if show_deleted_flag and 'delete_flag' in display_df.columns:
+        columns_to_show.append('Deleted')
+    
+    st.dataframe(
+        display_df[columns_to_show],
+        hide_index=True,
+        column_config={
+            'ID': st.column_config.TextColumn('ID', width='small'),
+            'Salesperson': st.column_config.TextColumn('Salesperson', width='medium'),
+            'Customer': st.column_config.TextColumn('Customer', width='large'),
+            'Product': st.column_config.TextColumn('Product', width='large'),
+            'brand': st.column_config.TextColumn('Brand', width='small'),
+            'Split': st.column_config.TextColumn('Split %', width='small'),
+            'effective_period': st.column_config.TextColumn('Period', width='medium'),
+            'Status': st.column_config.TextColumn('Status', width='small'),
+            'Approved': st.column_config.TextColumn('Approved', width='small'),
+        },
+        use_container_width=True
+    )
+    
+    # =========================================================================
+    # ROW ACTIONS
+    # =========================================================================
+    if can_edit and not split_df.empty:
+        st.markdown("##### Quick Actions")
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            rule_options = split_df['split_id'].tolist()
+            selected_rule = st.selectbox(
+                "Select Rule",
+                options=rule_options,
+                format_func=lambda x: f"#{x} - {split_df[split_df['split_id'] == x].iloc[0]['salesperson_name']} | {split_df[split_df['split_id'] == x].iloc[0]['customer_name'][:20]}...",
+                key="sp_split_select_rule"
+            )
+        
+        with col2:
+            if selected_rule and st.button("✏️ Edit", use_container_width=True):
+                st.session_state['sp_edit_split_id'] = selected_rule
+                st.rerun(scope="fragment")
+        
+        with col3:
+            if selected_rule and st.button("🗑️ Delete", use_container_width=True):
+                result = setup_queries.delete_split_rule(selected_rule)
+                if result['success']:
+                    st.success("Rule deleted")
+                    st.rerun(scope="fragment")
+                else:
+                    st.error(result['message'])
+
+
+def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool, 
+                       mode: str = 'add', rule_id: int = None):
+    """Render Add/Edit split rule form."""
+    
+    existing = None
+    if mode == 'edit' and rule_id:
+        df = setup_queries.get_sales_split_data(limit=5000)
+        df = df[df['split_id'] == rule_id]
+        if not df.empty:
+            existing = df.iloc[0]
+        else:
+            st.error("Rule not found")
+            st.session_state['sp_edit_split_id'] = None
+            return
+    
+    title = "✏️ Edit Split Rule" if mode == 'edit' else "➕ Add Split Rule"
+    
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        
+        if mode == 'edit' and existing is not None:
+            st.caption(f"Rule ID: {rule_id}")
+            col_info1, col_info2 = st.columns(2)
+            with col_info1:
+                st.markdown(f"**Customer:** {existing['customer_display']}")
+            with col_info2:
+                st.markdown(f"**Product:** {existing['product_display']}")
+        
+        with st.form(f"sp_{mode}_split_form", clear_on_submit=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if mode == 'add':
+                    # Customer search
+                    customer_search = st.text_input("🔍 Search Customer", key=f"sp_{mode}_cust_search")
+                    customers_df = setup_queries.get_customers_for_dropdown(
+                        search=customer_search if customer_search else None, 
+                        limit=50
+                    )
+                    
+                    if not customers_df.empty:
+                        customer_id = st.selectbox(
+                            "Customer *",
+                            options=customers_df['customer_id'].tolist(),
+                            format_func=lambda x: customers_df[customers_df['customer_id'] == x]['display_name'].iloc[0],
+                            key=f"sp_{mode}_customer_id"
+                        )
+                    else:
+                        customer_id = None
+                        st.caption("No customers found")
+                else:
+                    customer_id = existing['customer_id']
+                
+                # Salesperson selection
+                salespeople_df = setup_queries.get_salespeople_for_dropdown()
+                if not salespeople_df.empty:
+                    default_idx = 0
+                    if existing is not None and 'sale_person_id' in existing:
+                        matches = salespeople_df[salespeople_df['employee_id'] == existing['sale_person_id']]
+                        if not matches.empty:
+                            default_idx = salespeople_df.index.tolist().index(matches.index[0])
+                    
+                    sale_person_id = st.selectbox(
+                        "Salesperson *",
+                        options=salespeople_df['employee_id'].tolist(),
+                        index=default_idx,
+                        format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
+                        key=f"sp_{mode}_sale_person_id"
+                    )
+                else:
+                    sale_person_id = None
+            
+            with col2:
+                if mode == 'add':
+                    # Product search
+                    product_search = st.text_input("🔍 Search Product", key=f"sp_{mode}_prod_search")
+                    products_df = setup_queries.get_products_for_dropdown(
+                        search=product_search if product_search else None,
+                        limit=50
+                    )
+                    
+                    if not products_df.empty:
+                        product_id = st.selectbox(
+                            "Product *",
+                            options=products_df['product_id'].tolist(),
+                            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0],
+                            key=f"sp_{mode}_product_id"
+                        )
+                    else:
+                        product_id = None
+                        st.caption("No products found")
+                else:
+                    product_id = existing['product_id']
+                
+                # Split percentage
+                default_split = float(existing['split_percentage']) if existing is not None else 100.0
+                split_pct = st.number_input(
+                    "Split % *",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=default_split,
+                    step=5.0,
+                    key=f"sp_{mode}_split_pct"
+                )
+            
+            # Validation display
+            if customer_id and product_id:
+                validation = setup_queries.validate_split_percentage(
+                    customer_id=customer_id,
+                    product_id=product_id,
+                    new_percentage=split_pct,
+                    exclude_rule_id=rule_id if mode == 'edit' else None
+                )
+                
+                if validation['current_total'] > 0 or mode == 'edit':
+                    val_col1, val_col2, val_col3 = st.columns(3)
+                    with val_col1:
+                        st.metric("Current Total", f"{validation['current_total']:.0f}%")
+                    with val_col2:
+                        st.metric("After Save", f"{validation['new_total']:.0f}%",
+                                 delta=f"+{split_pct:.0f}%", delta_color="off")
+                    with val_col3:
+                        if validation['new_total'] == 100:
+                            st.success("✅ Perfect!")
+                        elif validation['new_total'] > 100:
+                            st.error(f"🔴 Over by {validation['new_total'] - 100:.0f}%")
+                        else:
+                            st.warning(f"⚠️ {validation['remaining']:.0f}% remaining")
+            
+            # Period inputs
+            col3, col4 = st.columns(2)
+            with col3:
+                default_from = pd.to_datetime(existing['effective_from']).date() if existing is not None and pd.notna(existing.get('effective_from')) else date.today()
+                valid_from = st.date_input("Valid From *", value=default_from, key=f"sp_{mode}_valid_from")
+            
+            with col4:
+                default_to = pd.to_datetime(existing['effective_to']).date() if existing is not None and pd.notna(existing.get('effective_to')) else date(date.today().year, 12, 31)
+                valid_to = st.date_input("Valid To *", value=default_to, key=f"sp_{mode}_valid_to")
+            
+            # Form buttons
+            col_submit, col_cancel = st.columns(2)
+            
+            with col_submit:
+                submitted = st.form_submit_button(
+                    "💾 Save" if mode == 'add' else "💾 Update",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+            with col_cancel:
+                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            
+            if submitted:
+                if mode == 'add' and not all([customer_id, product_id, sale_person_id]):
+                    st.error("Please fill all required fields")
+                else:
+                    if mode == 'add':
+                        result = setup_queries.create_split_rule(
+                            customer_id=customer_id,
+                            product_id=product_id,
+                            sale_person_id=sale_person_id,
+                            split_percentage=split_pct,
+                            valid_from=valid_from,
+                            valid_to=valid_to,
+                            is_approved=can_approve
+                        )
+                    else:
+                        result = setup_queries.update_split_rule(
+                            rule_id=rule_id,
+                            split_percentage=split_pct,
+                            valid_from=valid_from,
+                            valid_to=valid_to,
+                            sale_person_id=sale_person_id
+                        )
+                    
+                    if result['success']:
+                        st.success(f"{'Created' if mode == 'add' else 'Updated'} successfully!")
+                        st.session_state['sp_show_add_split_form'] = False
+                        st.session_state['sp_edit_split_id'] = None
+                        st.rerun(scope="fragment")
+                    else:
+                        st.error(result['message'])
+            
+            if cancelled:
+                st.session_state['sp_show_add_split_form'] = False
+                st.session_state['sp_edit_split_id'] = None
+                st.rerun(scope="fragment")
+
+
+# =============================================================================
+# KPI ASSIGNMENTS SECTION
+# =============================================================================
+
+@st.fragment
+def kpi_assignments_section(
+    setup_queries: SalespersonSetupQueries,
+    employee_ids: List[int] = None,
+    can_edit: bool = False,
+    current_year: int = None
+):
+    """KPI Assignments sub-tab."""
+    
+    current_year = current_year or date.today().year
+    
+    # -------------------------------------------------------------------------
+    # FILTER BAR
+    # -------------------------------------------------------------------------
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        available_years = setup_queries.get_available_years()
+        if current_year not in available_years:
+            available_years.append(current_year)
+        available_years.sort(reverse=True)
+        
+        selected_year = st.selectbox(
+            "Year",
+            options=available_years,
+            index=available_years.index(current_year) if current_year in available_years else 0,
+            key="sp_assign_year_filter"
+        )
+    
+    with col2:
+        salespeople_df = setup_queries.get_salespeople_for_dropdown(include_inactive=True)
+        salesperson_options = [(-1, "All Salespeople")] + [
+            (row['employee_id'], f"👤 {row['employee_name']}") 
+            for _, row in salespeople_df.iterrows()
+        ]
+        selected_employee_id = st.selectbox(
+            "Salesperson",
+            options=[s[0] for s in salesperson_options],
+            format_func=lambda x: next((s[1] for s in salesperson_options if s[0] == x), ""),
+            key="sp_assign_employee_filter"
+        )
+    
+    with col3:
+        if can_edit:
+            st.write("")
+            if st.button("➕ Add Assignment", type="primary", use_container_width=True):
+                st.session_state['sp_show_add_assignment_form'] = True
+    
+    # -------------------------------------------------------------------------
+    # ISSUES SECTION
+    # -------------------------------------------------------------------------
+    issues = setup_queries.get_assignment_issues_summary(selected_year)
+    
+    critical_count = issues['no_assignment_count']
+    warning_count = issues['weight_issues_count']
+    
+    has_issues = critical_count > 0 or warning_count > 0
+    
+    if has_issues:
+        if critical_count > 0:
+            expander_title = f"🔴 {critical_count} Missing Assignments"
+        else:
+            expander_title = f"⚠️ {warning_count} Weight Issues"
+        
+        with st.expander(expander_title, expanded=(critical_count > 0)):
+            
+            # Missing assignments
+            if issues['no_assignment_count'] > 0:
+                st.markdown("##### 🔴 Salespeople Without Assignments")
+                st.caption(f"{issues['no_assignment_count']} active salespeople need {selected_year} KPI assignments")
+                
+                with st.container(border=True):
+                    for emp in issues['no_assignment_details']:
+                        col_info, col_action = st.columns([4, 1])
+                        with col_info:
+                            st.markdown(f"👤 **{emp['name']}**")
+                            st.caption(emp.get('email', ''))
+                        with col_action:
+                            if can_edit and st.button(
+                                "➕ Add", 
+                                key=f"sp_add_assign_{emp['id']}", 
+                                use_container_width=True
+                            ):
+                                st.session_state['sp_add_assignment_employee_id'] = emp['id']
+                                st.session_state['sp_show_add_assignment_form'] = True
+                                st.rerun(scope="fragment")
+                
+                st.divider()
+            
+            # Weight issues
+            if issues['weight_issues_count'] > 0:
+                st.markdown("##### ⚠️ Weight Sum ≠ 100%")
+                st.caption(f"{issues['weight_issues_count']} salespeople have weights not summing to 100%")
+                
+                with st.container(border=True):
+                    for emp in issues['weight_issues_details']:
+                        col_info, col_weight, col_action = st.columns([3, 1, 1])
+                        with col_info:
+                            st.markdown(f"**{emp['employee_name']}**")
+                        with col_weight:
+                            weight = emp['total_weight']
+                            if weight < 100:
+                                st.warning(f"{weight:.0f}%")
+                            else:
+                                st.error(f"{weight:.0f}%")
+                        with col_action:
+                            gap = 100 - weight
+                            if gap > 0:
+                                st.caption(f"+{gap:.0f}% needed")
+                            else:
+                                st.caption(f"{abs(gap):.0f}% over")
+    
+    else:
+        st.success(f"✅ All {selected_year} assignments are healthy!")
+    
+    st.divider()
+    
+    # -------------------------------------------------------------------------
+    # ADD/EDIT FORMS
+    # -------------------------------------------------------------------------
+    if st.session_state.get('sp_show_add_assignment_form', False):
+        _render_assignment_form(setup_queries, selected_year, mode='add')
+    
+    if st.session_state.get('sp_edit_assignment_id'):
+        _render_assignment_form(setup_queries, selected_year, mode='edit',
+                               assignment_id=st.session_state['sp_edit_assignment_id'])
+    
+    # -------------------------------------------------------------------------
+    # GET DATA
+    # -------------------------------------------------------------------------
+    query_params = {'year': selected_year}
+    if selected_employee_id > 0:
+        query_params['employee_ids'] = [selected_employee_id]
+    elif employee_ids:
+        query_params['employee_ids'] = employee_ids
+    
+    assignments_df = setup_queries.get_kpi_assignments(**query_params)
+    weight_summary_df = setup_queries.get_assignment_weight_summary(selected_year)
+    
+    if assignments_df.empty:
+        st.info(f"No KPI assignments found for {selected_year}")
+        return
+    
+    # -------------------------------------------------------------------------
+    # ASSIGNMENTS BY SALESPERSON - Card layout
+    # -------------------------------------------------------------------------
+    for emp_id in assignments_df['employee_id'].unique():
+        emp_data = assignments_df[assignments_df['employee_id'] == emp_id]
+        emp_name = emp_data.iloc[0]['employee_name']
+        emp_email = emp_data.iloc[0]['employee_email']
+        emp_status = emp_data.iloc[0]['employee_status']
+        
+        # Get weight sum
+        weight_row = weight_summary_df[weight_summary_df['employee_id'] == emp_id]
+        total_weight = int(weight_row['total_weight'].iloc[0]) if not weight_row.empty else 0
+        kpi_count = len(emp_data)
+        
+        # Determine weight status
+        if total_weight == 100:
+            weight_badge = "✅"
+            weight_color = "normal"
+        elif total_weight < 100:
+            weight_badge = "⚠️"
+            weight_color = "off"
+        else:
+            weight_badge = "🔴"
+            weight_color = "inverse"
+        
+        status_icon = STATUS_ICONS.get(emp_status, '❓')
+        
+        # Card container
+        with st.container(border=True):
+            # Header
+            header_col1, header_col2 = st.columns([4, 1])
+            
+            with header_col1:
+                st.markdown(f"### {status_icon} {emp_name}")
+                st.caption(f"{emp_email} • {kpi_count} KPI{'s' if kpi_count > 1 else ''}")
+            
+            with header_col2:
+                st.metric(
+                    label="Weight Sum",
+                    value=f"{total_weight}%",
+                    delta=weight_badge,
+                    delta_color=weight_color,
+                    help="Total weight should equal 100%"
+                )
+            
+            # KPI rows
+            for _, kpi in emp_data.iterrows():
+                _render_kpi_assignment_row(kpi, can_edit, setup_queries)
+            
+            # Add KPI button
+            if can_edit:
+                if st.button(
+                    f"➕ Add KPI to {emp_name}", 
+                    key=f"sp_add_kpi_btn_{emp_id}",
+                    use_container_width=True
+                ):
+                    st.session_state['sp_add_assignment_employee_id'] = emp_id
+                    st.session_state['sp_show_add_assignment_form'] = True
+                    st.rerun(scope="fragment")
+
+
+def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SalespersonSetupQueries):
+    """Render a single KPI assignment row."""
+    
+    kpi_lower = kpi['kpi_name'].lower().replace(' ', '_')
+    icon = KPI_ICONS.get(kpi_lower, '📋')
+    
+    col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
+    
+    with col1:
+        st.markdown(f"**{icon} {kpi['kpi_name']}**")
+        st.caption(f"ID: {kpi['assignment_id']}")
+    
+    with col2:
+        if kpi['unit_of_measure'] == 'USD':
+            annual = format_currency(kpi['annual_target_value_numeric'])
+            monthly = format_currency(kpi['monthly_target_value'])
+        else:
+            annual = f"{kpi['annual_target_value_numeric']:,.0f}"
+            monthly = f"{kpi['monthly_target_value']:,.1f}"
+        
+        st.caption(f"Annual: {annual} • Monthly: {monthly}")
+    
+    with col3:
+        st.markdown(f"**{kpi['weight_numeric']:.0f}%** weight")
+    
+    with col4:
+        if can_edit:
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("✏️", key=f"sp_edit_assign_{kpi['assignment_id']}", help="Edit"):
+                    st.session_state['sp_edit_assignment_id'] = kpi['assignment_id']
+                    st.rerun(scope="fragment")
+            with btn_col2:
+                if st.button("🗑️", key=f"sp_del_assign_{kpi['assignment_id']}", help="Delete"):
+                    result = setup_queries.delete_assignment(kpi['assignment_id'])
+                    if result['success']:
+                        st.rerun(scope="fragment")
+
+
+def _render_assignment_form(setup_queries: SalespersonSetupQueries, year: int,
+                           mode: str = 'add', assignment_id: int = None):
+    """Render Add/Edit assignment form."""
+    
+    existing = None
+    if mode == 'edit' and assignment_id:
+        df = setup_queries.get_kpi_assignments()
+        df = df[df['assignment_id'] == assignment_id]
+        if not df.empty:
+            existing = df.iloc[0]
+        else:
+            st.error("Assignment not found")
+            st.session_state['sp_edit_assignment_id'] = None
+            return
+    
+    title = "✏️ Edit KPI Assignment" if mode == 'edit' else "➕ Add KPI Assignment"
+    
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        
+        with st.form(f"sp_{mode}_assignment_form"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Salesperson
+                salespeople_df = setup_queries.get_salespeople_for_dropdown()
+                
+                default_employee = st.session_state.get('sp_add_assignment_employee_id')
+                if existing is not None:
+                    default_employee = existing['employee_id']
+                
+                default_idx = 0
+                if default_employee and not salespeople_df.empty:
+                    matches = salespeople_df[salespeople_df['employee_id'] == default_employee]
+                    if not matches.empty:
+                        default_idx = salespeople_df.index.tolist().index(matches.index[0])
+                
+                employee_id = st.selectbox(
+                    "Salesperson *",
+                    options=salespeople_df['employee_id'].tolist(),
+                    index=default_idx,
+                    format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
+                    key=f"sp_{mode}_assign_employee",
+                    disabled=(mode == 'edit')
+                )
+                
+                # KPI Type
+                kpi_types_df = setup_queries.get_kpi_types()
+                
+                default_type_idx = 0
+                if existing is not None:
+                    matches = kpi_types_df[kpi_types_df['kpi_type_id'] == existing['kpi_type_id']]
+                    if not matches.empty:
+                        default_type_idx = kpi_types_df.index.tolist().index(matches.index[0])
+                
+                kpi_type_id = st.selectbox(
+                    "KPI Type *",
+                    options=kpi_types_df['kpi_type_id'].tolist(),
+                    index=default_type_idx,
+                    format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
+                    key=f"sp_{mode}_assign_type",
+                    disabled=(mode == 'edit')
+                )
+            
+            with col2:
+                # Get UOM
+                selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
+                selected_uom = selected_kpi['unit_of_measure']
+                
+                # Annual target
+                default_target = int(existing['annual_target_value_numeric']) if existing is not None else 0
+                annual_target = st.number_input(
+                    f"Annual Target ({selected_uom}) *",
+                    min_value=0,
+                    value=default_target,
+                    step=10000 if selected_uom == 'USD' else 1,
+                    key=f"sp_{mode}_assign_target"
+                )
+                
+                if selected_uom == 'USD' and annual_target > 0:
+                    st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+                
+                # Weight
+                default_weight = int(existing['weight_numeric']) if existing is not None else 0
+                weight = st.number_input(
+                    "Weight % *",
+                    min_value=0,
+                    max_value=100,
+                    value=default_weight,
+                    step=5,
+                    key=f"sp_{mode}_assign_weight"
+                )
+            
+            # Weight validation
+            validation = setup_queries.validate_assignment_weight(
+                employee_id=employee_id,
+                year=year,
+                new_weight=weight,
+                exclude_assignment_id=assignment_id if mode == 'edit' else None
+            )
+            
+            val_col1, val_col2 = st.columns(2)
+            with val_col1:
+                st.metric("Current Weight Sum", f"{validation['current_total']}%")
+            with val_col2:
+                if validation['new_total'] == 100:
+                    st.success(f"✅ After save: {validation['new_total']}%")
+                elif validation['new_total'] > 100:
+                    st.error(f"🔴 After save: {validation['new_total']}% (over limit!)")
+                else:
+                    st.warning(f"⚠️ After save: {validation['new_total']}% ({100 - validation['new_total']}% remaining)")
+            
+            notes = st.text_input(
+                "Notes (optional)",
+                value=existing['notes'] if existing is not None and pd.notna(existing.get('notes')) else "",
+                key=f"sp_{mode}_assign_notes"
+            )
+            
+            # Buttons
+            col_submit, col_cancel = st.columns(2)
+            
+            with col_submit:
+                submitted = st.form_submit_button(
+                    "💾 Save" if mode == 'add' else "💾 Update",
+                    type="primary",
+                    use_container_width=True
+                )
+            
+            with col_cancel:
+                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            
+            if submitted:
+                if annual_target <= 0:
+                    st.error("Annual target must be > 0")
+                elif weight <= 0:
+                    st.error("Weight must be > 0")
+                else:
+                    if mode == 'add':
+                        result = setup_queries.create_assignment(
+                            employee_id=employee_id,
+                            kpi_type_id=kpi_type_id,
+                            year=year,
+                            annual_target_value=annual_target,
+                            weight=weight,
+                            notes=notes if notes else None
+                        )
+                    else:
+                        result = setup_queries.update_assignment(
+                            assignment_id=assignment_id,
+                            annual_target_value=annual_target,
+                            weight=weight,
+                            notes=notes if notes else None
+                        )
+                    
+                    if result['success']:
+                        st.success("Saved!")
+                        st.session_state['sp_show_add_assignment_form'] = False
+                        st.session_state['sp_edit_assignment_id'] = None
+                        st.session_state['sp_add_assignment_employee_id'] = None
+                        st.rerun(scope="fragment")
+                    else:
+                        st.error(result['message'])
+            
+            if cancelled:
+                st.session_state['sp_show_add_assignment_form'] = False
+                st.session_state['sp_edit_assignment_id'] = None
+                st.session_state['sp_add_assignment_employee_id'] = None
+                st.rerun(scope="fragment")
+
+
+# =============================================================================
+# SALESPEOPLE SECTION
+# =============================================================================
+
+@st.fragment  
+def salespeople_section(
+    setup_queries: SalespersonSetupQueries,
+    can_edit: bool = False
+):
+    """Salespeople sub-tab with list view."""
+    
+    # Toolbar
+    col1, col2 = st.columns([1, 5])
+    
+    with col1:
+        status_options = {
+            'ACTIVE': '🟢 Active',
+            'all': '📋 All Status',
+            'INACTIVE': '🟡 Inactive',
+            'TERMINATED': '🔴 Terminated',
+            'ON_LEAVE': '🟠 On Leave'
+        }
+        status_filter = st.selectbox(
+            "Status",
+            options=list(status_options.keys()),
+            format_func=lambda x: status_options[x],
+            key="sp_salespeople_status"
+        )
+    
+    with col2:
+        search = st.text_input("🔍 Search", placeholder="Name or email...", key="sp_salespeople_search")
+    
+    st.divider()
+    
+    # Get salespeople
+    include_inactive = (status_filter == 'all')
+    status_param = status_filter if status_filter != 'all' else None
+    
+    salespeople_df = setup_queries.get_salespeople(
+        status_filter=status_param,
+        include_inactive=include_inactive
+    )
+    
+    # Client-side search
+    if not salespeople_df.empty and search:
+        search_lower = search.lower()
+        mask = (
+            salespeople_df['employee_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
+            salespeople_df['email'].fillna('').str.lower().str.contains(search_lower, regex=False)
+        )
+        salespeople_df = salespeople_df[mask]
+    
+    if salespeople_df.empty:
+        st.info("No salespeople found")
+        return
+    
+    st.caption(f"📊 Showing **{len(salespeople_df)}** salespeople")
+    
+    # Render cards
+    for _, row in salespeople_df.iterrows():
+        status_icon = STATUS_ICONS.get(row['status'], '❓')
+        
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([3, 2, 1])
+            
+            with col1:
+                st.markdown(f"### {status_icon} {row['employee_name']}")
+                st.caption(row['email'] or '')
+                
+                # Position info
+                info_parts = []
+                if row.get('title_name') and pd.notna(row['title_name']):
+                    info_parts.append(row['title_name'])
+                if row.get('department_name') and pd.notna(row['department_name']):
+                    info_parts.append(row['department_name'])
+                if info_parts:
+                    st.caption(" • ".join(info_parts))
+            
+            with col2:
+                # Stats
+                st.metric(
+                    label="Active Splits",
+                    value=row['active_split_count'],
+                    help="Number of active split rules"
+                )
+            
+            with col3:
+                st.metric(
+                    label=f"{date.today().year} KPIs",
+                    value=row['current_year_kpi_count'],
+                    help=f"Number of KPI assignments for {date.today().year}"
+                )
+            
+            # Manager info
+            if row.get('manager_name') and pd.notna(row['manager_name']):
+                st.caption(f"👔 Manager: {row['manager_name']}")

@@ -2,35 +2,58 @@
 """
 Setup Tab Module for Salesperson Performance
 
+Full management console with 3 sub-tabs:
+1. Split Rules - CRUD for sales_split_by_customer_product
+2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
+3. Salespeople - List/manage salespeople
 
-VERSION: 1.0.0
+Features:
+- Comprehensive Filters: Period, Entity, Attributes filters
+- Real-time Validation: Split percentage and weight validation
+- Issue Detection: Missing assignments, weight issues
+- CRUD Operations: Create, Read, Update, Delete for all entities
+
+v1.0.0 - Initial version based on KPI Center Performance setup pattern
+
+Tables Managed:
+- sales_split_by_customer_product: Sales territory assignments by customer-product
+- sales_employee_kpi_assignments: KPI targets for each salesperson by year
+- employees: Salesperson information (read-only)
 """
 
-from .fragments import setup_tab_fragment
-from .sales_split import render_sales_split_tab, SalesSplitFilter
-from .customer_portfolio import render_customer_portfolio_tab, prepare_customer_portfolio
-from .product_portfolio import render_product_portfolio_tab, prepare_product_portfolio
-from .helpers import is_period_active, is_period_expired
+# Queries
+from .queries import SalespersonSetupQueries
+
+# Fragments
+from .fragments import (
+    # Main entry point
+    setup_tab_fragment,
+    
+    # Sub-tab sections (can be used independently)
+    split_rules_section,
+    kpi_assignments_section,
+    salespeople_section,
+    
+    # Constants
+    KPI_ICONS,
+    STATUS_ICONS,
+)
 
 __all__ = [
-    # Main fragment
+    # Queries
+    'SalespersonSetupQueries',
+    
+    # Main Fragment
     'setup_tab_fragment',
     
-    # Sales Split
-    'render_sales_split_tab',
-    'SalesSplitFilter',
+    # Sub-tab Fragments
+    'split_rules_section',
+    'kpi_assignments_section',
+    'salespeople_section',
     
-    # Customer Portfolio
-    'render_customer_portfolio_tab',
-    'prepare_customer_portfolio',
-    
-    # Product Portfolio
-    'render_product_portfolio_tab',
-    'prepare_product_portfolio',
-    
-    # Helpers
-    'is_period_active',
-    'is_period_expired',
+    # Constants
+    'KPI_ICONS',
+    'STATUS_ICONS',
 ]
 
 __version__ = '1.0.0'
