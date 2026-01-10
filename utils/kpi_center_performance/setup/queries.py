@@ -2279,6 +2279,7 @@ class SetupQueries:
         Get users who have created or approved split rules.
         
         v2.6.0: NEW - For Created By / Approved By filters.
+        NOTE: Users table doesn't have first_name/last_name - must join employees.
         
         Returns:
             DataFrame with user_id, username, full_name
@@ -2287,8 +2288,13 @@ class SetupQueries:
             SELECT DISTINCT 
                 u.id as user_id,
                 u.username,
-                TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) as full_name
+                TRIM(CONCAT(
+                    COALESCE(e.first_name, ''), 
+                    ' ', 
+                    COALESCE(e.last_name, '')
+                )) as full_name
             FROM users u
+            LEFT JOIN employees e ON u.employee_id = e.id
             WHERE u.delete_flag = 0
               AND (
                   u.id IN (SELECT DISTINCT created_by FROM kpi_center_split_by_customer_product WHERE created_by IS NOT NULL)

@@ -651,7 +651,7 @@ def split_rules_section(
             renewal_section(
                 user_id=setup_queries.user_id,
                 can_approve=can_approve,
-                threshold_days=30
+                threshold_days=90  # Match renewal module default
             )
     
     # =========================================================================

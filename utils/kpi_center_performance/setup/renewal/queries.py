@@ -1,9 +1,15 @@
 # utils/kpi_center_performance/setup/renewal/queries.py
 """
-SQL Queries for KPI Center Split Rules Renewal
+SQL Queries for KPI Center Split Rules Renewal (v2.0)
+
+v2.0 Changes:
+- Comprehensive filters: Brand, Customer, Product search
+- Include EXPIRED rules (not just expiring)
+- Expiry status categories: expired, critical, warning, normal
+- Better sales activity filtering
 
 Handles:
-1. Fetching expiring rules with sales activity
+1. Fetching expired/expiring rules with sales activity
 2. Bulk renewal operations (EXTEND / COPY strategies)
 3. Validation and conflict detection
 """
@@ -19,22 +25,42 @@ from utils.db import get_db_engine
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+EXPIRY_STATUS = {
+    'expired': 'Already Expired',
+    'critical': 'Critical (<7 days)',
+    'warning': 'Warning (<30 days)',
+    'normal': 'Expiring Soon',
+    'all': 'All'
+}
+
+
 class RenewalQueries:
     """
     Database queries for Split Rules renewal functionality.
+    
+    v2.0: Enhanced with comprehensive filtering.
     
     Usage:
         from utils.kpi_center_performance.setup.renewal import RenewalQueries
         
         queries = RenewalQueries(user_id=123)
         
-        # Get suggestions
-        suggestions = queries.get_renewal_suggestions(threshold_days=30)
+        # Get suggestions with filters
+        suggestions = queries.get_renewal_suggestions(
+            threshold_days=90,
+            include_expired=True,
+            brand_ids=[1, 2, 3],
+            customer_search="foxconn"
+        )
         
         # Execute renewal
         result = queries.renew_rules_extend(
             rule_ids=[1, 2, 3],
-            new_valid_to=date(2025, 12, 31)
+            new_valid_to=date(2026, 12, 31)
         )
     """
     
@@ -56,46 +82,71 @@ class RenewalQueries:
         return self._engine
     
     # =========================================================================
-    # RENEWAL SUGGESTIONS
+    # RENEWAL SUGGESTIONS (v2.0 - Enhanced filters)
     # =========================================================================
     
     def get_renewal_suggestions(
         self,
-        threshold_days: int = 30,
-        min_sales_amount: float = 0,
+        # Expiry filters
+        threshold_days: int = 90,
+        include_expired: bool = True,
+        expired_within_days: int = 365,  # How far back to look for expired rules
+        expiry_status: str = None,  # 'expired', 'critical', 'warning', 'normal', 'all'
+        
+        # Entity filters
         kpi_center_ids: List[int] = None,
         kpi_type: str = None,
-        limit: int = 200
+        brand_ids: List[int] = None,
+        
+        # Search filters
+        customer_search: str = None,
+        product_search: str = None,
+        
+        # Sales filters
+        min_sales_amount: float = 0,
+        require_sales_activity: bool = True,
+        
+        # Pagination
+        limit: int = 500
     ) -> pd.DataFrame:
         """
-        Get split rules that are expiring soon AND have recent sales activity.
+        Get split rules that are expired/expiring AND have recent sales activity.
         
-        Criteria:
-        1. Rule is still active (valid_to >= today)
-        2. Rule expires within threshold_days
-        3. Rule is approved
-        4. Customer-Product combo has invoiced sales in last 12 months
+        v2.0 Changes:
+        - Include EXPIRED rules (not just expiring soon)
+        - Comprehensive entity filters (brand, customer, product search)
+        - Expiry status filter
         
         Args:
-            threshold_days: Show rules expiring within N days (default: 30)
-            min_sales_amount: Minimum sales amount in last 12 months (default: 0)
+            threshold_days: Show rules expiring within N days (default: 90)
+            include_expired: Include already expired rules (default: True)
+            expired_within_days: How far back for expired rules (default: 365)
+            expiry_status: Filter by status ('expired', 'critical', 'warning', 'normal', 'all')
+            
             kpi_center_ids: Filter by KPI Center IDs
             kpi_type: Filter by KPI type (TERRITORY, VERTICAL, etc.)
-            limit: Maximum number of results
+            brand_ids: Filter by Brand IDs
+            
+            customer_search: Search customer name/code (partial match)
+            product_search: Search product name/code (partial match)
+            
+            min_sales_amount: Minimum sales in last 12 months
+            require_sales_activity: If False, show rules without sales too
+            
+            limit: Maximum results
             
         Returns:
             DataFrame with columns:
             - All split rule fields
-            - total_sales_12m: Total sales in last 12 months
-            - total_gp_12m: Total gross profit in last 12 months
-            - last_invoice_date: Most recent invoice date
-            - invoice_count: Number of invoices in last 12 months
-            - days_until_expiry: Days until rule expires
-            - expiry_urgency: 'critical' (<7d), 'warning' (<30d), 'normal'
+            - total_sales_12m, total_gp_12m, last_invoice_date, invoice_count
+            - days_until_expiry (negative = already expired)
+            - expiry_status: 'expired', 'critical', 'warning', 'normal'
         """
-        query = """
+        # Build CTE for sales data
+        sales_join = "INNER JOIN" if require_sales_activity else "LEFT JOIN"
+        
+        query = f"""
             WITH recent_sales AS (
-                -- Aggregate sales by customer-product in last 12 months
                 SELECT 
                     customer_id,
                     product_id,
@@ -130,7 +181,9 @@ class RenewalQueries:
                 kcsfv.split_percentage,
                 kcsfv.effective_from,
                 kcsfv.effective_to,
+                kcsfv.effective_period,
                 kcsfv.is_approved,
+                kcsfv.approval_status,
                 kcsfv.created_by_name,
                 kcsfv.approved_by_name,
                 
@@ -141,33 +194,68 @@ class RenewalQueries:
                 rs.last_invoice_date,
                 COALESCE(rs.invoice_count, 0) as invoice_count,
                 
-                -- Expiry info
+                -- Expiry info (negative = already expired)
                 DATEDIFF(kcsfv.effective_to, CURDATE()) as days_until_expiry,
+                
+                -- Expiry status
                 CASE 
+                    WHEN kcsfv.effective_to < CURDATE() THEN 'expired'
                     WHEN DATEDIFF(kcsfv.effective_to, CURDATE()) <= 7 THEN 'critical'
                     WHEN DATEDIFF(kcsfv.effective_to, CURDATE()) <= 30 THEN 'warning'
                     ELSE 'normal'
-                END as expiry_urgency
+                END as expiry_status
                 
             FROM kpi_center_split_looker_view kcsfv
-            INNER JOIN recent_sales rs 
+            {sales_join} recent_sales rs 
                 ON kcsfv.customer_id = rs.customer_id 
                 AND kcsfv.product_id = rs.product_id
             WHERE 
-                -- Still active
-                kcsfv.effective_to >= CURDATE()
-                -- Expiring within threshold
-                AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
-                -- Approved only
-                AND kcsfv.is_approved = 1
+                -- Active (not deleted) and approved
+                kcsfv.is_approved = 1
+                AND (kcsfv.delete_flag = 0 OR kcsfv.delete_flag IS NULL)
         """
         
         params = {
-            'threshold_days': threshold_days,
             'min_sales': min_sales_amount
         }
         
-        # Optional filters
+        # =====================================================================
+        # EXPIRY DATE FILTER
+        # =====================================================================
+        if include_expired:
+            # Include expired rules (back to expired_within_days) AND expiring soon
+            query += """
+                AND (
+                    kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL :expired_within DAY)
+                    AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+                )
+            """
+            params['expired_within'] = expired_within_days
+            params['threshold_days'] = threshold_days
+        else:
+            # Only expiring soon (not yet expired)
+            query += """
+                AND kcsfv.effective_to >= CURDATE()
+                AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+            """
+            params['threshold_days'] = threshold_days
+        
+        # =====================================================================
+        # EXPIRY STATUS FILTER
+        # =====================================================================
+        if expiry_status and expiry_status != 'all':
+            if expiry_status == 'expired':
+                query += " AND kcsfv.effective_to < CURDATE()"
+            elif expiry_status == 'critical':
+                query += " AND kcsfv.effective_to >= CURDATE() AND DATEDIFF(kcsfv.effective_to, CURDATE()) <= 7"
+            elif expiry_status == 'warning':
+                query += " AND kcsfv.effective_to >= CURDATE() AND DATEDIFF(kcsfv.effective_to, CURDATE()) > 7 AND DATEDIFF(kcsfv.effective_to, CURDATE()) <= 30"
+            elif expiry_status == 'normal':
+                query += " AND DATEDIFF(kcsfv.effective_to, CURDATE()) > 30"
+        
+        # =====================================================================
+        # ENTITY FILTERS
+        # =====================================================================
         if kpi_center_ids:
             query += " AND kcsfv.kpi_center_id IN :kpi_center_ids"
             params['kpi_center_ids'] = tuple(kpi_center_ids)
@@ -176,9 +264,41 @@ class RenewalQueries:
             query += " AND kcsfv.kpi_type = :kpi_type"
             params['kpi_type'] = kpi_type
         
-        # Order by urgency then sales value
+        if brand_ids:
+            query += " AND kcsfv.brand_id IN :brand_ids"
+            params['brand_ids'] = tuple(brand_ids)
+        
+        # =====================================================================
+        # SEARCH FILTERS (partial match)
+        # =====================================================================
+        if customer_search:
+            query += """
+                AND (
+                    kcsfv.customer_name LIKE :customer_search
+                    OR kcsfv.company_code LIKE :customer_search
+                )
+            """
+            params['customer_search'] = f"%{customer_search}%"
+        
+        if product_search:
+            query += """
+                AND (
+                    kcsfv.product_name LIKE :product_search
+                    OR kcsfv.pt_code LIKE :product_search
+                )
+            """
+            params['product_search'] = f"%{product_search}%"
+        
+        # =====================================================================
+        # ORDER & LIMIT
+        # =====================================================================
         query += """
             ORDER BY 
+                -- Expired first, then by urgency
+                CASE 
+                    WHEN kcsfv.effective_to < CURDATE() THEN 0
+                    ELSE 1
+                END,
                 days_until_expiry ASC,
                 total_sales_12m DESC
             LIMIT :limit
@@ -187,12 +307,19 @@ class RenewalQueries:
         
         return self._execute_query(query, params, "renewal_suggestions")
     
-    def get_renewal_summary_stats(self, threshold_days: int = 30) -> Dict:
+    def get_renewal_summary_stats(
+        self,
+        threshold_days: int = 90,
+        include_expired: bool = True,
+        expired_within_days: int = 365
+    ) -> Dict:
         """
         Get summary statistics for renewal suggestions.
         
+        v2.0: Include expired rules in stats.
+        
         Returns:
-            Dict with counts by urgency level and total sales at risk
+            Dict with counts by status and total sales at risk
         """
         query = """
             WITH recent_sales AS (
@@ -206,33 +333,60 @@ class RenewalQueries:
                 GROUP BY customer_id, product_id
                 HAVING SUM(sales_by_kpi_center_usd) > 0
             ),
-            expiring_rules AS (
+            target_rules AS (
                 SELECT 
                     kcsfv.kpi_center_split_id,
                     DATEDIFF(kcsfv.effective_to, CURDATE()) as days_until_expiry,
-                    COALESCE(rs.total_sales_12m, 0) as total_sales_12m
+                    COALESCE(rs.total_sales_12m, 0) as total_sales_12m,
+                    CASE 
+                        WHEN kcsfv.effective_to < CURDATE() THEN 'expired'
+                        WHEN DATEDIFF(kcsfv.effective_to, CURDATE()) <= 7 THEN 'critical'
+                        WHEN DATEDIFF(kcsfv.effective_to, CURDATE()) <= 30 THEN 'warning'
+                        ELSE 'normal'
+                    END as expiry_status
                 FROM kpi_center_split_looker_view kcsfv
                 INNER JOIN recent_sales rs 
                     ON kcsfv.customer_id = rs.customer_id 
                     AND kcsfv.product_id = rs.product_id
-                WHERE kcsfv.effective_to >= CURDATE()
-                  AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
-                  AND kcsfv.is_approved = 1
+                WHERE 
+                    kcsfv.is_approved = 1
+                    AND (kcsfv.delete_flag = 0 OR kcsfv.delete_flag IS NULL)
+        """
+        
+        params = {}
+        
+        if include_expired:
+            query += """
+                    AND kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL :expired_within DAY)
+                    AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+            """
+            params['expired_within'] = expired_within_days
+            params['threshold_days'] = threshold_days
+        else:
+            query += """
+                    AND kcsfv.effective_to >= CURDATE()
+                    AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+            """
+            params['threshold_days'] = threshold_days
+        
+        query += """
             )
             SELECT 
                 COUNT(*) as total_count,
-                SUM(CASE WHEN days_until_expiry <= 7 THEN 1 ELSE 0 END) as critical_count,
-                SUM(CASE WHEN days_until_expiry > 7 AND days_until_expiry <= 30 THEN 1 ELSE 0 END) as warning_count,
-                SUM(CASE WHEN days_until_expiry > 30 THEN 1 ELSE 0 END) as normal_count,
-                SUM(total_sales_12m) as total_sales_at_risk
-            FROM expiring_rules
+                SUM(CASE WHEN expiry_status = 'expired' THEN 1 ELSE 0 END) as expired_count,
+                SUM(CASE WHEN expiry_status = 'critical' THEN 1 ELSE 0 END) as critical_count,
+                SUM(CASE WHEN expiry_status = 'warning' THEN 1 ELSE 0 END) as warning_count,
+                SUM(CASE WHEN expiry_status = 'normal' THEN 1 ELSE 0 END) as normal_count,
+                COALESCE(SUM(total_sales_12m), 0) as total_sales_at_risk
+            FROM target_rules
         """
         
-        df = self._execute_query(query, {'threshold_days': threshold_days}, "renewal_summary")
+        df = self._execute_query(query, params, "renewal_summary_stats")
         
         if df.empty:
             return {
                 'total_count': 0,
+                'expired_count': 0,
                 'critical_count': 0,
                 'warning_count': 0,
                 'normal_count': 0,
@@ -242,11 +396,53 @@ class RenewalQueries:
         row = df.iloc[0]
         return {
             'total_count': int(row.get('total_count', 0) or 0),
+            'expired_count': int(row.get('expired_count', 0) or 0),
             'critical_count': int(row.get('critical_count', 0) or 0),
             'warning_count': int(row.get('warning_count', 0) or 0),
             'normal_count': int(row.get('normal_count', 0) or 0),
             'total_sales_at_risk': float(row.get('total_sales_at_risk', 0) or 0)
         }
+    
+    def get_brands_with_expiring_rules(
+        self,
+        threshold_days: int = 90,
+        include_expired: bool = True
+    ) -> pd.DataFrame:
+        """
+        Get brands that have expiring rules for filter dropdown.
+        """
+        query = """
+            SELECT DISTINCT 
+                b.id as brand_id,
+                b.brand_name,
+                COUNT(kcsfv.kpi_center_split_id) as rule_count
+            FROM kpi_center_split_looker_view kcsfv
+            JOIN brands b ON kcsfv.brand_id = b.id
+            WHERE kcsfv.is_approved = 1
+              AND (kcsfv.delete_flag = 0 OR kcsfv.delete_flag IS NULL)
+        """
+        
+        params = {}
+        
+        if include_expired:
+            query += """
+              AND kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+              AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+            """
+        else:
+            query += """
+              AND kcsfv.effective_to >= CURDATE()
+              AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
+            """
+        
+        params['threshold_days'] = threshold_days
+        
+        query += """
+            GROUP BY b.id, b.brand_name
+            ORDER BY rule_count DESC, b.brand_name
+        """
+        
+        return self._execute_query(query, params, "brands_with_expiring")
     
     # =========================================================================
     # RENEWAL OPERATIONS
@@ -256,20 +452,23 @@ class RenewalQueries:
         self,
         rule_ids: List[int],
         new_valid_to: date,
-        auto_approve: bool = True
+        auto_approve: bool = False
     ) -> Dict:
         """
-        Renew rules by EXTENDING the validity period (update valid_to).
+        Extend validity period of existing rules.
         
-        This is the simpler approach that modifies existing rules.
+        This strategy:
+        - Updates valid_to date
+        - Keeps all other fields unchanged
+        - Optionally auto-approves
         
         Args:
-            rule_ids: List of rule IDs to renew
-            new_valid_to: New end date for all selected rules
-            auto_approve: Whether to keep approved status (default: True)
+            rule_ids: List of rule IDs to extend
+            new_valid_to: New end date
+            auto_approve: If True, set isApproved = 1
             
         Returns:
-            Dict with 'success': bool, 'count': int, 'message': str
+            Dict with success, count, message
         """
         if not rule_ids:
             return {'success': False, 'count': 0, 'message': 'No rules selected'}
@@ -278,25 +477,21 @@ class RenewalQueries:
             UPDATE kpi_center_split_by_customer_product
             SET 
                 valid_to = :new_valid_to,
+                isApproved = CASE WHEN :auto_approve = 1 THEN 1 ELSE isApproved END,
+                approved_by = CASE WHEN :auto_approve = 1 THEN :user_id ELSE approved_by END,
                 modified_date = NOW(),
                 modified_by = :user_id,
                 version = version + 1
             WHERE id IN :rule_ids
-              AND delete_flag = 0
+              AND (delete_flag = 0 OR delete_flag IS NULL)
         """
         
         params = {
             'rule_ids': tuple(rule_ids),
             'new_valid_to': new_valid_to,
+            'auto_approve': 1 if auto_approve else 0,
             'user_id': self.user_id
         }
-        
-        # If not auto-approve, reset approval status
-        if not auto_approve:
-            query = query.replace(
-                "version = version + 1",
-                "version = version + 1, isApproved = 0, approved_by = NULL"
-            )
         
         return self._execute_update(query, params, "renew_extend")
     
@@ -308,26 +503,28 @@ class RenewalQueries:
         auto_approve: bool = False
     ) -> Dict:
         """
-        Renew rules by COPYING to new records with new validity period.
+        Create new rules by copying existing ones with new validity period.
         
-        This approach preserves history by creating new records.
-        Original rules are optionally expired (valid_to = new_valid_from - 1).
+        This strategy:
+        - Creates new rules with new validity period
+        - Expires original rules (sets valid_to to day before new_valid_from)
+        - Optionally auto-approves new rules
         
         Args:
             rule_ids: List of source rule IDs
             new_valid_from: Start date for new rules
             new_valid_to: End date for new rules
-            auto_approve: Whether to auto-approve new rules (default: False)
+            auto_approve: If True, new rules are approved
             
         Returns:
-            Dict with 'success': bool, 'count': int, 'new_ids': list, 'message': str
+            Dict with success, count, message
         """
         if not rule_ids:
-            return {'success': False, 'count': 0, 'new_ids': [], 'message': 'No rules selected'}
+            return {'success': False, 'count': 0, 'message': 'No rules selected'}
         
         try:
             with self.engine.connect() as conn:
-                # Step 1: Insert new rules copied from originals
+                # Step 1: Insert new rules
                 insert_query = """
                     INSERT INTO kpi_center_split_by_customer_product (
                         customer_id, product_id, kpi_center_id, split_percentage,
@@ -337,27 +534,28 @@ class RenewalQueries:
                     )
                     SELECT 
                         customer_id, product_id, kpi_center_id, split_percentage,
-                        :new_valid_from, :new_valid_to, 
-                        :is_approved, :approved_by,
-                        NOW(), NOW(), :created_by, :created_by,
+                        :new_valid_from, :new_valid_to,
+                        CASE WHEN :auto_approve = 1 THEN 1 ELSE 0 END,
+                        CASE WHEN :auto_approve = 1 THEN :user_id ELSE NULL END,
+                        NOW(), NOW(), :user_id, :user_id,
                         0, 0
                     FROM kpi_center_split_by_customer_product
-                    WHERE id IN :rule_ids AND delete_flag = 0
+                    WHERE id IN :rule_ids
+                      AND (delete_flag = 0 OR delete_flag IS NULL)
                 """
                 
-                params = {
+                insert_params = {
                     'rule_ids': tuple(rule_ids),
                     'new_valid_from': new_valid_from,
                     'new_valid_to': new_valid_to,
-                    'is_approved': 1 if auto_approve else 0,
-                    'approved_by': self.user_id if auto_approve else None,
-                    'created_by': self.user_id
+                    'auto_approve': 1 if auto_approve else 0,
+                    'user_id': self.user_id
                 }
                 
-                result = conn.execute(text(insert_query), params)
+                result = conn.execute(text(insert_query), insert_params)
                 rows_inserted = result.rowcount
                 
-                # Step 2: Expire original rules (set valid_to = new_valid_from - 1)
+                # Step 2: Expire original rules (set valid_to to day before new period)
                 expire_query = """
                     UPDATE kpi_center_split_by_customer_product
                     SET 
@@ -366,7 +564,7 @@ class RenewalQueries:
                         modified_by = :user_id,
                         version = version + 1
                     WHERE id IN :rule_ids
-                      AND delete_flag = 0
+                      AND (delete_flag = 0 OR delete_flag IS NULL)
                       AND valid_to >= :new_valid_from
                 """
                 
@@ -409,23 +607,13 @@ class RenewalQueries:
         
         Conflicts include:
         - Overlapping periods with other rules for same customer-product-center
-        - Over 100% split after renewal
-        
-        Args:
-            rule_ids: Rules to be renewed
-            new_valid_from: Proposed new start date
-            new_valid_to: Proposed new end date
-            
-        Returns:
-            Dict with 'has_conflicts': bool, 'conflicts': list
         """
-        # Check for overlapping rules
         query = """
             WITH rules_to_renew AS (
                 SELECT 
                     id, customer_id, product_id, kpi_center_id, split_percentage
                 FROM kpi_center_split_by_customer_product
-                WHERE id IN :rule_ids AND delete_flag = 0
+                WHERE id IN :rule_ids AND (delete_flag = 0 OR delete_flag IS NULL)
             )
             SELECT 
                 rtr.id as renewing_rule_id,
@@ -442,10 +630,9 @@ class RenewalQueries:
                 AND rtr.product_id = existing.product_id
                 AND rtr.kpi_center_id = existing.kpi_center_id
                 AND existing.id != rtr.id
-                AND existing.delete_flag = 0
+                AND (existing.delete_flag = 0 OR existing.delete_flag IS NULL)
             INNER JOIN kpi_centers kc ON existing.kpi_center_id = kc.id
             WHERE 
-                -- Check for period overlap
                 existing.valid_from <= :new_valid_to
                 AND existing.valid_to >= :new_valid_from
         """
@@ -461,11 +648,10 @@ class RenewalQueries:
         if df.empty:
             return {'has_conflicts': False, 'conflicts': []}
         
-        conflicts = df.to_dict('records')
         return {
             'has_conflicts': True,
-            'conflicts': conflicts,
-            'message': f'Found {len(conflicts)} potential overlapping rules'
+            'conflicts': df.to_dict('records'),
+            'message': f'Found {len(df)} potential overlapping rules'
         }
     
     def preview_renewal(
@@ -476,21 +662,9 @@ class RenewalQueries:
     ) -> Dict:
         """
         Preview the renewal operation before executing.
-        
-        Args:
-            rule_ids: Rules to be renewed
-            new_valid_to: New end date
-            new_valid_from: New start date (for COPY strategy)
-            
-        Returns:
-            Dict with summary of what will happen
         """
         if not rule_ids:
-            return {
-                'count': 0,
-                'rules': [],
-                'total_sales_covered': 0
-            }
+            return {'count': 0, 'rules': [], 'total_sales_covered': 0}
         
         query = """
             WITH recent_sales AS (
@@ -509,6 +683,7 @@ class RenewalQueries:
                 kcsfv.product_display,
                 kcsfv.split_percentage,
                 kcsfv.effective_to as current_valid_to,
+                DATEDIFF(kcsfv.effective_to, CURDATE()) as days_until_expiry,
                 COALESCE(rs.total_sales_12m, 0) as total_sales_12m
             FROM kpi_center_split_looker_view kcsfv
             LEFT JOIN recent_sales rs 
