@@ -533,8 +533,10 @@ class RenewalQueries:
             UPDATE kpi_center_split_by_customer_product
             SET 
                 valid_to = :new_valid_to,
-                isApproved = CASE WHEN :auto_approve = 1 THEN 1 ELSE isApproved END,
-                approved_by = CASE WHEN :auto_approve = 1 THEN :user_id ELSE approved_by END,
+                -- Always reset approval status when extending (requires re-approval)
+                -- If auto_approve is checked, approve immediately with current user
+                isApproved = CASE WHEN :auto_approve = 1 THEN 1 ELSE 0 END,
+                approved_by = CASE WHEN :auto_approve = 1 THEN :user_id ELSE NULL END,
                 modified_date = NOW(),
                 modified_by = :user_id,
                 version = version + 1
