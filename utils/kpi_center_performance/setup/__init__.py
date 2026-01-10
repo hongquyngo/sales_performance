@@ -10,6 +10,13 @@ Full management console with 3 sub-tabs:
 Features:
 - Renewal: Bulk renew expiring split rules with sales activity (v2.5.0)
 - Validation: Integrated into Split Rules and KPI Assignments tabs for better UX
+- Comprehensive Filters: Full filtering by period, entity, attributes, audit trail (v2.6.0)
+
+v2.6.0 Changes:
+- Split Rules now has 5 filter groups: Period, Entity, Attributes, Audit, System
+- Period filter uses overlapping logic (not active_only)
+- Added: Split % range filter, Created By/Approved By filters, Date range filters
+- Removed: active_only logic (confusing with delete_flag)
 """
 
 # Queries
@@ -63,4 +70,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.5.0'
+__version__ = '2.6.0'

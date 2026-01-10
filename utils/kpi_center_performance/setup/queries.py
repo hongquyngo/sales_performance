@@ -69,19 +69,51 @@ class SetupQueries:
     
     def get_kpi_split_data(
         self,
+        # Entity filters
         kpi_center_ids: List[int] = None,
         customer_ids: List[int] = None,
         product_ids: List[int] = None,
         brand_ids: List[int] = None,
         kpi_type: str = None,
-        status_filter: str = None,  # 'ok', 'incomplete_split', 'over_100_split'
-        approval_filter: str = None,  # 'approved', 'pending', 'all'
-        active_only: bool = True,
-        expiring_days: int = None,  # Show rules expiring within N days
+        
+        # Period filters (v2.6.0)
+        period_year: int = None,           # Filter by year (rules overlapping this year)
+        period_start: date = None,         # Custom period start
+        period_end: date = None,           # Custom period end
+        
+        # Rule attribute filters
+        status_filter: str = None,         # 'ok', 'incomplete_split', 'over_100_split'
+        approval_filter: str = None,       # 'approved', 'pending', 'all'
+        split_min: float = None,           # Min split percentage
+        split_max: float = None,           # Max split percentage
+        
+        # Audit filters (v2.6.0)
+        created_by_user_id: int = None,    # Filter by creator
+        approved_by_user_id: int = None,   # Filter by approver
+        created_date_from: date = None,    # Created date range start
+        created_date_to: date = None,      # Created date range end
+        modified_date_from: date = None,   # Modified date range start
+        modified_date_to: date = None,     # Modified date range end
+        
+        # System filters (v2.6.0 - replaces active_only)
+        include_deleted: bool = False,     # Show deleted rules
+        
+        # Legacy support (deprecated)
+        active_only: bool = None,          # DEPRECATED - use period filters instead
+        expiring_days: int = None,         # Show rules expiring within N days
+        
+        # Pagination
         limit: int = None
     ) -> pd.DataFrame:
         """
-        Get KPI Center split assignments with enhanced filtering.
+        Get KPI Center split assignments with comprehensive filtering.
+        
+        v2.6.0 Changes:
+        - Period filter uses OVERLAPPING logic: rule's [valid_from, valid_to] 
+          overlaps with [period_start, period_end]
+        - delete_flag = 0 by default (unless include_deleted=True)
+        - Removed active_only logic (was confusing validity period with active status)
+        - Added audit trail filters (created_by, approved_by, date ranges)
         
         Args:
             kpi_center_ids: Filter by KPI Center IDs
@@ -89,14 +121,31 @@ class SetupQueries:
             product_ids: Filter by Product IDs
             brand_ids: Filter by Brand IDs
             kpi_type: Filter by KPI type (TERRITORY, VERTICAL, etc.)
+            
+            period_year: Filter rules overlapping this year
+            period_start: Custom period start date
+            period_end: Custom period end date
+            
             status_filter: Filter by split status
             approval_filter: Filter by approval status
-            active_only: Only show rules with valid_to >= today
+            split_min: Minimum split percentage
+            split_max: Maximum split percentage
+            
+            created_by_user_id: Filter by creator user ID
+            approved_by_user_id: Filter by approver user ID
+            created_date_from: Filter created_date >= this
+            created_date_to: Filter created_date <= this
+            modified_date_from: Filter modified_date >= this
+            modified_date_to: Filter modified_date <= this
+            
+            include_deleted: If True, show deleted rules too
+            active_only: DEPRECATED - ignored, use period filters
             expiring_days: Show rules expiring within N days
+            
             limit: Limit number of results
             
         Returns:
-            DataFrame with split assignments (all columns from view v2.0)
+            DataFrame with split assignments
         """
         query = """
             SELECT 
@@ -172,54 +221,113 @@ class SetupQueries:
         
         params = {}
         
-        # KPI Center filter
+        # =====================================================================
+        # SYSTEM FILTER: delete_flag (v2.6.0)
+        # =====================================================================
+        if not include_deleted:
+            query += " AND (delete_flag = 0 OR delete_flag IS NULL)"
+        
+        # =====================================================================
+        # PERIOD FILTER - Overlapping logic (v2.6.0)
+        # Rule overlaps period if: valid_from <= period_end AND valid_to >= period_start
+        # =====================================================================
+        if period_year:
+            # Year filter: rules overlapping any part of the year
+            query += """
+                AND (effective_from <= :period_end OR effective_from IS NULL)
+                AND (effective_to >= :period_start OR effective_to IS NULL)
+            """
+            params['period_start'] = date(period_year, 1, 1)
+            params['period_end'] = date(period_year, 12, 31)
+        elif period_start or period_end:
+            # Custom date range
+            if period_start:
+                query += " AND (effective_to >= :period_start OR effective_to IS NULL)"
+                params['period_start'] = period_start
+            if period_end:
+                query += " AND (effective_from <= :period_end OR effective_from IS NULL)"
+                params['period_end'] = period_end
+        
+        # Legacy: expiring_days filter (still supported)
+        if expiring_days:
+            query += " AND effective_to BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL :expiring_days DAY)"
+            params['expiring_days'] = expiring_days
+        
+        # =====================================================================
+        # ENTITY FILTERS
+        # =====================================================================
         if kpi_center_ids:
             query += " AND kpi_center_id IN :kpi_center_ids"
             params['kpi_center_ids'] = tuple(kpi_center_ids)
         
-        # Customer filter
         if customer_ids:
             query += " AND customer_id IN :customer_ids"
             params['customer_ids'] = tuple(customer_ids)
         
-        # Product filter
         if product_ids:
             query += " AND product_id IN :product_ids"
             params['product_ids'] = tuple(product_ids)
         
-        # Brand filter (need to join or use subquery)
         if brand_ids:
             query += """ AND product_id IN (
                 SELECT id FROM products WHERE brand_id IN :brand_ids AND delete_flag = 0
             )"""
             params['brand_ids'] = tuple(brand_ids)
         
-        # KPI Type filter
         if kpi_type:
             query += " AND kpi_type = :kpi_type"
             params['kpi_type'] = kpi_type
         
-        # Status filter
+        # =====================================================================
+        # RULE ATTRIBUTE FILTERS
+        # =====================================================================
         if status_filter and status_filter != 'all':
             query += " AND kpi_split_status = :status_filter"
             params['status_filter'] = status_filter
         
-        # Approval filter
         if approval_filter == 'approved':
             query += " AND is_approved = 1"
         elif approval_filter == 'pending':
             query += " AND (is_approved = 0 OR is_approved IS NULL)"
-        # 'all' or None = no filter
         
-        # Active only filter
-        if active_only:
-            query += " AND (effective_to >= CURDATE() OR effective_to IS NULL)"
+        if split_min is not None:
+            query += " AND split_percentage >= :split_min"
+            params['split_min'] = split_min
         
-        # Expiring soon filter
-        if expiring_days:
-            query += " AND effective_to BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL :expiring_days DAY)"
-            params['expiring_days'] = expiring_days
+        if split_max is not None:
+            query += " AND split_percentage <= :split_max"
+            params['split_max'] = split_max
         
+        # =====================================================================
+        # AUDIT FILTERS (v2.6.0)
+        # =====================================================================
+        if created_by_user_id:
+            query += " AND created_by_user_id = :created_by_user_id"
+            params['created_by_user_id'] = created_by_user_id
+        
+        if approved_by_user_id:
+            query += " AND approved_by_user_id = :approved_by_user_id"
+            params['approved_by_user_id'] = approved_by_user_id
+        
+        if created_date_from:
+            query += " AND created_date >= :created_date_from"
+            params['created_date_from'] = created_date_from
+        
+        if created_date_to:
+            query += " AND created_date <= :created_date_to"
+            params['created_date_to'] = created_date_to
+        
+        if modified_date_from:
+            query += " AND modified_date >= :modified_date_from"
+            params['modified_date_from'] = modified_date_from
+        
+        if modified_date_to:
+            query += " AND modified_date <= :modified_date_to"
+            params['modified_date_to'] = modified_date_to
+        
+        # =====================================================================
+        # ORDERING & LIMIT
+        # =====================================================================
         query += " ORDER BY kpi_center_name, customer_name, product_name"
         
         if limit:
@@ -227,10 +335,24 @@ class SetupQueries:
         
         return self._execute_query(query, params, "kpi_split_data")
     
-    def get_split_summary_stats(self) -> Dict:
+    def get_split_summary_stats(
+        self,
+        period_year: int = None,
+        period_start: date = None,
+        period_end: date = None,
+        include_deleted: bool = False
+    ) -> Dict:
         """
-        Get summary statistics for split rules.
+        Get summary statistics for split rules with period filter.
         
+        v2.6.0: Added period filter to sync with comprehensive filters.
+        
+        Args:
+            period_year: Filter by year (rules overlapping this year)
+            period_start: Custom period start
+            period_end: Custom period end
+            include_deleted: Include deleted rules in stats
+            
         Returns:
             Dict with counts: total, ok, incomplete, over_100, pending, expiring_soon
         """
@@ -246,10 +368,32 @@ class SetupQueries:
                     THEN 1 ELSE 0 
                 END) as expiring_soon_count
             FROM kpi_center_split_looker_view
-            WHERE effective_to >= CURDATE() OR effective_to IS NULL
+            WHERE 1=1
         """
         
-        df = self._execute_query(query, {}, "split_summary_stats")
+        params = {}
+        
+        # Delete flag filter
+        if not include_deleted:
+            query += " AND (delete_flag = 0 OR delete_flag IS NULL)"
+        
+        # Period filter (overlapping logic)
+        if period_year:
+            query += """
+                AND (effective_from <= :period_end OR effective_from IS NULL)
+                AND (effective_to >= :period_start OR effective_to IS NULL)
+            """
+            params['period_start'] = date(period_year, 1, 1)
+            params['period_end'] = date(period_year, 12, 31)
+        elif period_start or period_end:
+            if period_start:
+                query += " AND (effective_to >= :period_start OR effective_to IS NULL)"
+                params['period_start'] = period_start
+            if period_end:
+                query += " AND (effective_from <= :period_end OR effective_from IS NULL)"
+                params['period_end'] = period_end
+        
+        df = self._execute_query(query, params, "split_summary_stats")
         
         if df.empty:
             return {
@@ -2129,6 +2273,72 @@ class SetupQueries:
         """
         
         return self._execute_query(query, {}, "brands_dropdown")
+    
+    def get_users_for_dropdown(self) -> pd.DataFrame:
+        """
+        Get users who have created or approved split rules.
+        
+        v2.6.0: NEW - For Created By / Approved By filters.
+        
+        Returns:
+            DataFrame with user_id, username, full_name
+        """
+        query = """
+            SELECT DISTINCT 
+                u.id as user_id,
+                u.username,
+                TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) as full_name
+            FROM users u
+            WHERE u.delete_flag = 0
+              AND (
+                  u.id IN (SELECT DISTINCT created_by FROM kpi_center_split_by_customer_product WHERE created_by IS NOT NULL)
+                  OR u.id IN (SELECT DISTINCT approved_by FROM kpi_center_split_by_customer_product WHERE approved_by IS NOT NULL)
+                  OR u.id IN (SELECT DISTINCT modified_by FROM kpi_center_split_by_customer_product WHERE modified_by IS NOT NULL)
+              )
+            ORDER BY full_name
+        """
+        return self._execute_query(query, {}, "users_for_dropdown")
+    
+    def get_split_rule_years(self) -> List[int]:
+        """
+        Get list of years that have split rules.
+        
+        v2.6.0: NEW - For Period Year dropdown.
+        
+        Returns:
+            List of years sorted descending
+        """
+        query = """
+            SELECT DISTINCT year FROM (
+                SELECT YEAR(valid_from) as year
+                FROM kpi_center_split_by_customer_product
+                WHERE (delete_flag = 0 OR delete_flag IS NULL)
+                  AND valid_from IS NOT NULL
+                
+                UNION
+                
+                SELECT YEAR(valid_to) as year
+                FROM kpi_center_split_by_customer_product
+                WHERE (delete_flag = 0 OR delete_flag IS NULL)
+                  AND valid_to IS NOT NULL
+            ) years
+            WHERE year IS NOT NULL
+            ORDER BY year DESC
+        """
+        
+        df = self._execute_query(query, {}, "split_rule_years")
+        
+        if df.empty:
+            return [date.today().year]
+        
+        years = df['year'].dropna().astype(int).tolist()
+        
+        # Ensure current year is included
+        current_year = date.today().year
+        if current_year not in years:
+            years.append(current_year)
+        
+        return sorted(set(years), reverse=True)
     
     # =========================================================================
     # VALIDATION DASHBOARD
