@@ -1,23 +1,31 @@
 # utils/kpi_center_performance/setup/renewal/fragments.py
 """
-UI Fragments for KPI Center Split Rules Renewal (v2.0)
+UI Fragments for KPI Center Split Rules Renewal (v3.0)
+
+v3.0 Changes:
+- Multi-step confirmation flow: Select → Preview → Processing → Result
+- Impact summary with detailed breakdown before execution
+- Progress indicator during bulk operations
+- Detailed result summary with download option
+- Confirmation checkbox for safety on bulk operations
 
 v2.0 Changes:
 - Comprehensive filters: Expiry status, Brand, Customer/Product search
 - Include EXPIRED rules (not just expiring)
 - Better @st.fragment handling to avoid page reruns
-- Cleaner dialog flow
 
 Provides:
 1. Trigger button to open renewal dialog
-2. Renewal dialog with filters, selection, and execution
-3. Proper fragment handling
+2. Multi-step renewal dialog with filters, preview, and execution
+3. Proper fragment handling with step navigation
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
+from io import BytesIO
+import time
 
 from .queries import RenewalQueries, EXPIRY_STATUS
 
@@ -64,6 +72,15 @@ KPI_TYPE_ICONS = {
     'INTERNAL': '🏢'
 }
 
+# Dialog step constants
+STEP_SELECT = 'select'
+STEP_PREVIEW = 'preview'
+STEP_PROCESSING = 'processing'
+STEP_RESULT = 'result'
+
+# Threshold for requiring confirmation (number of rules)
+BULK_CONFIRMATION_THRESHOLD = 50
+
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -107,8 +124,140 @@ def get_default_expired_from() -> date:
     return date(today.year - 1, 1, 1)
 
 
+def init_renewal_state():
+    """Initialize all renewal-related session state variables."""
+    defaults = {
+        'renewal_step': STEP_SELECT,
+        # Note: 'renewal_selected_ids' is NOT initialized here
+        # It will be set by default selection logic in _render_step_select()
+        'renewal_selected_df': None,
+        'renewal_settings': {},
+        'renewal_result': None,
+        'renewal_start_time': None,
+        'renewal_completed': False,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def reset_renewal_state():
+    """Reset renewal state when closing dialog."""
+    keys_to_reset = [
+        'renewal_step', 'renewal_selected_ids', 'renewal_selected_df',
+        'renewal_settings', 'renewal_result', 'renewal_start_time'
+    ]
+    for key in keys_to_reset:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def get_preview_stats(df: pd.DataFrame) -> Dict:
+    """
+    Calculate detailed statistics for preview step.
+    
+    Args:
+        df: DataFrame of selected rules
+        
+    Returns:
+        Dict with counts, affected entities, and totals
+    """
+    if df.empty:
+        return {
+            'total_rules': 0,
+            'expired_count': 0,
+            'critical_count': 0,
+            'warning_count': 0,
+            'normal_count': 0,
+            'total_sales': 0,
+            'total_gp': 0,
+            'unique_customers': 0,
+            'unique_products': 0,
+            'unique_centers': 0,
+            'unique_brands': 0,
+        }
+    
+    return {
+        'total_rules': len(df),
+        'expired_count': len(df[df['expiry_status'] == 'expired']),
+        'critical_count': len(df[df['expiry_status'] == 'critical']),
+        'warning_count': len(df[df['expiry_status'] == 'warning']),
+        'normal_count': len(df[df['expiry_status'] == 'normal']),
+        'total_sales': df['total_sales'].sum() if 'total_sales' in df.columns else 0,
+        'total_gp': df['total_gp'].sum() if 'total_gp' in df.columns else 0,
+        'unique_customers': df['customer_id'].nunique() if 'customer_id' in df.columns else 0,
+        'unique_products': df['product_id'].nunique() if 'product_id' in df.columns else 0,
+        'unique_centers': df['kpi_center_id'].nunique() if 'kpi_center_id' in df.columns else 0,
+        'unique_brands': df['brand_id'].nunique() if 'brand_id' in df.columns else 0,
+    }
+
+
+def generate_renewal_report(
+    selected_df: pd.DataFrame,
+    settings: Dict,
+    result: Dict
+) -> BytesIO:
+    """
+    Generate Excel report of renewal operation.
+    
+    Args:
+        selected_df: DataFrame of renewed rules
+        settings: Renewal settings used
+        result: Result of renewal operation
+        
+    Returns:
+        BytesIO buffer containing Excel file
+    """
+    buffer = BytesIO()
+    
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        # Summary sheet
+        summary_data = {
+            'Item': [
+                'Renewal Date',
+                'Strategy',
+                'New End Date',
+                'New Start Date',
+                'Auto-approved',
+                'Total Rules',
+                'Success Count',
+                'Failed Count',
+                'Duration (seconds)',
+            ],
+            'Value': [
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                settings.get('strategy', 'N/A'),
+                str(settings.get('new_valid_to', 'N/A')),
+                str(settings.get('new_valid_from', 'N/A')),
+                'Yes' if settings.get('auto_approve', False) else 'No',
+                result.get('count', 0),
+                result.get('count', 0) if result.get('success') else 0,
+                0 if result.get('success') else result.get('count', 0),
+                f"{result.get('duration', 0):.2f}",
+            ]
+        }
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Details sheet
+        if selected_df is not None and not selected_df.empty:
+            export_cols = [
+                'kpi_center_split_id', 'kpi_center_name', 'kpi_type',
+                'customer_display', 'product_display', 'brand',
+                'split_percentage', 'effective_from', 'effective_to',
+                'expiry_status', 'total_sales', 'total_gp'
+            ]
+            available_cols = [c for c in export_cols if c in selected_df.columns]
+            selected_df[available_cols].to_excel(
+                writer, sheet_name='Renewed Rules', index=False
+            )
+    
+    buffer.seek(0)
+    return buffer
+
+
 # =============================================================================
-# RENEWAL DIALOG (v2.0)
+# RENEWAL DIALOG (v3.0) - Multi-step Confirmation Flow
 # =============================================================================
 
 @st.dialog("🔄 Renew Split Rules", width="large")
@@ -118,11 +267,70 @@ def _renewal_dialog_impl(
     initial_threshold: int = DEFAULT_THRESHOLD_DAYS
 ):
     """
-    Renewal dialog with comprehensive filters.
+    Renewal dialog with multi-step confirmation flow.
     
-    v2.0: Include expired rules, enhanced filters.
+    v3.0: Multi-step flow with preview, progress, and result summary.
+    
+    Steps:
+        1. SELECT: Filter and select rules to renew
+        2. PREVIEW: Review impact summary and confirm
+        3. PROCESSING: Execute with progress indicator
+        4. RESULT: Show summary and download option
     """
+    # Initialize state
+    init_renewal_state()
     renewal_queries = RenewalQueries(user_id=user_id)
+    
+    # Get current step
+    current_step = st.session_state.get('renewal_step', STEP_SELECT)
+    
+    # Step indicator
+    _render_step_indicator(current_step)
+    
+    st.divider()
+    
+    # Route to appropriate step
+    if current_step == STEP_SELECT:
+        _render_step_select(renewal_queries, can_approve, initial_threshold)
+    elif current_step == STEP_PREVIEW:
+        _render_step_preview(renewal_queries, can_approve)
+    elif current_step == STEP_PROCESSING:
+        _render_step_processing(renewal_queries)
+    elif current_step == STEP_RESULT:
+        _render_step_result()
+
+
+def _render_step_indicator(current_step: str):
+    """Render step progress indicator."""
+    steps = [
+        (STEP_SELECT, "1️⃣ Select", "Choose rules to renew"),
+        (STEP_PREVIEW, "2️⃣ Preview", "Review changes"),
+        (STEP_PROCESSING, "3️⃣ Process", "Executing..."),
+        (STEP_RESULT, "4️⃣ Done", "View results"),
+    ]
+    
+    cols = st.columns(4)
+    for i, (step_id, step_name, step_desc) in enumerate(steps):
+        with cols[i]:
+            if step_id == current_step:
+                st.markdown(f"**{step_name}**")
+                st.caption(step_desc)
+            elif steps.index((step_id, step_name, step_desc)) < [s[0] for s in steps].index(current_step):
+                st.markdown(f"~~{step_name}~~ ✓")
+            else:
+                st.markdown(f"<span style='color: gray'>{step_name}</span>", unsafe_allow_html=True)
+
+
+# =============================================================================
+# STEP 1: SELECT - Filter and Selection
+# =============================================================================
+
+def _render_step_select(
+    renewal_queries: RenewalQueries,
+    can_approve: bool,
+    initial_threshold: int
+):
+    """Render Step 1: Filter and rule selection."""
     
     # =========================================================================
     # FILTERS SECTION
@@ -374,6 +582,11 @@ def _renewal_dialog_impl(
             'Sales': st.column_config.TextColumn('Sales', width='small'),
             'GP': st.column_config.TextColumn('GP', width='small'),
         },
+        # Disable all columns except 'Select' to prevent accidental edits
+        disabled=[
+            'kpi_center_split_id', 'Status', 'Type', 'kpi_center_name',
+            'customer_display', 'product_display', 'brand', 'Split', 'Expires', 'Sales', 'GP'
+        ],
         hide_index=True,
         use_container_width=True,
         height=300,
@@ -443,46 +656,374 @@ def _renewal_dialog_impl(
     st.divider()
     
     # =========================================================================
-    # ACTION BUTTONS
+    # ACTION BUTTONS - Navigate to Preview
     # =========================================================================
     selected_ids = st.session_state.get('renewal_selected_ids', [])
+    
+    # Store settings in session state for preview step
+    strategy = st.session_state.get('renewal_strategy', 'extend')
+    if strategy == 'extend':
+        new_valid_to = st.session_state.get('renewal_new_valid_to', get_default_new_valid_to())
+        new_valid_from = None
+    else:
+        new_valid_from = st.session_state.get('renewal_new_valid_from', date.today())
+        new_valid_to = st.session_state.get('renewal_new_valid_to_copy', get_default_new_valid_to())
+    
+    auto_approve = st.session_state.get('renewal_auto_approve', False) if can_approve else False
     
     action_col1, action_col2 = st.columns([3, 1])
     
     with action_col1:
         if st.button(
-            f"🔄 Renew {len(selected_ids)} Rules",
+            f"👁️ Preview Changes ({len(selected_ids)} rules)",
             type="primary",
             disabled=len(selected_ids) == 0,
             use_container_width=True,
-            key="renewal_execute"
+            key="renewal_to_preview"
         ):
-            # Execute renewal
-            if strategy == 'extend':
-                result = renewal_queries.renew_rules_extend(
-                    rule_ids=selected_ids,
-                    new_valid_to=new_valid_to,
-                    auto_approve=auto_approve
-                )
-            else:
-                result = renewal_queries.renew_rules_copy(
-                    rule_ids=selected_ids,
-                    new_valid_from=new_valid_from,
-                    new_valid_to=new_valid_to,
-                    auto_approve=auto_approve
-                )
-            
-            if result['success']:
-                st.success(f"✅ {result['message']}")
-                st.session_state['renewal_selected_ids'] = []
-                st.session_state['renewal_completed'] = True
-                st.rerun()
-            else:
-                st.error(f"❌ {result['message']}")
+            # Save settings and selected data for preview
+            st.session_state['renewal_settings'] = {
+                'strategy': strategy,
+                'new_valid_from': new_valid_from,
+                'new_valid_to': new_valid_to,
+                'auto_approve': auto_approve,
+            }
+            # Store selected DataFrame for preview stats
+            st.session_state['renewal_selected_df'] = suggestions_df[
+                suggestions_df['kpi_center_split_id'].isin(selected_ids)
+            ].copy()
+            # Navigate to preview
+            st.session_state['renewal_step'] = STEP_PREVIEW
+            st.rerun()
     
     with action_col2:
         if st.button("❌ Close", use_container_width=True, key="renewal_cancel"):
-            st.session_state['renewal_selected_ids'] = []
+            reset_renewal_state()
+            st.rerun()
+
+
+# =============================================================================
+# STEP 2: PREVIEW - Review and Confirm
+# =============================================================================
+
+def _render_step_preview(renewal_queries: RenewalQueries, can_approve: bool):
+    """Render Step 2: Preview impact summary and confirm."""
+    
+    selected_ids = st.session_state.get('renewal_selected_ids', [])
+    selected_df = st.session_state.get('renewal_selected_df', pd.DataFrame())
+    settings = st.session_state.get('renewal_settings', {})
+    
+    if not selected_ids or selected_df.empty:
+        st.error("No rules selected. Please go back and select rules.")
+        if st.button("◀️ Back to Selection", key="preview_back_error"):
+            st.session_state['renewal_step'] = STEP_SELECT
+            st.rerun()
+        return
+    
+    # =========================================================================
+    # RENEWAL SUMMARY
+    # =========================================================================
+    st.markdown("### 📋 Renewal Summary")
+    
+    # Settings display
+    settings_col1, settings_col2, settings_col3 = st.columns(3)
+    
+    with settings_col1:
+        strategy_info = RENEWAL_STRATEGIES.get(settings.get('strategy', 'extend'), {})
+        st.markdown(f"**Strategy:** {strategy_info.get('icon', '📅')} {strategy_info.get('name', 'Extend')}")
+    
+    with settings_col2:
+        st.markdown(f"**New End Date:** `{settings.get('new_valid_to', 'N/A')}`")
+        if settings.get('new_valid_from'):
+            st.markdown(f"**New Start Date:** `{settings.get('new_valid_from', 'N/A')}`")
+    
+    with settings_col3:
+        if settings.get('auto_approve'):
+            st.markdown("**Auto-approve:** ✅ Yes")
+        else:
+            st.markdown("**Auto-approve:** ❌ No (requires approval)")
+    
+    st.divider()
+    
+    # =========================================================================
+    # IMPACT SUMMARY
+    # =========================================================================
+    st.markdown("### 📊 Impact Summary")
+    
+    stats = get_preview_stats(selected_df)
+    
+    # Status breakdown
+    st.markdown("##### Rules by Status")
+    status_cols = st.columns(5)
+    
+    with status_cols[0]:
+        st.metric("📋 Total", f"{stats['total_rules']:,}")
+    with status_cols[1]:
+        st.metric("⚫ Expired", f"{stats['expired_count']:,}")
+    with status_cols[2]:
+        st.metric("🔴 Critical", f"{stats['critical_count']:,}")
+    with status_cols[3]:
+        st.metric("🟠 Warning", f"{stats['warning_count']:,}")
+    with status_cols[4]:
+        st.metric("🟢 Normal", f"{stats['normal_count']:,}")
+    
+    # Affected entities
+    st.markdown("##### Affected Entities")
+    entity_cols = st.columns(4)
+    
+    with entity_cols[0]:
+        st.metric("👥 Customers", f"{stats['unique_customers']:,}")
+    with entity_cols[1]:
+        st.metric("📦 Products", f"{stats['unique_products']:,}")
+    with entity_cols[2]:
+        st.metric("🎯 KPI Centers", f"{stats['unique_centers']:,}")
+    with entity_cols[3]:
+        st.metric("🏷️ Brands", f"{stats['unique_brands']:,}")
+    
+    # Financial impact
+    st.markdown("##### Financial Coverage")
+    fin_cols = st.columns(2)
+    
+    with fin_cols[0]:
+        st.metric("💰 Total Sales", format_currency(stats['total_sales']))
+    with fin_cols[1]:
+        st.metric("📈 Total GP", format_currency(stats['total_gp']))
+    
+    st.divider()
+    
+    # =========================================================================
+    # CONFIRMATION
+    # =========================================================================
+    # Warning for bulk operations
+    if stats['total_rules'] >= BULK_CONFIRMATION_THRESHOLD:
+        st.warning(
+            f"⚠️ **Bulk Operation Warning**\n\n"
+            f"You are about to renew **{stats['total_rules']:,}** rules. "
+            f"This action cannot be undone. Please review the summary above carefully."
+        )
+        
+        confirm_checked = st.checkbox(
+            "I have reviewed the changes and want to proceed",
+            key="renewal_confirm_checkbox"
+        )
+    else:
+        confirm_checked = True  # No confirmation needed for small batches
+    
+    st.divider()
+    
+    # =========================================================================
+    # ACTION BUTTONS
+    # =========================================================================
+    btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 1])
+    
+    with btn_col1:
+        if st.button("◀️ Back", use_container_width=True, key="preview_back"):
+            st.session_state['renewal_step'] = STEP_SELECT
+            st.rerun()
+    
+    with btn_col2:
+        if st.button(
+            f"🔄 Confirm & Renew {stats['total_rules']:,} Rules",
+            type="primary",
+            disabled=not confirm_checked,
+            use_container_width=True,
+            key="preview_confirm"
+        ):
+            # Record start time and move to processing
+            st.session_state['renewal_start_time'] = time.time()
+            st.session_state['renewal_step'] = STEP_PROCESSING
+            st.rerun()
+    
+    with btn_col3:
+        if st.button("❌ Cancel", use_container_width=True, key="preview_cancel"):
+            reset_renewal_state()
+            st.rerun()
+
+
+# =============================================================================
+# STEP 3: PROCESSING - Execute with Progress
+# =============================================================================
+
+def _render_step_processing(renewal_queries: RenewalQueries):
+    """Render Step 3: Execute renewal with progress indicator."""
+    
+    selected_ids = st.session_state.get('renewal_selected_ids', [])
+    settings = st.session_state.get('renewal_settings', {})
+    start_time = st.session_state.get('renewal_start_time', time.time())
+    
+    st.markdown("### 🔄 Processing Renewal")
+    st.markdown(f"Renewing **{len(selected_ids):,}** rules...")
+    
+    # Progress placeholder
+    progress_bar = st.progress(0, text="Initializing...")
+    status_text = st.empty()
+    
+    # Simulate progress stages (actual execution is atomic)
+    stages = [
+        (0.1, "Validating rules..."),
+        (0.3, "Preparing updates..."),
+        (0.5, "Executing renewal..."),
+        (0.8, "Finalizing changes..."),
+    ]
+    
+    for progress, status in stages:
+        progress_bar.progress(progress, text=status)
+        status_text.caption(f"⏳ {status}")
+        time.sleep(0.3)  # Brief pause for visual feedback
+    
+    # Execute the actual renewal
+    strategy = settings.get('strategy', 'extend')
+    new_valid_to = settings.get('new_valid_to')
+    new_valid_from = settings.get('new_valid_from')
+    auto_approve = settings.get('auto_approve', False)
+    
+    if strategy == 'extend':
+        result = renewal_queries.renew_rules_extend(
+            rule_ids=selected_ids,
+            new_valid_to=new_valid_to,
+            auto_approve=auto_approve
+        )
+    else:
+        result = renewal_queries.renew_rules_copy(
+            rule_ids=selected_ids,
+            new_valid_from=new_valid_from,
+            new_valid_to=new_valid_to,
+            auto_approve=auto_approve
+        )
+    
+    # Calculate duration
+    duration = time.time() - start_time
+    result['duration'] = duration
+    
+    # Complete progress
+    progress_bar.progress(1.0, text="Complete!")
+    
+    # Store result and move to result step
+    st.session_state['renewal_result'] = result
+    st.session_state['renewal_step'] = STEP_RESULT
+    time.sleep(0.5)  # Brief pause before showing result
+    st.rerun()
+
+
+# =============================================================================
+# STEP 4: RESULT - Summary and Download
+# =============================================================================
+
+def _render_step_result():
+    """Render Step 4: Show result summary and download option."""
+    
+    result = st.session_state.get('renewal_result', {})
+    settings = st.session_state.get('renewal_settings', {})
+    selected_df = st.session_state.get('renewal_selected_df', pd.DataFrame())
+    
+    # =========================================================================
+    # RESULT STATUS
+    # =========================================================================
+    if result.get('success', False):
+        st.success("### ✅ Renewal Completed Successfully!")
+    else:
+        st.error("### ❌ Renewal Failed")
+        st.error(f"Error: {result.get('message', 'Unknown error')}")
+    
+    st.divider()
+    
+    # =========================================================================
+    # RESULT DETAILS
+    # =========================================================================
+    st.markdown("### 📊 Results")
+    
+    result_cols = st.columns(4)
+    
+    with result_cols[0]:
+        if result.get('success'):
+            st.metric("✅ Rules Renewed", f"{result.get('count', 0):,}")
+        else:
+            st.metric("❌ Failed", f"{result.get('count', 0):,}")
+    
+    with result_cols[1]:
+        st.metric("⏱️ Duration", f"{result.get('duration', 0):.1f}s")
+    
+    with result_cols[2]:
+        strategy_info = RENEWAL_STRATEGIES.get(settings.get('strategy', 'extend'), {})
+        st.metric("📅 Strategy", strategy_info.get('name', 'Extend'))
+    
+    with result_cols[3]:
+        st.metric("📆 New End Date", str(settings.get('new_valid_to', 'N/A')))
+    
+    # Additional info
+    info_cols = st.columns(2)
+    
+    with info_cols[0]:
+        if settings.get('new_valid_from'):
+            st.info(f"**New Start Date:** {settings.get('new_valid_from')}")
+    
+    with info_cols[1]:
+        if settings.get('auto_approve'):
+            st.success("**Status:** Auto-approved ✅")
+        else:
+            st.warning("**Status:** Pending approval ⏳")
+    
+    st.divider()
+    
+    # =========================================================================
+    # DOWNLOAD REPORT
+    # =========================================================================
+    if result.get('success') and not selected_df.empty:
+        st.markdown("### 📥 Download Report")
+        st.caption("Download a detailed report of the renewed rules for your records.")
+        
+        # Generate report
+        report_buffer = generate_renewal_report(selected_df, settings, result)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"renewal_report_{timestamp}.xlsx"
+        
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=report_buffer,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="renewal_download_report"
+        )
+    
+    st.divider()
+    
+    # =========================================================================
+    # TIPS AND NEXT STEPS
+    # =========================================================================
+    if result.get('success'):
+        with st.expander("💡 Tips & Next Steps", expanded=False):
+            st.markdown("""
+            - **Rules are now active** with updated validity periods
+            - **Check the main table** to verify the changes
+            - **If auto-approve was disabled**, rules will need manual approval
+            - **Download the report** above for your records or audit purposes
+            """)
+    
+    # =========================================================================
+    # ACTION BUTTONS
+    # =========================================================================
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        if st.button(
+            "🔄 Renew More Rules",
+            use_container_width=True,
+            key="result_renew_more"
+        ):
+            reset_renewal_state()
+            st.session_state['renewal_step'] = STEP_SELECT
+            st.rerun()
+    
+    with btn_col2:
+        if st.button(
+            "✅ Done - Close Dialog",
+            type="primary",
+            use_container_width=True,
+            key="result_done"
+        ):
+            st.session_state['renewal_completed'] = result.get('success', False)
+            reset_renewal_state()
             st.rerun()
 
 
@@ -500,6 +1041,8 @@ def renewal_section(
     Renewal button that opens dialog.
     
     Uses @st.fragment to avoid page rerun when button is clicked.
+    
+    v3.0: Multi-step dialog with preview and confirmation.
     """
     # Show success toast if just completed
     if st.session_state.get('renewal_completed', False):
@@ -509,9 +1052,11 @@ def renewal_section(
     # Simple button - opens dialog directly
     if st.button(
         "🔄 Renew Expiring",
-        help="Open renewal dialog to manage expiring/expired split rules",
+        help="Open renewal dialog to manage expiring/expired split rules with preview confirmation",
         key="renewal_trigger"
     ):
+        # Reset state to start fresh
+        reset_renewal_state()
         _renewal_dialog_impl(
             user_id=user_id,
             can_approve=can_approve,

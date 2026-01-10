@@ -1,6 +1,13 @@
 # utils/kpi_center_performance/setup/renewal/__init__.py
 """
-Renewal Module for KPI Center Split Rules (v2.1)
+Renewal Module for KPI Center Split Rules (v3.0)
+
+v3.0 Changes:
+- Multi-step confirmation flow: Select → Preview → Processing → Result
+- Impact summary with detailed breakdown before execution
+- Progress indicator during bulk operations
+- Detailed result summary with download option
+- Confirmation checkbox for safety on bulk operations (>50 rules)
 
 v2.1 Changes:
 - User-selectable date pickers for expired_from and sales_from
@@ -15,8 +22,9 @@ v2.0 Changes:
 Provides functionality to:
 1. Detect expired/expiring split rules with sales activity
 2. Filter by brand, customer, product, date ranges
-3. Bulk renew selected rules with new validity period
-4. Preview and confirm renewal operations
+3. Preview impact before bulk renewal operations
+4. Bulk renew selected rules with new validity period
+5. Download detailed Excel report of renewed rules
 
 Usage:
     from utils.kpi_center_performance.setup.renewal import renewal_section
@@ -34,6 +42,12 @@ from .fragments import (
     renewal_section,
     RENEWAL_STRATEGIES,
     DEFAULT_THRESHOLD_DAYS,
+    BULK_CONFIRMATION_THRESHOLD,
+    # Step constants (for testing/customization)
+    STEP_SELECT,
+    STEP_PREVIEW,
+    STEP_PROCESSING,
+    STEP_RESULT,
 )
 
 __all__ = [
@@ -47,6 +61,13 @@ __all__ = [
     # Constants
     'RENEWAL_STRATEGIES',
     'DEFAULT_THRESHOLD_DAYS',
+    'BULK_CONFIRMATION_THRESHOLD',
+    
+    # Step constants
+    'STEP_SELECT',
+    'STEP_PREVIEW',
+    'STEP_PROCESSING',
+    'STEP_RESULT',
 ]
 
-__version__ = '2.1.0'
+__version__ = '3.0.0'
