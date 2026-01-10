@@ -299,12 +299,14 @@ class SalespersonSetupQueries:
         period_year: int = None,
         period_start: date = None,
         period_end: date = None,
-        include_deleted: bool = False
+        include_deleted: bool = False,
+        employee_ids: List[int] = None  # v1.2.0: Added for Setup tab sync
     ) -> Dict:
         """
         Get summary statistics for split rules with period filter.
         
         v1.1.0: Uses view for consistent status calculation.
+        v1.2.0: Added employee_ids filter to sync metrics with data table.
         
         Returns:
             Dict with counts: total, ok, incomplete, over_100, pending, expiring_soon
@@ -325,6 +327,11 @@ class SalespersonSetupQueries:
         
         if not include_deleted:
             query += " AND (delete_flag = 0 OR delete_flag IS NULL)"
+        
+        # v1.2.0: Employee filter for access control
+        if employee_ids:
+            query += " AND sale_person_id IN :employee_ids"
+            params['employee_ids'] = tuple(employee_ids)
         
         if period_year:
             query += """

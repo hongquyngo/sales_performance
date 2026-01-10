@@ -21,6 +21,12 @@ v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
          - Created By / Approved By / Date range filters
          - KPI summary by type in Assignments tab
          - Uses sales_split_looker_view for performance
+v1.2.0 - FIX: Setup tab now independent from main page's "Only with KPI" filter
+         - Setup tab uses AccessControl for employee filtering instead of active_filters
+         - Added Salesperson dropdown filter in Entity Filters section
+         - Fixed metrics/data table mismatch (metrics now use same employee_ids filter)
+         - Access control: Users see only their own or team members' data based on hierarchy
+         - Full access users (admin/GM/MD) can see all salespeople
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -78,4 +84,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.1.0'
+__version__ = '1.2.0'

@@ -108,10 +108,14 @@ def setup_tab_fragment(
     """
     Main fragment for Setup tab with 3 sub-tabs.
     
+    v1.2.0: Setup tab now uses AccessControl for employee filtering instead of
+            main page's active_filters. This prevents "Only with KPI assignment"
+            filter from affecting Setup tab.
+    
     Args:
         sales_split_df: Pre-loaded split data (optional, for backward compatibility)
         sales_df: Pre-loaded sales data (optional)
-        active_filters: Dict of active filters from sidebar
+        active_filters: Dict of active filters from sidebar (year used, employee_ids ignored)
         fragment_key: Unique key for fragment
     """
     st.subheader("⚙️ Salesperson Configuration")
@@ -129,8 +133,30 @@ def setup_tab_fragment(
     # Get year from filters
     current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
     
-    # Get issue counts for tab badges
-    split_stats = setup_queries.get_split_summary_stats()
+    # =========================================================================
+    # v1.2.0: Get accessible employees from AccessControl (NOT from active_filters)
+    # This prevents "Only with KPI assignment" from affecting Setup tab
+    # =========================================================================
+    from utils.salesperson_performance import AccessControl
+    
+    # Get user info from session state
+    user_role = st.session_state.get('user_role', 'viewer')
+    employee_id = st.session_state.get('employee_id')
+    
+    access = AccessControl(user_role=user_role, employee_id=employee_id)
+    access_level = access.get_access_level()
+    
+    if access_level == 'full':
+        # Admin/GM/MD can see all salespeople
+        accessible_employee_ids = None  # None means no filter (all)
+    else:
+        # Team or Self access - restricted to accessible employees
+        accessible_employee_ids = access.get_accessible_employee_ids()
+    
+    # Get issue counts for tab badges (using accessible scope)
+    split_stats = setup_queries.get_split_summary_stats(
+        employee_ids=accessible_employee_ids
+    )
     split_critical = split_stats.get('over_100_count', 0)
     
     assignment_issues = setup_queries.get_assignment_issues_summary(current_year)
@@ -150,15 +176,16 @@ def setup_tab_fragment(
     with tab1:
         split_rules_section(
             setup_queries=setup_queries,
-            employee_ids=active_filters.get('employee_ids') if active_filters else None,
+            accessible_employee_ids=accessible_employee_ids,  # v1.2.0: Changed parameter
             can_edit=can_edit,
-            can_approve=can_approve
+            can_approve=can_approve,
+            access_level=access_level  # v1.2.0: Pass access level for UI
         )
     
     with tab2:
         kpi_assignments_section(
             setup_queries=setup_queries,
-            employee_ids=active_filters.get('employee_ids') if active_filters else None,
+            employee_ids=accessible_employee_ids,  # Use accessible scope
             can_edit=can_edit,
             current_year=current_year
         )
@@ -177,21 +204,37 @@ def setup_tab_fragment(
 @st.fragment
 def split_rules_section(
     setup_queries: SalespersonSetupQueries,
-    employee_ids: List[int] = None,
+    accessible_employee_ids: List[int] = None,  # v1.2.0: Renamed from employee_ids
     can_edit: bool = False,
-    can_approve: bool = False
+    can_approve: bool = False,
+    access_level: str = 'self'  # v1.2.0: Added for UI customization
 ):
     """
     Split Rules sub-tab with CRUD operations and comprehensive filters.
     
     v1.1.0: Added Audit Trail filter group (Created By, Approved By, Date Ranges)
+    v1.2.0: Changed to use accessible_employee_ids from AccessControl.
+            Added salesperson filter dropdown within accessible scope.
+            Setup tab is now independent from main page's "Only with KPI" filter.
+    
+    Args:
+        setup_queries: Query handler
+        accessible_employee_ids: List of employee IDs user can access (None = full access)
+        can_edit: Whether user can edit rules
+        can_approve: Whether user can approve rules
+        access_level: 'full', 'team', or 'self' - affects UI options
     """
     
     # =========================================================================
     # HELPER: Build query params from filter state
     # =========================================================================
     def get_current_filter_params():
-        """Build query params from current filter state."""
+        """
+        Build query params from current filter state.
+        
+        v1.2.0: Changed to use Setup tab's own salesperson filter instead of
+                main page's employee_ids. Applies accessible_employee_ids constraint.
+        """
         params = {}
         
         # Period filters
@@ -211,10 +254,30 @@ def split_rules_section(
             if custom_end:
                 params['period_end'] = custom_end
         
-        # Entity filters
-        if employee_ids:
-            params['employee_ids'] = employee_ids
+        # =====================================================================
+        # v1.2.0: Salesperson filter - Setup tab's own filter
+        # Note: selectbox returns single value (-1 = All, or specific employee_id)
+        # =====================================================================
+        sp_filter = st.session_state.get('sp_split_salesperson_filter', -1)
         
+        if sp_filter and sp_filter != -1:
+            # User selected a specific salesperson
+            # Apply accessible constraint if not full access
+            if accessible_employee_ids is not None:
+                # Verify selected person is in accessible scope
+                if sp_filter in accessible_employee_ids:
+                    params['employee_ids'] = [sp_filter]
+                else:
+                    # Fallback to all accessible (shouldn't happen with proper UI)
+                    params['employee_ids'] = accessible_employee_ids
+            else:
+                params['employee_ids'] = [sp_filter]
+        elif accessible_employee_ids is not None:
+            # "All" selected but user has restricted access
+            params['employee_ids'] = accessible_employee_ids
+        # else: Full access, "All" selected = show all (no filter)
+        
+        # Entity filters - Brand
         brand_filter = st.session_state.get('sp_split_brand_filter', [])
         if brand_filter:
             params['brand_ids'] = brand_filter
@@ -325,9 +388,44 @@ def split_rules_section(
         # ROW 2: Entity Filters
         st.markdown("##### 🏢 Entity Filters")
         
-        e_col1, e_col2, e_col3 = st.columns(3)
+        e_col1, e_col2, e_col3, e_col4 = st.columns(4)
         
+        # v1.2.0: Salesperson filter - Setup tab's own filter
         with e_col1:
+            # Get salespeople within accessible scope
+            salespeople_df = setup_queries.get_salespeople_for_dropdown(include_inactive=True)
+            
+            # Filter to accessible scope if restricted
+            if accessible_employee_ids is not None:
+                salespeople_df = salespeople_df[
+                    salespeople_df['employee_id'].isin(accessible_employee_ids)
+                ]
+            
+            if not salespeople_df.empty:
+                sp_options = [(-1, "👥 All Salespeople")] + [
+                    (row['employee_id'], f"👤 {row['employee_name']}") 
+                    for _, row in salespeople_df.iterrows()
+                ]
+                
+                # Determine label based on access level
+                if access_level == 'full':
+                    filter_label = "Salesperson"
+                elif access_level == 'team':
+                    filter_label = f"Team Member ({len(salespeople_df)})"
+                else:
+                    filter_label = "Your Data"
+                
+                st.selectbox(
+                    filter_label,
+                    options=[s[0] for s in sp_options],
+                    format_func=lambda x: next((s[1] for s in sp_options if s[0] == x), "All"),
+                    key="sp_split_salesperson_filter",
+                    help="Filter rules by salesperson (within your access scope)"
+                )
+            else:
+                st.info("No salespeople available")
+        
+        with e_col2:
             brands_df = setup_queries.get_brands_for_dropdown()
             brand_options = brands_df['brand_id'].tolist() if not brands_df.empty else []
             
@@ -339,14 +437,14 @@ def split_rules_section(
                 key="sp_split_brand_filter"
             )
         
-        with e_col2:
+        with e_col3:
             customer_search = st.text_input(
                 "🔍 Search Customer",
                 placeholder="Company code or name...",
                 key="sp_split_customer_search"
             )
         
-        with e_col3:
+        with e_col4:
             product_search = st.text_input(
                 "🔍 Search Product",
                 placeholder="PT code or name...",
@@ -498,6 +596,7 @@ def split_rules_section(
             if st.button("🔄 Reset Filters", use_container_width=True):
                 keys_to_reset = [
                     'sp_split_period_year', 'sp_split_period_type', 'sp_split_period_start', 'sp_split_period_end',
+                    'sp_split_salesperson_filter',  # v1.2.0: Added
                     'sp_split_brand_filter', 'sp_split_customer_search', 'sp_split_product_search',
                     'sp_split_pct_min', 'sp_split_pct_max', 'sp_split_status_filter', 'sp_split_approval_filter',
                     'sp_split_created_by_filter', 'sp_split_approved_by_filter',
@@ -512,8 +611,10 @@ def split_rules_section(
         
         with sys_col3:
             # Count active filters
+            sp_filter_val = st.session_state.get('sp_split_salesperson_filter', -1)
             active_filter_count = sum([
                 period_type != 'all',
+                sp_filter_val != -1 if sp_filter_val else False,  # v1.2.0: Salesperson filter
                 len(brand_filter) > 0,
                 bool(customer_search),
                 bool(product_search),
@@ -537,13 +638,14 @@ def split_rules_section(
     query_params = get_current_filter_params()
     
     # =========================================================================
-    # SUMMARY METRICS
+    # SUMMARY METRICS (v1.2.0: Now synced with data table via employee_ids)
     # =========================================================================
     stats = setup_queries.get_split_summary_stats(
         period_year=query_params.get('period_year'),
         period_start=query_params.get('period_start'),
         period_end=query_params.get('period_end'),
-        include_deleted=query_params.get('include_deleted', False)
+        include_deleted=query_params.get('include_deleted', False),
+        employee_ids=query_params.get('employee_ids')  # v1.2.0: Sync with data table
     )
     
     col1, col2, col3, col4, col5, col6 = st.columns(6)
