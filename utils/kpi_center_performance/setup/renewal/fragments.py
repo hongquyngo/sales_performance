@@ -268,7 +268,9 @@ def _renewal_dialog_impl(
         threshold_days=threshold_days,
         include_expired=include_expired,
         expired_from_date=expired_from_date if include_expired else None,
-        sales_from_date=sales_from_date if require_sales else None
+        sales_from_date=sales_from_date if require_sales else None,
+        min_sales_amount=min_sales,
+        require_sales_activity=require_sales
     )
     
     metric_cols = st.columns(6)

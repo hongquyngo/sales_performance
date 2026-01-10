@@ -149,6 +149,22 @@ class RenewalQueries:
             today = date.today()
             sales_from_date = date(today.year - 1, 1, 1)
         
+        # HAVING clause logic:
+        # - require_sales_activity=True + min_sales=0: HAVING SUM > 0 (có sales dương)
+        # - require_sales_activity=True + min_sales>0: HAVING SUM >= min_sales (min_sales>0 ngầm định có sales)
+        # - require_sales_activity=False + min_sales>0: HAVING SUM >= min_sales
+        # - require_sales_activity=False + min_sales=0: không cần HAVING
+        if require_sales_activity:
+            if min_sales_amount > 0:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) >= :min_sales"
+            else:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) > 0"
+        else:
+            if min_sales_amount > 0:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) >= :min_sales"
+            else:
+                having_clause = ""
+        
         query = f"""
             WITH recent_sales AS (
                 SELECT 
@@ -163,7 +179,7 @@ class RenewalQueries:
                 WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
                 GROUP BY customer_id, product_id
-                HAVING SUM(sales_by_kpi_center_usd) >= :min_sales
+                {having_clause}
             )
             SELECT 
                 -- Split rule fields
@@ -307,13 +323,16 @@ class RenewalQueries:
         threshold_days: int = 90,
         include_expired: bool = True,
         expired_from_date: date = None,
-        sales_from_date: date = None
+        sales_from_date: date = None,
+        min_sales_amount: float = 0,
+        require_sales_activity: bool = True
     ) -> Dict:
         """
         Get summary statistics for renewal suggestions.
         
         v2.0: Include expired rules in stats.
         v2.1: Use expired_from_date and sales_from_date instead of fixed values.
+        v2.2: Add min_sales_amount and require_sales_activity for consistency.
         
         Returns:
             Dict with counts by status and total sales at risk
@@ -323,7 +342,21 @@ class RenewalQueries:
             today = date.today()
             sales_from_date = date(today.year - 1, 1, 1)
         
-        query = """
+        # HAVING clause logic (same as get_renewal_suggestions)
+        if require_sales_activity:
+            if min_sales_amount > 0:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) >= :min_sales"
+            else:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) > 0"
+        else:
+            if min_sales_amount > 0:
+                having_clause = "HAVING SUM(sales_by_kpi_center_usd) >= :min_sales"
+            else:
+                having_clause = ""
+        
+        sales_join = "INNER JOIN" if require_sales_activity else "LEFT JOIN"
+        
+        query = f"""
             WITH recent_sales AS (
                 SELECT 
                     customer_id,
@@ -333,7 +366,7 @@ class RenewalQueries:
                 WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
                 GROUP BY customer_id, product_id
-                HAVING SUM(sales_by_kpi_center_usd) >= 0
+                {having_clause}
             ),
             target_rules AS (
                 SELECT 
@@ -347,7 +380,7 @@ class RenewalQueries:
                         ELSE 'normal'
                     END as expiry_status
                 FROM kpi_center_split_looker_view kcsfv
-                INNER JOIN recent_sales rs 
+                {sales_join} recent_sales rs 
                     ON kcsfv.customer_id = rs.customer_id 
                     AND kcsfv.product_id = rs.product_id
                 WHERE 
@@ -356,7 +389,8 @@ class RenewalQueries:
         """
         
         params = {
-            'sales_from_date': sales_from_date
+            'sales_from_date': sales_from_date,
+            'min_sales': min_sales_amount
         }
         
         if include_expired:
