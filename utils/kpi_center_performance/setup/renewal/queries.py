@@ -170,6 +170,7 @@ class RenewalQueries:
                 SELECT 
                     customer_id,
                     product_id,
+                    kpi_center_id,
                     SUM(sales_by_kpi_center_usd) as total_sales,
                     SUM(gross_profit_by_kpi_center_usd) as total_gp,
                     SUM(gp1_by_kpi_center_usd) as total_gp1,
@@ -178,7 +179,7 @@ class RenewalQueries:
                 FROM sales_report_by_kpi_center_flat_looker_view
                 WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
-                GROUP BY customer_id, product_id
+                GROUP BY customer_id, product_id, kpi_center_id
                 {having_clause}
             )
             SELECT 
@@ -229,6 +230,7 @@ class RenewalQueries:
             {sales_join} recent_sales rs 
                 ON kcsfv.customer_id = rs.customer_id 
                 AND kcsfv.product_id = rs.product_id
+                AND kcsfv.kpi_center_id = rs.kpi_center_id
             WHERE 
                 -- Active (not deleted) and approved
                 kcsfv.is_approved = 1
@@ -361,11 +363,12 @@ class RenewalQueries:
                 SELECT 
                     customer_id,
                     product_id,
+                    kpi_center_id,
                     SUM(sales_by_kpi_center_usd) as total_sales
                 FROM sales_report_by_kpi_center_flat_looker_view
                 WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
-                GROUP BY customer_id, product_id
+                GROUP BY customer_id, product_id, kpi_center_id
                 {having_clause}
             ),
             target_rules AS (
@@ -383,6 +386,7 @@ class RenewalQueries:
                 {sales_join} recent_sales rs 
                     ON kcsfv.customer_id = rs.customer_id 
                     AND kcsfv.product_id = rs.product_id
+                    AND kcsfv.kpi_center_id = rs.kpi_center_id
                 WHERE 
                     kcsfv.is_approved = 1
                     AND (kcsfv.delete_flag = 0 OR kcsfv.delete_flag IS NULL)
@@ -723,10 +727,11 @@ class RenewalQueries:
                 SELECT 
                     customer_id,
                     product_id,
+                    kpi_center_id,
                     SUM(sales_by_kpi_center_usd) as total_sales_12m
                 FROM sales_report_by_kpi_center_flat_looker_view
                 WHERE inv_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-                GROUP BY customer_id, product_id
+                GROUP BY customer_id, product_id, kpi_center_id
             )
             SELECT 
                 kcsfv.kpi_center_split_id,
@@ -741,6 +746,7 @@ class RenewalQueries:
             LEFT JOIN recent_sales rs 
                 ON kcsfv.customer_id = rs.customer_id 
                 AND kcsfv.product_id = rs.product_id
+                AND kcsfv.kpi_center_id = rs.kpi_center_id
             WHERE kcsfv.kpi_center_split_id IN :rule_ids
         """
         

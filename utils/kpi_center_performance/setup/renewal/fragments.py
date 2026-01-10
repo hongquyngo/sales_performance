@@ -145,7 +145,8 @@ def reset_renewal_state():
     """Reset renewal state when closing dialog."""
     keys_to_reset = [
         'renewal_step', 'renewal_selected_ids', 'renewal_selected_df',
-        'renewal_settings', 'renewal_result', 'renewal_start_time'
+        'renewal_settings', 'renewal_result', 'renewal_start_time',
+        'renewal_dialog_open'  # Track dialog open state for rerun persistence
     ]
     for key in keys_to_reset:
         if key in st.session_state:
@@ -1043,13 +1044,14 @@ def renewal_section(
     Uses @st.fragment to avoid page rerun when button is clicked.
     
     v3.0: Multi-step dialog with preview and confirmation.
+    v3.1: Fixed dialog closing on rerun by tracking open state.
     """
     # Show success toast if just completed
     if st.session_state.get('renewal_completed', False):
         st.toast("✅ Rules renewed successfully!", icon="🎉")
         st.session_state['renewal_completed'] = False
     
-    # Simple button - opens dialog directly
+    # Button to open dialog
     if st.button(
         "🔄 Renew Expiring",
         help="Open renewal dialog to manage expiring/expired split rules with preview confirmation",
@@ -1057,6 +1059,10 @@ def renewal_section(
     ):
         # Reset state to start fresh
         reset_renewal_state()
+        st.session_state['renewal_dialog_open'] = True
+    
+    # Open dialog if flag is set (persists across reruns)
+    if st.session_state.get('renewal_dialog_open', False):
         _renewal_dialog_impl(
             user_id=user_id,
             can_approve=can_approve,
