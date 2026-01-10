@@ -8,6 +8,8 @@ UI Fragments for Setup Tab - Salesperson Performance
 3. Salespeople - List/manage salespeople
 
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, KPI summary by type, enhanced card layout
+         Synced with KPI Center Performance v2.6.0 features
 """
 
 import streamlit as st
@@ -169,7 +171,7 @@ def setup_tab_fragment(
 
 
 # =============================================================================
-# SPLIT RULES SECTION
+# SPLIT RULES SECTION (v1.1.0 - Added Audit Trail Filters)
 # =============================================================================
 
 @st.fragment
@@ -181,6 +183,8 @@ def split_rules_section(
 ):
     """
     Split Rules sub-tab with CRUD operations and comprehensive filters.
+    
+    v1.1.0: Added Audit Trail filter group (Created By, Approved By, Date Ranges)
     """
     
     # =========================================================================
@@ -231,6 +235,31 @@ def split_rules_section(
         if split_max is not None and split_max < 100:
             params['split_max'] = split_max
         
+        # Audit trail filters (v1.1.0 - NEW)
+        created_by = st.session_state.get('sp_split_created_by_filter')
+        if created_by and created_by > 0:
+            params['created_by_user_id'] = created_by
+        
+        approved_by = st.session_state.get('sp_split_approved_by_filter')
+        if approved_by and approved_by > 0:
+            params['approved_by_employee_id'] = approved_by
+        
+        created_from = st.session_state.get('sp_split_created_date_from')
+        if created_from:
+            params['created_date_from'] = created_from
+        
+        created_to = st.session_state.get('sp_split_created_date_to')
+        if created_to:
+            params['created_date_to'] = created_to
+        
+        modified_from = st.session_state.get('sp_split_modified_date_from')
+        if modified_from:
+            params['modified_date_from'] = modified_from
+        
+        modified_to = st.session_state.get('sp_split_modified_date_to')
+        if modified_to:
+            params['modified_date_to'] = modified_to
+        
         # System filters
         include_deleted = st.session_state.get('sp_split_show_deleted', False)
         params['include_deleted'] = include_deleted
@@ -238,7 +267,7 @@ def split_rules_section(
         return params
     
     # =========================================================================
-    # FILTERS
+    # FILTERS (v1.1.0 - 5 Filter Groups like KPI Center)
     # =========================================================================
     with st.expander("🔍 Filters", expanded=True):
         
@@ -380,15 +409,89 @@ def split_rules_section(
         
         st.divider()
         
-        # ROW 4: System Filters
+        # ROW 4: Audit Trail Filters (v1.1.0 - NEW)
+        st.markdown("##### 👤 Audit Trail")
+        
+        a_col1, a_col2, a_col3, a_col4 = st.columns(4)
+        
+        with a_col1:
+            # Created By dropdown
+            users_df = setup_queries.get_users_for_dropdown()
+            user_options = [(-1, "All Users")] + [
+                (row['user_id'], row['full_name']) 
+                for _, row in users_df.iterrows()
+            ] if not users_df.empty else [(-1, "All Users")]
+            
+            created_by_filter = st.selectbox(
+                "Created By",
+                options=[u[0] for u in user_options],
+                format_func=lambda x: next((u[1] for u in user_options if u[0] == x), "All Users"),
+                key="sp_split_created_by_filter"
+            )
+        
+        with a_col2:
+            # Approved By dropdown
+            approvers_df = setup_queries.get_approvers_for_dropdown()
+            approver_options = [(-1, "All Approvers")] + [
+                (row['employee_id'], row['employee_name']) 
+                for _, row in approvers_df.iterrows()
+            ] if not approvers_df.empty else [(-1, "All Approvers")]
+            
+            approved_by_filter = st.selectbox(
+                "Approved By",
+                options=[a[0] for a in approver_options],
+                format_func=lambda x: next((a[1] for a in approver_options if a[0] == x), "All Approvers"),
+                key="sp_split_approved_by_filter"
+            )
+        
+        with a_col3:
+            # Created Date Range
+            created_date_from = st.date_input(
+                "Created From",
+                value=None,
+                key="sp_split_created_date_from"
+            )
+        
+        with a_col4:
+            created_date_to = st.date_input(
+                "Created To",
+                value=None,
+                key="sp_split_created_date_to"
+            )
+        
+        # Modified date row
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        
+        with m_col1:
+            modified_date_from = st.date_input(
+                "Modified From",
+                value=None,
+                key="sp_split_modified_date_from"
+            )
+        
+        with m_col2:
+            modified_date_to = st.date_input(
+                "Modified To",
+                value=None,
+                key="sp_split_modified_date_to"
+            )
+        
+        st.divider()
+        
+        # ROW 5: System Filters
+        st.markdown("##### ⚙️ System")
+        
         sys_col1, sys_col2, sys_col3 = st.columns([2, 1, 1])
         
         with sys_col1:
+            # NOTE: View has built-in WHERE delete_flag=0, so this checkbox
+            # cannot actually show deleted records. Kept disabled for UI consistency.
             show_deleted = st.checkbox(
                 "🗑️ Show deleted rules",
                 value=False,
                 key="sp_split_show_deleted",
-                help="Include soft-deleted rules"
+                help="⚠️ Not available: View filters out deleted records",
+                disabled=True  # Cannot show deleted with current view
             )
         
         with sys_col2:
@@ -397,6 +500,9 @@ def split_rules_section(
                     'sp_split_period_year', 'sp_split_period_type', 'sp_split_period_start', 'sp_split_period_end',
                     'sp_split_brand_filter', 'sp_split_customer_search', 'sp_split_product_search',
                     'sp_split_pct_min', 'sp_split_pct_max', 'sp_split_status_filter', 'sp_split_approval_filter',
+                    'sp_split_created_by_filter', 'sp_split_approved_by_filter',
+                    'sp_split_created_date_from', 'sp_split_created_date_to',
+                    'sp_split_modified_date_from', 'sp_split_modified_date_to',
                     'sp_split_show_deleted'
                 ]
                 for key in keys_to_reset:
@@ -405,6 +511,7 @@ def split_rules_section(
                 st.rerun(scope="fragment")
         
         with sys_col3:
+            # Count active filters
             active_filter_count = sum([
                 period_type != 'all',
                 len(brand_filter) > 0,
@@ -414,6 +521,12 @@ def split_rules_section(
                 split_max < 100,
                 status_filter != 'all',
                 approval_filter != 'all',
+                created_by_filter > 0 if created_by_filter else False,
+                approved_by_filter > 0 if approved_by_filter else False,
+                created_date_from is not None,
+                created_date_to is not None,
+                modified_date_from is not None if 'modified_date_from' in dir() else False,
+                modified_date_to is not None if 'modified_date_to' in dir() else False,
                 show_deleted
             ])
             st.metric("Active Filters", active_filter_count)
@@ -433,7 +546,7 @@ def split_rules_section(
         include_deleted=query_params.get('include_deleted', False)
     )
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
         st.metric(
@@ -469,6 +582,12 @@ def split_rules_section(
             value=f"{stats['pending_count']:,}",
             help="Rules awaiting approval"
         )
+    with col6:
+        st.metric(
+            label="⏰ Expiring",
+            value=f"{stats['expiring_soon_count']:,}",
+            help="Rules expiring within 30 days"
+        )
     
     st.divider()
     
@@ -496,6 +615,9 @@ def split_rules_section(
     
     # Client-side text search
     if not split_df.empty:
+        customer_search = st.session_state.get('sp_split_customer_search', '')
+        product_search = st.session_state.get('sp_split_product_search', '')
+        
         if customer_search:
             search_lower = customer_search.lower()
             mask = (
@@ -532,7 +654,7 @@ def split_rules_section(
     st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
     
     # =========================================================================
-    # DATA TABLE
+    # DATA TABLE (v1.1.0 - Added Creator column)
     # =========================================================================
     display_df = split_df.copy()
     
@@ -546,6 +668,7 @@ def split_rules_section(
         lambda r: f"✅ {r.get('approved_by_name', '').strip() if pd.notna(r.get('approved_by_name')) else ''}" if r.get('is_approved') else '⏳ Pending',
         axis=1
     )
+    display_df['Created By'] = display_df['created_by_name'].fillna('')
     
     show_deleted_flag = st.session_state.get('sp_split_show_deleted', False)
     
@@ -554,7 +677,7 @@ def split_rules_section(
     
     columns_to_show = [
         'ID', 'Salesperson', 'Customer', 'Product', 'brand',
-        'Split', 'effective_period', 'Status', 'Approved'
+        'Split', 'effective_period', 'Status', 'Approved', 'Created By'
     ]
     if show_deleted_flag and 'delete_flag' in display_df.columns:
         columns_to_show.append('Deleted')
@@ -571,7 +694,8 @@ def split_rules_section(
             'Split': st.column_config.TextColumn('Split %', width='small'),
             'effective_period': st.column_config.TextColumn('Period', width='medium'),
             'Status': st.column_config.TextColumn('Status', width='small'),
-            'Approved': st.column_config.TextColumn('Approved', width='small'),
+            'Approved': st.column_config.TextColumn('Approved', width='medium'),
+            'Created By': st.column_config.TextColumn('Created By', width='medium'),
         },
         use_container_width=True
     )
@@ -797,7 +921,7 @@ def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool
 
 
 # =============================================================================
-# KPI ASSIGNMENTS SECTION
+# KPI ASSIGNMENTS SECTION (v1.1.0 - Added Summary by Type)
 # =============================================================================
 
 @st.fragment
@@ -807,7 +931,11 @@ def kpi_assignments_section(
     can_edit: bool = False,
     current_year: int = None
 ):
-    """KPI Assignments sub-tab."""
+    """
+    KPI Assignments sub-tab.
+    
+    v1.1.0: Added KPI Summary by Type section (synced with KPI Center Performance)
+    """
     
     current_year = current_year or date.today().year
     
@@ -847,6 +975,40 @@ def kpi_assignments_section(
             st.write("")
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
                 st.session_state['sp_show_add_assignment_form'] = True
+    
+    # -------------------------------------------------------------------------
+    # KPI SUMMARY BY TYPE (v1.1.0 - NEW - Synced with KPI Center Performance)
+    # -------------------------------------------------------------------------
+    summary_df = setup_queries.get_assignment_summary_by_type(selected_year)
+    
+    if not summary_df.empty:
+        st.markdown(f"##### 📊 {selected_year} Targets Overview")
+        
+        # Create summary cards
+        num_kpis = len(summary_df)
+        cols = st.columns(min(num_kpis, 4))
+        
+        for idx, (_, row) in enumerate(summary_df.iterrows()):
+            col_idx = idx % 4
+            kpi_lower = row['kpi_name'].lower().replace(' ', '_')
+            icon = KPI_ICONS.get(kpi_lower, '📋')
+            
+            with cols[col_idx]:
+                # Format target based on UOM
+                if row['unit_of_measure'] == 'USD':
+                    target_display = format_currency(row['total_target'])
+                else:
+                    target_display = f"{row['total_target']:,.0f}"
+                
+                st.metric(
+                    label=f"{icon} {row['kpi_name']}",
+                    value=target_display,
+                    delta=f"{row['employee_count']} salespeople",
+                    delta_color="off",
+                    help=f"Total {row['kpi_name']} target for {selected_year}"
+                )
+        
+        st.divider()
     
     # -------------------------------------------------------------------------
     # ISSUES SECTION

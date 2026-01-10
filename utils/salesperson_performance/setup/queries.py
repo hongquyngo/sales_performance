@@ -8,6 +8,13 @@ Full CRUD operations for:
 - Salespeople Management
 
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
+         Synced with KPI Center Performance v2.6.0 features
+         
+Schema notes:
+- sales_split_by_customer_product.created_by: VARCHAR (username/UUID string)
+- sales_split_by_customer_product.approved_by: FK -> employees.id
+- No modified_by column in sales_split_by_customer_product
 """
 
 import logging
@@ -64,7 +71,7 @@ class SalespersonSetupQueries:
         return self._engine
     
     # =========================================================================
-    # SALES SPLIT RULES - READ
+    # SALES SPLIT RULES - READ (v1.1.0 - Using View + Audit Trail)
     # =========================================================================
     
     def get_sales_split_data(
@@ -86,6 +93,14 @@ class SalespersonSetupQueries:
         split_min: float = None,
         split_max: float = None,
         
+        # Audit filters (v1.1.0 - NEW)
+        created_by_user_id: int = None,       # Filter by creator user ID
+        approved_by_employee_id: int = None,  # Filter by approver employee ID
+        created_date_from: date = None,       # Created date range start
+        created_date_to: date = None,         # Created date range end
+        modified_date_from: date = None,      # Modified date range start
+        modified_date_to: date = None,        # Modified date range end
+        
         # System filters
         include_deleted: bool = False,
         
@@ -95,8 +110,10 @@ class SalespersonSetupQueries:
         """
         Get Sales Split assignments with comprehensive filtering.
         
-        Period filter uses OVERLAPPING logic: rule's [valid_from, valid_to] 
-        overlaps with [period_start, period_end]
+        v1.1.0 Changes:
+        - Now uses sales_split_full_looker_view for better performance
+        - Added audit trail filters (created_by, approved_by, date ranges)
+        - Period filter uses OVERLAPPING logic
         
         Args:
             employee_ids: Filter by Salesperson IDs
@@ -113,6 +130,13 @@ class SalespersonSetupQueries:
             split_min: Minimum split percentage
             split_max: Maximum split percentage
             
+            created_by_user_id: Filter by creator user ID (users.id)
+            approved_by_employee_id: Filter by approver employee ID (employees.id)
+            created_date_from: Filter created_date >= this
+            created_date_to: Filter created_date <= this
+            modified_date_from: Filter modified_date >= this
+            modified_date_to: Filter modified_date <= this
+            
             include_deleted: If True, show deleted rules too
             
             limit: Limit number of results
@@ -120,204 +144,145 @@ class SalespersonSetupQueries:
         Returns:
             DataFrame with split assignments
         """
+        # Use view for optimized query
         query = """
             SELECT 
-                -- Primary ID
-                ss.id AS split_id,
-                
-                -- Salesperson
-                ss.sale_person_id,
-                CONCAT(e.first_name, ' ', e.last_name) AS salesperson_name,
-                e.email AS salesperson_email,
-                e.status AS salesperson_status,
-                
-                -- Customer
-                ss.customer_id,
-                c.company_code,
-                c.english_name AS customer_name,
-                CONCAT(c.company_code, ' | ', c.english_name) AS customer_display,
-                
-                -- Product
-                ss.product_id,
-                p.pt_code,
-                p.name AS product_name,
-                p.package_size,
-                CONCAT(p.pt_code, ' | ', p.name, ' (', COALESCE(p.package_size, ''), ')') AS product_display,
-                
-                -- Brand
-                p.brand_id,
-                b.brand_name AS brand,
-                
-                -- Split
-                ss.split_percentage,
-                CONCAT(FORMAT(ss.split_percentage, 0), '%') AS split_percentage_display,
-                
-                -- Period
-                ss.valid_from AS effective_from,
-                ss.valid_to AS effective_to,
-                CONCAT(
-                    COALESCE(DATE_FORMAT(ss.valid_from, '%Y-%m-%d'), 'Start'),
-                    ' → ',
-                    COALESCE(DATE_FORMAT(ss.valid_to, '%Y-%m-%d'), 'No End')
-                ) AS effective_period,
-                DATEDIFF(ss.valid_to, CURDATE()) AS days_until_expiry,
-                
-                -- Approval
-                ss.is_approved,
-                CASE 
-                    WHEN ss.is_approved = 1 THEN 'Approved'
-                    ELSE 'Pending'
-                END AS approval_status,
-                
-                -- Approver
-                ss.approved_by AS approved_by_employee_id,
-                CONCAT(approver.first_name, ' ', approver.last_name) AS approved_by_name,
-                
-                -- Creator (stored as UUID string)
-                ss.created_by AS created_by_uuid,
-                ss.created_date,
-                
-                -- Modifier
-                ss.modified_date,
-                
-                -- Version
-                ss.version,
-                
-                -- Delete flag
-                COALESCE(ss.delete_flag, 0) AS delete_flag,
-                
-                -- Validation: Calculate total split for this customer-product combo
-                (
-                    SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                    FROM sales_split_by_customer_product ss2
-                    WHERE ss2.customer_id = ss.customer_id
-                      AND ss2.product_id = ss.product_id
-                      AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                      AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                ) AS total_split_percentage,
-                
-                -- Split status
-                CASE 
-                    WHEN (
-                        SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                        FROM sales_split_by_customer_product ss2
-                        WHERE ss2.customer_id = ss.customer_id
-                          AND ss2.product_id = ss.product_id
-                          AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                          AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                    ) = 100 THEN 'ok'
-                    WHEN (
-                        SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                        FROM sales_split_by_customer_product ss2
-                        WHERE ss2.customer_id = ss.customer_id
-                          AND ss2.product_id = ss.product_id
-                          AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                          AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                    ) > 100 THEN 'over_100_split'
-                    ELSE 'incomplete_split'
-                END AS split_status
-                
-            FROM sales_split_by_customer_product ss
-            LEFT JOIN employees e ON ss.sale_person_id = e.id
-            LEFT JOIN companies c ON ss.customer_id = c.id
-            LEFT JOIN products p ON ss.product_id = p.id
-            LEFT JOIN brands b ON p.brand_id = b.id
-            LEFT JOIN employees approver ON ss.approved_by = approver.id
+                split_id,
+                sale_person_id,
+                salesperson_name,
+                salesperson_email,
+                salesperson_status,
+                customer_id,
+                company_code,
+                customer_name,
+                customer_display,
+                product_id,
+                pt_code,
+                product_name,
+                package_size,
+                product_display,
+                brand_id,
+                brand,
+                split_percentage,
+                split_percentage_display,
+                effective_from,
+                effective_to,
+                effective_period,
+                days_until_expiry,
+                period_status,
+                is_approved,
+                approval_status,
+                approved_by_employee_id,
+                approved_by_name,
+                approved_by_email,
+                created_by_raw,
+                created_by_user_id,
+                created_by_username,
+                created_by_name,
+                created_date,
+                modified_date,
+                version,
+                delete_flag,
+                total_split_percentage,
+                total_split_percentage_all,
+                split_status,
+                existing_split_structure
+            FROM sales_split_full_looker_view
             WHERE 1=1
         """
         
         params = {}
         
         # =====================================================================
-        # SYSTEM FILTER: delete_flag
+        # NOTE: View already has WHERE ss.delete_flag = 0, so include_deleted
+        # parameter has no effect when using the view. This is kept for API
+        # compatibility but deleted records cannot be retrieved from view.
+        # To show deleted records, would need direct table query (not implemented).
         # =====================================================================
-        if not include_deleted:
-            query += " AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)"
         
         # =====================================================================
         # PERIOD FILTER - Overlapping logic
         # =====================================================================
         if period_year:
             query += """
-                AND (ss.valid_from <= :period_end OR ss.valid_from IS NULL)
-                AND (ss.valid_to >= :period_start OR ss.valid_to IS NULL)
+                AND (effective_from <= :period_end OR effective_from IS NULL)
+                AND (effective_to >= :period_start OR effective_to IS NULL)
             """
             params['period_start'] = date(period_year, 1, 1)
             params['period_end'] = date(period_year, 12, 31)
         elif period_start or period_end:
             if period_start:
-                query += " AND (ss.valid_to >= :period_start OR ss.valid_to IS NULL)"
+                query += " AND (effective_to >= :period_start OR effective_to IS NULL)"
                 params['period_start'] = period_start
             if period_end:
-                query += " AND (ss.valid_from <= :period_end OR ss.valid_from IS NULL)"
+                query += " AND (effective_from <= :period_end OR effective_from IS NULL)"
                 params['period_end'] = period_end
         
         # =====================================================================
         # ENTITY FILTERS
         # =====================================================================
         if employee_ids:
-            query += " AND ss.sale_person_id IN :employee_ids"
+            query += " AND sale_person_id IN :employee_ids"
             params['employee_ids'] = tuple(employee_ids)
         
         if customer_ids:
-            query += " AND ss.customer_id IN :customer_ids"
+            query += " AND customer_id IN :customer_ids"
             params['customer_ids'] = tuple(customer_ids)
         
         if product_ids:
-            query += " AND ss.product_id IN :product_ids"
+            query += " AND product_id IN :product_ids"
             params['product_ids'] = tuple(product_ids)
         
         if brand_ids:
-            query += """ AND ss.product_id IN (
-                SELECT id FROM products WHERE brand_id IN :brand_ids AND delete_flag = 0
-            )"""
+            query += " AND brand_id IN :brand_ids"
             params['brand_ids'] = tuple(brand_ids)
         
         # =====================================================================
         # RULE ATTRIBUTE FILTERS
         # =====================================================================
         if status_filter and status_filter != 'all':
-            # Filter by computed split status using HAVING or subquery
-            if status_filter == 'ok':
-                query += """ AND (
-                    SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                    FROM sales_split_by_customer_product ss2
-                    WHERE ss2.customer_id = ss.customer_id
-                      AND ss2.product_id = ss.product_id
-                      AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                      AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                ) = 100"""
-            elif status_filter == 'over_100_split':
-                query += """ AND (
-                    SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                    FROM sales_split_by_customer_product ss2
-                    WHERE ss2.customer_id = ss.customer_id
-                      AND ss2.product_id = ss.product_id
-                      AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                      AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                ) > 100"""
-            elif status_filter == 'incomplete_split':
-                query += """ AND (
-                    SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                    FROM sales_split_by_customer_product ss2
-                    WHERE ss2.customer_id = ss.customer_id
-                      AND ss2.product_id = ss.product_id
-                      AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                      AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                ) < 100"""
+            query += " AND split_status = :status_filter"
+            params['status_filter'] = status_filter
         
         if approval_filter == 'approved':
-            query += " AND ss.is_approved = 1"
+            query += " AND is_approved = 1"
         elif approval_filter == 'pending':
-            query += " AND (ss.is_approved = 0 OR ss.is_approved IS NULL)"
+            query += " AND (is_approved = 0 OR is_approved IS NULL)"
         
         if split_min is not None:
-            query += " AND ss.split_percentage >= :split_min"
+            query += " AND split_percentage >= :split_min"
             params['split_min'] = split_min
         
         if split_max is not None:
-            query += " AND ss.split_percentage <= :split_max"
+            query += " AND split_percentage <= :split_max"
             params['split_max'] = split_max
+        
+        # =====================================================================
+        # AUDIT FILTERS (v1.1.0 - NEW)
+        # =====================================================================
+        if created_by_user_id:
+            query += " AND created_by_user_id = :created_by_user_id"
+            params['created_by_user_id'] = created_by_user_id
+        
+        if approved_by_employee_id:
+            query += " AND approved_by_employee_id = :approved_by_employee_id"
+            params['approved_by_employee_id'] = approved_by_employee_id
+        
+        if created_date_from:
+            query += " AND DATE(created_date) >= :created_date_from"
+            params['created_date_from'] = created_date_from
+        
+        if created_date_to:
+            query += " AND DATE(created_date) <= :created_date_to"
+            params['created_date_to'] = created_date_to
+        
+        if modified_date_from:
+            query += " AND DATE(modified_date) >= :modified_date_from"
+            params['modified_date_from'] = modified_date_from
+        
+        if modified_date_to:
+            query += " AND DATE(modified_date) <= :modified_date_to"
+            params['modified_date_to'] = modified_date_to
         
         # =====================================================================
         # ORDERING & LIMIT
@@ -339,69 +304,41 @@ class SalespersonSetupQueries:
         """
         Get summary statistics for split rules with period filter.
         
+        v1.1.0: Uses view for consistent status calculation.
+        
         Returns:
             Dict with counts: total, ok, incomplete, over_100, pending, expiring_soon
         """
         query = """
             SELECT 
                 COUNT(*) as total_rules,
-                SUM(CASE 
-                    WHEN (
-                        SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                        FROM sales_split_by_customer_product ss2
-                        WHERE ss2.customer_id = ss.customer_id
-                          AND ss2.product_id = ss.product_id
-                          AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                          AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                    ) = 100 THEN 1 ELSE 0 
-                END) as ok_count,
-                SUM(CASE 
-                    WHEN (
-                        SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                        FROM sales_split_by_customer_product ss2
-                        WHERE ss2.customer_id = ss.customer_id
-                          AND ss2.product_id = ss.product_id
-                          AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                          AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                    ) < 100 THEN 1 ELSE 0 
-                END) as incomplete_count,
-                SUM(CASE 
-                    WHEN (
-                        SELECT COALESCE(SUM(ss2.split_percentage), 0)
-                        FROM sales_split_by_customer_product ss2
-                        WHERE ss2.customer_id = ss.customer_id
-                          AND ss2.product_id = ss.product_id
-                          AND (ss2.delete_flag = 0 OR ss2.delete_flag IS NULL)
-                          AND (ss2.valid_to >= CURDATE() OR ss2.valid_to IS NULL)
-                    ) > 100 THEN 1 ELSE 0 
-                END) as over_100_count,
-                SUM(CASE WHEN ss.is_approved = 0 OR ss.is_approved IS NULL THEN 1 ELSE 0 END) as pending_count,
-                SUM(CASE 
-                    WHEN ss.valid_to BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY) 
-                    THEN 1 ELSE 0 
-                END) as expiring_soon_count
-            FROM sales_split_by_customer_product ss
+                SUM(CASE WHEN split_status = 'ok' THEN 1 ELSE 0 END) as ok_count,
+                SUM(CASE WHEN split_status = 'incomplete_split' THEN 1 ELSE 0 END) as incomplete_count,
+                SUM(CASE WHEN split_status = 'over_100_split' THEN 1 ELSE 0 END) as over_100_count,
+                SUM(CASE WHEN is_approved = 0 OR is_approved IS NULL THEN 1 ELSE 0 END) as pending_count,
+                SUM(CASE WHEN period_status IN ('critical', 'warning') THEN 1 ELSE 0 END) as expiring_soon_count
+            FROM sales_split_full_looker_view
             WHERE 1=1
         """
         
         params = {}
         
         if not include_deleted:
-            query += " AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)"
+            query += " AND (delete_flag = 0 OR delete_flag IS NULL)"
         
         if period_year:
             query += """
-                AND (ss.valid_from <= :period_end OR ss.valid_from IS NULL)
-                AND (ss.valid_to >= :period_start OR ss.valid_to IS NULL)
+                AND (effective_from <= :period_end OR effective_from IS NULL)
+                AND (effective_to >= :period_start OR effective_to IS NULL)
             """
             params['period_start'] = date(period_year, 1, 1)
             params['period_end'] = date(period_year, 12, 31)
         elif period_start or period_end:
             if period_start:
-                query += " AND (ss.valid_to >= :period_start OR ss.valid_to IS NULL)"
+                query += " AND (effective_to >= :period_start OR effective_to IS NULL)"
                 params['period_start'] = period_start
             if period_end:
-                query += " AND (ss.valid_from <= :period_end OR ss.valid_from IS NULL)"
+                query += " AND (effective_from <= :period_end OR effective_from IS NULL)"
                 params['period_end'] = period_end
         
         df = self._execute_query(query, params, "split_summary_stats")
@@ -687,6 +624,36 @@ class SalespersonSetupQueries:
         
         return self._execute_query(query, params, "kpi_assignments")
     
+    def get_assignment_summary_by_type(self, year: int) -> pd.DataFrame:
+        """
+        Get assignment summary by KPI type for a year.
+        
+        NEW v1.1.0: Synced with KPI Center Performance pattern.
+        
+        Args:
+            year: Target year
+            
+        Returns:
+            DataFrame with kpi_name, kpi_type_id, unit_of_measure, employee_count, total_target
+        """
+        query = """
+            SELECT 
+                kt.name as kpi_name,
+                kt.id as kpi_type_id,
+                kt.uom as unit_of_measure,
+                COUNT(DISTINCT a.employee_id) as employee_count,
+                SUM(a.annual_target_value) as total_target
+            FROM sales_employee_kpi_assignments a
+            JOIN kpi_types kt ON a.kpi_type_id = kt.id
+            WHERE a.year = :year 
+              AND a.delete_flag = 0
+              AND kt.delete_flag = 0
+            GROUP BY kt.id, kt.name, kt.uom
+            ORDER BY kt.name
+        """
+        
+        return self._execute_query(query, {'year': year}, "assignment_summary_by_type")
+    
     def get_assignment_weight_summary(self, year: int) -> pd.DataFrame:
         """
         Get weight sum by employee for validation.
@@ -739,7 +706,8 @@ class SalespersonSetupQueries:
               AND e.id IN (
                   SELECT DISTINCT sale_person_id 
                   FROM sales_split_by_customer_product 
-                  WHERE delete_flag = 0 AND (valid_to >= CURDATE() OR valid_to IS NULL)
+                  WHERE (delete_flag = 0 OR delete_flag IS NULL) 
+                    AND (valid_to >= CURDATE() OR valid_to IS NULL)
               )
             ORDER BY name
         """
@@ -1001,7 +969,6 @@ class SalespersonSetupQueries:
                       AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)
                       AND (ss.valid_to >= CURDATE() OR ss.valid_to IS NULL)
                 ) AS active_split_count,
-                
                 (
                     SELECT COUNT(*) 
                     FROM sales_employee_kpi_assignments a 
@@ -1057,6 +1024,65 @@ class SalespersonSetupQueries:
         query += " ORDER BY employee_name"
         
         return self._execute_query(query, {}, "salespeople_dropdown")
+    
+    # =========================================================================
+    # USERS FOR AUDIT FILTERS (v1.1.0 - NEW)
+    # =========================================================================
+    
+    def get_users_for_dropdown(self) -> pd.DataFrame:
+        """
+        Get users for audit filter dropdowns (Created By filter).
+        
+        NEW v1.1.0: For audit trail filters.
+        
+        Returns:
+            DataFrame with user_id, username, full_name
+        """
+        query = """
+            SELECT 
+                u.id AS user_id,
+                u.username,
+                COALESCE(
+                    CONCAT(e.first_name, ' ', e.last_name),
+                    u.username
+                ) AS full_name,
+                u.email,
+                u.role
+            FROM users u
+            LEFT JOIN employees e ON u.employee_id = e.id
+            WHERE u.is_active = 1
+              AND (u.delete_flag = 0 OR u.delete_flag IS NULL)
+            ORDER BY full_name
+        """
+        
+        return self._execute_query(query, {}, "users_dropdown")
+    
+    def get_approvers_for_dropdown(self) -> pd.DataFrame:
+        """
+        Get employees who have approved rules (for Approved By filter).
+        
+        NEW v1.1.0: For audit trail filters.
+        Note: In sales_split, approved_by is FK to employees.id, not users.id
+        
+        Returns:
+            DataFrame with employee_id, employee_name
+        """
+        query = """
+            SELECT DISTINCT
+                e.id AS employee_id,
+                CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+                e.email
+            FROM employees e
+            WHERE e.delete_flag = 0
+              AND e.id IN (
+                  SELECT DISTINCT approved_by 
+                  FROM sales_split_by_customer_product 
+                  WHERE approved_by IS NOT NULL
+              )
+            ORDER BY employee_name
+        """
+        
+        return self._execute_query(query, {}, "approvers_dropdown")
     
     # =========================================================================
     # LOOKUP DATA

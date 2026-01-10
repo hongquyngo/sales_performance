@@ -8,17 +8,27 @@ Full management console with 3 sub-tabs:
 3. Salespeople - List/manage salespeople
 
 Features:
-- Comprehensive Filters: Period, Entity, Attributes filters
+- Comprehensive Filters: Period, Entity, Attributes, Audit Trail filters
 - Real-time Validation: Split percentage and weight validation
 - Issue Detection: Missing assignments, weight issues
 - CRUD Operations: Create, Read, Update, Delete for all entities
+- KPI Summary: Overview by KPI type with total targets
 
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
+         Synced with KPI Center Performance v2.6.0 features:
+         - 5 filter groups (Period, Entity, Attributes, Audit Trail, System)
+         - Created By / Approved By / Date range filters
+         - KPI summary by type in Assignments tab
+         - Uses sales_split_looker_view for performance
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
 - sales_employee_kpi_assignments: KPI targets for each salesperson by year
 - employees: Salesperson information (read-only)
+
+Views Used:
+- sales_split_full_looker_view: Pre-computed split data with validation status (enhanced)
 """
 
 # Queries
@@ -33,6 +43,12 @@ from .fragments import (
     split_rules_section,
     kpi_assignments_section,
     salespeople_section,
+    
+    # Helper functions
+    format_currency,
+    format_percentage,
+    get_status_display,
+    get_period_warning,
     
     # Constants
     KPI_ICONS,
@@ -51,9 +67,15 @@ __all__ = [
     'kpi_assignments_section',
     'salespeople_section',
     
+    # Helpers
+    'format_currency',
+    'format_percentage',
+    'get_status_display',
+    'get_period_warning',
+    
     # Constants
     'KPI_ICONS',
     'STATUS_ICONS',
 ]
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
