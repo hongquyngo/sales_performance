@@ -105,9 +105,6 @@ class RenewalQueries:
         min_sales_amount: float = 0,
         require_sales_activity: bool = True,
         sales_from_date: date = None,  # Date to look back for sales activity
-        
-        # Pagination
-        limit: int = 500
     ) -> pd.DataFrame:
         """
         Get split rules that are expired/expiring AND have recent sales activity.
@@ -136,8 +133,6 @@ class RenewalQueries:
             min_sales_amount: Minimum sales in the period
             require_sales_activity: If False, show rules without sales too
             sales_from_date: Include sales since this date (default: first day of previous year)
-            
-            limit: Maximum results
             
         Returns:
             DataFrame with columns:
@@ -292,7 +287,7 @@ class RenewalQueries:
             params['product_search'] = f"%{product_search}%"
         
         # =====================================================================
-        # ORDER & LIMIT
+        # ORDER
         # =====================================================================
         query += """
             ORDER BY 
@@ -303,9 +298,7 @@ class RenewalQueries:
                 END,
                 days_until_expiry ASC,
                 total_sales DESC
-            LIMIT :limit
         """
-        params['limit'] = limit
         
         return self._execute_query(query, params, "renewal_suggestions")
     
@@ -340,7 +333,7 @@ class RenewalQueries:
                 WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
                 GROUP BY customer_id, product_id
-                HAVING SUM(sales_by_kpi_center_usd) > 0
+                HAVING SUM(sales_by_kpi_center_usd) >= 0
             ),
             target_rules AS (
                 SELECT 
