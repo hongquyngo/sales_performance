@@ -101,6 +101,12 @@ def get_default_new_valid_to() -> date:
         return date(today.year, 12, 31)
 
 
+def get_default_expired_from() -> date:
+    """Get default expired_from date (first day of previous year)."""
+    today = date.today()
+    return date(today.year - 1, 1, 1)
+
+
 # =============================================================================
 # RENEWAL DIALOG (v2.0)
 # =============================================================================
@@ -125,7 +131,7 @@ def _renewal_dialog_impl(
         
         # Row 1: Expiry filters
         st.markdown("##### 📅 Expiry Filters")
-        exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
+        exp_col1, exp_col2, exp_col3, exp_col4, exp_col5 = st.columns([1.2, 1, 1, 1, 1])
         
         with exp_col1:
             threshold_days = st.selectbox(
@@ -145,11 +151,14 @@ def _renewal_dialog_impl(
             )
         
         with exp_col3:
-            expiry_status = st.selectbox(
-                "Expiry Status",
-                options=list(EXPIRY_STATUS_OPTIONS.keys()),
-                format_func=lambda x: EXPIRY_STATUS_OPTIONS[x],
-                key="renewal_expiry_status"
+            # Date picker for expired_from - only enabled when include_expired is checked
+            expired_from_date = st.date_input(
+                "Expired from",
+                value=get_default_expired_from(),
+                max_value=date.today(),
+                disabled=not include_expired,
+                key="renewal_expired_from",
+                help="Include rules expired since this date"
             )
         
         with exp_col4:
@@ -157,7 +166,18 @@ def _renewal_dialog_impl(
                 "With sales activity",
                 value=True,
                 key="renewal_require_sales",
-                help="Only show rules with sales in last 12 months"
+                help="Only show rules with sales activity"
+            )
+        
+        with exp_col5:
+            # Date picker for sales_from - only enabled when require_sales is checked
+            sales_from_date = st.date_input(
+                "Sales from",
+                value=get_default_expired_from(),  # Same default: first day of previous year
+                max_value=date.today(),
+                disabled=not require_sales,
+                key="renewal_sales_from",
+                help="Include rules with sales since this date"
             )
         
         st.divider()
@@ -178,7 +198,8 @@ def _renewal_dialog_impl(
             # Get brands with expiring rules
             brands_df = renewal_queries.get_brands_with_expiring_rules(
                 threshold_days=threshold_days,
-                include_expired=include_expired
+                include_expired=include_expired,
+                expired_from_date=expired_from_date if include_expired else None
             )
             brand_options = brands_df['brand_id'].tolist() if not brands_df.empty else []
             
@@ -192,12 +213,13 @@ def _renewal_dialog_impl(
         
         with ent_col3:
             min_sales = st.number_input(
-                "Min sales (12m)",
+                "Min sales",
                 min_value=0,
                 value=0,
                 step=1000,
                 format="%d",
-                key="renewal_min_sales"
+                key="renewal_min_sales",
+                help="Minimum total sales in selected period"
             )
         
         # Row 3: Search
@@ -223,13 +245,14 @@ def _renewal_dialog_impl(
     suggestions_df = renewal_queries.get_renewal_suggestions(
         threshold_days=threshold_days,
         include_expired=include_expired,
-        expiry_status=expiry_status if expiry_status != 'all' else None,
+        expired_from_date=expired_from_date if include_expired else None,
         kpi_type=kpi_type_filter if kpi_type_filter != 'All' else None,
         brand_ids=brand_filter if brand_filter else None,
         customer_search=customer_search if customer_search else None,
         product_search=product_search if product_search else None,
         min_sales_amount=min_sales,
-        require_sales_activity=require_sales
+        require_sales_activity=require_sales,
+        sales_from_date=sales_from_date if require_sales else None
     )
     
     if suggestions_df.empty:
@@ -243,7 +266,9 @@ def _renewal_dialog_impl(
     # =========================================================================
     stats = renewal_queries.get_renewal_summary_stats(
         threshold_days=threshold_days,
-        include_expired=include_expired
+        include_expired=include_expired,
+        expired_from_date=expired_from_date if include_expired else None,
+        sales_from_date=sales_from_date if require_sales else None
     )
     
     metric_cols = st.columns(6)
@@ -322,8 +347,8 @@ def _renewal_dialog_impl(
         lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}" if pd.notna(x) else ''
     )
     
-    display_df['Sales'] = display_df['total_sales_12m'].apply(format_currency)
-    display_df['GP'] = display_df['total_gp_12m'].apply(format_currency)
+    display_df['Sales'] = display_df['total_sales'].apply(format_currency)
+    display_df['GP'] = display_df['total_gp'].apply(format_currency)
     display_df['Split'] = display_df['split_percentage'].apply(lambda x: f"{x:.0f}%")
     display_df['Expires'] = pd.to_datetime(display_df['effective_to']).dt.strftime('%Y-%m-%d')
     
@@ -344,8 +369,8 @@ def _renewal_dialog_impl(
             'brand': st.column_config.TextColumn('Brand', width='small'),
             'Split': st.column_config.TextColumn('Split', width='small'),
             'Expires': st.column_config.TextColumn('Expires', width='small'),
-            'Sales': st.column_config.TextColumn('Sales 12m', width='small'),
-            'GP': st.column_config.TextColumn('GP 12m', width='small'),
+            'Sales': st.column_config.TextColumn('Sales', width='small'),
+            'GP': st.column_config.TextColumn('GP', width='small'),
         },
         hide_index=True,
         use_container_width=True,

@@ -90,8 +90,7 @@ class RenewalQueries:
         # Expiry filters
         threshold_days: int = 90,
         include_expired: bool = True,
-        expired_within_days: int = 365,  # How far back to look for expired rules
-        expiry_status: str = None,  # 'expired', 'critical', 'warning', 'normal', 'all'
+        expired_from_date: date = None,  # Date to look back for expired rules
         
         # Entity filters
         kpi_center_ids: List[int] = None,
@@ -105,6 +104,7 @@ class RenewalQueries:
         # Sales filters
         min_sales_amount: float = 0,
         require_sales_activity: bool = True,
+        sales_from_date: date = None,  # Date to look back for sales activity
         
         # Pagination
         limit: int = 500
@@ -115,13 +115,16 @@ class RenewalQueries:
         v2.0 Changes:
         - Include EXPIRED rules (not just expiring soon)
         - Comprehensive entity filters (brand, customer, product search)
-        - Expiry status filter
+        
+        v2.1 Changes:
+        - expired_from_date: User-selectable date instead of fixed 365 days
+        - sales_from_date: User-selectable date instead of fixed 12 months
+        - Removed expiry_status filter (always show all)
         
         Args:
             threshold_days: Show rules expiring within N days (default: 90)
             include_expired: Include already expired rules (default: True)
-            expired_within_days: How far back for expired rules (default: 365)
-            expiry_status: Filter by status ('expired', 'critical', 'warning', 'normal', 'all')
+            expired_from_date: Include rules expired since this date (default: first day of previous year)
             
             kpi_center_ids: Filter by KPI Center IDs
             kpi_type: Filter by KPI type (TERRITORY, VERTICAL, etc.)
@@ -130,33 +133,39 @@ class RenewalQueries:
             customer_search: Search customer name/code (partial match)
             product_search: Search product name/code (partial match)
             
-            min_sales_amount: Minimum sales in last 12 months
+            min_sales_amount: Minimum sales in the period
             require_sales_activity: If False, show rules without sales too
+            sales_from_date: Include sales since this date (default: first day of previous year)
             
             limit: Maximum results
             
         Returns:
             DataFrame with columns:
             - All split rule fields
-            - total_sales_12m, total_gp_12m, last_invoice_date, invoice_count
+            - total_sales, total_gp, last_invoice_date, invoice_count
             - days_until_expiry (negative = already expired)
             - expiry_status: 'expired', 'critical', 'warning', 'normal'
         """
         # Build CTE for sales data
         sales_join = "INNER JOIN" if require_sales_activity else "LEFT JOIN"
         
+        # Default sales_from_date to first day of previous year if not provided
+        if sales_from_date is None:
+            today = date.today()
+            sales_from_date = date(today.year - 1, 1, 1)
+        
         query = f"""
             WITH recent_sales AS (
                 SELECT 
                     customer_id,
                     product_id,
-                    SUM(sales_by_kpi_center_usd) as total_sales_12m,
-                    SUM(gross_profit_by_kpi_center_usd) as total_gp_12m,
-                    SUM(gp1_by_kpi_center_usd) as total_gp1_12m,
+                    SUM(sales_by_kpi_center_usd) as total_sales,
+                    SUM(gross_profit_by_kpi_center_usd) as total_gp,
+                    SUM(gp1_by_kpi_center_usd) as total_gp1,
                     MAX(inv_date) as last_invoice_date,
                     COUNT(DISTINCT inv_number) as invoice_count
                 FROM sales_report_by_kpi_center_flat_looker_view
-                WHERE inv_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+                WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
                 GROUP BY customer_id, product_id
                 HAVING SUM(sales_by_kpi_center_usd) >= :min_sales
@@ -188,9 +197,9 @@ class RenewalQueries:
                 kcsfv.approved_by_name,
                 
                 -- Sales metrics
-                COALESCE(rs.total_sales_12m, 0) as total_sales_12m,
-                COALESCE(rs.total_gp_12m, 0) as total_gp_12m,
-                COALESCE(rs.total_gp1_12m, 0) as total_gp1_12m,
+                COALESCE(rs.total_sales, 0) as total_sales,
+                COALESCE(rs.total_gp, 0) as total_gp,
+                COALESCE(rs.total_gp1, 0) as total_gp1,
                 rs.last_invoice_date,
                 COALESCE(rs.invoice_count, 0) as invoice_count,
                 
@@ -216,21 +225,27 @@ class RenewalQueries:
         """
         
         params = {
-            'min_sales': min_sales_amount
+            'min_sales': min_sales_amount,
+            'sales_from_date': sales_from_date
         }
         
         # =====================================================================
         # EXPIRY DATE FILTER
         # =====================================================================
         if include_expired:
-            # Include expired rules (back to expired_within_days) AND expiring soon
+            # Include expired rules (from expired_from_date) AND expiring soon
+            # Default expired_from_date to first day of previous year if not provided
+            if expired_from_date is None:
+                today = date.today()
+                expired_from_date = date(today.year - 1, 1, 1)
+            
             query += """
                 AND (
-                    kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL :expired_within DAY)
+                    kcsfv.effective_to >= :expired_from_date
                     AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
                 )
             """
-            params['expired_within'] = expired_within_days
+            params['expired_from_date'] = expired_from_date
             params['threshold_days'] = threshold_days
         else:
             # Only expiring soon (not yet expired)
@@ -239,19 +254,6 @@ class RenewalQueries:
                 AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
             """
             params['threshold_days'] = threshold_days
-        
-        # =====================================================================
-        # EXPIRY STATUS FILTER
-        # =====================================================================
-        if expiry_status and expiry_status != 'all':
-            if expiry_status == 'expired':
-                query += " AND kcsfv.effective_to < CURDATE()"
-            elif expiry_status == 'critical':
-                query += " AND kcsfv.effective_to >= CURDATE() AND DATEDIFF(kcsfv.effective_to, CURDATE()) <= 7"
-            elif expiry_status == 'warning':
-                query += " AND kcsfv.effective_to >= CURDATE() AND DATEDIFF(kcsfv.effective_to, CURDATE()) > 7 AND DATEDIFF(kcsfv.effective_to, CURDATE()) <= 30"
-            elif expiry_status == 'normal':
-                query += " AND DATEDIFF(kcsfv.effective_to, CURDATE()) > 30"
         
         # =====================================================================
         # ENTITY FILTERS
@@ -300,7 +302,7 @@ class RenewalQueries:
                     ELSE 1
                 END,
                 days_until_expiry ASC,
-                total_sales_12m DESC
+                total_sales DESC
             LIMIT :limit
         """
         params['limit'] = limit
@@ -311,24 +313,31 @@ class RenewalQueries:
         self,
         threshold_days: int = 90,
         include_expired: bool = True,
-        expired_within_days: int = 365
+        expired_from_date: date = None,
+        sales_from_date: date = None
     ) -> Dict:
         """
         Get summary statistics for renewal suggestions.
         
         v2.0: Include expired rules in stats.
+        v2.1: Use expired_from_date and sales_from_date instead of fixed values.
         
         Returns:
             Dict with counts by status and total sales at risk
         """
+        # Default sales_from_date to first day of previous year if not provided
+        if sales_from_date is None:
+            today = date.today()
+            sales_from_date = date(today.year - 1, 1, 1)
+        
         query = """
             WITH recent_sales AS (
                 SELECT 
                     customer_id,
                     product_id,
-                    SUM(sales_by_kpi_center_usd) as total_sales_12m
+                    SUM(sales_by_kpi_center_usd) as total_sales
                 FROM sales_report_by_kpi_center_flat_looker_view
-                WHERE inv_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+                WHERE inv_date >= :sales_from_date
                   AND inv_date <= CURDATE()
                 GROUP BY customer_id, product_id
                 HAVING SUM(sales_by_kpi_center_usd) > 0
@@ -337,7 +346,7 @@ class RenewalQueries:
                 SELECT 
                     kcsfv.kpi_center_split_id,
                     DATEDIFF(kcsfv.effective_to, CURDATE()) as days_until_expiry,
-                    COALESCE(rs.total_sales_12m, 0) as total_sales_12m,
+                    COALESCE(rs.total_sales, 0) as total_sales,
                     CASE 
                         WHEN kcsfv.effective_to < CURDATE() THEN 'expired'
                         WHEN DATEDIFF(kcsfv.effective_to, CURDATE()) <= 7 THEN 'critical'
@@ -353,14 +362,21 @@ class RenewalQueries:
                     AND (kcsfv.delete_flag = 0 OR kcsfv.delete_flag IS NULL)
         """
         
-        params = {}
+        params = {
+            'sales_from_date': sales_from_date
+        }
         
         if include_expired:
+            # Default expired_from_date to first day of previous year if not provided
+            if expired_from_date is None:
+                today = date.today()
+                expired_from_date = date(today.year - 1, 1, 1)
+            
             query += """
-                    AND kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL :expired_within DAY)
+                    AND kcsfv.effective_to >= :expired_from_date
                     AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
             """
-            params['expired_within'] = expired_within_days
+            params['expired_from_date'] = expired_from_date
             params['threshold_days'] = threshold_days
         else:
             query += """
@@ -377,7 +393,7 @@ class RenewalQueries:
                 SUM(CASE WHEN expiry_status = 'critical' THEN 1 ELSE 0 END) as critical_count,
                 SUM(CASE WHEN expiry_status = 'warning' THEN 1 ELSE 0 END) as warning_count,
                 SUM(CASE WHEN expiry_status = 'normal' THEN 1 ELSE 0 END) as normal_count,
-                COALESCE(SUM(total_sales_12m), 0) as total_sales_at_risk
+                COALESCE(SUM(total_sales), 0) as total_sales_at_risk
             FROM target_rules
         """
         
@@ -406,10 +422,13 @@ class RenewalQueries:
     def get_brands_with_expiring_rules(
         self,
         threshold_days: int = 90,
-        include_expired: bool = True
+        include_expired: bool = True,
+        expired_from_date: date = None
     ) -> pd.DataFrame:
         """
         Get brands that have expiring rules for filter dropdown.
+        
+        v2.1: Use expired_from_date instead of fixed 365 days.
         """
         query = """
             SELECT DISTINCT 
@@ -425,10 +444,16 @@ class RenewalQueries:
         params = {}
         
         if include_expired:
+            # Default expired_from_date to first day of previous year if not provided
+            if expired_from_date is None:
+                today = date.today()
+                expired_from_date = date(today.year - 1, 1, 1)
+            
             query += """
-              AND kcsfv.effective_to >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+              AND kcsfv.effective_to >= :expired_from_date
               AND kcsfv.effective_to <= DATE_ADD(CURDATE(), INTERVAL :threshold_days DAY)
             """
+            params['expired_from_date'] = expired_from_date
         else:
             query += """
               AND kcsfv.effective_to >= CURDATE()
