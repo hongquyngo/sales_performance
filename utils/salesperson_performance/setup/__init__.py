@@ -25,8 +25,12 @@ v1.2.0 - FIX: Setup tab now independent from main page's "Only with KPI" filter
          - Setup tab uses AccessControl for employee filtering instead of active_filters
          - Added Salesperson dropdown filter in Entity Filters section
          - Fixed metrics/data table mismatch (metrics now use same employee_ids filter)
-         - Access control: Users see only their own or team members' data based on hierarchy
-         - Full access users (admin/GM/MD) can see all salespeople
+         - Hybrid authorization (Option C):
+           * admin (full): CRUD all records
+           * sales_manager (team): CRUD for team members only
+           * sales (self): VIEW ONLY - no edit permission
+         - Record-level permission checks on Edit/Delete buttons
+         - Salesperson dropdowns in forms filtered to editable scope
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -56,6 +60,10 @@ from .fragments import (
     get_status_display,
     get_period_warning,
     
+    # Authorization helpers (v1.2.0)
+    can_modify_record,
+    get_editable_employee_ids,
+    
     # Constants
     KPI_ICONS,
     STATUS_ICONS,
@@ -78,6 +86,10 @@ __all__ = [
     'format_percentage',
     'get_status_display',
     'get_period_warning',
+    
+    # Authorization helpers (v1.2.0)
+    'can_modify_record',
+    'get_editable_employee_ids',
     
     # Constants
     'KPI_ICONS',

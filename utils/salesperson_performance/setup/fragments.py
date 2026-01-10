@@ -10,6 +10,15 @@ UI Fragments for Setup Tab - Salesperson Performance
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
 v1.1.0 - Added audit trail filters, KPI summary by type, enhanced card layout
          Synced with KPI Center Performance v2.6.0 features
+v1.2.0 - Hybrid authorization (Option C):
+         - Setup tab independent from main page's "Only with KPI" filter
+         - Record-level authorization: users can only CRUD within their scope
+         - admin (full): CRUD all records
+         - sales_manager (team): CRUD for team members only  
+         - sales (self): VIEW ONLY - no edit permission
+         - Added can_modify_record() and get_editable_employee_ids() helpers
+         - Salesperson dropdowns filtered to editable scope
+         - Edit/Delete buttons check per-record permission
 """
 
 import streamlit as st
@@ -41,6 +50,68 @@ STATUS_ICONS = {
     'TERMINATED': '🔴',
     'ON_LEAVE': '🟠',
 }
+
+
+# =============================================================================
+# AUTHORIZATION HELPERS (v1.2.0)
+# =============================================================================
+
+def can_modify_record(
+    record_owner_id: int,
+    access_level: str,
+    accessible_employee_ids: List[int] = None
+) -> bool:
+    """
+    Check if current user can modify a specific record.
+    
+    Authorization rules (Option C: Hybrid):
+    - admin (full): Can modify ALL records
+    - sales_manager (team): Can modify records owned by team members
+    - sales (self): Can only modify own records
+    
+    Args:
+        record_owner_id: Employee ID who owns the record (sale_person_id)
+        access_level: 'full', 'team', or 'self'
+        accessible_employee_ids: List of employee IDs user can access
+        
+    Returns:
+        True if user can modify this record
+    """
+    if access_level == 'full':
+        return True  # Admin can modify all
+    
+    if accessible_employee_ids is None:
+        return True  # Full access (shouldn't happen but safety check)
+    
+    return record_owner_id in accessible_employee_ids
+
+
+def get_editable_employee_ids(
+    access_level: str,
+    accessible_employee_ids: List[int] = None,
+    user_employee_id: int = None
+) -> List[int]:
+    """
+    Get list of employee IDs that user can CREATE/EDIT records FOR.
+    
+    This determines which salespeople appear in dropdown when creating new rules.
+    
+    Args:
+        access_level: 'full', 'team', or 'self'
+        accessible_employee_ids: List of employee IDs user can access
+        user_employee_id: Current user's employee ID
+        
+    Returns:
+        List of employee IDs user can create/edit records for
+    """
+    if access_level == 'full':
+        return None  # None means all (no filter)
+    
+    if access_level == 'team':
+        return accessible_employee_ids  # Can create for team members
+    
+    # 'self' access - can only create for themselves
+    return [user_employee_id] if user_employee_id else []
 
 
 # =============================================================================
@@ -127,8 +198,6 @@ def setup_tab_fragment(
     # Get user role for permission check
     user_role = st.session_state.get('user_role', 'viewer')
     user_role_lower = str(user_role).lower() if user_role else ''
-    can_edit = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
-    can_approve = user_role_lower == 'admin'
     
     # Get year from filters
     current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
@@ -153,6 +222,23 @@ def setup_tab_fragment(
         # Team or Self access - restricted to accessible employees
         accessible_employee_ids = access.get_accessible_employee_ids()
     
+    # =========================================================================
+    # v1.2.0: Determine EDITABLE scope (who can user CREATE/EDIT records for)
+    # - admin (full): All salespeople
+    # - sales_manager (team): Team members only
+    # - sales (self): View only (no edit permission)
+    # =========================================================================
+    editable_employee_ids = get_editable_employee_ids(
+        access_level=access_level,
+        accessible_employee_ids=accessible_employee_ids,
+        user_employee_id=employee_id
+    )
+    
+    # Determine base edit permission by role
+    # NOTE: 'sales' role is VIEW ONLY - not included here
+    can_edit_base = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
+    can_approve = user_role_lower == 'admin'
+    
     # Get issue counts for tab badges (using accessible scope)
     split_stats = setup_queries.get_split_summary_stats(
         employee_ids=accessible_employee_ids
@@ -176,24 +262,29 @@ def setup_tab_fragment(
     with tab1:
         split_rules_section(
             setup_queries=setup_queries,
-            accessible_employee_ids=accessible_employee_ids,  # v1.2.0: Changed parameter
-            can_edit=can_edit,
+            accessible_employee_ids=accessible_employee_ids,
+            editable_employee_ids=editable_employee_ids,  # v1.2.0: For record-level auth
+            can_edit_base=can_edit_base,  # v1.2.0: Renamed
             can_approve=can_approve,
-            access_level=access_level  # v1.2.0: Pass access level for UI
+            access_level=access_level,
+            user_employee_id=employee_id  # v1.2.0: For ownership check
         )
     
     with tab2:
         kpi_assignments_section(
             setup_queries=setup_queries,
-            employee_ids=accessible_employee_ids,  # Use accessible scope
-            can_edit=can_edit,
-            current_year=current_year
+            employee_ids=accessible_employee_ids,
+            editable_employee_ids=editable_employee_ids,  # v1.2.0
+            can_edit_base=can_edit_base,  # v1.2.0
+            current_year=current_year,
+            access_level=access_level,  # v1.2.0
+            user_employee_id=employee_id  # v1.2.0
         )
     
     with tab3:
         salespeople_section(
             setup_queries=setup_queries,
-            can_edit=can_edit
+            can_edit=can_edit_base and access_level == 'full'  # Only admin can edit salespeople
         )
 
 
@@ -204,26 +295,38 @@ def setup_tab_fragment(
 @st.fragment
 def split_rules_section(
     setup_queries: SalespersonSetupQueries,
-    accessible_employee_ids: List[int] = None,  # v1.2.0: Renamed from employee_ids
-    can_edit: bool = False,
+    accessible_employee_ids: List[int] = None,
+    editable_employee_ids: List[int] = None,  # v1.2.0: Who can user CREATE/EDIT for
+    can_edit_base: bool = False,  # v1.2.0: Base permission (role allows editing)
     can_approve: bool = False,
-    access_level: str = 'self'  # v1.2.0: Added for UI customization
+    access_level: str = 'self',
+    user_employee_id: int = None  # v1.2.0: For ownership check
 ):
     """
     Split Rules sub-tab with CRUD operations and comprehensive filters.
     
     v1.1.0: Added Audit Trail filter group (Created By, Approved By, Date Ranges)
-    v1.2.0: Changed to use accessible_employee_ids from AccessControl.
-            Added salesperson filter dropdown within accessible scope.
-            Setup tab is now independent from main page's "Only with KPI" filter.
+    v1.2.0: Hybrid authorization (Option C):
+            - admin (full): CRUD all records
+            - sales_manager (team): CRUD for team members only
+            - sales (self): CRUD only own records
     
     Args:
         setup_queries: Query handler
-        accessible_employee_ids: List of employee IDs user can access (None = full access)
-        can_edit: Whether user can edit rules
+        accessible_employee_ids: List of employee IDs user can VIEW (None = all)
+        editable_employee_ids: List of employee IDs user can CREATE/EDIT FOR (None = all)
+        can_edit_base: Whether user's role allows editing at all
         can_approve: Whether user can approve rules
-        access_level: 'full', 'team', or 'self' - affects UI options
+        access_level: 'full', 'team', or 'self'
+        user_employee_id: Current user's employee ID
     """
+    
+    # Helper to check if user can modify a specific record
+    def can_modify_this_record(record_owner_id: int) -> bool:
+        """Check if current user can edit/delete this specific record."""
+        if not can_edit_base:
+            return False
+        return can_modify_record(record_owner_id, access_level, editable_employee_ids)
     
     # =========================================================================
     # HELPER: Build query params from filter state
@@ -696,7 +799,7 @@ def split_rules_section(
     # =========================================================================
     # TOOLBAR
     # =========================================================================
-    if can_edit:
+    if can_edit_base:
         if st.button("➕ Add Split Rule", type="primary"):
             st.session_state['sp_show_add_split_form'] = True
     
@@ -704,11 +807,23 @@ def split_rules_section(
     # ADD/EDIT FORMS
     # =========================================================================
     if st.session_state.get('sp_show_add_split_form', False):
-        _render_split_form(setup_queries, can_approve, mode='add')
+        _render_split_form(
+            setup_queries, 
+            can_approve, 
+            mode='add',
+            editable_employee_ids=editable_employee_ids,  # v1.2.0
+            access_level=access_level
+        )
     
     if st.session_state.get('sp_edit_split_id'):
-        _render_split_form(setup_queries, can_approve, mode='edit', 
-                          rule_id=st.session_state['sp_edit_split_id'])
+        _render_split_form(
+            setup_queries, 
+            can_approve, 
+            mode='edit', 
+            rule_id=st.session_state['sp_edit_split_id'],
+            editable_employee_ids=editable_employee_ids,  # v1.2.0
+            access_level=access_level
+        )
     
     # =========================================================================
     # GET DATA WITH FILTERS
@@ -803,9 +918,9 @@ def split_rules_section(
     )
     
     # =========================================================================
-    # ROW ACTIONS
+    # ROW ACTIONS (v1.2.0: Record-level authorization)
     # =========================================================================
-    if can_edit and not split_df.empty:
+    if can_edit_base and not split_df.empty:
         st.markdown("##### Quick Actions")
         col1, col2, col3 = st.columns([2, 1, 1])
         
@@ -818,24 +933,53 @@ def split_rules_section(
                 key="sp_split_select_rule"
             )
         
+        # v1.2.0: Check if user can modify this specific record
+        if selected_rule:
+            selected_row = split_df[split_df['split_id'] == selected_rule].iloc[0]
+            record_owner_id = selected_row['sale_person_id']
+            can_modify = can_modify_this_record(record_owner_id)
+        else:
+            can_modify = False
+        
         with col2:
-            if selected_rule and st.button("✏️ Edit", use_container_width=True):
-                st.session_state['sp_edit_split_id'] = selected_rule
-                st.rerun(scope="fragment")
+            if selected_rule:
+                if can_modify:
+                    if st.button("✏️ Edit", use_container_width=True):
+                        st.session_state['sp_edit_split_id'] = selected_rule
+                        st.rerun(scope="fragment")
+                else:
+                    st.button("✏️ Edit", use_container_width=True, disabled=True, 
+                             help="You can only edit records for your team members")
         
         with col3:
-            if selected_rule and st.button("🗑️ Delete", use_container_width=True):
-                result = setup_queries.delete_split_rule(selected_rule)
-                if result['success']:
-                    st.success("Rule deleted")
-                    st.rerun(scope="fragment")
+            if selected_rule:
+                if can_modify:
+                    if st.button("🗑️ Delete", use_container_width=True):
+                        result = setup_queries.delete_split_rule(selected_rule)
+                        if result['success']:
+                            st.success("Rule deleted")
+                            st.rerun(scope="fragment")
+                        else:
+                            st.error(result['message'])
                 else:
-                    st.error(result['message'])
+                    st.button("🗑️ Delete", use_container_width=True, disabled=True,
+                             help="You can only delete records for your team members")
 
 
-def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool, 
-                       mode: str = 'add', rule_id: int = None):
-    """Render Add/Edit split rule form."""
+def _render_split_form(
+    setup_queries: SalespersonSetupQueries, 
+    can_approve: bool, 
+    mode: str = 'add', 
+    rule_id: int = None,
+    editable_employee_ids: List[int] = None,  # v1.2.0
+    access_level: str = 'self'  # v1.2.0
+):
+    """
+    Render Add/Edit split rule form.
+    
+    v1.2.0: Added editable_employee_ids to restrict salesperson dropdown
+            based on user's authorization scope.
+    """
     
     existing = None
     if mode == 'edit' and rule_id:
@@ -886,8 +1030,15 @@ def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool
                 else:
                     customer_id = existing['customer_id']
                 
-                # Salesperson selection
+                # Salesperson selection (v1.2.0: Filter by editable scope)
                 salespeople_df = setup_queries.get_salespeople_for_dropdown()
+                
+                # v1.2.0: Filter to only show editable employees
+                if editable_employee_ids is not None and not salespeople_df.empty:
+                    salespeople_df = salespeople_df[
+                        salespeople_df['employee_id'].isin(editable_employee_ids)
+                    ].reset_index(drop=True)
+                
                 if not salespeople_df.empty:
                     default_idx = 0
                     if existing is not None and 'sale_person_id' in existing:
@@ -895,8 +1046,15 @@ def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool
                         if not matches.empty:
                             default_idx = salespeople_df.index.tolist().index(matches.index[0])
                     
+                    # v1.2.0: Add label hint based on access level
+                    sp_label = "Salesperson *"
+                    if access_level == 'self':
+                        sp_label = "Salesperson * (your account)"
+                    elif access_level == 'team':
+                        sp_label = "Salesperson * (team members)"
+                    
                     sale_person_id = st.selectbox(
-                        "Salesperson *",
+                        sp_label,
                         options=salespeople_df['employee_id'].tolist(),
                         index=default_idx,
                         format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
@@ -1030,14 +1188,25 @@ def _render_split_form(setup_queries: SalespersonSetupQueries, can_approve: bool
 def kpi_assignments_section(
     setup_queries: SalespersonSetupQueries,
     employee_ids: List[int] = None,
-    can_edit: bool = False,
-    current_year: int = None
+    editable_employee_ids: List[int] = None,  # v1.2.0
+    can_edit_base: bool = False,  # v1.2.0: Renamed from can_edit
+    current_year: int = None,
+    access_level: str = 'self',  # v1.2.0
+    user_employee_id: int = None  # v1.2.0
 ):
     """
     KPI Assignments sub-tab.
     
     v1.1.0: Added KPI Summary by Type section (synced with KPI Center Performance)
+    v1.2.0: Hybrid authorization - record-level permissions
     """
+    
+    # Helper to check if user can modify a specific record
+    def can_modify_this_record(record_owner_id: int) -> bool:
+        """Check if current user can edit/delete this specific record."""
+        if not can_edit_base:
+            return False
+        return can_modify_record(record_owner_id, access_level, editable_employee_ids)
     
     current_year = current_year or date.today().year
     
@@ -1073,7 +1242,7 @@ def kpi_assignments_section(
         )
     
     with col3:
-        if can_edit:
+        if can_edit_base:
             st.write("")
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
                 st.session_state['sp_show_add_assignment_form'] = True
@@ -1142,7 +1311,8 @@ def kpi_assignments_section(
                             st.markdown(f"👤 **{emp['name']}**")
                             st.caption(emp.get('email', ''))
                         with col_action:
-                            if can_edit and st.button(
+                            # v1.2.0: Check record-level permission for this employee
+                            if can_edit_base and can_modify_this_record(emp['id']) and st.button(
                                 "➕ Add", 
                                 key=f"sp_add_assign_{emp['id']}", 
                                 use_container_width=True
@@ -1185,11 +1355,23 @@ def kpi_assignments_section(
     # ADD/EDIT FORMS
     # -------------------------------------------------------------------------
     if st.session_state.get('sp_show_add_assignment_form', False):
-        _render_assignment_form(setup_queries, selected_year, mode='add')
+        _render_assignment_form(
+            setup_queries, 
+            selected_year, 
+            mode='add',
+            editable_employee_ids=editable_employee_ids,  # v1.2.0
+            access_level=access_level
+        )
     
     if st.session_state.get('sp_edit_assignment_id'):
-        _render_assignment_form(setup_queries, selected_year, mode='edit',
-                               assignment_id=st.session_state['sp_edit_assignment_id'])
+        _render_assignment_form(
+            setup_queries, 
+            selected_year, 
+            mode='edit',
+            assignment_id=st.session_state['sp_edit_assignment_id'],
+            editable_employee_ids=editable_employee_ids,  # v1.2.0
+            access_level=access_level
+        )
     
     # -------------------------------------------------------------------------
     # GET DATA
@@ -1234,6 +1416,9 @@ def kpi_assignments_section(
         
         status_icon = STATUS_ICONS.get(emp_status, '❓')
         
+        # v1.2.0: Check if user can modify records for this employee
+        can_modify_for_emp = can_modify_this_record(emp_id)
+        
         # Card container
         with st.container(border=True):
             # Header
@@ -1252,12 +1437,12 @@ def kpi_assignments_section(
                     help="Total weight should equal 100%"
                 )
             
-            # KPI rows
+            # KPI rows (v1.2.0: Pass per-employee edit permission)
             for _, kpi in emp_data.iterrows():
-                _render_kpi_assignment_row(kpi, can_edit, setup_queries)
+                _render_kpi_assignment_row(kpi, can_modify_for_emp, setup_queries)
             
-            # Add KPI button
-            if can_edit:
+            # Add KPI button (v1.2.0: Only show if user can add for this employee)
+            if can_edit_base and can_modify_for_emp:
                 if st.button(
                     f"➕ Add KPI to {emp_name}", 
                     key=f"sp_add_kpi_btn_{emp_id}",
@@ -1307,9 +1492,19 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Sa
                         st.rerun(scope="fragment")
 
 
-def _render_assignment_form(setup_queries: SalespersonSetupQueries, year: int,
-                           mode: str = 'add', assignment_id: int = None):
-    """Render Add/Edit assignment form."""
+def _render_assignment_form(
+    setup_queries: SalespersonSetupQueries, 
+    year: int,
+    mode: str = 'add', 
+    assignment_id: int = None,
+    editable_employee_ids: List[int] = None,  # v1.2.0
+    access_level: str = 'self'  # v1.2.0
+):
+    """
+    Render Add/Edit assignment form.
+    
+    v1.2.0: Added editable_employee_ids to restrict salesperson dropdown.
+    """
     
     existing = None
     if mode == 'edit' and assignment_id:
@@ -1331,8 +1526,14 @@ def _render_assignment_form(setup_queries: SalespersonSetupQueries, year: int,
             col1, col2 = st.columns(2)
             
             with col1:
-                # Salesperson
+                # Salesperson (v1.2.0: Filter by editable scope)
                 salespeople_df = setup_queries.get_salespeople_for_dropdown()
+                
+                # v1.2.0: Filter to only show editable employees
+                if editable_employee_ids is not None and not salespeople_df.empty:
+                    salespeople_df = salespeople_df[
+                        salespeople_df['employee_id'].isin(editable_employee_ids)
+                    ].reset_index(drop=True)
                 
                 default_employee = st.session_state.get('sp_add_assignment_employee_id')
                 if existing is not None:
@@ -1344,8 +1545,15 @@ def _render_assignment_form(setup_queries: SalespersonSetupQueries, year: int,
                     if not matches.empty:
                         default_idx = salespeople_df.index.tolist().index(matches.index[0])
                 
+                # v1.2.0: Add label hint based on access level
+                sp_label = "Salesperson *"
+                if access_level == 'self':
+                    sp_label = "Salesperson * (your account)"
+                elif access_level == 'team':
+                    sp_label = "Salesperson * (team members)"
+                
                 employee_id = st.selectbox(
-                    "Salesperson *",
+                    sp_label,
                     options=salespeople_df['employee_id'].tolist(),
                     index=default_idx,
                     format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
