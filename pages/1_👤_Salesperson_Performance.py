@@ -1043,6 +1043,43 @@ with st.sidebar:
         if cached_start and cached_end:
             st.caption(f"📦 {cached_start}-{cached_end}")
     
+    # =========================================================================
+    # SETUP QUICK STATS (NEW v2.4.0 - Phase 3)
+    # Shows Setup tab stats if available (populated when Setup tab renders)
+    # =========================================================================
+    if 'setup_quick_stats' in st.session_state:
+        with st.expander("⚙️ Setup Quick Stats", expanded=False):
+            stats = st.session_state['setup_quick_stats']
+            
+            # KPI Year with warning if 0
+            kpi_year = stats.get('kpi_year', date.today().year)
+            kpi_count = stats.get('kpi_current_year_count', 0)
+            
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                st.metric("📋 Split Rules", stats.get('split_rules_count', 0))
+            with col_s2:
+                if kpi_count == 0:
+                    st.metric(f"🎯 KPI {kpi_year}", "0 ⚠️", help="No KPI assignments for this year")
+                else:
+                    st.metric(f"🎯 KPI {kpi_year}", kpi_count)
+            
+            # Show issues if any
+            split_critical = stats.get('split_critical', 0)
+            assign_critical = stats.get('assign_critical', 0)
+            
+            if split_critical > 0 or assign_critical > 0:
+                st.warning(f"Issues: {split_critical} split, {assign_critical} KPI")
+            
+            st.caption("Go to **⚙️ Setup** tab to manage")
+    
+    # Show hint when empty selection due to KPI filter
+    if is_empty_selection and filter_values.get('_only_with_kpi_checked'):
+        st.warning(
+            f"💡 **Tip**: No KPI for {filter_values.get('year', date.today().year)}. "
+            f"Go to **⚙️ Setup** tab to create targets."
+        )
+    
 # Load data with smart caching
 raw_data = get_or_load_data(active_filters)
 

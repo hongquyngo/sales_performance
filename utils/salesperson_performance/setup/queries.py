@@ -10,6 +10,9 @@ Full CRUD operations for:
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
 v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
          Synced with KPI Center Performance v2.6.0 features
+v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
+         - Non-admin users now only see issues for their team members
+         - Added total_assignments count to result dict
          
 Schema notes:
 - sales_split_by_customer_product.created_by: VARCHAR (username/UUID string)
@@ -685,26 +688,46 @@ class SalespersonSetupQueries:
         
         return self._execute_query(query, {'year': year}, "assignment_weight_summary")
     
-    def get_assignment_issues_summary(self, year: int) -> Dict:
+    def get_assignment_issues_summary(
+        self, 
+        year: int,
+        employee_ids: List[int] = None  # FIX v1.3.1: Filter by team scope
+    ) -> Dict:
         """
         Get assignment issues summary for display in issues panel.
         
+        FIX v1.3.1: Added employee_ids parameter to filter by team scope.
+        
+        Args:
+            year: Year to check assignments
+            employee_ids: Optional list of employee IDs to filter (team scope)
+        
         Returns:
-            Dict with no_assignment_count, weight_issues_count, and details
+            Dict with no_assignment_count, weight_issues_count, total_assignments, and details
         """
         result = {
             'no_assignment_count': 0,
             'no_assignment_details': [],
             'weight_issues_count': 0,
-            'weight_issues_details': []
+            'weight_issues_details': [],
+            'total_assignments': 0  # NEW: Track total count
         }
         
+        # Build employee filter clause
+        emp_filter = ""
+        params = {'year': year}
+        
+        if employee_ids is not None and len(employee_ids) > 0:
+            emp_ids_str = ','.join(str(id) for id in employee_ids)
+            emp_filter = f"AND e.id IN ({emp_ids_str})"
+        
         # Active salespeople without assignments
-        no_assign_query = """
+        no_assign_query = f"""
             SELECT e.id, CONCAT(e.first_name, ' ', e.last_name) AS name, e.email
             FROM employees e
             WHERE e.delete_flag = 0
               AND e.status = 'ACTIVE'
+              {emp_filter}
               AND e.id NOT IN (
                   SELECT DISTINCT employee_id 
                   FROM sales_employee_kpi_assignments 
@@ -718,14 +741,19 @@ class SalespersonSetupQueries:
               )
             ORDER BY name
         """
-        no_assign_df = self._execute_query(no_assign_query, {'year': year}, "employees_without_assignment")
+        no_assign_df = self._execute_query(no_assign_query, params, "employees_without_assignment")
         
         if not no_assign_df.empty:
             result['no_assignment_count'] = len(no_assign_df)
             result['no_assignment_details'] = no_assign_df.to_dict('records')
         
-        # Weight issues
-        weight_query = """
+        # Weight issues - also filter by employee_ids
+        weight_filter = ""
+        if employee_ids is not None and len(employee_ids) > 0:
+            emp_ids_str = ','.join(str(id) for id in employee_ids)
+            weight_filter = f"AND a.employee_id IN ({emp_ids_str})"
+        
+        weight_query = f"""
             SELECT 
                 a.employee_id,
                 CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
@@ -735,15 +763,33 @@ class SalespersonSetupQueries:
             WHERE a.delete_flag = 0
               AND e.delete_flag = 0
               AND a.year = :year
+              {weight_filter}
             GROUP BY a.employee_id, employee_name
             HAVING total_weight != 100
             ORDER BY employee_name
         """
-        weight_df = self._execute_query(weight_query, {'year': year}, "weight_issues")
+        weight_df = self._execute_query(weight_query, params, "weight_issues")
         
         if not weight_df.empty:
             result['weight_issues_count'] = len(weight_df)
             result['weight_issues_details'] = weight_df.to_dict('records')
+        
+        # NEW: Get total assignments count (for Quick Stats)
+        total_filter = ""
+        if employee_ids is not None and len(employee_ids) > 0:
+            emp_ids_str = ','.join(str(id) for id in employee_ids)
+            total_filter = f"AND employee_id IN ({emp_ids_str})"
+        
+        total_query = f"""
+            SELECT COUNT(*) as cnt 
+            FROM sales_employee_kpi_assignments
+            WHERE year = :year 
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+              {total_filter}
+        """
+        total_df = self._execute_query(total_query, params, "total_assignments")
+        if not total_df.empty:
+            result['total_assignments'] = int(total_df.iloc[0]['cnt'])
         
         return result
     

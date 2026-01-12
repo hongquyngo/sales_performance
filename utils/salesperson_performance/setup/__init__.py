@@ -31,6 +31,15 @@ v1.2.0 - FIX: Setup tab now independent from main page's "Only with KPI" filter
            * sales (self): VIEW ONLY - no edit permission
          - Record-level permission checks on Edit/Delete buttons
          - Salesperson dropdowns in forms filtered to editable scope
+v1.3.0 - Phase 3 & 4 implementation:
+         - Setup tab now defaults to MOST RECENT year with KPI data (Phase 4)
+         - Stores quick stats in session_state for sidebar display (Phase 3)
+         - Added _get_most_recent_kpi_year() helper function
+         - Stores setup_access_info and setup_quick_stats for dynamic sidebar
+v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
+         - get_assignment_issues_summary() now accepts employee_ids parameter
+         - salespeople_section() now accepts and filters by employee_ids  
+         - Non-admin users now only see their team members in Setup tab
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -96,4 +105,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.2.0'
+__version__ = '1.3.1'

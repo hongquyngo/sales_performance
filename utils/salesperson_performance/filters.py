@@ -23,6 +23,11 @@ CHANGELOG:
           - validate_filters() now sets 'is_empty_selection' flag instead
           - Added get_empty_selection_reason() helper for informative messages
           - Page renders with $0 values, all tabs accessible including Setup
+- v2.5.0: NEW - Dynamic sidebar for Setup tab (Phase 3 & 4)
+          - Added render_setup_sidebar() for Setup-specific sidebar content
+          - Added get_most_recent_kpi_year() for smart year default
+          - Added get_setup_quick_stats() for sidebar stats display
+          - Setup tab now independent with its own filter system
 - v2.2.0: FIX - KPI assignment checkbox and LY date display
           - Bug 1: "Only with KPI assignment" always used current_year instead of 
             period-specific year (e.g., LY should check 2025 KPIs, not 2026)
@@ -53,7 +58,7 @@ CHANGELOG:
           - FilterResult dataclass for clean return values
 - v1.1.0: Added exclude_internal_revenue checkbox to filter out internal company revenue
 
-VERSION: 2.4.0
+VERSION: 2.5.0
 """
 
 import logging
@@ -1326,3 +1331,162 @@ def analyze_period(filter_values: Dict) -> Dict:
         'show_backlog': show_backlog,
         'comparison_type': 'multi_year' if is_multi_year else 'yoy',
     }
+
+
+# =============================================================================
+# SETUP TAB SIDEBAR (NEW v2.4.0 - Phase 3)
+# =============================================================================
+
+def render_setup_sidebar(access_level: str, accessible_count: int, editable_count: int):
+    """
+    Render Setup-specific sidebar content when Setup tab is active.
+    
+    NEW v2.4.0: Dynamic sidebar for Setup tab showing:
+    - Access level badge
+    - Scope information
+    - Quick stats
+    - Info message about inline filters
+    
+    Args:
+        access_level: 'full', 'team', or 'self'
+        accessible_count: Number of salespeople user can view
+        editable_count: Number of salespeople user can edit
+    """
+    with st.sidebar:
+        st.header("⚙️ Setup Mode")
+        
+        # Access level badge
+        if access_level == 'full':
+            st.success("🔓 **Full Access** (Admin)")
+        elif access_level == 'team':
+            st.info(f"👥 **Team Access** ({accessible_count} members)")
+        else:
+            st.warning("👤 **Personal View** (Read-only)")
+        
+        st.divider()
+        
+        # Scope information
+        st.markdown("**📊 Your Scope:**")
+        st.markdown(f"- **View**: {accessible_count if accessible_count else 'All'} salespeople")
+        st.markdown(f"- **Edit**: {editable_count if editable_count else 'All'} salespeople")
+        
+        st.divider()
+        
+        # Info message
+        st.info(
+            """
+            ℹ️ **Setup tab has its own filter system.**
+            
+            Use the inline filters within each sub-tab for data filtering.
+            
+            Sidebar filters (Period, KPI assignment, etc.) apply to other tabs only.
+            """
+        )
+        
+        st.divider()
+        
+        # Quick stats placeholder - will be populated by setup tab
+        if 'setup_quick_stats' in st.session_state:
+            stats = st.session_state['setup_quick_stats']
+            st.markdown("**📈 Quick Stats:**")
+            
+            if 'split_rules_count' in stats:
+                st.markdown(f"- Split Rules: {stats['split_rules_count']}")
+            if 'kpi_current_year_count' in stats:
+                year = stats.get('kpi_year', date.today().year)
+                count = stats['kpi_current_year_count']
+                if count == 0:
+                    st.markdown(f"- KPI {year}: **0** ⚠️")
+                else:
+                    st.markdown(f"- KPI {year}: {count}")
+            if 'active_salespeople_count' in stats:
+                st.markdown(f"- Active Salespeople: {stats['active_salespeople_count']}")
+
+
+def get_most_recent_kpi_year() -> int:
+    """
+    Get the most recent year that has KPI assignment data.
+    
+    NEW v2.4.0 (Phase 4): Used to set default year in Setup tab.
+    Falls back to current year if no data found.
+    
+    Returns:
+        Year with most recent KPI data, or current year if none
+    """
+    try:
+        from utils.db import get_db_engine
+        engine = get_db_engine()
+        
+        query = """
+            SELECT MAX(year) as max_year
+            FROM sales_employee_kpi_assignments
+            WHERE delete_flag = 0
+        """
+        
+        with engine.connect() as conn:
+            result = conn.execute(text(query))
+            row = result.fetchone()
+            
+            if row and row[0]:
+                return int(row[0])
+            else:
+                return date.today().year
+                
+    except Exception as e:
+        logger.error(f"Error fetching most recent KPI year: {e}")
+        return date.today().year
+
+
+def get_setup_quick_stats(year: int = None) -> Dict:
+    """
+    Get quick statistics for Setup sidebar display.
+    
+    NEW v2.4.0 (Phase 3): Provides overview stats for Setup tab.
+    
+    Args:
+        year: Year to check KPI assignments (default: current year)
+        
+    Returns:
+        Dict with counts for display
+    """
+    if year is None:
+        year = date.today().year
+    
+    stats = {
+        'kpi_year': year,
+        'split_rules_count': 0,
+        'kpi_current_year_count': 0,
+        'active_salespeople_count': 0,
+    }
+    
+    try:
+        from utils.db import get_db_engine
+        engine = get_db_engine()
+        
+        with engine.connect() as conn:
+            # Count split rules
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM sales_split_by_customer_product
+                WHERE (delete_flag = 0 OR delete_flag IS NULL)
+            """))
+            stats['split_rules_count'] = result.fetchone()[0] or 0
+            
+            # Count KPI assignments for specified year
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM sales_employee_kpi_assignments
+                WHERE year = :year AND (delete_flag = 0 OR delete_flag IS NULL)
+            """), {'year': year})
+            stats['kpi_current_year_count'] = result.fetchone()[0] or 0
+            
+            # Count active salespeople with sales data
+            result = conn.execute(text("""
+                SELECT COUNT(DISTINCT sales_id) 
+                FROM unified_sales_by_salesperson_view
+                WHERE sales_id IS NOT NULL
+            """))
+            stats['active_salespeople_count'] = result.fetchone()[0] or 0
+            
+    except Exception as e:
+        logger.error(f"Error fetching setup quick stats: {e}")
+    
+    return stats

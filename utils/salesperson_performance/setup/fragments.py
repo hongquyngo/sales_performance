@@ -19,6 +19,15 @@ v1.2.0 - Hybrid authorization (Option C):
          - Added can_modify_record() and get_editable_employee_ids() helpers
          - Salesperson dropdowns filtered to editable scope
          - Edit/Delete buttons check per-record permission
+v1.3.0 - Phase 3 & 4 implementation:
+         - Setup tab now defaults to MOST RECENT year with KPI data (Phase 4)
+         - Stores quick stats in session_state for sidebar display (Phase 3)
+         - Added _get_most_recent_kpi_year() helper function
+         - Stores setup_access_info and setup_quick_stats for dynamic sidebar
+v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
+         - get_assignment_issues_summary() now accepts employee_ids parameter
+         - salespeople_section() now accepts and filters by employee_ids
+         - Non-admin users now only see their team members in Setup tab
 """
 
 import streamlit as st
@@ -199,8 +208,30 @@ def setup_tab_fragment(
     user_role = st.session_state.get('user_role', 'viewer')
     user_role_lower = str(user_role).lower() if user_role else ''
     
-    # Get year from filters
-    current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
+    # =========================================================================
+    # v1.3.0 (Phase 4): Get default year from MOST RECENT KPI data
+    # Instead of using active_filters year, default to year with actual KPI data
+    # =========================================================================
+    def _get_most_recent_kpi_year() -> int:
+        """Get year with most recent KPI assignments, or current year if none."""
+        try:
+            result = setup_queries.execute_query("""
+                SELECT MAX(year) as max_year
+                FROM sales_employee_kpi_assignments
+                WHERE delete_flag = 0 OR delete_flag IS NULL
+            """)
+            if result and len(result) > 0 and result[0].get('max_year'):
+                return int(result[0]['max_year'])
+        except Exception:
+            pass
+        return date.today().year
+    
+    # Use session state to cache default year for Setup tab
+    if 'setup_default_year' not in st.session_state:
+        st.session_state['setup_default_year'] = _get_most_recent_kpi_year()
+    
+    # Setup tab uses its own year (independent from sidebar filters)
+    current_year = st.session_state.get('setup_default_year', date.today().year)
     
     # =========================================================================
     # v1.2.0: Get accessible employees from AccessControl (NOT from active_filters)
@@ -234,6 +265,19 @@ def setup_tab_fragment(
         user_employee_id=employee_id
     )
     
+    # =========================================================================
+    # v1.3.0 (Phase 3): Store quick stats for sidebar display
+    # =========================================================================
+    accessible_count = len(accessible_employee_ids) if accessible_employee_ids else None
+    editable_count = len(editable_employee_ids) if editable_employee_ids else None
+    
+    # Store for sidebar to access
+    st.session_state['setup_access_info'] = {
+        'access_level': access_level,
+        'accessible_count': accessible_count,
+        'editable_count': editable_count,
+    }
+    
     # Determine base edit permission by role
     # NOTE: 'sales' role is VIEW ONLY - not included here
     can_edit_base = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
@@ -245,8 +289,23 @@ def setup_tab_fragment(
     )
     split_critical = split_stats.get('over_100_count', 0)
     
-    assignment_issues = setup_queries.get_assignment_issues_summary(current_year)
+    # FIX v1.3.1: Pass accessible_employee_ids to filter by team scope
+    assignment_issues = setup_queries.get_assignment_issues_summary(
+        current_year,
+        employee_ids=accessible_employee_ids
+    )
     assign_critical = assignment_issues.get('no_assignment_count', 0) + assignment_issues.get('weight_issues_count', 0)
+    
+    # =========================================================================
+    # v1.3.0 (Phase 3): Store quick stats in session_state for sidebar
+    # =========================================================================
+    st.session_state['setup_quick_stats'] = {
+        'split_rules_count': split_stats.get('total_rules', 0),
+        'kpi_year': current_year,
+        'kpi_current_year_count': assignment_issues.get('total_assignments', 0),
+        'split_critical': split_critical,
+        'assign_critical': assign_critical,
+    }
     
     # Dynamic tab names with badges
     split_tab_name = f"📋 Split Rules{' 🔴' if split_critical > 0 else ''}"
@@ -282,8 +341,10 @@ def setup_tab_fragment(
         )
     
     with tab3:
+        # FIX v1.3.1: Pass accessible_employee_ids to filter salespeople list
         salespeople_section(
             setup_queries=setup_queries,
+            employee_ids=accessible_employee_ids,  # NEW: Filter by team scope
             can_edit=can_edit_base and access_level == 'full'  # Only admin can edit salespeople
         )
 
@@ -1692,9 +1753,15 @@ def _render_assignment_form(
 @st.fragment  
 def salespeople_section(
     setup_queries: SalespersonSetupQueries,
+    employee_ids: List[int] = None,  # FIX v1.3.1: Filter by team scope
     can_edit: bool = False
 ):
-    """Salespeople sub-tab with list view."""
+    """
+    Salespeople sub-tab with list view.
+    
+    FIX v1.3.1: Added employee_ids parameter to filter by team scope.
+    Non-admin users should only see their team members.
+    """
     
     # Toolbar
     col1, col2 = st.columns([1, 5])
@@ -1727,6 +1794,10 @@ def salespeople_section(
         status_filter=status_param,
         include_inactive=include_inactive
     )
+    
+    # FIX v1.3.1: Filter by employee_ids (team scope)
+    if not salespeople_df.empty and employee_ids is not None:
+        salespeople_df = salespeople_df[salespeople_df['employee_id'].isin(employee_ids)]
     
     # Client-side search
     if not salespeople_df.empty and search:
