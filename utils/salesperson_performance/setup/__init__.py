@@ -7,7 +7,87 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
+Features:
+- Comprehensive Filters: Period, Entity, Attributes, Audit Trail filters
+- Real-time Validation: Split percentage and weight validation
+- Issue Detection: Missing assignments, weight issues
+- CRUD Operations: Create, Read, Update, Delete for all entities
+- KPI Summary: Overview by KPI type with total targets
+- Bulk Approval: Select multiple rules and approve/disapprove in one action (v1.5.0)
 
+v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
+         Synced with KPI Center Performance v2.6.0 features:
+         - 5 filter groups (Period, Entity, Attributes, Audit Trail, System)
+         - Created By / Approved By / Date range filters
+         - KPI summary by type in Assignments tab
+         - Uses sales_split_looker_view for performance
+v1.2.0 - FIX: Setup tab now independent from main page's "Only with KPI" filter
+         - Setup tab uses AccessControl for employee filtering instead of active_filters
+         - Added Salesperson dropdown filter in Entity Filters section
+         - Fixed metrics/data table mismatch (metrics now use same employee_ids filter)
+         - Hybrid authorization (Option C):
+           * admin (full): CRUD all records + approve all
+           * sales_manager (team): CRUD + approve for team members only
+           * sales (self): CRUD own records (pending status, cannot approve)
+         - Record-level permission checks on Edit/Delete buttons
+         - Salesperson dropdowns in forms filtered to editable scope
+v1.3.0 - Phase 3 & 4 implementation:
+         - Setup tab now defaults to MOST RECENT year with KPI data (Phase 4)
+         - Stores quick stats in session_state for sidebar display (Phase 3)
+         - Added _get_most_recent_kpi_year() helper function
+         - Stores setup_access_info and setup_quick_stats for dynamic sidebar
+v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
+         - get_assignment_issues_summary() now accepts employee_ids parameter
+         - salespeople_section() now accepts and filters by employee_ids  
+         - Non-admin users now only see their team members in Setup tab
+v1.4.0 - UX Improvements:
+         - Select Rule dropdown shows full info without truncation
+         - Edit Split Rule form includes Approve checkbox for admins and sales_managers
+         - sales_manager can approve rules for their team members
+         - Shows approval status (read-only) for users without approve permission
+v1.4.1 - Authorization update for sales role:
+         - sales role can now CRUD their own records (pending status)
+         - sales edits on approved rules reset to pending (needs re-approval)
+v1.4.2 - Added Authorization Info Popover:
+         - 🔐 Permissions button shows role-based authorization matrix
+         - Highlights current user's permissions
+         - Expandable view of all roles comparison
+         - FIXED: Created By column displays employee name correctly
+           (joins via employees.keycloak_id instead of users.id)
+v1.5.0 - Bulk Approval UI (Phase 1 + 2):
+         - Checkbox column in data table for multi-select (st.data_editor)
+         - Quick select buttons: "Select All Pending", "Select All Approved"
+         - Floating Action Bar with bulk Approve/Disapprove buttons
+         - Confirmation dialog using st.popover before bulk actions
+         - Inline single-rule Approve/Disapprove in Quick Actions
+         - st.toast notifications for better performance
+         - Uses st.rerun(scope="fragment") to minimize page reruns
+         - New queries: bulk_approve_split_rules(), bulk_disapprove_split_rules()
+v1.5.1 - UX Refinement:
+         - Removed separate Quick Actions dropdown section
+         - Unified all actions (Edit/Delete/Approve/Disapprove) in action bar
+         - Single selection: Shows Edit, Delete, Approve, Disapprove buttons
+         - Multi selection: Shows only Bulk Approve/Disapprove buttons
+         - Delete now uses confirmation popover for consistency
+v1.5.2 - Filter & Performance Improvements:
+         - Customer/Product filters: Changed from text search to multiselect
+         - New queries: get_customers_with_splits(), get_products_with_splits()
+         - Nested fragment for data table: Prevents full page rerun on row select
+         - Server-side filtering replaces client-side text search
+v1.5.3 - Enhanced Bulk Actions:
+         - Bulk Set Period: Apply same validity period to multiple rules
+         - Bulk Set Split %: Apply same split percentage to multiple rules
+         - New queries: bulk_update_split_period(), bulk_update_split_percentage()
+         - UI: 4-column layout for bulk actions (Approve, Disapprove, Period, Split %)
+
+Tables Managed:
+- sales_split_by_customer_product: Sales territory assignments by customer-product
+- sales_employee_kpi_assignments: KPI targets for each salesperson by year
+- employees: Salesperson information (read-only)
+
+Views Used:
+- sales_split_full_looker_view: Pre-computed split data with validation status (enhanced)
 """
 
 # Queries
@@ -65,4 +145,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.5.2'
+__version__ = '1.5.3'

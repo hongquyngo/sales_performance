@@ -7,6 +7,72 @@ UI Fragments for Setup Tab - Salesperson Performance
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments
 3. Salespeople - List/manage salespeople
 
+v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, KPI summary by type, enhanced card layout
+         Synced with KPI Center Performance v2.6.0 features
+v1.2.0 - Hybrid authorization (Option C):
+         - Setup tab independent from main page's "Only with KPI" filter
+         - Record-level authorization: users can only CRUD within their scope
+         - admin (full): CRUD all records + approve all
+         - sales_manager (team): CRUD + approve for team members only  
+         - sales (self): CRUD own records (pending status, cannot approve)
+         - Added can_modify_record() and get_editable_employee_ids() helpers
+         - Salesperson dropdowns filtered to editable scope
+         - Edit/Delete buttons check per-record permission
+v1.3.0 - Phase 3 & 4 implementation:
+         - Setup tab now defaults to MOST RECENT year with KPI data (Phase 4)
+         - Stores quick stats in session_state for sidebar display (Phase 3)
+         - Added _get_most_recent_kpi_year() helper function
+         - Stores setup_access_info and setup_quick_stats for dynamic sidebar
+v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
+         - get_assignment_issues_summary() now accepts employee_ids parameter
+         - salespeople_section() now accepts and filters by employee_ids
+         - Non-admin users now only see their team members in Setup tab
+v1.4.0 - UX Improvements:
+         - Select Rule dropdown now shows full info (no truncation)
+           Format: #{id} | {salesperson} | {customer} | {product} ({split%})
+         - Edit Split Rule form now includes Approve checkbox
+         - Approve permission: admin (all), sales_manager (team members only)
+v1.4.1 - Authorization update for sales role:
+         - sales role can now View/Create/Edit/Delete their OWN records
+         - sales role CANNOT approve - all their records are pending
+         - When sales edits an approved rule, it resets to pending (needs re-approval)
+         - Clear UI messaging for sales role about approval workflow
+v1.4.2 - Added Authorization Info Popover:
+         - 🔐 Permissions button in header shows authorization matrix
+         - Highlights current user's role and permissions
+         - Expandable section to view all roles comparison
+         - Clear legend for permission symbols
+         - FIXED: Created By column now displays employee name correctly
+           (joins via employees.keycloak_id instead of users.id)
+v1.5.0 - Bulk Approval UI (Phase 1 + 2):
+         - DATA TABLE: Checkbox column using st.data_editor for multi-select
+         - QUICK SELECT: "Select All Pending" / "Select All Approved" buttons
+         - FLOATING ACTION BAR: Shows when items selected with counts
+         - BULK ACTIONS: Approve/Disapprove multiple rules at once
+         - CONFIRMATION: st.popover dialog before bulk actions
+         - INLINE ACTIONS: Single-click Approve/Disapprove in Quick Actions
+         - NOTIFICATIONS: st.toast for performance (no page rerun)
+         - PERFORMANCE: Uses st.rerun(scope="fragment") to minimize reruns
+         - Select Rule dropdown now shows approval status icon (✅/⏳)
+v1.5.1 - UX Refinement:
+         - REMOVED: Separate Quick Actions dropdown section
+         - UNIFIED: All actions (Edit/Delete/Approve/Disapprove) in action bar
+         - Single selection: Shows Edit, Delete, Approve, Disapprove buttons
+         - Multi selection: Shows only Bulk Approve/Disapprove buttons
+         - Delete now uses confirmation popover (consistent with bulk actions)
+v1.5.2 - Filter & Performance Improvements:
+         - Customer/Product filters: text input → multiselect widget
+         - Only shows customers/products that have split rules (cleaner UX)
+         - New queries: get_customers_with_splits(), get_products_with_splits()
+         - Nested @st.fragment for data table: row select only reruns table section
+         - Removed client-side text search (now server-side via multiselect)
+v1.5.3 - Enhanced Bulk Actions:
+         - Bulk Set Period: Apply same Valid From/To to multiple selected rules
+         - Bulk Set Split %: Apply same split percentage to multiple selected rules
+         - UI uses popover with date inputs / number input for bulk updates
+         - 4-column layout for bulk actions when user has approve permission
+         - Non-approvers can still bulk update Period and Split %
 """
 
 import streamlit as st
@@ -1249,10 +1315,14 @@ def _render_split_data_table(
             else:
                 st.caption(f"📌 **{selected_count}** rules selected: {selected_pending} pending, {selected_approved} approved")
                 
+                # v1.5.3: Enhanced bulk actions with Period and Split %
+                selected_rule_ids = list(valid_selected)
+                
+                # ROW 1: Approval actions
                 if can_approve:
-                    bulk_col1, bulk_col2, bulk_col3 = st.columns([1, 1, 2])
+                    approve_col1, approve_col2, approve_col3, approve_col4 = st.columns(4)
                     
-                    with bulk_col1:
+                    with approve_col1:
                         if selected_pending > 0:
                             with st.popover(f"✅ Approve {selected_pending}", use_container_width=True):
                                 st.warning(f"Approve **{selected_pending}** pending rules?")
@@ -1273,7 +1343,7 @@ def _render_split_data_table(
                             st.button("✅ Approve", disabled=True, use_container_width=True,
                                      help="No pending rules selected", key="sp_dt_bulk_approve_dis")
                     
-                    with bulk_col2:
+                    with approve_col2:
                         if selected_approved > 0:
                             with st.popover(f"⏳ Disapprove {selected_approved}", use_container_width=True):
                                 st.warning(f"Reset **{selected_approved}** rules to Pending?")
@@ -1292,8 +1362,130 @@ def _render_split_data_table(
                         else:
                             st.button("⏳ Disapprove", disabled=True, use_container_width=True,
                                      help="No approved rules selected", key="sp_dt_bulk_disapprove_dis")
+                    
+                    # v1.5.3: Bulk Period Update
+                    with approve_col3:
+                        with st.popover(f"📅 Set Period", use_container_width=True):
+                            st.markdown(f"**Update period for {selected_count} rules**")
+                            
+                            bulk_from = st.date_input(
+                                "Valid From",
+                                value=date.today().replace(month=1, day=1),
+                                key="sp_dt_bulk_period_from"
+                            )
+                            bulk_to = st.date_input(
+                                "Valid To",
+                                value=date.today().replace(month=12, day=31),
+                                key="sp_dt_bulk_period_to"
+                            )
+                            
+                            if bulk_from and bulk_to:
+                                if bulk_from > bulk_to:
+                                    st.error("Valid From must be before Valid To")
+                                else:
+                                    if st.button("📅 Apply Period", type="primary",
+                                                key="sp_dt_bulk_period_apply", use_container_width=True):
+                                        result = setup_queries.bulk_update_split_period(
+                                            rule_ids=selected_rule_ids,
+                                            valid_from=bulk_from,
+                                            valid_to=bulk_to
+                                        )
+                                        if result['success']:
+                                            st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
+                                            st.rerun(scope="fragment")
+                                        else:
+                                            st.error(result['message'])
+                    
+                    # v1.5.3: Bulk Split % Update
+                    with approve_col4:
+                        with st.popover(f"📊 Set Split %", use_container_width=True):
+                            st.markdown(f"**Update split % for {selected_count} rules**")
+                            
+                            bulk_split = st.number_input(
+                                "Split Percentage",
+                                min_value=0,
+                                max_value=100,
+                                value=100,
+                                step=5,
+                                key="sp_dt_bulk_split_pct"
+                            )
+                            
+                            st.caption("⚠️ This will set the same split % for all selected rules")
+                            
+                            if st.button(f"📊 Apply {bulk_split}%", type="primary",
+                                        key="sp_dt_bulk_split_apply", use_container_width=True):
+                                result = setup_queries.bulk_update_split_percentage(
+                                    rule_ids=selected_rule_ids,
+                                    split_percentage=bulk_split
+                                )
+                                if result['success']:
+                                    st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
+                
                 else:
-                    st.info("💡 Select a single rule to Edit or Delete")
+                    # Non-approvers can still bulk update Period and Split %
+                    edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 2])
+                    
+                    with edit_col1:
+                        with st.popover(f"📅 Set Period", use_container_width=True):
+                            st.markdown(f"**Update period for {selected_count} rules**")
+                            
+                            bulk_from = st.date_input(
+                                "Valid From",
+                                value=date.today().replace(month=1, day=1),
+                                key="sp_dt_bulk_period_from_ne"
+                            )
+                            bulk_to = st.date_input(
+                                "Valid To",
+                                value=date.today().replace(month=12, day=31),
+                                key="sp_dt_bulk_period_to_ne"
+                            )
+                            
+                            if bulk_from and bulk_to:
+                                if bulk_from > bulk_to:
+                                    st.error("Valid From must be before Valid To")
+                                else:
+                                    if st.button("📅 Apply Period", type="primary",
+                                                key="sp_dt_bulk_period_apply_ne", use_container_width=True):
+                                        result = setup_queries.bulk_update_split_period(
+                                            rule_ids=selected_rule_ids,
+                                            valid_from=bulk_from,
+                                            valid_to=bulk_to
+                                        )
+                                        if result['success']:
+                                            st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
+                                            st.rerun(scope="fragment")
+                                        else:
+                                            st.error(result['message'])
+                    
+                    with edit_col2:
+                        with st.popover(f"📊 Set Split %", use_container_width=True):
+                            st.markdown(f"**Update split % for {selected_count} rules**")
+                            
+                            bulk_split = st.number_input(
+                                "Split Percentage",
+                                min_value=0,
+                                max_value=100,
+                                value=100,
+                                step=5,
+                                key="sp_dt_bulk_split_pct_ne"
+                            )
+                            
+                            st.caption("⚠️ This will set the same split % for all selected rules")
+                            
+                            if st.button(f"📊 Apply {bulk_split}%", type="primary",
+                                        key="sp_dt_bulk_split_apply_ne", use_container_width=True):
+                                result = setup_queries.bulk_update_split_percentage(
+                                    rule_ids=selected_rule_ids,
+                                    split_percentage=bulk_split
+                                )
+                                if result['success']:
+                                    st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
     
     # =========================================================================
     # DATA TABLE WITH CHECKBOXES

@@ -7,7 +7,28 @@ Full CRUD operations for:
 - KPI Assignments (sales_employee_kpi_assignments)
 - Salespeople Management
 
-
+v1.0.0 - Initial version based on KPI Center Performance setup pattern
+v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
+         Synced with KPI Center Performance v2.6.0 features
+v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
+         - Non-admin users now only see issues for their team members
+         - Added total_assignments count to result dict
+v1.5.0 - Bulk Approval methods:
+         - bulk_approve_split_rules(rule_ids, approver_employee_id)
+         - bulk_disapprove_split_rules(rule_ids)
+         - Both use single transaction for performance
+v1.5.2 - Filter dropdown queries:
+         - get_customers_with_splits(employee_ids): Customers that have split rules
+         - get_products_with_splits(employee_ids): Products that have split rules
+v1.5.3 - Bulk update methods:
+         - bulk_update_split_period(rule_ids, valid_from, valid_to)
+         - bulk_update_split_percentage(rule_ids, split_percentage)
+         
+Schema notes:
+- sales_split_by_customer_product.created_by: VARCHAR (keycloak_id from employees table)
+- sales_split_by_customer_product.approved_by: FK -> employees.id
+- No modified_by column in sales_split_by_customer_product
+- Join chain for created_by: ss.created_by → employees.keycloak_id → users.employee_id
 """
 
 import logging
@@ -599,6 +620,102 @@ class SalespersonSetupQueries:
         """
         
         return self._execute_update(query, params, f"bulk_disapprove_{len(rule_ids)}_rules")
+    
+    def bulk_update_split_period(
+        self,
+        rule_ids: List[int],
+        valid_from: date,
+        valid_to: date
+    ) -> Dict:
+        """
+        Bulk update validity period for multiple split rules.
+        
+        v1.5.3: New method for bulk period update.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            valid_from: New start date
+            valid_to: New end date
+            
+        Returns:
+            Dict with success, count, message
+        """
+        if not rule_ids:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'No rules selected'
+            }
+        
+        if valid_from > valid_to:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'Valid From must be before Valid To'
+            }
+        
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        params['valid_from'] = valid_from
+        params['valid_to'] = valid_to
+        
+        query = f"""
+            UPDATE sales_split_by_customer_product
+            SET valid_from = :valid_from,
+                valid_to = :valid_to,
+                modified_date = NOW(),
+                version = version + 1
+            WHERE id IN ({placeholders})
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        return self._execute_update(query, params, f"bulk_update_period_{len(rule_ids)}_rules")
+    
+    def bulk_update_split_percentage(
+        self,
+        rule_ids: List[int],
+        split_percentage: float
+    ) -> Dict:
+        """
+        Bulk update split percentage for multiple split rules.
+        
+        v1.5.3: New method for bulk split % update.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            split_percentage: New split percentage (0-100)
+            
+        Returns:
+            Dict with success, count, message
+        """
+        if not rule_ids:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'No rules selected'
+            }
+        
+        if split_percentage < 0 or split_percentage > 100:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'Split percentage must be between 0 and 100'
+            }
+        
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        params['split_percentage'] = split_percentage
+        
+        query = f"""
+            UPDATE sales_split_by_customer_product
+            SET split_percentage = :split_percentage,
+                modified_date = NOW(),
+                version = version + 1
+            WHERE id IN ({placeholders})
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        return self._execute_update(query, params, f"bulk_update_split_{len(rule_ids)}_rules")
     
     # =========================================================================
     # SALES SPLIT RULES - VALIDATION
