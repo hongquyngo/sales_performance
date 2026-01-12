@@ -13,6 +13,10 @@ v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
 v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
          - Non-admin users now only see issues for their team members
          - Added total_assignments count to result dict
+v1.5.0 - Bulk Approval methods:
+         - bulk_approve_split_rules(rule_ids, approver_employee_id)
+         - bulk_disapprove_split_rules(rule_ids)
+         - Both use single transaction for performance
          
 Schema notes:
 - sales_split_by_customer_product.created_by: VARCHAR (keycloak_id from employees table)
@@ -524,6 +528,92 @@ class SalespersonSetupQueries:
         """
         
         return self._execute_update(query, {'rule_id': rule_id}, "delete_split_rule")
+    
+    # =========================================================================
+    # SALES SPLIT RULES - BULK APPROVAL (v1.5.0)
+    # =========================================================================
+    
+    def bulk_approve_split_rules(
+        self,
+        rule_ids: List[int],
+        approver_employee_id: int = None
+    ) -> Dict:
+        """
+        Bulk approve multiple split rules in a single transaction.
+        
+        v1.5.0: New method for bulk approval workflow.
+        
+        Args:
+            rule_ids: List of rule IDs to approve
+            approver_employee_id: Employee ID of the approver (for audit)
+            
+        Returns:
+            Dict with success, count, message
+        """
+        if not rule_ids:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'No rules selected'
+            }
+        
+        # Build placeholders for IN clause
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
+        # Add approver info
+        if approver_employee_id:
+            params['approver_id'] = approver_employee_id
+            approver_clause = ", approved_by = :approver_id"
+        else:
+            approver_clause = ""
+        
+        query = f"""
+            UPDATE sales_split_by_customer_product
+            SET is_approved = 1,
+                modified_date = NOW(),
+                version = version + 1
+                {approver_clause}
+            WHERE id IN ({placeholders})
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        return self._execute_update(query, params, f"bulk_approve_{len(rule_ids)}_rules")
+    
+    def bulk_disapprove_split_rules(self, rule_ids: List[int]) -> Dict:
+        """
+        Bulk disapprove (reset to pending) multiple split rules.
+        
+        v1.5.0: New method for bulk disapproval workflow.
+        
+        Args:
+            rule_ids: List of rule IDs to disapprove
+            
+        Returns:
+            Dict with success, count, message
+        """
+        if not rule_ids:
+            return {
+                'success': False,
+                'count': 0,
+                'message': 'No rules selected'
+            }
+        
+        # Build placeholders for IN clause
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
+        query = f"""
+            UPDATE sales_split_by_customer_product
+            SET is_approved = 0,
+                approved_by = NULL,
+                modified_date = NOW(),
+                version = version + 1
+            WHERE id IN ({placeholders})
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        return self._execute_update(query, params, f"bulk_disapprove_{len(rule_ids)}_rules")
     
     # =========================================================================
     # SALES SPLIT RULES - VALIDATION

@@ -13,6 +13,7 @@ Features:
 - Issue Detection: Missing assignments, weight issues
 - CRUD Operations: Create, Read, Update, Delete for all entities
 - KPI Summary: Overview by KPI type with total targets
+- Bulk Approval: Select multiple rules and approve/disapprove in one action (v1.5.0)
 
 v1.0.0 - Initial version based on KPI Center Performance setup pattern
 v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
@@ -54,6 +55,21 @@ v1.4.2 - Added Authorization Info Popover:
          - Expandable view of all roles comparison
          - FIXED: Created By column displays employee name correctly
            (joins via employees.keycloak_id instead of users.id)
+v1.5.0 - Bulk Approval UI (Phase 1 + 2):
+         - Checkbox column in data table for multi-select (st.data_editor)
+         - Quick select buttons: "Select All Pending", "Select All Approved"
+         - Floating Action Bar with bulk Approve/Disapprove buttons
+         - Confirmation dialog using st.popover before bulk actions
+         - Inline single-rule Approve/Disapprove in Quick Actions
+         - st.toast notifications for better performance
+         - Uses st.rerun(scope="fragment") to minimize page reruns
+         - New queries: bulk_approve_split_rules(), bulk_disapprove_split_rules()
+v1.5.1 - UX Refinement:
+         - Removed separate Quick Actions dropdown section
+         - Unified all actions (Edit/Delete/Approve/Disapprove) in action bar
+         - Single selection: Shows Edit, Delete, Approve, Disapprove buttons
+         - Multi selection: Shows only Bulk Approve/Disapprove buttons
+         - Delete now uses confirmation popover for consistency
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -119,4 +135,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.4.2'
+__version__ = '1.5.1'
