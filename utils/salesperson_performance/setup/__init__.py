@@ -48,6 +48,12 @@ v1.4.0 - UX Improvements:
 v1.4.1 - Authorization update for sales role:
          - sales role can now CRUD their own records (pending status)
          - sales edits on approved rules reset to pending (needs re-approval)
+v1.4.2 - Added Authorization Info Popover:
+         - 🔐 Permissions button shows role-based authorization matrix
+         - Highlights current user's permissions
+         - Expandable view of all roles comparison
+         - FIXED: Created By column displays employee name correctly
+           (joins via employees.keycloak_id instead of users.id)
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -113,4 +119,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.4.1'
+__version__ = '1.4.2'

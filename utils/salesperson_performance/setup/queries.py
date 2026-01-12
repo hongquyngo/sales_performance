@@ -15,9 +15,10 @@ v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
          - Added total_assignments count to result dict
          
 Schema notes:
-- sales_split_by_customer_product.created_by: VARCHAR (username/UUID string)
+- sales_split_by_customer_product.created_by: VARCHAR (keycloak_id from employees table)
 - sales_split_by_customer_product.approved_by: FK -> employees.id
 - No modified_by column in sales_split_by_customer_product
+- Join chain for created_by: ss.created_by → employees.keycloak_id → users.employee_id
 """
 
 import logging
@@ -96,9 +97,9 @@ class SalespersonSetupQueries:
         split_min: float = None,
         split_max: float = None,
         
-        # Audit filters (v1.1.0 - NEW)
-        created_by_user_id: int = None,       # Filter by creator user ID
-        approved_by_employee_id: int = None,  # Filter by approver employee ID
+        # Audit filters (v1.1.0 - NEW, v1.4.2 - FIXED)
+        created_by_employee_id: int = None,    # Filter by creator employee ID (via keycloak_id)
+        approved_by_employee_id: int = None,   # Filter by approver employee ID
         created_date_from: date = None,       # Created date range start
         created_date_to: date = None,         # Created date range end
         modified_date_from: date = None,      # Modified date range start
@@ -133,7 +134,7 @@ class SalespersonSetupQueries:
             split_min: Minimum split percentage
             split_max: Maximum split percentage
             
-            created_by_user_id: Filter by creator user ID (users.id)
+            created_by_employee_id: Filter by creator employee ID (joins via keycloak_id)
             approved_by_employee_id: Filter by approver employee ID (employees.id)
             created_date_from: Filter created_date >= this
             created_date_to: Filter created_date <= this
@@ -179,9 +180,13 @@ class SalespersonSetupQueries:
                 approved_by_name,
                 approved_by_email,
                 created_by_raw,
+                created_by_employee_id,
+                created_by_keycloak_id,
+                created_by_name,
+                created_by_email,
                 created_by_user_id,
                 created_by_username,
-                created_by_name,
+                created_by_role,
                 created_date,
                 modified_date,
                 version,
@@ -261,11 +266,11 @@ class SalespersonSetupQueries:
             params['split_max'] = split_max
         
         # =====================================================================
-        # AUDIT FILTERS (v1.1.0 - NEW)
+        # AUDIT FILTERS (v1.1.0 - NEW, v1.4.2 - FIXED)
         # =====================================================================
-        if created_by_user_id:
-            query += " AND created_by_user_id = :created_by_user_id"
-            params['created_by_user_id'] = created_by_user_id
+        if created_by_employee_id:
+            query += " AND created_by_employee_id = :created_by_employee_id"
+            params['created_by_employee_id'] = created_by_employee_id
         
         if approved_by_employee_id:
             query += " AND approved_by_employee_id = :approved_by_employee_id"
@@ -1079,14 +1084,44 @@ class SalespersonSetupQueries:
         return self._execute_query(query, {}, "salespeople_dropdown")
     
     # =========================================================================
-    # USERS FOR AUDIT FILTERS (v1.1.0 - NEW)
+    # EMPLOYEES FOR AUDIT FILTERS (v1.4.2 - FIXED)
     # =========================================================================
+    
+    def get_creators_for_dropdown(self) -> pd.DataFrame:
+        """
+        Get employees who have created split rules (for Created By filter).
+        
+        v1.4.2: FIXED - created_by stores keycloak_id, not user_id.
+        This function joins via employees.keycloak_id.
+        
+        Returns:
+            DataFrame with employee_id, employee_name, keycloak_id
+        """
+        query = """
+            SELECT DISTINCT
+                e.id AS employee_id,
+                CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+                e.email,
+                e.keycloak_id
+            FROM employees e
+            WHERE e.delete_flag = 0
+              AND e.keycloak_id IN (
+                  SELECT DISTINCT created_by 
+                  FROM sales_split_by_customer_product 
+                  WHERE created_by IS NOT NULL
+                    AND (delete_flag = 0 OR delete_flag IS NULL)
+              )
+            ORDER BY employee_name
+        """
+        
+        return self._execute_query(query, {}, "creators_dropdown")
     
     def get_users_for_dropdown(self) -> pd.DataFrame:
         """
         Get users for audit filter dropdowns (Created By filter).
         
         NEW v1.1.0: For audit trail filters.
+        DEPRECATED v1.4.2: Use get_creators_for_dropdown() instead for split rules.
         
         Returns:
             DataFrame with user_id, username, full_name

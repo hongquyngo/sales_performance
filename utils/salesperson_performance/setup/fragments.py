@@ -38,6 +38,13 @@ v1.4.1 - Authorization update for sales role:
          - sales role CANNOT approve - all their records are pending
          - When sales edits an approved rule, it resets to pending (needs re-approval)
          - Clear UI messaging for sales role about approval workflow
+v1.4.2 - Added Authorization Info Popover:
+         - 🔐 Permissions button in header shows authorization matrix
+         - Highlights current user's role and permissions
+         - Expandable section to view all roles comparison
+         - Clear legend for permission symbols
+         - FIXED: Created By column now displays employee name correctly
+           (joins via employees.keycloak_id instead of users.id)
 """
 
 import streamlit as st
@@ -137,6 +144,122 @@ def get_editable_employee_ids(
 # HELPER FUNCTIONS
 # =============================================================================
 
+def _render_authorization_info(current_role: str):
+    """
+    Render authorization matrix info in popover.
+    
+    v1.4.2: Shows role-based permissions with current user highlighted.
+    """
+    st.markdown("#### 🔐 Authorization Matrix")
+    st.caption("Your current role is highlighted")
+    
+    # Define authorization matrix
+    auth_matrix = {
+        'admin': {
+            'label': '👑 Admin',
+            'scope': 'All Records',
+            'view': '✅', 'create': '✅', 'edit': '✅', 'delete': '✅', 'approve': '✅',
+            'notes': 'Full access to all records and approval'
+        },
+        'sales_manager': {
+            'label': '👔 Sales Manager',
+            'scope': 'Team Members',
+            'view': '✅', 'create': '✅', 'edit': '✅', 'delete': '✅', 'approve': '✅',
+            'notes': 'CRUD + Approve for team members only'
+        },
+        'gm': {
+            'label': '🏢 GM',
+            'scope': 'All Records',
+            'view': '✅', 'create': '✅', 'edit': '✅', 'delete': '✅', 'approve': '❌',
+            'notes': 'Full CRUD but cannot approve'
+        },
+        'md': {
+            'label': '🏢 MD',
+            'scope': 'All Records',
+            'view': '✅', 'create': '✅', 'edit': '✅', 'delete': '✅', 'approve': '❌',
+            'notes': 'Full CRUD but cannot approve'
+        },
+        'director': {
+            'label': '🏢 Director',
+            'scope': 'All Records',
+            'view': '✅', 'create': '✅', 'edit': '✅', 'delete': '✅', 'approve': '❌',
+            'notes': 'Full CRUD but cannot approve'
+        },
+        'sales': {
+            'label': '💼 Sales',
+            'scope': 'Own Records',
+            'view': '✅', 'create': '✅*', 'edit': '✅*', 'delete': '✅', 'approve': '❌',
+            'notes': '* Created/edited records are Pending approval'
+        },
+        'viewer': {
+            'label': '👁️ Viewer',
+            'scope': 'View Only',
+            'view': '✅', 'create': '❌', 'edit': '❌', 'delete': '❌', 'approve': '❌',
+            'notes': 'Read-only access'
+        },
+    }
+    
+    # Show current user's permissions first
+    current_role_lower = current_role.lower()
+    if current_role_lower in auth_matrix:
+        info = auth_matrix[current_role_lower]
+        st.success(f"**Your Role: {info['label']}**")
+        st.markdown(f"**Scope:** {info['scope']}")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("View", info['view'])
+        col2.metric("Create", info['create'])
+        col3.metric("Edit", info['edit'])
+        col4.metric("Delete", info['delete'])
+        col5.metric("Approve", info['approve'])
+        
+        if info.get('notes'):
+            st.caption(f"📝 {info['notes']}")
+    else:
+        st.warning(f"Unknown role: {current_role}")
+    
+    st.divider()
+    
+    # Show full matrix
+    with st.expander("📋 View All Roles", expanded=False):
+        # Build table data
+        table_data = []
+        for role_key, info in auth_matrix.items():
+            is_current = (role_key == current_role_lower)
+            row = {
+                'Role': f"**{info['label']}**" if is_current else info['label'],
+                'Scope': info['scope'],
+                'View': info['view'],
+                'Create': info['create'],
+                'Edit': info['edit'],
+                'Delete': info['delete'],
+                'Approve': info['approve'],
+            }
+            table_data.append(row)
+        
+        st.dataframe(
+            table_data,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                'Role': st.column_config.TextColumn('Role', width='medium'),
+                'Scope': st.column_config.TextColumn('Scope', width='medium'),
+                'View': st.column_config.TextColumn('View', width='small'),
+                'Create': st.column_config.TextColumn('Create', width='small'),
+                'Edit': st.column_config.TextColumn('Edit', width='small'),
+                'Delete': st.column_config.TextColumn('Delete', width='small'),
+                'Approve': st.column_config.TextColumn('Approve', width='small'),
+            }
+        )
+        
+        st.caption("""
+        **Legend:**
+        - ✅ = Allowed
+        - ✅* = Allowed but record stays Pending
+        - ❌ = Not allowed
+        """)
+
+
 def format_currency(value: float, decimals: int = 0) -> str:
     """Format value as USD currency."""
     if pd.isna(value) or value == 0:
@@ -208,8 +331,6 @@ def setup_tab_fragment(
         active_filters: Dict of active filters from sidebar (year used, employee_ids ignored)
         fragment_key: Unique key for fragment
     """
-    st.subheader("⚙️ Salesperson Configuration")
-    
     # Initialize queries with user context
     user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
     setup_queries = SalespersonSetupQueries(user_id=user_id)
@@ -217,6 +338,19 @@ def setup_tab_fragment(
     # Get user role for permission check
     user_role = st.session_state.get('user_role', 'viewer')
     user_role_lower = str(user_role).lower() if user_role else ''
+    
+    # =========================================================================
+    # HEADER WITH AUTHORIZATION INFO (v1.4.2)
+    # =========================================================================
+    header_col1, header_col2 = st.columns([6, 1])
+    
+    with header_col1:
+        st.subheader("⚙️ Salesperson Configuration")
+    
+    with header_col2:
+        # Authorization info popover
+        with st.popover("🔐 Permissions", use_container_width=True):
+            _render_authorization_info(user_role_lower)
     
     # =========================================================================
     # v1.3.0 (Phase 4): Get default year from MOST RECENT KPI data
@@ -477,10 +611,10 @@ def split_rules_section(
         if split_max is not None and split_max < 100:
             params['split_max'] = split_max
         
-        # Audit trail filters (v1.1.0 - NEW)
+        # Audit trail filters (v1.1.0 - NEW, v1.4.2 - FIXED)
         created_by = st.session_state.get('sp_split_created_by_filter')
         if created_by and created_by > 0:
-            params['created_by_user_id'] = created_by
+            params['created_by_employee_id'] = created_by
         
         approved_by = st.session_state.get('sp_split_approved_by_filter')
         if approved_by and approved_by > 0:
@@ -692,17 +826,17 @@ def split_rules_section(
         a_col1, a_col2, a_col3, a_col4 = st.columns(4)
         
         with a_col1:
-            # Created By dropdown
-            users_df = setup_queries.get_users_for_dropdown()
-            user_options = [(-1, "All Users")] + [
-                (row['user_id'], row['full_name']) 
-                for _, row in users_df.iterrows()
-            ] if not users_df.empty else [(-1, "All Users")]
+            # Created By dropdown (v1.4.2: Fixed - uses employees via keycloak_id)
+            creators_df = setup_queries.get_creators_for_dropdown()
+            creator_options = [(-1, "All Creators")] + [
+                (row['employee_id'], row['employee_name']) 
+                for _, row in creators_df.iterrows()
+            ] if not creators_df.empty else [(-1, "All Creators")]
             
             created_by_filter = st.selectbox(
                 "Created By",
-                options=[u[0] for u in user_options],
-                format_func=lambda x: next((u[1] for u in user_options if u[0] == x), "All Users"),
+                options=[c[0] for c in creator_options],
+                format_func=lambda x: next((c[1] for c in creator_options if c[0] == x), "All Creators"),
                 key="sp_split_created_by_filter"
             )
         
