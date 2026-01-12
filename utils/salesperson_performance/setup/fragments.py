@@ -31,8 +31,9 @@ v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
 v1.4.0 - UX Improvements:
          - Select Rule dropdown now shows full info (no truncation)
            Format: #{id} | {salesperson} | {customer} | {product} ({split%})
-         - Edit Split Rule form now includes Approve checkbox for admins
-         - Shows current approval status for non-admin users (read-only)
+         - Edit Split Rule form now includes Approve checkbox
+         - Approve permission: admin (all records), sales_manager (team members only)
+         - Shows current approval status for users without approve permission
 """
 
 import streamlit as st
@@ -286,7 +287,11 @@ def setup_tab_fragment(
     # Determine base edit permission by role
     # NOTE: 'sales' role is VIEW ONLY - not included here
     can_edit_base = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
-    can_approve = user_role_lower == 'admin'
+    
+    # v1.4.0: sales_manager can approve for their team members
+    # - admin: can approve ALL records
+    # - sales_manager: can approve for team members only (checked per-record)
+    can_approve = user_role_lower in ['admin', 'sales_manager']
     
     # Get issue counts for tab badges (using accessible scope)
     split_stats = setup_queries.get_split_summary_stats(
