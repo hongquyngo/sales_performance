@@ -18,6 +18,11 @@ CHANGELOG:
           - Trade-off: Period change causes quick UI rerun (~0.1s) but no data reload
           - Fixes UX issue where Custom date picker wasn't visible until Apply clicked
           - Disabled date_input for non-Custom shows correct calculated dates
+- v2.4.0: UPDATED - Non-blocking empty selection handling
+          - Empty employee_ids no longer blocks page with st.stop()
+          - validate_filters() now sets 'is_empty_selection' flag instead
+          - Added get_empty_selection_reason() helper for informative messages
+          - Page renders with $0 values, all tabs accessible including Setup
 - v2.2.0: FIX - KPI assignment checkbox and LY date display
           - Bug 1: "Only with KPI assignment" always used current_year instead of 
             period-specific year (e.g., LY should check 2025 KPIs, not 2026)
@@ -48,7 +53,7 @@ CHANGELOG:
           - FilterResult dataclass for clean return values
 - v1.1.0: Added exclude_internal_revenue checkbox to filter out internal company revenue
 
-VERSION: 2.3.0
+VERSION: 2.4.0
 """
 
 import logging
@@ -933,6 +938,7 @@ class SalespersonFilters:
             year = start_date.year
         
         # Build filter values dict
+        # UPDATED v2.4.0: Added _only_with_kpi_checked for empty state messaging
         filter_values = {
             'period_type': period_type,
             'year': year,
@@ -943,6 +949,9 @@ class SalespersonFilters:
             'compare_yoy': True,
             'exclude_internal_revenue': exclude_internal,
             'only_with_kpi': only_with_kpi,
+            '_only_with_kpi_checked': only_with_kpi,  # For empty state reason detection
+            '_kpi_employee_count': len(kpi_employee_ids) if only_with_kpi else None,
+            '_total_salesperson_count': len(salesperson_df) if not salesperson_df.empty else 0,
         }
         
         return filter_values, submitted
@@ -1216,6 +1225,9 @@ class SalespersonFilters:
         """
         Validate filter values.
         
+        UPDATED v2.4.0: Empty employee_ids no longer blocks page.
+        Instead, sets 'is_empty_selection' flag and allows graceful empty state.
+        
         Returns:
             Tuple of (is_valid, error_message)
         """
@@ -1223,15 +1235,54 @@ class SalespersonFilters:
         if filters['start_date'] > filters['end_date']:
             return False, "Start date must be before end date"
         
-        # Check employee selection
-        if not filters.get('employee_ids'):
-            return False, "Please select at least one salesperson"
-        
         # Check year range (reasonable bounds)
         if filters['year'] < 2010 or filters['year'] > 2100:
             return False, "Invalid year selected"
         
+        # UPDATED v2.4.0: Empty employee selection is now allowed
+        # Set flag instead of returning error - page will show empty state
+        if not filters.get('employee_ids'):
+            filters['is_empty_selection'] = True
+        else:
+            filters['is_empty_selection'] = False
+        
         return True, None
+    
+    @staticmethod
+    def get_empty_selection_reason(filters: Dict) -> Dict:
+        """
+        Get detailed reason for empty selection to display helpful message.
+        
+        NEW v2.4.0: Provides context for why no salespeople are available.
+        
+        Returns:
+            Dict with reason info:
+            {
+                'reason': str,
+                'details': List[str],
+                'suggestions': List[str]
+            }
+        """
+        reasons = {
+            'reason': 'No salespeople match current filters',
+            'details': [],
+            'suggestions': []
+        }
+        
+        # Check if KPI filter is the cause
+        if filters.get('_only_with_kpi_checked', False):
+            year = filters.get('year', date.today().year)
+            reasons['details'].append(
+                f'"Only with KPI assignment" is checked for year {year}'
+            )
+            reasons['suggestions'].append(
+                'Uncheck "Only with KPI assignment" to see all salespeople'
+            )
+            reasons['suggestions'].append(
+                f'Go to Setup tab → KPI Assignments to create {year} targets'
+            )
+        
+        return reasons
 
 
 # =============================================================================

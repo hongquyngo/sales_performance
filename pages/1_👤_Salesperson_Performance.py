@@ -363,6 +363,16 @@ if not is_valid:
     st.stop()
 
 # =============================================================================
+# EMPTY SELECTION HANDLING (NEW v2.4.0 - Non-blocking)
+# =============================================================================
+
+is_empty_selection = filter_values.get('is_empty_selection', False)
+
+if is_empty_selection:
+    # Log for debugging
+    logger.info(f"Empty selection detected: only_with_kpi={filter_values.get('_only_with_kpi_checked')}, year={filter_values.get('year')}")
+
+# =============================================================================
 # LOAD ALL DATA WITH SMART CACHING (Client-Side Filtering)
 # =============================================================================
 
@@ -617,6 +627,10 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     UPDATED v1.8.0: Extended exclude_internal_revenue to backlog data
     - Backlog detail still shows internal orders (for display)
     - Backlog aggregates (total_backlog, in_period_backlog) zero internal revenue
+    
+    UPDATED v2.4.0: Handle empty employee_ids (is_empty_selection)
+    - When employee_ids is empty list [], return empty DataFrames
+    - Allows page to render with $0 values instead of blocking
     """
     filter_start = time.perf_counter()
     if DEBUG_TIMING:
@@ -627,8 +641,24 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     entity_ids = filter_values['entity_ids']
     year = filter_values['year']
     exclude_internal_revenue = filter_values.get('exclude_internal_revenue', True)  # NEW
+    is_empty_selection = filter_values.get('is_empty_selection', False)  # NEW v2.4.0
     
     filtered = {}
+    
+    # NEW v2.4.0: If empty selection, return empty DataFrames for data tables
+    # This allows page to render with $0 values instead of blocking
+    if is_empty_selection:
+        if DEBUG_TIMING:
+            print(f"   ⚠️ Empty selection - returning empty DataFrames")
+        for key, df in raw_data.items():
+            if key.startswith('_'):
+                continue
+            if isinstance(df, pd.DataFrame):
+                # Return empty DataFrame with same structure
+                filtered[key] = df.head(0)
+            else:
+                filtered[key] = df
+        return filtered
     
     for key, df in raw_data.items():
         # Skip metadata
@@ -1025,11 +1055,24 @@ data = filter_data_client_side(
     filter_values=active_filters
 )
 
-# Check if we have any data
-if data['sales'].empty and data['total_backlog'].empty:
-    st.warning("📭 No data found for the selected filters")
-    st.info("Try adjusting your filter criteria")
-    st.stop()
+# =============================================================================
+# EMPTY DATA HANDLING (UPDATED v2.4.0 - Non-blocking)
+# =============================================================================
+
+# Check if we have empty data (could be due to empty employee selection or just no matching data)
+has_empty_data = data['sales'].empty and data['total_backlog'].empty
+
+# Prepare empty state info for display
+empty_state_info = None
+if has_empty_data or active_filters.get('is_empty_selection', False):
+    empty_state_info = {
+        'has_empty_data': has_empty_data,
+        'is_empty_selection': active_filters.get('is_empty_selection', False),
+        'year': active_filters.get('year'),
+        'only_with_kpi': active_filters.get('_only_with_kpi_checked', False),
+        'kpi_employee_count': active_filters.get('_kpi_employee_count', 0),
+        'total_salesperson_count': active_filters.get('_total_salesperson_count', 0),
+    }
 
 # =============================================================================
 # CALCULATE METRICS
@@ -1163,6 +1206,41 @@ if DEBUG_TIMING:
 st.title("👤 Salesperson Performance")
 filter_summary = filters_ui.get_filter_summary(active_filters)
 st.caption(f"📊 {filter_summary}")
+
+# =============================================================================
+# EMPTY STATE BANNER (NEW v2.4.0)
+# =============================================================================
+
+if empty_state_info:
+    with st.container():
+        if empty_state_info.get('is_empty_selection'):
+            # Empty due to filter settings (e.g., "Only with KPI" checked but no KPIs)
+            year = empty_state_info.get('year', date.today().year)
+            total_sp = empty_state_info.get('total_salesperson_count', 0)
+            
+            st.info(
+                f"""
+                ℹ️ **No salespeople match current filters**
+                
+                • "Only with KPI assignment" is checked for year **{year}**
+                • **0** salespeople have KPI assignments for {year} ({total_sp} total salespeople)
+                
+                **Options:**
+                - Uncheck "Only with KPI assignment" in sidebar to see all salespeople
+                - Go to **⚙️ Setup** tab → **KPI Assignments** to create {year} targets
+                
+                *Data below shows $0 values. Setup tab is fully accessible.*
+                """
+            )
+        elif empty_state_info.get('has_empty_data'):
+            # Empty due to no data for selected filters
+            st.warning(
+                """
+                📭 **No data found for the selected filters**
+                
+                Try adjusting your filter criteria or date range.
+                """
+            )
 
 # =============================================================================
 # TABS
