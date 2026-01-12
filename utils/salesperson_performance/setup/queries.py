@@ -7,28 +7,7 @@ Full CRUD operations for:
 - KPI Assignments (sales_employee_kpi_assignments)
 - Salespeople Management
 
-v1.0.0 - Initial version based on KPI Center Performance setup pattern
-v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
-         Synced with KPI Center Performance v2.6.0 features
-v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
-         - Non-admin users now only see issues for their team members
-         - Added total_assignments count to result dict
-v1.5.0 - Bulk Approval methods:
-         - bulk_approve_split_rules(rule_ids, approver_employee_id)
-         - bulk_disapprove_split_rules(rule_ids)
-         - Both use single transaction for performance
-v1.5.2 - Filter dropdown queries:
-         - get_customers_with_splits(employee_ids): Customers that have split rules
-         - get_products_with_splits(employee_ids): Products that have split rules
-v1.5.3 - Bulk update methods:
-         - bulk_update_split_period(rule_ids, valid_from, valid_to)
-         - bulk_update_split_percentage(rule_ids, split_percentage)
-         
-Schema notes:
-- sales_split_by_customer_product.created_by: VARCHAR (keycloak_id from employees table)
-- sales_split_by_customer_product.approved_by: FK -> employees.id
-- No modified_by column in sales_split_by_customer_product
-- Join chain for created_by: ss.created_by → employees.keycloak_id → users.employee_id
+
 """
 
 import logging
@@ -625,17 +604,17 @@ class SalespersonSetupQueries:
         self,
         rule_ids: List[int],
         valid_from: date,
-        valid_to: date
+        valid_to: date = None
     ) -> Dict:
         """
         Bulk update validity period for multiple split rules.
         
-        v1.5.3: New method for bulk period update.
+        v1.5.4: New method for bulk period update.
         
         Args:
             rule_ids: List of rule IDs to update
-            valid_from: New start date
-            valid_to: New end date
+            valid_from: New valid_from date
+            valid_to: New valid_to date (optional, can be NULL for no end date)
             
         Returns:
             Dict with success, count, message
@@ -647,15 +626,10 @@ class SalespersonSetupQueries:
                 'message': 'No rules selected'
             }
         
-        if valid_from > valid_to:
-            return {
-                'success': False,
-                'count': 0,
-                'message': 'Valid From must be before Valid To'
-            }
-        
+        # Build placeholders for IN clause
         placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
         params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
         params['valid_from'] = valid_from
         params['valid_to'] = valid_to
         
@@ -679,7 +653,7 @@ class SalespersonSetupQueries:
         """
         Bulk update split percentage for multiple split rules.
         
-        v1.5.3: New method for bulk split % update.
+        v1.5.4: New method for bulk split percentage update.
         
         Args:
             rule_ids: List of rule IDs to update
@@ -702,8 +676,10 @@ class SalespersonSetupQueries:
                 'message': 'Split percentage must be between 0 and 100'
             }
         
+        # Build placeholders for IN clause
         placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
         params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
         params['split_percentage'] = split_percentage
         
         query = f"""
@@ -831,14 +807,20 @@ class SalespersonSetupQueries:
         
         return self._execute_query(query, params, "kpi_assignments")
     
-    def get_assignment_summary_by_type(self, year: int) -> pd.DataFrame:
+    def get_assignment_summary_by_type(
+        self, 
+        year: int,
+        employee_ids: List[int] = None  # FIX v1.5.3: Added for team scope filter
+    ) -> pd.DataFrame:
         """
         Get assignment summary by KPI type for a year.
         
         NEW v1.1.0: Synced with KPI Center Performance pattern.
+        FIX v1.5.3: Added employee_ids filter for team scope.
         
         Args:
             year: Target year
+            employee_ids: Optional list of employee IDs to filter (team scope)
             
         Returns:
             DataFrame with kpi_name, kpi_type_id, unit_of_measure, employee_count, total_target
@@ -855,11 +837,21 @@ class SalespersonSetupQueries:
             WHERE a.year = :year 
               AND a.delete_flag = 0
               AND kt.delete_flag = 0
+        """
+        
+        params = {'year': year}
+        
+        # FIX v1.5.3: Filter by employee_ids for team scope
+        if employee_ids is not None and len(employee_ids) > 0:
+            query += " AND a.employee_id IN :employee_ids"
+            params['employee_ids'] = tuple(employee_ids)
+        
+        query += """
             GROUP BY kt.id, kt.name, kt.uom
             ORDER BY kt.name
         """
         
-        return self._execute_query(query, {'year': year}, "assignment_summary_by_type")
+        return self._execute_query(query, params, "assignment_summary_by_type")
     
     def get_assignment_weight_summary(self, year: int) -> pd.DataFrame:
         """
