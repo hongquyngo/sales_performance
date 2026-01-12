@@ -1005,33 +1005,22 @@ def split_rules_section(
     st.divider()
     
     # =========================================================================
-    # TOOLBAR
+    # TOOLBAR (v1.7.0: Using dialogs instead of inline forms)
     # =========================================================================
+    # Get user_id from session state for dialog context
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    
+    # Store context for dialogs to access
+    st.session_state['_split_dialog_context'] = {
+        'user_id': user_id,
+        'can_approve': can_approve,
+        'editable_employee_ids': editable_employee_ids,
+        'access_level': access_level
+    }
+    
     if can_edit_base:
         if st.button("➕ Add Split Rule", type="primary"):
-            st.session_state['sp_show_add_split_form'] = True
-    
-    # =========================================================================
-    # ADD/EDIT FORMS
-    # =========================================================================
-    if st.session_state.get('sp_show_add_split_form', False):
-        _render_split_form(
-            setup_queries, 
-            can_approve, 
-            mode='add',
-            editable_employee_ids=editable_employee_ids,  # v1.2.0
-            access_level=access_level
-        )
-    
-    if st.session_state.get('sp_edit_split_id'):
-        _render_split_form(
-            setup_queries, 
-            can_approve, 
-            mode='edit', 
-            rule_id=st.session_state['sp_edit_split_id'],
-            editable_employee_ids=editable_employee_ids,  # v1.2.0
-            access_level=access_level
-        )
+            _add_split_rule_dialog()
     
     # =========================================================================
     # GET DATA WITH FILTERS
@@ -1190,8 +1179,8 @@ def _render_split_data_table(
                 with act_col1:
                     if can_modify:
                         if st.button("✏️ Edit", use_container_width=True, type="secondary", key="sp_dt_edit"):
-                            st.session_state['sp_edit_split_id'] = selected_rule_id
-                            st.rerun(scope="fragment")
+                            # v1.7.0: Call dialog directly instead of setting session state
+                            _edit_split_rule_dialog(rule_id=selected_rule_id)
                     else:
                         st.button("✏️ Edit", use_container_width=True, disabled=True,
                                  help="You can only edit records for your team members", key="sp_dt_edit_dis")
@@ -1483,21 +1472,208 @@ def _render_split_data_table(
             st.rerun(scope="fragment")
 
 
-def _render_split_form(
+# =============================================================================
+# COMBO INSIGHTS SECTION (v1.7.0 - For Edit Dialog)
+# =============================================================================
+
+def _render_combo_insights(
+    setup_queries: SalespersonSetupQueries,
+    customer_id: int,
+    product_id: int,
+    current_rule_id: int = None,
+    current_salesperson_id: int = None
+):
+    """
+    Render insights section showing current split structure.
+    
+    v1.7.0: New function for Edit dialog.
+    v1.7.1: Removed Sales History tab (table not available).
+    """
+    with st.expander("📊 **Current Split Structure**", expanded=True):
+        
+        # Get current split structure (excluding the rule being edited)
+        split_structure = setup_queries.get_combo_split_structure(
+            customer_id=customer_id,
+            product_id=product_id,
+            exclude_rule_id=current_rule_id,
+            include_expired=False
+        )
+        
+        # Get combo summary
+        combo_summary = setup_queries.get_combo_summary(
+            customer_id=customer_id,
+            product_id=product_id,
+            exclude_rule_id=current_rule_id
+        )
+        
+        # Summary metrics row
+        sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
+        
+        with sum_col1:
+            total_split = combo_summary['total_split']
+            st.metric(
+                "Other Allocations",
+                f"{total_split:.0f}%",
+                help="Total split % from other rules (excluding this one)"
+            )
+        
+        with sum_col2:
+            st.metric(
+                "Other Rules",
+                combo_summary['rule_count'],
+                help="Number of other active rules for this combo"
+            )
+        
+        with sum_col3:
+            st.metric(
+                "Approved",
+                f"{combo_summary['approved_split']:.0f}%",
+                help="Split % from approved rules"
+            )
+        
+        with sum_col4:
+            st.metric(
+                "Pending",
+                f"{combo_summary['pending_split']:.0f}%",
+                help="Split % from pending rules"
+            )
+        
+        # Allocation breakdown
+        if not split_structure.empty:
+            st.markdown("##### 👥 Allocation Breakdown")
+            
+            # Create visual display for each salesperson
+            for _, row in split_structure.iterrows():
+                is_same_person = (row['salesperson_id'] == current_salesperson_id)
+                
+                # Status indicators
+                period_icon = {
+                    'ok': '🟢',
+                    'warning': '🟠',
+                    'critical': '🔴',
+                    'expired': '⚫',
+                    'no_end': '🔵'
+                }.get(row['period_status'], '❓')
+                
+                approval_badge = "✅" if row['is_approved'] else "⏳"
+                
+                # Highlight if same salesperson
+                same_person_note = " *(same salesperson)*" if is_same_person else ""
+                
+                cols = st.columns([3, 2, 2, 1])
+                
+                with cols[0]:
+                    st.markdown(f"**{row['salesperson_name']}**{same_person_note}")
+                    st.caption(f"{row['salesperson_email']}")
+                
+                with cols[1]:
+                    # Visual progress bar
+                    pct = row['split_percentage']
+                    bar_width = min(pct, 100)
+                    bar_color = "#4CAF50" if pct <= 100 else "#f44336"
+                    st.markdown(f"""
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div style="flex: 1; background: #e0e0e0; border-radius: 4px; height: 8px;">
+                                <div style="width: {bar_width}%; background: {bar_color}; height: 100%; border-radius: 4px;"></div>
+                            </div>
+                            <span style="font-weight: bold; min-width: 45px;">{pct:.0f}%</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[2]:
+                    st.caption(f"{period_icon} {row['period_display']}")
+                
+                with cols[3]:
+                    st.markdown(f"{approval_badge}")
+                
+                st.divider()
+            
+            # Warning if same salesperson has overlapping allocation
+            same_person_rules = split_structure[
+                split_structure['salesperson_id'] == current_salesperson_id
+            ]
+            if not same_person_rules.empty:
+                st.warning(
+                    f"⚠️ **{same_person_rules.iloc[0]['salesperson_name']}** already has "
+                    f"**{same_person_rules['split_percentage'].sum():.0f}%** allocation for this combo. "
+                    f"Check for period overlaps!"
+                )
+        else:
+            st.info("✨ No other allocations for this customer/product combo")
+
+
+# =============================================================================
+# SPLIT RULE DIALOGS (v1.7.0 - Replaced inline forms with dialogs)
+# =============================================================================
+
+@st.dialog("➕ Add Split Rule", width="large")
+def _add_split_rule_dialog():
+    """
+    Dialog for adding new split rule.
+    
+    v1.7.0: New - replaces inline form for better UX.
+    Reads context from st.session_state['_split_dialog_context'].
+    """
+    ctx = st.session_state.get('_split_dialog_context', {})
+    user_id = ctx.get('user_id')
+    can_approve = ctx.get('can_approve', False)
+    editable_employee_ids = ctx.get('editable_employee_ids')
+    access_level = ctx.get('access_level', 'self')
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    _render_split_form_content(
+        setup_queries=setup_queries,
+        can_approve=can_approve,
+        mode='add',
+        rule_id=None,
+        editable_employee_ids=editable_employee_ids,
+        access_level=access_level
+    )
+
+
+@st.dialog("✏️ Edit Split Rule", width="large")
+def _edit_split_rule_dialog(rule_id: int):
+    """
+    Dialog for editing existing split rule.
+    
+    v1.7.0: New - replaces inline form for better UX.
+    
+    Args:
+        rule_id: ID of rule to edit
+    """
+    ctx = st.session_state.get('_split_dialog_context', {})
+    user_id = ctx.get('user_id')
+    can_approve = ctx.get('can_approve', False)
+    editable_employee_ids = ctx.get('editable_employee_ids')
+    access_level = ctx.get('access_level', 'self')
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    _render_split_form_content(
+        setup_queries=setup_queries,
+        can_approve=can_approve,
+        mode='edit',
+        rule_id=rule_id,
+        editable_employee_ids=editable_employee_ids,
+        access_level=access_level
+    )
+
+
+def _render_split_form_content(
     setup_queries: SalespersonSetupQueries, 
     can_approve: bool, 
     mode: str = 'add', 
     rule_id: int = None,
-    editable_employee_ids: List[int] = None,  # v1.2.0
-    access_level: str = 'self'  # v1.2.0
+    editable_employee_ids: List[int] = None,
+    access_level: str = 'self'
 ):
     """
-    Render Add/Edit split rule form.
+    Render split rule form content (used inside dialogs).
     
-    v1.2.0: Added editable_employee_ids to restrict salesperson dropdown
-            based on user's authorization scope.
+    v1.7.0: Refactored from _render_split_form to be used inside @st.dialog.
+            Added insights section for Edit mode.
     """
-    
     existing = None
     if mode == 'edit' and rule_id:
         df = setup_queries.get_sales_split_data(limit=5000)
@@ -1506,23 +1682,30 @@ def _render_split_form(
             existing = df.iloc[0]
         else:
             st.error("Rule not found")
-            st.session_state['sp_edit_split_id'] = None
+            if st.button("Close", use_container_width=True):
+                st.rerun(scope="fragment")
             return
     
-    title = "✏️ Edit Split Rule" if mode == 'edit' else "➕ Add Split Rule"
+    if mode == 'edit' and existing is not None:
+        st.caption(f"Rule ID: **#{rule_id}**")
+        col_info1, col_info2 = st.columns(2)
+        with col_info1:
+            st.markdown(f"**Customer:** {existing['customer_display']}")
+        with col_info2:
+            st.markdown(f"**Product:** {existing['product_display']}")
+        
+        # =====================================================================
+        # v1.7.0: INSIGHTS SECTION - Current Split Structure & Sales History
+        # =====================================================================
+        _render_combo_insights(
+            setup_queries=setup_queries,
+            customer_id=existing['customer_id'],
+            product_id=existing['product_id'],
+            current_rule_id=rule_id,
+            current_salesperson_id=existing['sale_person_id']
+        )
     
-    with st.container(border=True):
-        st.markdown(f"### {title}")
-        
-        if mode == 'edit' and existing is not None:
-            st.caption(f"Rule ID: {rule_id}")
-            col_info1, col_info2 = st.columns(2)
-            with col_info1:
-                st.markdown(f"**Customer:** {existing['customer_display']}")
-            with col_info2:
-                st.markdown(f"**Product:** {existing['product_display']}")
-        
-        with st.form(f"sp_{mode}_split_form", clear_on_submit=False):
+    with st.form(f"sp_{mode}_split_form_dialog", clear_on_submit=False):
             col1, col2 = st.columns(2)
             
             with col1:
@@ -1734,18 +1917,12 @@ def _render_split_form(
                 else:
                     st.info("⏳ Status: **Pending approval** - Your manager will review after you save.")
             
-            # Form buttons
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                submitted = st.form_submit_button(
-                    "💾 Save" if mode == 'add' else "💾 Update",
-                    type="primary",
-                    use_container_width=True
-                )
-            
-            with col_cancel:
-                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+            # Form submit button only
+            submitted = st.form_submit_button(
+                "💾 Save" if mode == 'add' else "💾 Update",
+                type="primary",
+                use_container_width=True
+            )
             
             if submitted:
                 # v1.6.0: Check validation before proceeding
@@ -1786,17 +1963,15 @@ def _render_split_form(
                         result = setup_queries.update_split_rule(**update_kwargs)
                     
                     if result['success']:
-                        st.success(f"{'Created' if mode == 'add' else 'Updated'} successfully!")
-                        st.session_state['sp_show_add_split_form'] = False
-                        st.session_state['sp_edit_split_id'] = None
+                        st.toast(f"✅ {'Created' if mode == 'add' else 'Updated'} successfully!", icon="✅")
+                        # v1.7.0: Dialog closes automatically on rerun
                         st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
-            
-            if cancelled:
-                st.session_state['sp_show_add_split_form'] = False
-                st.session_state['sp_edit_split_id'] = None
-                st.rerun(scope="fragment")
+    
+    # v1.7.0: Cancel button OUTSIDE form to properly close dialog
+    if st.button("❌ Cancel", use_container_width=True, key=f"sp_{mode}_cancel_btn"):
+        st.rerun(scope="fragment")
 
 
 # =============================================================================

@@ -1919,6 +1919,155 @@ class SalespersonSetupQueries:
         return self._execute_query(query, {}, "kpi_types")
     
     # =========================================================================
+    # COMBO INSIGHTS (v1.7.0 - For Edit Dialog)
+    # =========================================================================
+    
+    def get_combo_split_structure(
+        self,
+        customer_id: int,
+        product_id: int,
+        exclude_rule_id: int = None,
+        include_expired: bool = False
+    ) -> pd.DataFrame:
+        """
+        Get detailed split structure for a customer/product combo.
+        
+        v1.7.0: New method for Edit dialog to show current allocations.
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            exclude_rule_id: Rule ID to exclude (current rule being edited)
+            include_expired: Whether to include expired rules
+            
+        Returns:
+            DataFrame with columns:
+            - rule_id, salesperson_id, salesperson_name, split_percentage
+            - valid_from, valid_to, period_display, is_current_period
+            - is_approved, approval_status
+            - days_until_expiry, period_status
+        """
+        query = """
+            SELECT 
+                ss.id AS rule_id,
+                ss.sale_person_id AS salesperson_id,
+                CONCAT(e.first_name, ' ', e.last_name) AS salesperson_name,
+                e.email AS salesperson_email,
+                ss.split_percentage,
+                ss.valid_from,
+                ss.valid_to,
+                CONCAT(
+                    DATE_FORMAT(ss.valid_from, '%Y-%m-%d'),
+                    ' → ',
+                    COALESCE(DATE_FORMAT(ss.valid_to, '%Y-%m-%d'), 'No End')
+                ) AS period_display,
+                
+                -- Is this period currently active?
+                CASE 
+                    WHEN (ss.valid_from <= CURDATE() OR ss.valid_from IS NULL)
+                         AND (ss.valid_to >= CURDATE() OR ss.valid_to IS NULL)
+                    THEN 1 ELSE 0 
+                END AS is_current_period,
+                
+                -- Approval
+                COALESCE(ss.is_approved, 0) AS is_approved,
+                CASE WHEN ss.is_approved = 1 THEN 'Approved' ELSE 'Pending' END AS approval_status,
+                
+                -- Period status
+                DATEDIFF(ss.valid_to, CURDATE()) AS days_until_expiry,
+                CASE 
+                    WHEN ss.valid_to < CURDATE() THEN 'expired'
+                    WHEN DATEDIFF(ss.valid_to, CURDATE()) <= 7 THEN 'critical'
+                    WHEN DATEDIFF(ss.valid_to, CURDATE()) <= 30 THEN 'warning'
+                    WHEN ss.valid_to IS NULL THEN 'no_end'
+                    ELSE 'ok'
+                END AS period_status,
+                
+                -- Audit
+                ss.created_date,
+                ss.modified_date
+                
+            FROM sales_split_by_customer_product ss
+            JOIN employees e ON ss.sale_person_id = e.id
+            WHERE ss.customer_id = :customer_id
+              AND ss.product_id = :product_id
+              AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id
+        }
+        
+        if exclude_rule_id:
+            query += " AND ss.id != :exclude_rule_id"
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        if not include_expired:
+            query += " AND (ss.valid_to >= CURDATE() OR ss.valid_to IS NULL)"
+        
+        query += " ORDER BY ss.split_percentage DESC, e.first_name"
+        
+        return self._execute_query(query, params, "combo_split_structure")
+    
+    def get_combo_summary(
+        self,
+        customer_id: int,
+        product_id: int,
+        exclude_rule_id: int = None
+    ) -> Dict:
+        """
+        Get quick summary stats for a customer/product combo.
+        
+        v1.7.0: Lightweight method for validation display.
+        
+        Returns:
+            Dict with total_split, rule_count, has_overlap, period_gaps
+        """
+        query = """
+            SELECT 
+                COALESCE(SUM(split_percentage), 0) AS total_split,
+                COUNT(*) AS rule_count,
+                SUM(CASE WHEN is_approved = 1 THEN split_percentage ELSE 0 END) AS approved_split,
+                SUM(CASE WHEN is_approved = 0 OR is_approved IS NULL THEN split_percentage ELSE 0 END) AS pending_split
+            FROM sales_split_by_customer_product
+            WHERE customer_id = :customer_id
+              AND product_id = :product_id
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+              AND (valid_to >= CURDATE() OR valid_to IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id
+        }
+        
+        if exclude_rule_id:
+            query = query.replace(
+                "WHERE customer_id",
+                "WHERE id != :exclude_rule_id AND customer_id"
+            )
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        df = self._execute_query(query, params, "combo_summary")
+        
+        if df.empty:
+            return {
+                'total_split': 0,
+                'rule_count': 0,
+                'approved_split': 0,
+                'pending_split': 0
+            }
+        
+        row = df.iloc[0]
+        return {
+            'total_split': float(row.get('total_split', 0) or 0),
+            'rule_count': int(row.get('rule_count', 0) or 0),
+            'approved_split': float(row.get('approved_split', 0) or 0),
+            'pending_split': float(row.get('pending_split', 0) or 0)
+        }
+    
+    # =========================================================================
     # HELPER METHODS
     # =========================================================================
     
