@@ -1968,10 +1968,6 @@ def _render_split_form_content(
                         st.rerun(scope="fragment")
                     else:
                         st.error(result['message'])
-    
-    # v1.7.0: Cancel button OUTSIDE form to properly close dialog
-    if st.button("❌ Cancel", use_container_width=True, key=f"sp_{mode}_cancel_btn"):
-        st.rerun(scope="fragment")
 
 
 # =============================================================================
