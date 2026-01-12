@@ -40,6 +40,10 @@ v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
          - get_assignment_issues_summary() now accepts employee_ids parameter
          - salespeople_section() now accepts and filters by employee_ids  
          - Non-admin users now only see their team members in Setup tab
+v1.4.0 - UX Improvements:
+         - Select Rule dropdown shows full info without truncation
+         - Edit Split Rule form includes Approve checkbox for admins
+         - Shows approval status (read-only) for non-admin users
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -105,4 +109,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.3.1'
+__version__ = '1.4.0'

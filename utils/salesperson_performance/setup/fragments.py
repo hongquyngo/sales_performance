@@ -28,6 +28,11 @@ v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
          - get_assignment_issues_summary() now accepts employee_ids parameter
          - salespeople_section() now accepts and filters by employee_ids
          - Non-admin users now only see their team members in Setup tab
+v1.4.0 - UX Improvements:
+         - Select Rule dropdown now shows full info (no truncation)
+           Format: #{id} | {salesperson} | {customer} | {product} ({split%})
+         - Edit Split Rule form now includes Approve checkbox for admins
+         - Shows current approval status for non-admin users (read-only)
 """
 
 import streamlit as st
@@ -987,10 +992,20 @@ def split_rules_section(
         
         with col1:
             rule_options = split_df['split_id'].tolist()
+            
+            # Build display labels with full info (no truncation)
+            def _format_rule_option(rule_id):
+                row = split_df[split_df['split_id'] == rule_id].iloc[0]
+                salesperson = row['salesperson_name']
+                customer = row['customer_display'] if 'customer_display' in row else row['customer_name']
+                product = row['pt_code'] if 'pt_code' in row else ''
+                split_pct = row['split_percentage']
+                return f"#{rule_id} | {salesperson} | {customer} | {product} ({split_pct:.0f}%)"
+            
             selected_rule = st.selectbox(
                 "Select Rule",
                 options=rule_options,
-                format_func=lambda x: f"#{x} - {split_df[split_df['split_id'] == x].iloc[0]['salesperson_name']} | {split_df[split_df['split_id'] == x].iloc[0]['customer_name'][:20]}...",
+                format_func=_format_rule_option,
                 key="sp_split_select_rule"
             )
         
@@ -1191,6 +1206,29 @@ def _render_split_form(
                 default_to = pd.to_datetime(existing['effective_to']).date() if existing is not None and pd.notna(existing.get('effective_to')) else date(date.today().year, 12, 31)
                 valid_to = st.date_input("Valid To *", value=default_to, key=f"sp_{mode}_valid_to")
             
+            # Approval checkbox (only for edit mode and users with approve permission)
+            is_approved_value = False
+            if mode == 'edit' and can_approve:
+                st.divider()
+                current_approval = bool(existing.get('is_approved', 0)) if existing is not None else False
+                is_approved_value = st.checkbox(
+                    "✅ Approve this rule",
+                    value=current_approval,
+                    key=f"sp_{mode}_is_approved",
+                    help="Check to approve this split rule. Only admins can approve."
+                )
+                if is_approved_value and not current_approval:
+                    st.success("Rule will be marked as Approved after save")
+                elif not is_approved_value and current_approval:
+                    st.warning("Rule will be marked as Pending after save")
+            elif mode == 'edit' and not can_approve:
+                # Show current approval status (read-only)
+                current_approval = bool(existing.get('is_approved', 0)) if existing is not None else False
+                if current_approval:
+                    st.info(f"✅ Approved by: {existing.get('approved_by_name', 'Unknown')}")
+                else:
+                    st.caption("⏳ Status: Pending approval")
+            
             # Form buttons
             col_submit, col_cancel = st.columns(2)
             
@@ -1219,13 +1257,18 @@ def _render_split_form(
                             is_approved=can_approve
                         )
                     else:
-                        result = setup_queries.update_split_rule(
-                            rule_id=rule_id,
-                            split_percentage=split_pct,
-                            valid_from=valid_from,
-                            valid_to=valid_to,
-                            sale_person_id=sale_person_id
-                        )
+                        # Build update params - only include is_approved if user can approve
+                        update_kwargs = {
+                            'rule_id': rule_id,
+                            'split_percentage': split_pct,
+                            'valid_from': valid_from,
+                            'valid_to': valid_to,
+                            'sale_person_id': sale_person_id
+                        }
+                        if can_approve:
+                            update_kwargs['is_approved'] = is_approved_value
+                        
+                        result = setup_queries.update_split_rule(**update_kwargs)
                     
                     if result['success']:
                         st.success(f"{'Created' if mode == 'add' else 'Updated'} successfully!")
