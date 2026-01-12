@@ -13,9 +13,9 @@ v1.1.0 - Added audit trail filters, KPI summary by type, enhanced card layout
 v1.2.0 - Hybrid authorization (Option C):
          - Setup tab independent from main page's "Only with KPI" filter
          - Record-level authorization: users can only CRUD within their scope
-         - admin (full): CRUD all records
-         - sales_manager (team): CRUD for team members only  
-         - sales (self): VIEW ONLY - no edit permission
+         - admin (full): CRUD all records + approve all
+         - sales_manager (team): CRUD + approve for team members only  
+         - sales (self): CRUD own records (pending status, cannot approve)
          - Added can_modify_record() and get_editable_employee_ids() helpers
          - Salesperson dropdowns filtered to editable scope
          - Edit/Delete buttons check per-record permission
@@ -32,8 +32,12 @@ v1.4.0 - UX Improvements:
          - Select Rule dropdown now shows full info (no truncation)
            Format: #{id} | {salesperson} | {customer} | {product} ({split%})
          - Edit Split Rule form now includes Approve checkbox
-         - Approve permission: admin (all records), sales_manager (team members only)
-         - Shows current approval status for users without approve permission
+         - Approve permission: admin (all), sales_manager (team members only)
+v1.4.1 - Authorization update for sales role:
+         - sales role can now View/Create/Edit/Delete their OWN records
+         - sales role CANNOT approve - all their records are pending
+         - When sales edits an approved rule, it resets to pending (needs re-approval)
+         - Clear UI messaging for sales role about approval workflow
 """
 
 import streamlit as st
@@ -285,12 +289,13 @@ def setup_tab_fragment(
     }
     
     # Determine base edit permission by role
-    # NOTE: 'sales' role is VIEW ONLY - not included here
-    can_edit_base = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager']
+    # v1.4.1: sales role can now CRUD their own records (but cannot approve)
+    can_edit_base = user_role_lower in ['admin', 'gm', 'md', 'director', 'sales_manager', 'sales']
     
-    # v1.4.0: sales_manager can approve for their team members
+    # v1.4.0: Approve permission
     # - admin: can approve ALL records
     # - sales_manager: can approve for team members only (checked per-record)
+    # - sales: CANNOT approve (their records stay pending)
     can_approve = user_role_lower in ['admin', 'sales_manager']
     
     # Get issue counts for tab badges (using accessible scope)
@@ -1220,19 +1225,20 @@ def _render_split_form(
                     "✅ Approve this rule",
                     value=current_approval,
                     key=f"sp_{mode}_is_approved",
-                    help="Check to approve this split rule. Only admins can approve."
+                    help="Check to approve this split rule. Only admins/managers can approve."
                 )
                 if is_approved_value and not current_approval:
                     st.success("Rule will be marked as Approved after save")
                 elif not is_approved_value and current_approval:
                     st.warning("Rule will be marked as Pending after save")
             elif mode == 'edit' and not can_approve:
-                # Show current approval status (read-only)
+                # v1.4.1: Sales role - show warning that edit resets approval
                 current_approval = bool(existing.get('is_approved', 0)) if existing is not None else False
+                st.divider()
                 if current_approval:
-                    st.info(f"✅ Approved by: {existing.get('approved_by_name', 'Unknown')}")
+                    st.warning("⚠️ This rule is currently **Approved**. After saving your changes, it will need to be re-approved by your manager.")
                 else:
-                    st.caption("⏳ Status: Pending approval")
+                    st.info("⏳ Status: **Pending approval** - Your manager will review after you save.")
             
             # Form buttons
             col_submit, col_cancel = st.columns(2)
@@ -1262,7 +1268,7 @@ def _render_split_form(
                             is_approved=can_approve
                         )
                     else:
-                        # Build update params - only include is_approved if user can approve
+                        # Build update params
                         update_kwargs = {
                             'rule_id': rule_id,
                             'split_percentage': split_pct,
@@ -1270,8 +1276,15 @@ def _render_split_form(
                             'valid_to': valid_to,
                             'sale_person_id': sale_person_id
                         }
+                        
+                        # v1.4.1: Handle approval status on update
+                        # - If user can approve: use checkbox value
+                        # - If user cannot approve (sales): reset to pending (needs re-approval)
                         if can_approve:
                             update_kwargs['is_approved'] = is_approved_value
+                        else:
+                            # Sales role edits reset approval status to pending
+                            update_kwargs['is_approved'] = False
                         
                         result = setup_queries.update_split_rule(**update_kwargs)
                     

@@ -26,9 +26,9 @@ v1.2.0 - FIX: Setup tab now independent from main page's "Only with KPI" filter
          - Added Salesperson dropdown filter in Entity Filters section
          - Fixed metrics/data table mismatch (metrics now use same employee_ids filter)
          - Hybrid authorization (Option C):
-           * admin (full): CRUD all records
-           * sales_manager (team): CRUD for team members only
-           * sales (self): VIEW ONLY - no edit permission
+           * admin (full): CRUD all records + approve all
+           * sales_manager (team): CRUD + approve for team members only
+           * sales (self): CRUD own records (pending status, cannot approve)
          - Record-level permission checks on Edit/Delete buttons
          - Salesperson dropdowns in forms filtered to editable scope
 v1.3.0 - Phase 3 & 4 implementation:
@@ -45,6 +45,9 @@ v1.4.0 - UX Improvements:
          - Edit Split Rule form includes Approve checkbox for admins and sales_managers
          - sales_manager can approve rules for their team members
          - Shows approval status (read-only) for users without approve permission
+v1.4.1 - Authorization update for sales role:
+         - sales role can now CRUD their own records (pending status)
+         - sales edits on approved rules reset to pending (needs re-approval)
 
 Tables Managed:
 - sales_split_by_customer_product: Sales territory assignments by customer-product
@@ -110,4 +113,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '1.4.0'
+__version__ = '1.4.1'
