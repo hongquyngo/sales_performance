@@ -1294,7 +1294,7 @@ def _render_split_data_table(
                             st.button("⏳ Disapprove", disabled=True, use_container_width=True,
                                      help="No approved rules selected", key="sp_dt_bulk_disapprove_dis")
                 
-                # ROW 2: Bulk Update actions (v1.5.4 - NEW)
+                # ROW 2: Bulk Update actions (v1.6.0 - Enhanced with validation)
                 # Only show if user has edit permission
                 if can_edit_base:
                     st.divider()
@@ -1302,7 +1302,7 @@ def _render_split_data_table(
                     
                     upd_col1, upd_col2, upd_col3 = st.columns([1, 1, 2])
                     
-                    # Bulk Update Period
+                    # Bulk Update Period (v1.6.0: With validation preview)
                     with upd_col1:
                         with st.popover(f"📅 Update Period ({selected_count})", use_container_width=True):
                             st.markdown(f"**Set validity period for {selected_count} rules**")
@@ -1320,22 +1320,54 @@ def _render_split_data_table(
                             
                             st.caption(f"📌 Will update: {bulk_valid_from} → {bulk_valid_to}")
                             
-                            if st.button("📅 Apply Period", type="primary", 
-                                        key="sp_dt_bulk_period", use_container_width=True):
-                                selected_rule_ids = list(valid_selected)
-                                result = setup_queries.bulk_update_split_period(
-                                    rule_ids=selected_rule_ids,
-                                    valid_from=bulk_valid_from,
-                                    valid_to=bulk_valid_to
-                                )
-                                if result['success']:
-                                    st.session_state['sp_split_selected_ids'] = set()
-                                    st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
-                                    st.rerun(scope="fragment")
-                                else:
-                                    st.error(result['message'])
+                            # v1.6.0: Validation preview
+                            selected_rule_ids = list(valid_selected)
+                            period_impact = setup_queries.validate_bulk_period_impact(
+                                rule_ids=selected_rule_ids,
+                                valid_from=bulk_valid_from,
+                                valid_to=bulk_valid_to
+                            )
+                            
+                            # Show validation results
+                            if period_impact['period_errors']:
+                                for err in period_impact['period_errors']:
+                                    st.error(f"❌ {err}")
+                            
+                            if period_impact.get('period_warnings'):
+                                for warn in period_impact['period_warnings']:
+                                    st.warning(f"⚠️ {warn}")
+                            
+                            if period_impact['overlap_count'] > 0:
+                                st.error(f"❌ {period_impact['overlap_count']} rules will have overlapping periods - Not allowed")
+                                with st.expander("View overlap details"):
+                                    for ow in period_impact['overlap_warnings'][:5]:  # Show max 5
+                                        st.caption(f"• #{ow['rule_id']}: {ow['salesperson_name']} - {ow['overlap_count']} overlaps")
+                                    if period_impact['overlap_count'] > 5:
+                                        st.caption(f"... and {period_impact['overlap_count'] - 5} more")
+                            
+                            # v1.6.2: Block if any overlaps OR period errors (pre-validation)
+                            can_proceed_period = period_impact['can_proceed'] and period_impact['overlap_count'] == 0
+                            
+                            if can_proceed_period:
+                                if st.button("📅 Apply Period", type="primary", 
+                                            key="sp_dt_bulk_period", use_container_width=True):
+                                    result = setup_queries.bulk_update_split_period(
+                                        rule_ids=selected_rule_ids,
+                                        valid_from=bulk_valid_from,
+                                        valid_to=bulk_valid_to
+                                    )
+                                    if result['success']:
+                                        st.session_state['sp_split_selected_ids'] = set()
+                                        st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(result['message'])
+                            else:
+                                st.button("📅 Apply Period", type="primary", disabled=True,
+                                         key="sp_dt_bulk_period_dis", use_container_width=True)
+                                st.error("❌ Fix errors above before proceeding")
                     
-                    # Bulk Update Split %
+                    # Bulk Update Split % (v1.6.0: With validation preview)
                     with upd_col2:
                         with st.popover(f"📊 Update Split % ({selected_count})", use_container_width=True):
                             st.markdown(f"**Set split % for {selected_count} rules**")
@@ -1351,23 +1383,57 @@ def _render_split_data_table(
                             
                             st.caption(f"📌 Will set: **{bulk_split_pct}%** for all selected rules")
                             
-                            # Warning if setting high percentage for multiple rules
-                            if bulk_split_pct >= 50 and selected_count > 1:
-                                st.warning(f"⚠️ Setting {bulk_split_pct}% for {selected_count} rules may cause over-allocation!")
+                            # v1.6.0: Validation preview with impact analysis
+                            selected_rule_ids = list(valid_selected)
+                            split_impact = setup_queries.validate_bulk_split_impact(
+                                rule_ids=selected_rule_ids,
+                                new_split_percentage=float(bulk_split_pct)
+                            )
                             
-                            if st.button("📊 Apply Split %", type="primary",
-                                        key="sp_dt_bulk_split", use_container_width=True):
-                                selected_rule_ids = list(valid_selected)
-                                result = setup_queries.bulk_update_split_percentage(
-                                    rule_ids=selected_rule_ids,
-                                    split_percentage=bulk_split_pct
-                                )
-                                if result['success']:
-                                    st.session_state['sp_split_selected_ids'] = set()
-                                    st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
-                                    st.rerun(scope="fragment")
-                                else:
-                                    st.error(result['message'])
+                            # Show impact summary
+                            imp_col1, imp_col2, imp_col3 = st.columns(3)
+                            with imp_col1:
+                                st.metric("✅ OK", split_impact['will_be_ok'], help="Will have total = 100%")
+                            with imp_col2:
+                                st.metric("⚠️ Under", split_impact['will_be_under'], help="Will have total < 100%")
+                            with imp_col3:
+                                delta_color = "inverse" if split_impact['will_be_over'] > 0 else "off"
+                                st.metric("🔴 Over", split_impact['will_be_over'], 
+                                         help="Will have total > 100%",
+                                         delta="BLOCKED" if split_impact['will_be_over'] > 0 and access_level != 'full' else None,
+                                         delta_color=delta_color)
+                            
+                            # Show detailed issues
+                            if split_impact['will_be_over'] > 0:
+                                over_rules = [d for d in split_impact['details'] if d['status'] == 'over']
+                                with st.expander(f"🔴 View {len(over_rules)} over-allocated rules"):
+                                    for r in over_rules[:5]:
+                                        st.caption(f"• #{r['rule_id']}: {r['customer_name'][:20]}... → {r['new_total']:.0f}%")
+                                    if len(over_rules) > 5:
+                                        st.caption(f"... and {len(over_rules) - 5} more")
+                            
+                            # v1.6.0: Block if any over 100% - ALL users (business rule)
+                            can_bulk_update = split_impact['can_proceed']
+                            
+                            if split_impact['will_be_over'] > 0:
+                                st.error(f"❌ Cannot proceed: {split_impact['will_be_over']} rules would exceed 100%")
+                            
+                            if can_bulk_update:
+                                if st.button("📊 Apply Split %", type="primary",
+                                            key="sp_dt_bulk_split", use_container_width=True):
+                                    result = setup_queries.bulk_update_split_percentage(
+                                        rule_ids=selected_rule_ids,
+                                        split_percentage=bulk_split_pct
+                                    )
+                                    if result['success']:
+                                        st.session_state['sp_split_selected_ids'] = set()
+                                        st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(result['message'])
+                            else:
+                                st.button("📊 Apply Split %", type="primary", disabled=True,
+                                         key="sp_dt_bulk_split_dis", use_container_width=True)
                 
                 if not can_approve and not can_edit_base:
                     st.info("💡 Select a single rule to view details")
@@ -1547,31 +1613,7 @@ def _render_split_form(
                     key=f"sp_{mode}_split_pct"
                 )
             
-            # Validation display
-            if customer_id and product_id:
-                validation = setup_queries.validate_split_percentage(
-                    customer_id=customer_id,
-                    product_id=product_id,
-                    new_percentage=split_pct,
-                    exclude_rule_id=rule_id if mode == 'edit' else None
-                )
-                
-                if validation['current_total'] > 0 or mode == 'edit':
-                    val_col1, val_col2, val_col3 = st.columns(3)
-                    with val_col1:
-                        st.metric("Current Total", f"{validation['current_total']:.0f}%")
-                    with val_col2:
-                        st.metric("After Save", f"{validation['new_total']:.0f}%",
-                                 delta=f"+{split_pct:.0f}%", delta_color="off")
-                    with val_col3:
-                        if validation['new_total'] == 100:
-                            st.success("✅ Perfect!")
-                        elif validation['new_total'] > 100:
-                            st.error(f"🔴 Over by {validation['new_total'] - 100:.0f}%")
-                        else:
-                            st.warning(f"⚠️ {validation['remaining']:.0f}% remaining")
-            
-            # Period inputs
+            # Period inputs (moved up for better UX)
             col3, col4 = st.columns(2)
             with col3:
                 default_from = pd.to_datetime(existing['effective_from']).date() if existing is not None and pd.notna(existing.get('effective_from')) else date.today()
@@ -1580,6 +1622,93 @@ def _render_split_form(
             with col4:
                 default_to = pd.to_datetime(existing['effective_to']).date() if existing is not None and pd.notna(existing.get('effective_to')) else date(date.today().year, 12, 31)
                 valid_to = st.date_input("Valid To *", value=default_to, key=f"sp_{mode}_valid_to")
+            
+            # =====================================================================
+            # v1.6.0: ENHANCED VALIDATION SECTION
+            # =====================================================================
+            st.divider()
+            st.markdown("##### 🔍 Validation")
+            
+            validation_errors = []
+            validation_warnings = []
+            can_save = True
+            
+            # 1. Period Validation
+            if valid_from and valid_to:
+                period_validation = setup_queries.validate_period(valid_from, valid_to)
+                
+                if not period_validation['is_valid']:
+                    for err in period_validation['errors']:
+                        validation_errors.append(f"📅 {err}")
+                        can_save = False
+                
+                for warn in period_validation.get('warnings', []):
+                    validation_warnings.append(f"📅 {warn}")
+            
+            # 2. Period Overlap Check (for same salesperson)
+            # v1.6.2: BLOCK overlap (pre-validation business rule)
+            if customer_id and product_id and sale_person_id and valid_from:
+                overlap_check = setup_queries.check_period_overlap(
+                    customer_id=customer_id,
+                    product_id=product_id,
+                    sale_person_id=sale_person_id,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    exclude_rule_id=rule_id if mode == 'edit' else None
+                )
+                
+                if overlap_check['has_overlap']:
+                    # v1.6.2: BLOCK - not allowed to create overlapping rules
+                    validation_errors.append(f"📅 Period overlaps with {overlap_check['overlap_count']} existing rule(s) for this salesperson")
+                    can_save = False
+                    
+                    with st.expander(f"🔍 View {overlap_check['overlap_count']} overlapping rules"):
+                        for r in overlap_check['overlapping_rules']:
+                            st.caption(f"• Rule #{r['rule_id']}: {r['split_percentage']:.0f}% ({r['period_display']})")
+            
+            # 3. Split Percentage Validation (with period awareness)
+            if customer_id and product_id:
+                split_validation = setup_queries.validate_split_percentage(
+                    customer_id=customer_id,
+                    product_id=product_id,
+                    new_percentage=split_pct,
+                    exclude_rule_id=rule_id if mode == 'edit' else None,
+                    valid_from=valid_from,
+                    valid_to=valid_to
+                )
+                
+                val_col1, val_col2, val_col3 = st.columns(3)
+                with val_col1:
+                    st.metric("Current Total", f"{split_validation['current_total']:.0f}%",
+                             help=f"{split_validation['existing_count']} existing rule(s)")
+                with val_col2:
+                    delta_color = "off"
+                    if split_validation['new_total'] > 100:
+                        delta_color = "inverse"
+                    st.metric("After Save", f"{split_validation['new_total']:.0f}%",
+                             delta=f"+{split_pct:.0f}%", delta_color=delta_color)
+                with val_col3:
+                    if split_validation['new_total'] == 100:
+                        st.success("✅ Perfect!")
+                    elif split_validation['new_total'] > 100:
+                        over_pct = split_validation['over_amount']
+                        st.error(f"🔴 Over by {over_pct:.0f}%")
+                        
+                        # v1.6.0: Block save for over 100% - ALL users (business rule)
+                        validation_errors.append(f"📊 Total split ({split_validation['new_total']:.0f}%) exceeds 100% - Not allowed")
+                        can_save = False
+                    else:
+                        st.warning(f"⚠️ {split_validation['remaining']:.0f}% remaining")
+                        validation_warnings.append(f"📊 Under-allocated: {split_validation['remaining']:.0f}% remaining")
+            
+            # Display validation summary
+            if validation_errors:
+                for err in validation_errors:
+                    st.error(err)
+            
+            if validation_warnings and not validation_errors:
+                for warn in validation_warnings:
+                    st.warning(warn)
             
             # Approval checkbox (only for edit mode and users with approve permission)
             is_approved_value = False
@@ -1619,7 +1748,10 @@ def _render_split_form(
                 cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
             
             if submitted:
-                if mode == 'add' and not all([customer_id, product_id, sale_person_id]):
+                # v1.6.0: Check validation before proceeding
+                if not can_save:
+                    st.error("❌ Cannot save - Please fix validation errors above")
+                elif mode == 'add' and not all([customer_id, product_id, sale_person_id]):
                     st.error("Please fill all required fields")
                 else:
                     if mode == 'add':

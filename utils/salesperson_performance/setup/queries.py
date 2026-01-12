@@ -694,46 +694,439 @@ class SalespersonSetupQueries:
         return self._execute_update(query, params, f"bulk_update_split_{len(rule_ids)}_rules")
     
     # =========================================================================
-    # SALES SPLIT RULES - VALIDATION
+    # SALES SPLIT RULES - VALIDATION (v1.6.0 - Enhanced)
     # =========================================================================
+    
+    def validate_period(
+        self,
+        valid_from: date,
+        valid_to: date
+    ) -> Dict:
+        """
+        Basic period validation.
+        
+        v1.6.0: New method for period validation.
+        
+        Args:
+            valid_from: Start date
+            valid_to: End date (can be None for no end date)
+            
+        Returns:
+            Dict with is_valid, errors list
+        """
+        errors = []
+        warnings = []
+        
+        if valid_from is None:
+            errors.append("Valid From date is required")
+        
+        if valid_to is not None and valid_from is not None:
+            if valid_from > valid_to:
+                errors.append(f"Valid From ({valid_from}) must be before Valid To ({valid_to})")
+        
+        # Warning for past dates
+        if valid_from is not None and valid_from < date.today():
+            warnings.append(f"Valid From ({valid_from}) is in the past")
+        
+        # Warning for very long periods
+        if valid_from is not None and valid_to is not None:
+            days_diff = (valid_to - valid_from).days
+            if days_diff > 365 * 3:  # More than 3 years
+                warnings.append(f"Period spans {days_diff} days (> 3 years)")
+        
+        return {
+            'is_valid': len(errors) == 0,
+            'errors': errors,
+            'warnings': warnings
+        }
+    
+    def check_period_overlap(
+        self,
+        customer_id: int,
+        product_id: int,
+        sale_person_id: int,
+        valid_from: date,
+        valid_to: date,
+        exclude_rule_id: int = None
+    ) -> Dict:
+        """
+        Check if new period overlaps with existing rules for same customer/product/salesperson.
+        
+        v1.6.0: New method for overlap detection.
+        v1.6.2: Used for PRE-VALIDATION (BLOCK new overlaps)
+                Post-validation (existing data) shows as WARNING only in data table.
+        
+        Overlap logic:
+        - Two periods [A_start, A_end] and [B_start, B_end] overlap if:
+          A_start <= B_end AND A_end >= B_start
+        - NULL end date treated as infinity
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID  
+            sale_person_id: Salesperson ID
+            valid_from: New rule's start date
+            valid_to: New rule's end date (can be None)
+            exclude_rule_id: Rule ID to exclude (for edit mode)
+            
+        Returns:
+            Dict with has_overlap, overlapping_rules list, message
+        """
+        # Build query to find overlapping rules
+        query = """
+            SELECT 
+                id as rule_id,
+                split_percentage,
+                valid_from,
+                valid_to,
+                CONCAT(
+                    DATE_FORMAT(valid_from, '%Y-%m-%d'),
+                    ' → ',
+                    COALESCE(DATE_FORMAT(valid_to, '%Y-%m-%d'), 'No End')
+                ) as period_display
+            FROM sales_split_by_customer_product
+            WHERE customer_id = :customer_id
+              AND product_id = :product_id
+              AND sale_person_id = :sale_person_id
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id,
+            'sale_person_id': sale_person_id
+        }
+        
+        if exclude_rule_id:
+            query += " AND id != :exclude_rule_id"
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        # Overlap condition: new_start <= existing_end AND new_end >= existing_start
+        # Handle NULL end dates (treated as infinity)
+        if valid_to is not None:
+            query += """
+                AND (valid_from <= :new_end OR valid_from IS NULL)
+                AND (valid_to >= :new_start OR valid_to IS NULL)
+            """
+            params['new_start'] = valid_from
+            params['new_end'] = valid_to
+        else:
+            # New rule has no end date - overlaps with anything that starts before or has no end
+            query += """
+                AND (valid_to >= :new_start OR valid_to IS NULL)
+            """
+            params['new_start'] = valid_from
+        
+        df = self._execute_query(query, params, "check_period_overlap")
+        
+        if df.empty:
+            return {
+                'has_overlap': False,
+                'overlapping_rules': [],
+                'message': 'No overlapping rules found'
+            }
+        
+        overlapping = df.to_dict('records')
+        
+        return {
+            'has_overlap': True,
+            'overlapping_rules': overlapping,
+            'overlap_count': len(overlapping),
+            'message': f"Found {len(overlapping)} overlapping rule(s) for same salesperson"
+        }
     
     def validate_split_percentage(
         self,
         customer_id: int,
         product_id: int,
         new_percentage: float,
-        exclude_rule_id: int = None
+        exclude_rule_id: int = None,
+        valid_from: date = None,
+        valid_to: date = None
     ) -> Dict:
         """
         Validate that total split percentage won't exceed 100%.
         
+        v1.6.0 Enhanced: Added period-aware validation option.
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            new_percentage: New split percentage to add/update
+            exclude_rule_id: Rule ID to exclude (for edit mode)
+            valid_from: Optional - only count rules overlapping this period
+            valid_to: Optional - only count rules overlapping this period
+        
         Returns:
-            Dict with current_total, new_total, is_valid, remaining
+            Dict with current_total, new_total, is_valid, remaining, existing_rules
         """
         query = """
-            SELECT COALESCE(SUM(split_percentage), 0) as current_total
+            SELECT 
+                id as rule_id,
+                sale_person_id,
+                split_percentage,
+                valid_from,
+                valid_to
             FROM sales_split_by_customer_product
             WHERE customer_id = :customer_id
               AND product_id = :product_id
               AND (delete_flag = 0 OR delete_flag IS NULL)
-              AND (valid_to >= CURDATE() OR valid_to IS NULL)
         """
         
         params = {'customer_id': customer_id, 'product_id': product_id}
+        
+        # If period specified, only count overlapping rules
+        if valid_from is not None:
+            if valid_to is not None:
+                query += """
+                    AND (valid_from <= :period_end OR valid_from IS NULL)
+                    AND (valid_to >= :period_start OR valid_to IS NULL)
+                """
+                params['period_start'] = valid_from
+                params['period_end'] = valid_to
+            else:
+                query += """
+                    AND (valid_to >= :period_start OR valid_to IS NULL)
+                """
+                params['period_start'] = valid_from
+        else:
+            # Default: only count currently active rules
+            query += " AND (valid_to >= CURDATE() OR valid_to IS NULL)"
         
         if exclude_rule_id:
             query += " AND id != :exclude_rule_id"
             params['exclude_rule_id'] = exclude_rule_id
         
         df = self._execute_query(query, params, "validate_split")
-        current_total = float(df.iloc[0]['current_total']) if not df.empty else 0
+        
+        current_total = float(df['split_percentage'].sum()) if not df.empty else 0
         new_total = current_total + new_percentage
+        
+        existing_rules = df.to_dict('records') if not df.empty else []
         
         return {
             'current_total': current_total,
             'new_total': new_total,
             'is_valid': new_total <= 100,
-            'remaining': max(0, 100 - new_total)
+            'is_warning': new_total < 100,  # Under-allocated
+            'remaining': max(0, 100 - new_total),
+            'over_amount': max(0, new_total - 100),
+            'existing_rules': existing_rules,
+            'existing_count': len(existing_rules)
+        }
+    
+    def validate_bulk_split_impact(
+        self,
+        rule_ids: List[int],
+        new_split_percentage: float
+    ) -> Dict:
+        """
+        Preview impact of bulk split percentage update.
+        
+        v1.6.0: New method for bulk validation.
+        
+        For each rule, calculates what the new total would be if split is updated.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            new_split_percentage: New split percentage value
+            
+        Returns:
+            Dict with:
+            - total_rules: Number of rules being updated
+            - will_be_ok: Rules that will have total = 100%
+            - will_be_under: Rules that will have total < 100%
+            - will_be_over: Rules that will have total > 100%
+            - details: Detailed breakdown per customer/product
+        """
+        if not rule_ids:
+            return {
+                'total_rules': 0,
+                'will_be_ok': 0,
+                'will_be_under': 0,
+                'will_be_over': 0,
+                'can_proceed': True,
+                'details': []
+            }
+        
+        # Get current rules info
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
+        query = f"""
+            SELECT 
+                ss.id as rule_id,
+                ss.customer_id,
+                ss.product_id,
+                ss.sale_person_id,
+                ss.split_percentage as current_split,
+                ss.valid_from,
+                ss.valid_to,
+                c.english_name as customer_name,
+                p.name as product_name,
+                CONCAT(e.first_name, ' ', e.last_name) as salesperson_name
+            FROM sales_split_by_customer_product ss
+            JOIN companies c ON ss.customer_id = c.id
+            JOIN products p ON ss.product_id = p.id
+            JOIN employees e ON ss.sale_person_id = e.id
+            WHERE ss.id IN ({placeholders})
+        """
+        
+        rules_df = self._execute_query(query, params, "bulk_impact_rules")
+        
+        if rules_df.empty:
+            return {
+                'total_rules': 0,
+                'will_be_ok': 0,
+                'will_be_under': 0, 
+                'will_be_over': 0,
+                'can_proceed': True,
+                'details': []
+            }
+        
+        # For each rule, calculate new total
+        details = []
+        will_be_ok = 0
+        will_be_under = 0
+        will_be_over = 0
+        
+        for _, rule in rules_df.iterrows():
+            # Get current total for this customer/product (excluding this rule)
+            validation = self.validate_split_percentage(
+                customer_id=rule['customer_id'],
+                product_id=rule['product_id'],
+                new_percentage=new_split_percentage,
+                exclude_rule_id=rule['rule_id']
+            )
+            
+            new_total = validation['new_total']
+            
+            status = 'ok'
+            if new_total > 100:
+                status = 'over'
+                will_be_over += 1
+            elif new_total < 100:
+                status = 'under'
+                will_be_under += 1
+            else:
+                will_be_ok += 1
+            
+            details.append({
+                'rule_id': rule['rule_id'],
+                'customer_name': rule['customer_name'],
+                'product_name': rule['product_name'],
+                'salesperson_name': rule['salesperson_name'],
+                'current_split': rule['current_split'],
+                'new_split': new_split_percentage,
+                'current_total': validation['current_total'],
+                'new_total': new_total,
+                'status': status
+            })
+        
+        return {
+            'total_rules': len(rules_df),
+            'will_be_ok': will_be_ok,
+            'will_be_under': will_be_under,
+            'will_be_over': will_be_over,
+            'can_proceed': will_be_over == 0,  # Block if any will be over 100% (business rule - applies to ALL users)
+            'details': details
+        }
+    
+    def validate_bulk_period_impact(
+        self,
+        rule_ids: List[int],
+        valid_from: date,
+        valid_to: date
+    ) -> Dict:
+        """
+        Preview impact of bulk period update.
+        
+        v1.6.0: New method for bulk period validation.
+        v1.6.2: Updated - overlaps now BLOCK (pre-validation business rule)
+        
+        Business Rules:
+        - Period errors (from > to): BLOCK
+        - Period overlaps: BLOCK (pre-validation)
+        - Period warnings (past date, long period): WARNING only
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            valid_from: New valid_from date
+            valid_to: New valid_to date
+            
+        Returns:
+            Dict with overlap warnings and can_proceed flag
+        """
+        if not rule_ids:
+            return {
+                'total_rules': 0,
+                'period_errors': [],
+                'overlap_warnings': [],
+                'can_proceed': True
+            }
+        
+        # Basic period validation
+        period_validation = self.validate_period(valid_from, valid_to)
+        
+        if not period_validation['is_valid']:
+            return {
+                'total_rules': len(rule_ids),
+                'period_errors': period_validation['errors'],
+                'overlap_warnings': [],
+                'can_proceed': False
+            }
+        
+        # Get rules info
+        placeholders = ','.join([f':id_{i}' for i in range(len(rule_ids))])
+        params = {f'id_{i}': rid for i, rid in enumerate(rule_ids)}
+        
+        query = f"""
+            SELECT 
+                ss.id as rule_id,
+                ss.customer_id,
+                ss.product_id,
+                ss.sale_person_id,
+                c.english_name as customer_name,
+                p.name as product_name,
+                CONCAT(e.first_name, ' ', e.last_name) as salesperson_name
+            FROM sales_split_by_customer_product ss
+            JOIN companies c ON ss.customer_id = c.id
+            JOIN products p ON ss.product_id = p.id
+            JOIN employees e ON ss.sale_person_id = e.id
+            WHERE ss.id IN ({placeholders})
+        """
+        
+        rules_df = self._execute_query(query, params, "bulk_period_rules")
+        
+        overlap_warnings = []
+        
+        for _, rule in rules_df.iterrows():
+            overlap_check = self.check_period_overlap(
+                customer_id=rule['customer_id'],
+                product_id=rule['product_id'],
+                sale_person_id=rule['sale_person_id'],
+                valid_from=valid_from,
+                valid_to=valid_to,
+                exclude_rule_id=rule['rule_id']
+            )
+            
+            if overlap_check['has_overlap']:
+                overlap_warnings.append({
+                    'rule_id': rule['rule_id'],
+                    'customer_name': rule['customer_name'],
+                    'product_name': rule['product_name'],
+                    'salesperson_name': rule['salesperson_name'],
+                    'overlap_count': overlap_check['overlap_count'],
+                    'message': overlap_check['message']
+                })
+        
+        return {
+            'total_rules': len(rules_df),
+            'period_errors': period_validation['errors'],
+            'period_warnings': period_validation['warnings'],
+            'overlap_warnings': overlap_warnings,
+            'overlap_count': len(overlap_warnings),
+            'can_proceed': len(period_validation['errors']) == 0  # Block only for errors, not warnings
         }
     
     # =========================================================================
