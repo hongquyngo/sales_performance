@@ -7,60 +7,6 @@ UI Fragments for Setup Tab - Salesperson Performance
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments
 3. Salespeople - List/manage salespeople
 
-v1.0.0 - Initial version based on KPI Center Performance setup pattern
-v1.1.0 - Added audit trail filters, KPI summary by type, enhanced card layout
-         Synced with KPI Center Performance v2.6.0 features
-v1.2.0 - Hybrid authorization (Option C):
-         - Setup tab independent from main page's "Only with KPI" filter
-         - Record-level authorization: users can only CRUD within their scope
-         - admin (full): CRUD all records + approve all
-         - sales_manager (team): CRUD + approve for team members only  
-         - sales (self): CRUD own records (pending status, cannot approve)
-         - Added can_modify_record() and get_editable_employee_ids() helpers
-         - Salesperson dropdowns filtered to editable scope
-         - Edit/Delete buttons check per-record permission
-v1.3.0 - Phase 3 & 4 implementation:
-         - Setup tab now defaults to MOST RECENT year with KPI data (Phase 4)
-         - Stores quick stats in session_state for sidebar display (Phase 3)
-         - Added _get_most_recent_kpi_year() helper function
-         - Stores setup_access_info and setup_quick_stats for dynamic sidebar
-v1.3.1 - FIX: Team scope not applied to KPI Assignments and Salespeople tabs
-         - get_assignment_issues_summary() now accepts employee_ids parameter
-         - salespeople_section() now accepts and filters by employee_ids
-         - Non-admin users now only see their team members in Setup tab
-v1.4.0 - UX Improvements:
-         - Select Rule dropdown now shows full info (no truncation)
-           Format: #{id} | {salesperson} | {customer} | {product} ({split%})
-         - Edit Split Rule form now includes Approve checkbox
-         - Approve permission: admin (all), sales_manager (team members only)
-v1.4.1 - Authorization update for sales role:
-         - sales role can now View/Create/Edit/Delete their OWN records
-         - sales role CANNOT approve - all their records are pending
-         - When sales edits an approved rule, it resets to pending (needs re-approval)
-         - Clear UI messaging for sales role about approval workflow
-v1.4.2 - Added Authorization Info Popover:
-         - 🔐 Permissions button in header shows authorization matrix
-         - Highlights current user's role and permissions
-         - Expandable section to view all roles comparison
-         - Clear legend for permission symbols
-         - FIXED: Created By column now displays employee name correctly
-           (joins via employees.keycloak_id instead of users.id)
-v1.5.0 - Bulk Approval UI (Phase 1 + 2):
-         - DATA TABLE: Checkbox column using st.data_editor for multi-select
-         - QUICK SELECT: "Select All Pending" / "Select All Approved" buttons
-         - FLOATING ACTION BAR: Shows when items selected with counts
-         - BULK ACTIONS: Approve/Disapprove multiple rules at once
-         - CONFIRMATION: st.popover dialog before bulk actions
-         - INLINE ACTIONS: Single-click Approve/Disapprove in Quick Actions
-         - NOTIFICATIONS: st.toast for performance (no page rerun)
-         - PERFORMANCE: Uses st.rerun(scope="fragment") to minimize reruns
-         - Select Rule dropdown now shows approval status icon (✅/⏳)
-v1.5.1 - UX Refinement:
-         - REMOVED: Separate Quick Actions dropdown section
-         - UNIFIED: All actions (Edit/Delete/Approve/Disapprove) in action bar
-         - Single selection: Shows Edit, Delete, Approve, Disapprove buttons
-         - Multi selection: Shows only Bulk Approve/Disapprove buttons
-         - Delete now uses confirmation popover (consistent with bulk actions)
 """
 
 import streamlit as st
@@ -611,6 +557,16 @@ def split_rules_section(
         if brand_filter:
             params['brand_ids'] = brand_filter
         
+        # v1.5.2: Entity filters - Customer (multiselect)
+        customer_filter = st.session_state.get('sp_split_customer_filter', [])
+        if customer_filter:
+            params['customer_ids'] = customer_filter
+        
+        # v1.5.2: Entity filters - Product (multiselect)
+        product_filter = st.session_state.get('sp_split_product_filter', [])
+        if product_filter:
+            params['product_ids'] = product_filter
+        
         # Rule attribute filters
         status_filter = st.session_state.get('sp_split_status_filter')
         if status_filter and status_filter != 'all':
@@ -766,19 +722,43 @@ def split_rules_section(
                 key="sp_split_brand_filter"
             )
         
+        # v1.5.2: Customer multiselect (only customers with split rules)
         with e_col3:
-            customer_search = st.text_input(
-                "🔍 Search Customer",
-                placeholder="Company code or name...",
-                key="sp_split_customer_search"
+            customers_df = setup_queries.get_customers_with_splits(
+                employee_ids=accessible_employee_ids
             )
+            
+            if not customers_df.empty:
+                customer_options = customers_df['customer_id'].tolist()
+                st.multiselect(
+                    "Customer",
+                    options=customer_options,
+                    format_func=lambda x: customers_df[customers_df['customer_id'] == x]['display_name'].iloc[0] if x in customer_options else str(x),
+                    placeholder="All Customers",
+                    key="sp_split_customer_filter",
+                    help=f"{len(customer_options)} customers with split rules"
+                )
+            else:
+                st.multiselect("Customer", options=[], placeholder="No customers", disabled=True)
         
+        # v1.5.2: Product multiselect (only products with split rules)
         with e_col4:
-            product_search = st.text_input(
-                "🔍 Search Product",
-                placeholder="PT code or name...",
-                key="sp_split_product_search"
+            products_df = setup_queries.get_products_with_splits(
+                employee_ids=accessible_employee_ids
             )
+            
+            if not products_df.empty:
+                product_options = products_df['product_id'].tolist()
+                st.multiselect(
+                    "Product",
+                    options=product_options,
+                    format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0] if x in product_options else str(x),
+                    placeholder="All Products",
+                    key="sp_split_product_filter",
+                    help=f"{len(product_options)} products with split rules"
+                )
+            else:
+                st.multiselect("Product", options=[], placeholder="No products", disabled=True)
         
         st.divider()
         
@@ -925,8 +905,8 @@ def split_rules_section(
             if st.button("🔄 Reset Filters", use_container_width=True):
                 keys_to_reset = [
                     'sp_split_period_year', 'sp_split_period_type', 'sp_split_period_start', 'sp_split_period_end',
-                    'sp_split_salesperson_filter',  # v1.2.0: Added
-                    'sp_split_brand_filter', 'sp_split_customer_search', 'sp_split_product_search',
+                    'sp_split_salesperson_filter',
+                    'sp_split_brand_filter', 'sp_split_customer_filter', 'sp_split_product_filter',  # v1.5.2: Updated
                     'sp_split_pct_min', 'sp_split_pct_max', 'sp_split_status_filter', 'sp_split_approval_filter',
                     'sp_split_created_by_filter', 'sp_split_approved_by_filter',
                     'sp_split_created_date_from', 'sp_split_created_date_to',
@@ -941,12 +921,14 @@ def split_rules_section(
         with sys_col3:
             # Count active filters
             sp_filter_val = st.session_state.get('sp_split_salesperson_filter', -1)
+            customer_filter_val = st.session_state.get('sp_split_customer_filter', [])
+            product_filter_val = st.session_state.get('sp_split_product_filter', [])
             active_filter_count = sum([
                 period_type != 'all',
-                sp_filter_val != -1 if sp_filter_val else False,  # v1.2.0: Salesperson filter
+                sp_filter_val != -1 if sp_filter_val else False,
                 len(brand_filter) > 0,
-                bool(customer_search),
-                bool(product_search),
+                len(customer_filter_val) > 0,  # v1.5.2: Updated
+                len(product_filter_val) > 0,   # v1.5.2: Updated
                 split_min > 0,
                 split_max < 100,
                 status_filter != 'all',
@@ -1056,26 +1038,7 @@ def split_rules_section(
     # =========================================================================
     split_df = setup_queries.get_sales_split_data(**query_params)
     
-    # Client-side text search
-    if not split_df.empty:
-        customer_search = st.session_state.get('sp_split_customer_search', '')
-        product_search = st.session_state.get('sp_split_product_search', '')
-        
-        if customer_search:
-            search_lower = customer_search.lower()
-            mask = (
-                split_df['customer_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
-                split_df['company_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
-            )
-            split_df = split_df[mask]
-        
-        if product_search:
-            search_lower = product_search.lower()
-            mask = (
-                split_df['product_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
-                split_df['pt_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
-            )
-            split_df = split_df[mask]
+    # v1.5.2: Removed client-side text search - now using server-side multiselect filters
     
     if split_df.empty:
         st.info("No split rules found matching the filters")
@@ -1097,8 +1060,43 @@ def split_rules_section(
     st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
     
     # =========================================================================
-    # DATA TABLE WITH BULK SELECTION (v1.5.0)
+    # v1.5.2: Call nested fragment for data table
+    # This prevents full page rerun when selecting/deselecting rows
     # =========================================================================
+    _render_split_data_table(
+        split_df=split_df,
+        setup_queries=setup_queries,
+        can_edit_base=can_edit_base,
+        can_approve=can_approve,
+        editable_employee_ids=editable_employee_ids,
+        access_level=access_level
+    )
+
+
+@st.fragment
+def _render_split_data_table(
+    split_df: pd.DataFrame,
+    setup_queries: SalespersonSetupQueries,
+    can_edit_base: bool,
+    can_approve: bool,
+    editable_employee_ids: List[int],
+    access_level: str
+):
+    """
+    v1.5.2: Nested fragment for data table and action bar.
+    This allows row selection to only rerun this section, not the entire filters.
+    """
+    if split_df.empty:
+        st.info("No split rules found matching the filters")
+        return
+    
+    # Helper to check if user can modify a specific record
+    def can_modify_this_record(record_owner_id: int) -> bool:
+        if not can_edit_base:
+            return False
+        return can_modify_record(record_owner_id, access_level, editable_employee_ids)
+    
+    # Prepare display dataframe
     display_df = split_df.copy()
     
     display_df['ID'] = display_df['split_id'].apply(lambda x: f"#{x}")
@@ -1118,19 +1116,10 @@ def split_rules_section(
     if show_deleted_flag and 'delete_flag' in display_df.columns:
         display_df['Deleted'] = display_df['delete_flag'].apply(lambda x: '🗑️' if x else '')
     
-    
-    # =========================================================================
-    # v1.5.1: UNIFIED ACTION BAR + DATA TABLE
-    # - Removed separate Quick Actions section
-    # - All actions (Edit/Delete/Approve/Disapprove) in action bar
-    # - Single select: Edit, Delete, Approve/Disapprove
-    # - Multi select: Bulk Approve/Disapprove
-    # =========================================================================
-    
     # Get user's employee_id for approver tracking
     approver_employee_id = st.session_state.get('employee_id')
     
-    # Count pending and approved for quick actions
+    # Count pending and approved
     pending_mask = display_df['is_approved'] != 1
     approved_mask = display_df['is_approved'] == 1
     pending_count = pending_mask.sum()
@@ -1148,7 +1137,6 @@ def split_rules_section(
     # UNIFIED ACTION BAR
     # =========================================================================
     with st.container(border=True):
-        # ROW 1: Stats + Quick Select
         row1_col1, row1_col2, row1_col3, row1_col4 = st.columns([2, 1, 1, 1])
         
         with row1_col1:
@@ -1156,21 +1144,21 @@ def split_rules_section(
         
         with row1_col2:
             if st.button("☑️ Select All Pending", use_container_width=True, 
-                        help="Select all pending rules"):
+                        help="Select all pending rules", key="sp_dt_select_pending"):
                 pending_ids = display_df[pending_mask]['split_id'].tolist()
                 st.session_state['sp_split_selected_ids'] = set(pending_ids)
                 st.rerun(scope="fragment")
         
         with row1_col3:
             if st.button("☑️ Select All Approved", use_container_width=True,
-                        help="Select all approved rules"):
+                        help="Select all approved rules", key="sp_dt_select_approved"):
                 approved_ids = display_df[approved_mask]['split_id'].tolist()
                 st.session_state['sp_split_selected_ids'] = set(approved_ids)
                 st.rerun(scope="fragment")
         
         with row1_col4:
             if st.button("✖️ Clear", use_container_width=True, 
-                        disabled=selected_count == 0):
+                        disabled=selected_count == 0, key="sp_dt_clear"):
                 st.session_state['sp_split_selected_ids'] = set()
                 st.rerun(scope="fragment")
         
@@ -1189,8 +1177,7 @@ def split_rules_section(
                 record_owner_id = selected_row['sale_person_id']
                 is_rule_approved = selected_row.get('is_approved', 0) == 1
                 
-                # Check edit permission for this record
-                can_modify = can_modify_this_record(record_owner_id) if can_edit_base else False
+                can_modify = can_modify_this_record(record_owner_id)
                 
                 st.caption(f"📌 Selected: **#{selected_rule_id}** | {selected_row['salesperson_name']} | {selected_row['customer_display']}")
                 
@@ -1202,19 +1189,19 @@ def split_rules_section(
                 
                 with act_col1:
                     if can_modify:
-                        if st.button("✏️ Edit", use_container_width=True, type="secondary"):
+                        if st.button("✏️ Edit", use_container_width=True, type="secondary", key="sp_dt_edit"):
                             st.session_state['sp_edit_split_id'] = selected_rule_id
                             st.rerun(scope="fragment")
                     else:
                         st.button("✏️ Edit", use_container_width=True, disabled=True,
-                                 help="You can only edit records for your team members")
+                                 help="You can only edit records for your team members", key="sp_dt_edit_dis")
                 
                 with act_col2:
                     if can_modify:
                         with st.popover("🗑️ Delete", use_container_width=True):
                             st.warning(f"Delete rule **#{selected_rule_id}**?")
                             if st.button("🗑️ Yes, Delete", type="primary", 
-                                        key="sp_confirm_single_delete", use_container_width=True):
+                                        key="sp_dt_confirm_delete", use_container_width=True):
                                 result = setup_queries.delete_split_rule(selected_rule_id)
                                 if result['success']:
                                     st.session_state['sp_split_selected_ids'] = set()
@@ -1224,12 +1211,12 @@ def split_rules_section(
                                     st.error(result['message'])
                     else:
                         st.button("🗑️ Delete", use_container_width=True, disabled=True,
-                                 help="You can only delete records for your team members")
+                                 help="You can only delete records for your team members", key="sp_dt_del_dis")
                 
                 if can_approve:
                     with act_col3:
                         if not is_rule_approved:
-                            if st.button("✅ Approve", use_container_width=True, type="primary"):
+                            if st.button("✅ Approve", use_container_width=True, type="primary", key="sp_dt_approve"):
                                 result = setup_queries.bulk_approve_split_rules(
                                     rule_ids=[selected_rule_id],
                                     approver_employee_id=approver_employee_id
@@ -1241,11 +1228,11 @@ def split_rules_section(
                                     st.error(result['message'])
                         else:
                             st.button("✅ Approve", use_container_width=True, disabled=True,
-                                     help="Already approved")
+                                     help="Already approved", key="sp_dt_approve_dis")
                     
                     with act_col4:
                         if is_rule_approved:
-                            if st.button("⏳ Disapprove", use_container_width=True):
+                            if st.button("⏳ Disapprove", use_container_width=True, key="sp_dt_disapprove"):
                                 result = setup_queries.bulk_disapprove_split_rules(
                                     rule_ids=[selected_rule_id]
                                 )
@@ -1256,7 +1243,7 @@ def split_rules_section(
                                     st.error(result['message'])
                         else:
                             st.button("⏳ Disapprove", use_container_width=True, disabled=True,
-                                     help="Not approved yet")
+                                     help="Not approved yet", key="sp_dt_disapprove_dis")
             
             # Multi selection: Show bulk actions only
             else:
@@ -1270,7 +1257,7 @@ def split_rules_section(
                             with st.popover(f"✅ Approve {selected_pending}", use_container_width=True):
                                 st.warning(f"Approve **{selected_pending}** pending rules?")
                                 if st.button("✅ Yes, Approve All", type="primary", 
-                                            key="sp_confirm_bulk_approve", use_container_width=True):
+                                            key="sp_dt_bulk_approve", use_container_width=True):
                                     pending_to_approve = selected_df[selected_df['is_approved'] != 1]['split_id'].tolist()
                                     result = setup_queries.bulk_approve_split_rules(
                                         rule_ids=pending_to_approve,
@@ -1284,14 +1271,14 @@ def split_rules_section(
                                         st.error(result['message'])
                         else:
                             st.button("✅ Approve", disabled=True, use_container_width=True,
-                                     help="No pending rules selected")
+                                     help="No pending rules selected", key="sp_dt_bulk_approve_dis")
                     
                     with bulk_col2:
                         if selected_approved > 0:
                             with st.popover(f"⏳ Disapprove {selected_approved}", use_container_width=True):
                                 st.warning(f"Reset **{selected_approved}** rules to Pending?")
                                 if st.button("⏳ Yes, Reset to Pending", type="primary",
-                                            key="sp_confirm_bulk_disapprove", use_container_width=True):
+                                            key="sp_dt_bulk_disapprove", use_container_width=True):
                                     approved_to_reset = selected_df[selected_df['is_approved'] == 1]['split_id'].tolist()
                                     result = setup_queries.bulk_disapprove_split_rules(
                                         rule_ids=approved_to_reset
@@ -1304,20 +1291,17 @@ def split_rules_section(
                                         st.error(result['message'])
                         else:
                             st.button("⏳ Disapprove", disabled=True, use_container_width=True,
-                                     help="No approved rules selected")
+                                     help="No approved rules selected", key="sp_dt_bulk_disapprove_dis")
                 else:
                     st.info("💡 Select a single rule to Edit or Delete")
     
     # =========================================================================
     # DATA TABLE WITH CHECKBOXES
     # =========================================================================
-    
-    # Add selection column
     display_df['Select'] = display_df['split_id'].apply(
         lambda x: x in st.session_state.get('sp_split_selected_ids', set())
     )
     
-    # Define columns with checkbox first
     columns_to_show = [
         'Select', 'ID', 'Salesperson', 'Customer', 'Product', 'brand',
         'Split', 'effective_period', 'Status', 'Approved', 'Created By'
@@ -1325,7 +1309,6 @@ def split_rules_section(
     if show_deleted_flag and 'delete_flag' in display_df.columns:
         columns_to_show.append('Deleted')
     
-    # Use data_editor for checkbox interaction
     edited_df = st.data_editor(
         display_df[columns_to_show],
         hide_index=True,
@@ -1347,10 +1330,9 @@ def split_rules_section(
             'Created By': st.column_config.TextColumn('Created By', width='medium', disabled=True),
         },
         use_container_width=True,
-        key="sp_split_data_editor"
+        key="sp_split_data_editor_v2"
     )
     
-    # Update selection state from edited dataframe
     if edited_df is not None and 'Select' in edited_df.columns:
         new_selected = set(display_df[edited_df['Select'] == True]['split_id'].tolist())
         if new_selected != st.session_state.get('sp_split_selected_ids', set()):

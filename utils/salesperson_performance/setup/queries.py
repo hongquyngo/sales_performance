@@ -7,22 +7,7 @@ Full CRUD operations for:
 - KPI Assignments (sales_employee_kpi_assignments)
 - Salespeople Management
 
-v1.0.0 - Initial version based on KPI Center Performance setup pattern
-v1.1.0 - Added audit trail filters, SQL View support, assignment summary by type
-         Synced with KPI Center Performance v2.6.0 features
-v1.3.1 - FIX: get_assignment_issues_summary() now accepts employee_ids parameter
-         - Non-admin users now only see issues for their team members
-         - Added total_assignments count to result dict
-v1.5.0 - Bulk Approval methods:
-         - bulk_approve_split_rules(rule_ids, approver_employee_id)
-         - bulk_disapprove_split_rules(rule_ids)
-         - Both use single transaction for performance
-         
-Schema notes:
-- sales_split_by_customer_product.created_by: VARCHAR (keycloak_id from employees table)
-- sales_split_by_customer_product.approved_by: FK -> employees.id
-- No modified_by column in sales_split_by_customer_product
-- Join chain for created_by: ss.created_by → employees.keycloak_id → users.employee_id
+
 """
 
 import logging
@@ -1346,6 +1331,74 @@ class SalespersonSetupQueries:
         """
         
         return self._execute_query(query, {}, "brands_dropdown")
+    
+    def get_customers_with_splits(self, employee_ids: List[int] = None) -> pd.DataFrame:
+        """
+        Get customers that have split rules (for filter dropdown).
+        
+        v1.5.2: New method for multiselect filter.
+        
+        Args:
+            employee_ids: Optional filter by salesperson scope
+            
+        Returns:
+            DataFrame with customer_id, company_code, customer_name, display_name
+        """
+        query = """
+            SELECT DISTINCT
+                c.id AS customer_id,
+                c.company_code,
+                c.english_name AS customer_name,
+                CONCAT(c.company_code, ' | ', c.english_name) AS display_name
+            FROM companies c
+            INNER JOIN sales_split_by_customer_product ss ON c.id = ss.customer_id
+            WHERE c.delete_flag = 0
+              AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)
+        """
+        
+        params = {}
+        
+        if employee_ids:
+            query += " AND ss.sale_person_id IN :employee_ids"
+            params['employee_ids'] = tuple(employee_ids)
+        
+        query += " ORDER BY c.company_code"
+        
+        return self._execute_query(query, params, "customers_with_splits")
+    
+    def get_products_with_splits(self, employee_ids: List[int] = None) -> pd.DataFrame:
+        """
+        Get products that have split rules (for filter dropdown).
+        
+        v1.5.2: New method for multiselect filter.
+        
+        Args:
+            employee_ids: Optional filter by salesperson scope
+            
+        Returns:
+            DataFrame with product_id, pt_code, product_name, display_name
+        """
+        query = """
+            SELECT DISTINCT
+                p.id AS product_id,
+                p.pt_code,
+                p.name AS product_name,
+                CONCAT(p.pt_code, ' | ', p.name) AS display_name
+            FROM products p
+            INNER JOIN sales_split_by_customer_product ss ON p.id = ss.product_id
+            WHERE p.delete_flag = 0
+              AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)
+        """
+        
+        params = {}
+        
+        if employee_ids:
+            query += " AND ss.sale_person_id IN :employee_ids"
+            params['employee_ids'] = tuple(employee_ids)
+        
+        query += " ORDER BY p.pt_code"
+        
+        return self._execute_query(query, params, "products_with_splits")
     
     def get_kpi_types(self) -> pd.DataFrame:
         """Get KPI types for dropdown selection."""
