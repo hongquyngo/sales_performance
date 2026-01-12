@@ -1722,6 +1722,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Customers by Revenue"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No customer data available")
         with col4:
             top_brands = metrics_calc.prepare_top_brands_by_metric('revenue', top_percent=0.8)
             if not top_brands.empty:
@@ -1731,6 +1733,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Brands by Revenue"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No brand data available")
     
     with ranking_tab2:
         col3, col4 = st.columns(2)
@@ -1743,6 +1747,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Customers by Gross Profit"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No customer data available")
         with col4:
             top_brands = metrics_calc.prepare_top_brands_by_metric('gross_profit', top_percent=0.8)
             if not top_brands.empty:
@@ -1752,6 +1758,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Brands by Gross Profit"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No brand data available")
     
     with ranking_tab3:
         col3, col4 = st.columns(2)
@@ -1764,6 +1772,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Customers by GP1"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No customer data available")
         with col4:
             top_brands = metrics_calc.prepare_top_brands_by_metric('gp1', top_percent=0.8)
             if not top_brands.empty:
@@ -1773,6 +1783,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="Top Brands by GP1"
                 )
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No brand data available")
     
     st.divider()
     
@@ -1813,6 +1825,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.info("No salesperson data available for the selected filters")
     
     # ==========================================================================
     # EXPORT REPORT - FRAGMENT (NEW v2.4.0)
