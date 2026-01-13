@@ -21,6 +21,12 @@ v2.9.0 Changes (Synced with Salesperson Performance):
 - Fragment optimization: Dialog calls don't trigger full page rerun
 - Removed inline edit form (_render_split_form deprecated)
 
+v2.9.1 Bugfix:
+- FIX: Current Split Structure now uses same query as Validation
+  - Previously used get_kpi_combo_summary() which could return different results
+  - Now uses get_split_by_customer_product() for consistency
+  - Ensures "Other Allocations" matches "Current Total" in validation
+
 v2.8.2 Changes (Sync with Salesperson Performance):
 - Nested Fragment: Extract _render_split_data_table() for better performance
   - Row selection only reruns the data table section, not entire filters
@@ -104,4 +110,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.9.0'
+__version__ = '2.9.1'

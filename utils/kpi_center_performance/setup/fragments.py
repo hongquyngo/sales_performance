@@ -1317,6 +1317,7 @@ def _render_current_split_structure(
     Render current split structure insights for a customer/product combo.
     
     v2.9.0: NEW - Synced with Salesperson Performance module.
+    v2.9.1: FIX - Use same query as validation for consistency.
     
     Shows:
     - Summary metrics: Other Allocations, Other Rules, Approved %, Pending %
@@ -1333,22 +1334,28 @@ def _render_current_split_structure(
     if not customer_id or not product_id:
         return
     
-    # Get summary stats
-    summary = setup_queries.get_kpi_combo_summary(
+    # v2.9.1: Use same query as validation for consistency
+    # get_split_by_customer_product is used by validate_split_percentage
+    structure_df = setup_queries.get_split_by_customer_product(
         customer_id=customer_id,
         product_id=product_id,
         kpi_type=kpi_type,
         exclude_rule_id=exclude_rule_id
     )
     
-    # Get detailed structure
-    structure_df = setup_queries.get_kpi_combo_split_structure(
-        customer_id=customer_id,
-        product_id=product_id,
-        kpi_type=kpi_type,
-        exclude_rule_id=exclude_rule_id,
-        include_expired=False
-    )
+    # Calculate summary from structure_df
+    if structure_df.empty:
+        total_split = 0.0
+        rule_count = 0
+        approved_split = 0.0
+        pending_split = 0.0
+    else:
+        total_split = float(structure_df['split_percentage'].sum())
+        rule_count = len(structure_df)
+        # Handle BIT(1) is_approved column
+        structure_df['_is_approved_bool'] = structure_df['is_approved'].apply(is_approved_truthy)
+        approved_split = float(structure_df[structure_df['_is_approved_bool']]['split_percentage'].sum())
+        pending_split = float(structure_df[~structure_df['_is_approved_bool']]['split_percentage'].sum())
     
     type_label = f" ({kpi_type})" if kpi_type else ""
     
@@ -1359,28 +1366,28 @@ def _render_current_split_structure(
         with m_col1:
             st.metric(
                 "Other Allocations",
-                f"{summary['total_split']:.0f}%",
+                f"{total_split:.0f}%",
                 help="Total split % from other rules"
             )
         
         with m_col2:
             st.metric(
                 "Other Rules",
-                f"{summary['rule_count']}",
+                f"{rule_count}",
                 help="Number of other active rules"
             )
         
         with m_col3:
             st.metric(
                 "Approved",
-                f"{summary['approved_split']:.0f}%",
+                f"{approved_split:.0f}%",
                 help="Total from approved rules"
             )
         
         with m_col4:
             st.metric(
                 "Pending",
-                f"{summary['pending_split']:.0f}%",
+                f"{pending_split:.0f}%",
                 help="Total from pending rules"
             )
         
@@ -1391,10 +1398,20 @@ def _render_current_split_structure(
             for _, row in structure_df.iterrows():
                 # Progress bar style display
                 pct = float(row['split_percentage'])
-                kpc_name = row['kpi_center_name']
-                kpc_type = row['kpi_type']
-                period = row['period_display']
-                is_approved = is_approved_truthy(row['is_approved'])
+                kpc_name = row.get('kpi_center_name', 'Unknown')
+                kpc_type = row.get('kpi_type', '')
+                
+                # Build period display
+                valid_from = row.get('effective_from') or row.get('valid_from')
+                valid_to = row.get('effective_to') or row.get('valid_to')
+                if pd.notna(valid_from) and pd.notna(valid_to):
+                    period = f"{pd.to_datetime(valid_from).strftime('%Y-%m-%d')} → {pd.to_datetime(valid_to).strftime('%Y-%m-%d')}"
+                elif pd.notna(valid_from):
+                    period = f"{pd.to_datetime(valid_from).strftime('%Y-%m-%d')} → No End"
+                else:
+                    period = "No dates"
+                
+                is_approved = is_approved_truthy(row.get('is_approved'))
                 
                 # Status icon
                 approval_icon = "✅" if is_approved else "⏳"
