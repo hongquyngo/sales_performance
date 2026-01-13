@@ -1233,6 +1233,129 @@ class SetupQueries:
                        ("" if can_proceed else " - BLOCKED due to over-allocation")
         }
     
+    def validate_bulk_period_impact(
+        self,
+        rule_ids: List[int],
+        valid_from: date,
+        valid_to: date
+    ) -> Dict:
+        """
+        Preview impact of bulk period update - check for overlaps.
+        
+        v2.8.2: NEW - Sync with Salesperson Performance.
+        
+        Business Rules:
+        - Period errors (from > to): BLOCK
+        - Period overlaps (same kpi_center): BLOCK
+        - Period warnings (past date, long period): WARNING only
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            valid_from: New valid_from date
+            valid_to: New valid_to date
+            
+        Returns:
+            Dict with:
+            - total_rules: Number of rules being updated
+            - period_errors: List of period validation errors
+            - period_warnings: List of period warnings
+            - overlap_warnings: List of overlap details
+            - overlap_count: Number of rules with overlaps
+            - can_proceed: Whether update can proceed
+        """
+        if not rule_ids:
+            return {
+                'total_rules': 0,
+                'period_errors': [],
+                'period_warnings': [],
+                'overlap_warnings': [],
+                'overlap_count': 0,
+                'can_proceed': True
+            }
+        
+        # Basic period validation
+        period_validation = self.validate_period(valid_from, valid_to)
+        
+        if not period_validation['is_valid']:
+            return {
+                'total_rules': len(rule_ids),
+                'period_errors': period_validation['errors'],
+                'period_warnings': [],
+                'overlap_warnings': [],
+                'overlap_count': 0,
+                'can_proceed': False
+            }
+        
+        # Get rules info for overlap checking
+        query = """
+            SELECT 
+                ks.id AS rule_id,
+                ks.customer_id,
+                ks.product_id,
+                ks.kpi_center_id,
+                kc.name AS kpi_center_name,
+                kc.type AS kpi_type,
+                c.english_name AS customer_name,
+                p.name AS product_name
+            FROM kpi_center_split_by_customer_product ks
+            JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+            JOIN companies c ON ks.customer_id = c.id
+            JOIN products p ON ks.product_id = p.id
+            WHERE ks.id IN :rule_ids
+              AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+        """
+        
+        params = {'rule_ids': tuple(rule_ids)}
+        rules_df = self._execute_query(query, params, "bulk_period_rules")
+        
+        if rules_df.empty:
+            return {
+                'total_rules': 0,
+                'period_errors': [],
+                'period_warnings': period_validation.get('warnings', []),
+                'overlap_warnings': [],
+                'overlap_count': 0,
+                'can_proceed': True
+            }
+        
+        overlap_warnings = []
+        
+        for _, rule in rules_df.iterrows():
+            # Check overlap for each rule
+            overlap_check = self.check_period_overlap(
+                customer_id=int(rule['customer_id']),
+                product_id=int(rule['product_id']),
+                kpi_center_id=int(rule['kpi_center_id']),
+                valid_from=valid_from,
+                valid_to=valid_to,
+                exclude_rule_id=int(rule['rule_id'])
+            )
+            
+            if overlap_check['has_overlap']:
+                overlap_warnings.append({
+                    'rule_id': int(rule['rule_id']),
+                    'kpi_center_name': rule['kpi_center_name'],
+                    'kpi_type': rule['kpi_type'],
+                    'customer_name': rule['customer_name'],
+                    'product_name': rule['product_name'],
+                    'overlap_count': overlap_check['overlap_count'],
+                    'overlapping_rules': overlap_check['overlapping_rules'],
+                    'message': overlap_check['message']
+                })
+        
+        # Block if any overlaps (pre-validation business rule)
+        can_proceed = len(period_validation['errors']) == 0 and len(overlap_warnings) == 0
+        
+        return {
+            'total_rules': len(rules_df),
+            'period_errors': period_validation['errors'],
+            'period_warnings': period_validation.get('warnings', []),
+            'overlap_warnings': overlap_warnings,
+            'overlap_count': len(overlap_warnings),
+            'can_proceed': can_proceed,
+            'message': f"OK" if can_proceed else f"BLOCKED: {len(overlap_warnings)} overlap(s) found"
+        }
+    
     def get_kpi_combo_split_structure(
         self,
         customer_id: int,

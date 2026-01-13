@@ -13,7 +13,24 @@ Features:
 - Comprehensive Filters: Full filtering by period, entity, attributes, audit trail (v2.6.0)
 - Bulk Operations: Multi-selection with bulk approve/disapprove/update (v2.7.0)
 
-v2.7.0 Changes (Sync with Salesperson Performance):
+v2.8.2 Changes (Sync with Salesperson Performance):
+- Nested Fragment: Extract _render_split_data_table() for better performance
+  - Row selection only reruns the data table section, not entire filters
+- Dialog-based Add Form: @st.dialog for Add Split Rule (cleaner UX)
+- Bulk Period Validation: validate_bulk_period_impact() with overlap preview
+  - Shows period errors, warnings, and overlap conflicts before bulk update
+  - Blocks update if overlaps detected (business rule)
+
+v2.8.1 Changes:
+- Single KPI Type filter (selectbox instead of multiselect)
+- Smart ALL selection for KPI Centers (mutual exclusion)
+- Bulk split impact preview (validate_bulk_split_impact)
+
+v2.8.0 Changes:
+- Enhanced validation (period, overlap, split %)
+- Modified date filters
+
+v2.7.0 Changes:
 - DataTable with multi-selection (checkbox column)
 - Bulk Approve: Approve multiple pending rules at once
 - Bulk Disapprove: Reset multiple approved rules to pending
@@ -79,4 +96,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.7.2'
+__version__ = '2.8.2'

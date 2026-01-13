@@ -801,14 +801,17 @@ def split_rules_section(
     st.divider()
     
     # =========================================================================
-    # TOOLBAR
+    # TOOLBAR (v2.8.2: Dialog-based Add form)
     # =========================================================================
     if can_edit:
+        # Store context for dialog to access
+        st.session_state['_split_dialog_can_approve'] = can_approve
+        
         toolbar_col1, toolbar_col2 = st.columns([1, 1])
         
         with toolbar_col1:
             if st.button("➕ Add Split Rule", type="primary"):
-                st.session_state['show_add_split_form'] = True
+                _add_split_rule_dialog()
         
         with toolbar_col2:
             # Renewal section - handles both button and dialog
@@ -819,11 +822,8 @@ def split_rules_section(
             )
     
     # =========================================================================
-    # ADD/EDIT FORMS
+    # EDIT FORM (still inline for Edit mode)
     # =========================================================================
-    if st.session_state.get('show_add_split_form', False):
-        _render_split_form(setup_queries, can_approve, mode='add')
-    
     if st.session_state.get('edit_split_id'):
         _render_split_form(setup_queries, can_approve, mode='edit', 
                           rule_id=st.session_state['edit_split_id'])
@@ -853,8 +853,38 @@ def split_rules_section(
     st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
     
     # =========================================================================
-    # DATA TABLE
+    # v2.8.2: Call nested fragment for data table
+    # This prevents full page rerun when selecting/deselecting rows
     # =========================================================================
+    _render_split_data_table(
+        split_df=split_df,
+        setup_queries=setup_queries,
+        can_edit=can_edit,
+        can_approve=can_approve
+    )
+
+
+# =============================================================================
+# NESTED FRAGMENT: SPLIT DATA TABLE (v2.8.2)
+# =============================================================================
+
+@st.fragment
+def _render_split_data_table(
+    split_df: pd.DataFrame,
+    setup_queries: SetupQueries,
+    can_edit: bool,
+    can_approve: bool
+):
+    """
+    v2.8.2: Nested fragment for data table and action bar.
+    This allows row selection to only rerun this section, not the entire filters.
+    
+    Synced with Salesperson Performance pattern.
+    """
+    if split_df.empty:
+        st.info("No split rules found matching the filters")
+        return
+    
     display_df = split_df.copy()
     
     # Format columns
@@ -1072,14 +1102,14 @@ def split_rules_section(
                                  help="No approved rules selected", key="split_dt_bulk_disapprove_dis")
             
             # =================================================================
-            # BULK UPDATE ACTIONS
+            # BULK UPDATE ACTIONS (v2.8.2: Enhanced with period validation)
             # =================================================================
             st.divider()
             st.caption("📝 Bulk Update Actions")
             
             upd_col1, upd_col2, upd_col3 = st.columns([1, 1, 2])
             
-            # Bulk Update Period
+            # Bulk Update Period (v2.8.2: With validation preview)
             with upd_col1:
                 with st.popover(f"📅 Update Period ({selected_count})", use_container_width=True):
                     st.markdown(f"**Set validity period for {selected_count} rules**")
@@ -1095,22 +1125,61 @@ def split_rules_section(
                         key="split_bulk_valid_to"
                     )
                     
-                    st.caption(f"This will update {selected_count} rules")
+                    st.caption(f"📌 Will update: {bulk_valid_from} → {bulk_valid_to}")
                     
-                    if st.button("📅 Update Period", type="primary", 
-                                key="split_bulk_update_period", use_container_width=True):
-                        result = setup_queries.bulk_update_split_period(
-                            rule_ids=list(valid_selected),
-                            valid_from=bulk_valid_from,
-                            valid_to=bulk_valid_to,
-                            modified_by=approver_user_id
-                        )
-                        if result['success']:
-                            st.session_state['split_selected_ids'] = set()
-                            st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
-                            st.rerun(scope="fragment")
-                        else:
-                            st.error(result['message'])
+                    # v2.8.2: Validation preview with overlap check
+                    selected_rule_ids = list(valid_selected)
+                    period_impact = setup_queries.validate_bulk_period_impact(
+                        rule_ids=selected_rule_ids,
+                        valid_from=bulk_valid_from,
+                        valid_to=bulk_valid_to
+                    )
+                    
+                    # Show validation results
+                    if period_impact['period_errors']:
+                        for err in period_impact['period_errors']:
+                            st.error(f"❌ {err}")
+                    
+                    if period_impact.get('period_warnings'):
+                        for warn in period_impact['period_warnings']:
+                            st.warning(f"⚠️ {warn}")
+                    
+                    if period_impact['overlap_count'] > 0:
+                        st.error(f"❌ {period_impact['overlap_count']} rules will have overlapping periods")
+                        with st.expander("🔍 View overlap details"):
+                            for ow in period_impact['overlap_warnings'][:5]:
+                                st.caption(
+                                    f"• #{ow['rule_id']}: {ow['kpi_center_name']} - "
+                                    f"{ow['overlap_count']} overlap(s)"
+                                )
+                            if period_impact['overlap_count'] > 5:
+                                st.caption(f"... and {period_impact['overlap_count'] - 5} more")
+                    
+                    # Block if any errors or overlaps
+                    can_proceed_period = period_impact['can_proceed']
+                    
+                    if can_proceed_period:
+                        if not period_impact['period_errors'] and not period_impact['overlap_count']:
+                            st.success("✅ No conflicts detected")
+                        
+                        if st.button("📅 Apply Period", type="primary", 
+                                    key="split_bulk_update_period", use_container_width=True):
+                            result = setup_queries.bulk_update_split_period(
+                                rule_ids=selected_rule_ids,
+                                valid_from=bulk_valid_from,
+                                valid_to=bulk_valid_to,
+                                modified_by=approver_user_id
+                            )
+                            if result['success']:
+                                st.session_state['split_selected_ids'] = set()
+                                st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error(result['message'])
+                    else:
+                        st.button("📅 Apply Period", type="primary", disabled=True,
+                                 key="split_bulk_update_period_dis", use_container_width=True)
+                        st.error("❌ Fix errors above before proceeding")
             
             # Bulk Update Split % (v2.8.1: With validation preview)
             with upd_col2:
@@ -1233,9 +1302,241 @@ def split_rules_section(
                                 st.error(result['message'])
 
 
+# =============================================================================
+# ADD SPLIT RULE DIALOG (v2.8.2 - Dialog-based UX)
+# =============================================================================
+
+@st.dialog("➕ Add Split Rule", width="large")
+def _add_split_rule_dialog():
+    """
+    Dialog for adding a new split rule.
+    
+    v2.8.2: NEW - Converted from inline form to dialog for cleaner UX.
+    """
+    # Get context from session state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    can_approve = st.session_state.get('_split_dialog_can_approve', False)
+    
+    # Initialize queries
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Form layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Customer search
+        customer_search = st.text_input("🔍 Search Customer", key="dialog_cust_search")
+        customers_df = setup_queries.get_customers_for_dropdown(
+            search=customer_search if customer_search else None, 
+            limit=50
+        )
+        
+        if not customers_df.empty:
+            customer_id = st.selectbox(
+                "Customer *",
+                options=customers_df['customer_id'].tolist(),
+                format_func=lambda x: f"{customers_df[customers_df['customer_id'] == x]['customer_name'].iloc[0]} ({customers_df[customers_df['customer_id'] == x]['company_code'].iloc[0]})",
+                key="dialog_customer_id"
+            )
+        else:
+            customer_id = None
+            st.caption("No customers found")
+        
+        # KPI Center selection
+        centers_df = setup_queries.get_kpi_centers_for_dropdown()
+        if not centers_df.empty:
+            kpi_center_id = st.selectbox(
+                "KPI Center *",
+                options=centers_df['kpi_center_id'].tolist(),
+                format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
+                key="dialog_kpi_center_id"
+            )
+        else:
+            kpi_center_id = None
+    
+    with col2:
+        # Product search
+        product_search = st.text_input("🔍 Search Product", key="dialog_prod_search")
+        products_df = setup_queries.get_products_for_dropdown(
+            search=product_search if product_search else None,
+            limit=50
+        )
+        
+        if not products_df.empty:
+            def format_product_option(row):
+                name = row['product_name'] or ''
+                code = row['pt_code'] or ''
+                pkg = row.get('package_size', '') or ''
+                detail = " | ".join(filter(None, [code, pkg]))
+                return f"{name} ({detail})" if detail else name
+            
+            product_id = st.selectbox(
+                "Product *",
+                options=products_df['product_id'].tolist(),
+                format_func=lambda x: format_product_option(products_df[products_df['product_id'] == x].iloc[0]),
+                key="dialog_product_id"
+            )
+        else:
+            product_id = None
+            st.caption("No products found")
+        
+        # Split percentage
+        split_pct = st.number_input(
+            "Split % *",
+            min_value=0.0,
+            max_value=100.0,
+            value=100.0,
+            step=5.0,
+            key="dialog_split_pct"
+        )
+    
+    # Period inputs
+    col3, col4 = st.columns(2)
+    with col3:
+        valid_from = st.date_input("Valid From *", value=date.today(), key="dialog_valid_from")
+    
+    with col4:
+        valid_to = st.date_input("Valid To *", value=date(date.today().year, 12, 31), key="dialog_valid_to")
+    
+    # =========================================================================
+    # VALIDATION SECTION
+    # =========================================================================
+    st.divider()
+    st.markdown("##### 🔍 Validation")
+    
+    validation_errors = []
+    validation_warnings = []
+    can_save = True
+    
+    # 1. Period Validation
+    period_validation = setup_queries.validate_period(valid_from, valid_to)
+    
+    if not period_validation['is_valid']:
+        for err in period_validation['errors']:
+            validation_errors.append(f"📅 {err}")
+        can_save = False
+    
+    for warn in period_validation.get('warnings', []):
+        validation_warnings.append(f"📅 {warn}")
+    
+    # 2. Period Overlap Check
+    if customer_id and product_id and kpi_center_id and valid_from and valid_to:
+        overlap_check = setup_queries.check_period_overlap(
+            customer_id=customer_id,
+            product_id=product_id,
+            kpi_center_id=kpi_center_id,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            exclude_rule_id=None
+        )
+        
+        if overlap_check['has_overlap']:
+            validation_errors.append(
+                f"📅 Period overlaps with {overlap_check['overlap_count']} existing rule(s) for this KPI Center"
+            )
+            can_save = False
+            
+            with st.expander(f"🔍 View {overlap_check['overlap_count']} overlapping rules", expanded=False):
+                for r in overlap_check['overlapping_rules']:
+                    st.caption(f"• Rule #{r['rule_id']}: {r['split_percentage']:.0f}% ({r['period_display']})")
+    
+    # 3. Split Percentage Validation
+    if customer_id and product_id and kpi_center_id and not centers_df.empty:
+        selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
+        
+        split_validation = setup_queries.validate_split_percentage(
+            customer_id=customer_id,
+            product_id=product_id,
+            kpi_type=selected_type,
+            new_percentage=split_pct,
+            exclude_rule_id=None
+        )
+        
+        # Display metrics
+        val_col1, val_col2, val_col3 = st.columns(3)
+        
+        with val_col1:
+            st.metric(
+                "Current Total",
+                f"{split_validation['current_total']:.0f}%",
+                help=f"Total for {selected_type} type"
+            )
+        
+        with val_col2:
+            delta_color = "inverse" if split_validation['new_total'] > 100 else "off"
+            st.metric(
+                "After Save",
+                f"{split_validation['new_total']:.0f}%",
+                delta=f"+{split_pct:.0f}%",
+                delta_color=delta_color
+            )
+        
+        with val_col3:
+            if split_validation['new_total'] == 100:
+                st.success("✅ Perfect!")
+            elif split_validation['new_total'] > 100:
+                over_pct = split_validation['new_total'] - 100
+                st.error(f"🔴 Over by {over_pct:.0f}%")
+                validation_errors.append(
+                    f"📊 Total split ({split_validation['new_total']:.0f}%) exceeds 100% for {selected_type}"
+                )
+                can_save = False
+            else:
+                st.warning(f"⚠️ {split_validation['remaining']:.0f}% remaining")
+                validation_warnings.append(
+                    f"📊 Under-allocated: {split_validation['remaining']:.0f}% remaining for {selected_type}"
+                )
+    
+    # Display validation summary
+    if validation_errors:
+        for err in validation_errors:
+            st.error(err)
+    
+    if validation_warnings and not validation_errors:
+        for warn in validation_warnings:
+            st.warning(warn)
+    
+    if not validation_errors and not validation_warnings:
+        st.success("✅ All validations passed")
+    
+    # Buttons
+    st.divider()
+    col_submit, col_cancel = st.columns(2)
+    
+    with col_submit:
+        if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
+            if not all([customer_id, product_id, kpi_center_id]):
+                st.error("Please fill all required fields")
+            else:
+                result = setup_queries.create_split_rule(
+                    customer_id=customer_id,
+                    product_id=product_id,
+                    kpi_center_id=kpi_center_id,
+                    split_percentage=split_pct,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    is_approved=can_approve
+                )
+                
+                if result['success']:
+                    st.toast("✅ Created successfully!", icon="✅")
+                    st.rerun()  # Close dialog and refresh
+                else:
+                    st.error(result['message'])
+    
+    with col_cancel:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()  # Close dialog
+
+
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
                        mode: str = 'add', rule_id: int = None):
-    """Render Add/Edit split rule form."""
+    """
+    Render Add/Edit split rule form.
+    
+    DEPRECATED for Add mode - use _add_split_rule_dialog() instead.
+    Still used for Edit mode (inline form).
+    """
     
     existing = None
     if mode == 'edit' and rule_id:
