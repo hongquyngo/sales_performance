@@ -928,6 +928,459 @@ class SetupQueries:
             }
     
     # =========================================================================
+    # PHASE 1: PERIOD VALIDATION (v2.8.0)
+    # =========================================================================
+    
+    def validate_period(
+        self,
+        valid_from: date,
+        valid_to: date
+    ) -> Dict:
+        """
+        Validate validity period dates.
+        
+        v2.8.0: NEW - Sync with Salesperson Performance.
+        
+        Rules:
+        - valid_from is required
+        - valid_to is required (KPI Center requires end date)
+        - valid_from must be before valid_to
+        - Warning if valid_from is in the past
+        - Warning if period spans > 3 years
+        
+        Args:
+            valid_from: Start date
+            valid_to: End date
+            
+        Returns:
+            Dict with is_valid, errors[], warnings[]
+        """
+        errors = []
+        warnings = []
+        
+        # Required checks
+        if valid_from is None:
+            errors.append("Valid From date is required")
+        
+        if valid_to is None:
+            errors.append("Valid To date is required")
+        
+        # Date order check
+        if valid_from is not None and valid_to is not None:
+            if valid_from > valid_to:
+                errors.append(f"Valid From ({valid_from}) must be before Valid To ({valid_to})")
+        
+        # Warning for past start date
+        if valid_from is not None and valid_from < date.today():
+            warnings.append(f"Valid From ({valid_from}) is in the past")
+        
+        # Warning for very long periods (> 3 years)
+        if valid_from is not None and valid_to is not None:
+            days_diff = (valid_to - valid_from).days
+            if days_diff > 365 * 3:
+                years = days_diff / 365
+                warnings.append(f"Period spans {years:.1f} years (> 3 years)")
+        
+        return {
+            'is_valid': len(errors) == 0,
+            'errors': errors,
+            'warnings': warnings
+        }
+    
+    def check_period_overlap(
+        self,
+        customer_id: int,
+        product_id: int,
+        kpi_center_id: int,
+        valid_from: date,
+        valid_to: date,
+        exclude_rule_id: int = None
+    ) -> Dict:
+        """
+        Check if new period overlaps with existing rules for same customer/product/kpi_center.
+        
+        v2.8.0: NEW - Sync with Salesperson Performance.
+        
+        Overlap logic:
+        - Two periods [A_start, A_end] and [B_start, B_end] overlap if:
+          A_start <= B_end AND A_end >= B_start
+        
+        This check is for the SAME kpi_center only.
+        Different kpi_centers can have overlapping periods (cross-center is allowed).
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            kpi_center_id: KPI Center ID
+            valid_from: New rule's start date
+            valid_to: New rule's end date
+            exclude_rule_id: Rule ID to exclude (for edit mode)
+            
+        Returns:
+            Dict with has_overlap, overlapping_rules[], overlap_count, message
+        """
+        query = """
+            SELECT 
+                ks.id as rule_id,
+                ks.split_percentage,
+                ks.valid_from,
+                ks.valid_to,
+                CONCAT(
+                    DATE_FORMAT(ks.valid_from, '%Y-%m-%d'),
+                    ' → ',
+                    COALESCE(DATE_FORMAT(ks.valid_to, '%Y-%m-%d'), 'No End')
+                ) as period_display,
+                kc.name as kpi_center_name
+            FROM kpi_center_split_by_customer_product ks
+            JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+            WHERE ks.customer_id = :customer_id
+              AND ks.product_id = :product_id
+              AND ks.kpi_center_id = :kpi_center_id
+              AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id,
+            'kpi_center_id': kpi_center_id
+        }
+        
+        if exclude_rule_id:
+            query += " AND ks.id != :exclude_rule_id"
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        # Overlap condition: new_start <= existing_end AND new_end >= existing_start
+        if valid_to is not None:
+            query += """
+                AND (ks.valid_from <= :new_end OR ks.valid_from IS NULL)
+                AND (ks.valid_to >= :new_start OR ks.valid_to IS NULL)
+            """
+            params['new_start'] = valid_from
+            params['new_end'] = valid_to
+        else:
+            # New rule has no end date - overlaps with anything that hasn't ended
+            query += " AND (ks.valid_to >= :new_start OR ks.valid_to IS NULL)"
+            params['new_start'] = valid_from
+        
+        query += " ORDER BY ks.valid_from"
+        
+        df = self._execute_query(query, params, "check_period_overlap")
+        
+        if df.empty:
+            return {
+                'has_overlap': False,
+                'overlapping_rules': [],
+                'overlap_count': 0,
+                'message': 'No overlapping rules found'
+            }
+        
+        overlapping = df.to_dict('records')
+        
+        return {
+            'has_overlap': True,
+            'overlapping_rules': overlapping,
+            'overlap_count': len(overlapping),
+            'message': f"Found {len(overlapping)} overlapping rule(s) for same KPI Center"
+        }
+    
+    # =========================================================================
+    # PHASE 2: ENHANCED VALIDATION (v2.8.1)
+    # =========================================================================
+    
+    def validate_bulk_split_impact(
+        self,
+        rule_ids: List[int],
+        new_split_percentage: float
+    ) -> Dict:
+        """
+        Preview impact of bulk split percentage change before applying.
+        
+        v2.8.1: NEW - Sync with Salesperson Performance.
+        
+        Groups rules by customer/product/kpi_type combo and calculates
+        what the new totals would be after the change.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            new_split_percentage: New split percentage to set
+            
+        Returns:
+            Dict with can_proceed, will_be_ok, will_be_under, will_be_over, details[]
+        """
+        if not rule_ids:
+            return {
+                'can_proceed': False,
+                'will_be_ok': 0,
+                'will_be_under': 0,
+                'will_be_over': 0,
+                'details': [],
+                'message': 'No rules selected'
+            }
+        
+        # Get current state of selected rules and their combos
+        query = """
+            WITH selected_rules AS (
+                SELECT 
+                    ks.id as rule_id,
+                    ks.customer_id,
+                    ks.product_id,
+                    kc.type as kpi_type,
+                    ks.split_percentage as current_split,
+                    c.english_name as customer_name,
+                    p.name as product_name
+                FROM kpi_center_split_by_customer_product ks
+                JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+                JOIN customers c ON ks.customer_id = c.id
+                JOIN products p ON ks.product_id = p.id
+                WHERE ks.id IN :rule_ids
+                  AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+            ),
+            combo_totals AS (
+                SELECT 
+                    ks.customer_id,
+                    ks.product_id,
+                    kc.type as kpi_type,
+                    SUM(ks.split_percentage) as total_split,
+                    SUM(CASE WHEN ks.id IN :rule_ids THEN ks.split_percentage ELSE 0 END) as selected_split,
+                    COUNT(CASE WHEN ks.id IN :rule_ids THEN 1 END) as selected_count
+                FROM kpi_center_split_by_customer_product ks
+                JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+                WHERE (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+                  AND (ks.valid_to >= CURDATE() OR ks.valid_to IS NULL)
+                  AND EXISTS (
+                      SELECT 1 FROM selected_rules sr 
+                      WHERE sr.customer_id = ks.customer_id 
+                        AND sr.product_id = ks.product_id
+                        AND sr.kpi_type = kc.type
+                  )
+                GROUP BY ks.customer_id, ks.product_id, kc.type
+            )
+            SELECT 
+                ct.customer_id,
+                ct.product_id,
+                ct.kpi_type,
+                ct.total_split as current_total,
+                ct.selected_split,
+                ct.selected_count,
+                (ct.total_split - ct.selected_split + (ct.selected_count * :new_percentage)) as new_total,
+                c.english_name as customer_name,
+                p.name as product_name
+            FROM combo_totals ct
+            JOIN customers c ON ct.customer_id = c.id
+            JOIN products p ON ct.product_id = p.id
+            ORDER BY ct.kpi_type, customer_name, product_name
+        """
+        
+        params = {
+            'rule_ids': tuple(rule_ids),
+            'new_percentage': new_split_percentage
+        }
+        
+        df = self._execute_query(query, params, "validate_bulk_split_impact")
+        
+        if df.empty:
+            return {
+                'can_proceed': True,
+                'will_be_ok': 0,
+                'will_be_under': 0,
+                'will_be_over': 0,
+                'details': [],
+                'message': 'No affected combos found'
+            }
+        
+        # Analyze results
+        details = []
+        will_be_ok = 0
+        will_be_under = 0
+        will_be_over = 0
+        
+        for _, row in df.iterrows():
+            new_total = float(row['new_total'])
+            current_total = float(row['current_total'])
+            
+            if new_total == 100:
+                status = 'ok'
+                will_be_ok += 1
+            elif new_total < 100:
+                status = 'under'
+                will_be_under += 1
+            else:
+                status = 'over'
+                will_be_over += 1
+            
+            details.append({
+                'customer_id': int(row['customer_id']),
+                'product_id': int(row['product_id']),
+                'kpi_type': row['kpi_type'],
+                'customer_name': row['customer_name'],
+                'product_name': row['product_name'],
+                'current_total': current_total,
+                'new_total': new_total,
+                'selected_count': int(row['selected_count']),
+                'status': status
+            })
+        
+        can_proceed = (will_be_over == 0)
+        
+        return {
+            'can_proceed': can_proceed,
+            'will_be_ok': will_be_ok,
+            'will_be_under': will_be_under,
+            'will_be_over': will_be_over,
+            'total_combos': len(details),
+            'details': details,
+            'message': f"OK: {will_be_ok}, Under: {will_be_under}, Over: {will_be_over}" + 
+                       ("" if can_proceed else " - BLOCKED due to over-allocation")
+        }
+    
+    def get_kpi_combo_split_structure(
+        self,
+        customer_id: int,
+        product_id: int,
+        kpi_type: str = None,
+        exclude_rule_id: int = None,
+        include_expired: bool = False
+    ) -> pd.DataFrame:
+        """
+        Get detailed split structure for a customer/product combo.
+        
+        v2.8.1: NEW - For Edit dialog to show current allocations.
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            kpi_type: Optional filter by kpi_centers.type
+            exclude_rule_id: Rule ID to exclude (current rule being edited)
+            include_expired: Whether to include expired rules
+            
+        Returns:
+            DataFrame with rule details by KPI Center
+        """
+        query = """
+            SELECT 
+                ks.id AS rule_id,
+                ks.kpi_center_id,
+                kc.name AS kpi_center_name,
+                kc.type AS kpi_type,
+                ks.split_percentage,
+                ks.valid_from,
+                ks.valid_to,
+                CONCAT(
+                    DATE_FORMAT(ks.valid_from, '%Y-%m-%d'),
+                    ' → ',
+                    COALESCE(DATE_FORMAT(ks.valid_to, '%Y-%m-%d'), 'No End')
+                ) AS period_display,
+                CASE 
+                    WHEN (ks.valid_from <= CURDATE() OR ks.valid_from IS NULL)
+                         AND (ks.valid_to >= CURDATE() OR ks.valid_to IS NULL)
+                    THEN 1 ELSE 0 
+                END AS is_current_period,
+                COALESCE(ks.isApproved, 0) AS is_approved,
+                CASE WHEN ks.isApproved = 1 THEN 'Approved' ELSE 'Pending' END AS approval_status,
+                DATEDIFF(ks.valid_to, CURDATE()) AS days_until_expiry,
+                CASE 
+                    WHEN ks.valid_to < CURDATE() THEN 'expired'
+                    WHEN DATEDIFF(ks.valid_to, CURDATE()) <= 7 THEN 'critical'
+                    WHEN DATEDIFF(ks.valid_to, CURDATE()) <= 30 THEN 'warning'
+                    WHEN ks.valid_to IS NULL THEN 'no_end'
+                    ELSE 'ok'
+                END AS period_status,
+                ks.created_date,
+                ks.modified_date
+            FROM kpi_center_split_by_customer_product ks
+            JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+            WHERE ks.customer_id = :customer_id
+              AND ks.product_id = :product_id
+              AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id
+        }
+        
+        if kpi_type:
+            query += " AND kc.type = :kpi_type"
+            params['kpi_type'] = kpi_type
+        
+        if exclude_rule_id:
+            query += " AND ks.id != :exclude_rule_id"
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        if not include_expired:
+            query += " AND (ks.valid_to >= CURDATE() OR ks.valid_to IS NULL)"
+        
+        query += " ORDER BY kc.type, ks.split_percentage DESC, kc.name"
+        
+        return self._execute_query(query, params, "kpi_combo_split_structure")
+    
+    def get_kpi_combo_summary(
+        self,
+        customer_id: int,
+        product_id: int,
+        kpi_type: str = None,
+        exclude_rule_id: int = None
+    ) -> Dict:
+        """
+        Get quick summary stats for a customer/product combo.
+        
+        v2.8.1: NEW - Lightweight method for validation display.
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            kpi_type: Optional filter by kpi_centers.type
+            exclude_rule_id: Rule ID to exclude
+            
+        Returns:
+            Dict with total_split, rule_count, approved_split, pending_split
+        """
+        query = """
+            SELECT 
+                COALESCE(SUM(ks.split_percentage), 0) AS total_split,
+                COUNT(*) AS rule_count,
+                SUM(CASE WHEN ks.isApproved = 1 THEN ks.split_percentage ELSE 0 END) AS approved_split,
+                SUM(CASE WHEN ks.isApproved = 0 OR ks.isApproved IS NULL THEN ks.split_percentage ELSE 0 END) AS pending_split
+            FROM kpi_center_split_by_customer_product ks
+            JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+            WHERE ks.customer_id = :customer_id
+              AND ks.product_id = :product_id
+              AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+              AND (ks.valid_to >= CURDATE() OR ks.valid_to IS NULL)
+        """
+        
+        params = {
+            'customer_id': customer_id,
+            'product_id': product_id
+        }
+        
+        if kpi_type:
+            query += " AND kc.type = :kpi_type"
+            params['kpi_type'] = kpi_type
+        
+        if exclude_rule_id:
+            query += " AND ks.id != :exclude_rule_id"
+            params['exclude_rule_id'] = exclude_rule_id
+        
+        df = self._execute_query(query, params, "kpi_combo_summary")
+        
+        if df.empty:
+            return {
+                'total_split': 0,
+                'rule_count': 0,
+                'approved_split': 0,
+                'pending_split': 0
+            }
+        
+        row = df.iloc[0]
+        return {
+            'total_split': float(row.get('total_split', 0) or 0),
+            'rule_count': int(row.get('rule_count', 0) or 0),
+            'approved_split': float(row.get('approved_split', 0) or 0),
+            'pending_split': float(row.get('pending_split', 0) or 0)
+        }
+    
+    # =========================================================================
     # KPI SPLIT RULES - CREATE
     # =========================================================================
     
