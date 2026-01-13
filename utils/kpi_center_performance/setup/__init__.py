@@ -13,6 +13,14 @@ Features:
 - Comprehensive Filters: Full filtering by period, entity, attributes, audit trail (v2.6.0)
 - Bulk Operations: Multi-selection with bulk approve/disapprove/update (v2.7.0)
 
+v2.9.0 Changes (Synced with Salesperson Performance):
+- Dialog-based Edit Form: @st.dialog for Edit Split Rule (same as Add)
+- Current Split Structure Insights: Shows existing allocations in Add/Edit dialogs
+  - Summary metrics: Other Allocations, Other Rules, Approved %, Pending %
+  - Allocation Breakdown: Visual table of all KPI Centers with their splits
+- Fragment optimization: Dialog calls don't trigger full page rerun
+- Removed inline edit form (_render_split_form deprecated)
+
 v2.8.2 Changes (Sync with Salesperson Performance):
 - Nested Fragment: Extract _render_split_data_table() for better performance
   - Row selection only reruns the data table section, not entire filters
@@ -96,4 +104,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.8.2'
+__version__ = '2.9.0'

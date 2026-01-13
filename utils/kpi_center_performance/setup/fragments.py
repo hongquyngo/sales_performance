@@ -822,11 +822,9 @@ def split_rules_section(
             )
     
     # =========================================================================
-    # EDIT FORM (still inline for Edit mode)
+    # v2.9.0: Edit form removed - now using dialog (_edit_split_rule_dialog)
+    # Dialog is called directly from Edit button in _render_split_data_table
     # =========================================================================
-    if st.session_state.get('edit_split_id'):
-        _render_split_form(setup_queries, can_approve, mode='edit', 
-                          rule_id=st.session_state['edit_split_id'])
     
     # =========================================================================
     # GET DATA WITH FILTERS
@@ -1266,9 +1264,10 @@ def _render_split_data_table(
                 edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 2])
                 
                 with edit_col1:
+                    # v2.9.0: Open dialog instead of inline form
                     if st.button("✏️ Edit", use_container_width=True, type="secondary", key="split_dt_edit"):
-                        st.session_state['edit_split_id'] = selected_rule_id
-                        st.rerun(scope="fragment")
+                        st.session_state['_edit_split_rule_id'] = selected_rule_id
+                        _edit_split_rule_dialog()
                 
                 with edit_col2:
                     with st.popover("🗑️ Delete", use_container_width=True):
@@ -1303,7 +1302,123 @@ def _render_split_data_table(
 
 
 # =============================================================================
-# ADD SPLIT RULE DIALOG (v2.8.2 - Dialog-based UX)
+# HELPER: CURRENT SPLIT STRUCTURE (v2.9.0 - Synced with Salesperson)
+# =============================================================================
+
+def _render_current_split_structure(
+    setup_queries: SetupQueries,
+    customer_id: int,
+    product_id: int,
+    kpi_type: str = None,
+    exclude_rule_id: int = None,
+    expanded: bool = True
+):
+    """
+    Render current split structure insights for a customer/product combo.
+    
+    v2.9.0: NEW - Synced with Salesperson Performance module.
+    
+    Shows:
+    - Summary metrics: Other Allocations, Other Rules, Approved %, Pending %
+    - Allocation Breakdown: Table of all KPI Centers with their splits
+    
+    Args:
+        setup_queries: SetupQueries instance
+        customer_id: Customer ID
+        product_id: Product ID
+        kpi_type: Optional KPI type filter (TERRITORY, VERTICAL, etc.)
+        exclude_rule_id: Rule ID to exclude (for edit mode)
+        expanded: Whether expander starts expanded
+    """
+    if not customer_id or not product_id:
+        return
+    
+    # Get summary stats
+    summary = setup_queries.get_kpi_combo_summary(
+        customer_id=customer_id,
+        product_id=product_id,
+        kpi_type=kpi_type,
+        exclude_rule_id=exclude_rule_id
+    )
+    
+    # Get detailed structure
+    structure_df = setup_queries.get_kpi_combo_split_structure(
+        customer_id=customer_id,
+        product_id=product_id,
+        kpi_type=kpi_type,
+        exclude_rule_id=exclude_rule_id,
+        include_expired=False
+    )
+    
+    type_label = f" ({kpi_type})" if kpi_type else ""
+    
+    with st.expander(f"📊 Current Split Structure{type_label}", expanded=expanded):
+        # Summary metrics row
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        
+        with m_col1:
+            st.metric(
+                "Other Allocations",
+                f"{summary['total_split']:.0f}%",
+                help="Total split % from other rules"
+            )
+        
+        with m_col2:
+            st.metric(
+                "Other Rules",
+                f"{summary['rule_count']}",
+                help="Number of other active rules"
+            )
+        
+        with m_col3:
+            st.metric(
+                "Approved",
+                f"{summary['approved_split']:.0f}%",
+                help="Total from approved rules"
+            )
+        
+        with m_col4:
+            st.metric(
+                "Pending",
+                f"{summary['pending_split']:.0f}%",
+                help="Total from pending rules"
+            )
+        
+        # Allocation Breakdown
+        if not structure_df.empty:
+            st.markdown("##### 📋 Allocation Breakdown")
+            
+            for _, row in structure_df.iterrows():
+                # Progress bar style display
+                pct = float(row['split_percentage'])
+                kpc_name = row['kpi_center_name']
+                kpc_type = row['kpi_type']
+                period = row['period_display']
+                is_approved = is_approved_truthy(row['is_approved'])
+                
+                # Status icon
+                approval_icon = "✅" if is_approved else "⏳"
+                type_icon = KPI_TYPE_ICONS.get(kpc_type, '📁')
+                
+                col_name, col_bar, col_period, col_status = st.columns([2, 2, 2, 1])
+                
+                with col_name:
+                    st.markdown(f"{type_icon} **{kpc_name}**")
+                
+                with col_bar:
+                    st.progress(min(pct / 100, 1.0), text=f"{pct:.0f}%")
+                
+                with col_period:
+                    st.caption(f"📅 {period}")
+                
+                with col_status:
+                    st.markdown(approval_icon)
+        else:
+            st.info("No other allocations for this combo")
+
+
+# =============================================================================
+# ADD SPLIT RULE DIALOG (v2.9.0 - With Current Structure Insights)
 # =============================================================================
 
 @st.dialog("➕ Add Split Rule", width="large")
@@ -1311,6 +1426,7 @@ def _add_split_rule_dialog():
     """
     Dialog for adding a new split rule.
     
+    v2.9.0: Enhanced with Current Split Structure insights.
     v2.8.2: NEW - Converted from inline form to dialog for cleaner UX.
     """
     # Get context from session state
@@ -1397,6 +1513,22 @@ def _add_split_rule_dialog():
     
     with col4:
         valid_to = st.date_input("Valid To *", value=date(date.today().year, 12, 31), key="dialog_valid_to")
+    
+    # =========================================================================
+    # v2.9.0: CURRENT SPLIT STRUCTURE INSIGHTS
+    # =========================================================================
+    if customer_id and product_id and kpi_center_id and not centers_df.empty:
+        selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
+        
+        st.divider()
+        _render_current_split_structure(
+            setup_queries=setup_queries,
+            customer_id=customer_id,
+            product_id=product_id,
+            kpi_type=selected_type,
+            exclude_rule_id=None,
+            expanded=False  # Start collapsed in Add mode
+        )
     
     # =========================================================================
     # VALIDATION SECTION
@@ -1499,8 +1631,19 @@ def _add_split_rule_dialog():
     if not validation_errors and not validation_warnings:
         st.success("✅ All validations passed")
     
-    # Buttons
+    # Approve checkbox (only for admins)
     st.divider()
+    
+    approve_on_create = False
+    if can_approve:
+        approve_on_create = st.checkbox(
+            "✅ Approve this rule",
+            value=True,
+            key="dialog_approve_on_create",
+            help="Automatically approve this rule upon creation"
+        )
+    
+    # Buttons
     col_submit, col_cancel = st.columns(2)
     
     with col_submit:
@@ -1515,7 +1658,8 @@ def _add_split_rule_dialog():
                     split_percentage=split_pct,
                     valid_from=valid_from,
                     valid_to=valid_to,
-                    is_approved=can_approve
+                    is_approved=approve_on_create,
+                    approved_by=user_id if approve_on_create else None
                 )
                 
                 if result['success']:
@@ -1529,13 +1673,326 @@ def _add_split_rule_dialog():
             st.rerun()  # Close dialog
 
 
+# =============================================================================
+# EDIT SPLIT RULE DIALOG (v2.9.0 - Modal with Current Structure Insights)
+# =============================================================================
+
+@st.dialog("✏️ Edit Split Rule", width="large")
+def _edit_split_rule_dialog():
+    """
+    Dialog for editing an existing split rule.
+    
+    v2.9.0: NEW - Synced with Salesperson Performance module.
+    
+    Features:
+    - Header with Rule ID, Customer, Product info
+    - Current Split Structure insights (collapsible)
+    - Form: KPI Center, Split %, Valid From, Valid To
+    - Validation section with metrics
+    - Approve checkbox (admin only)
+    - Update/Cancel buttons
+    """
+    # Get context from session state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    can_approve = st.session_state.get('_split_dialog_can_approve', False)
+    rule_id = st.session_state.get('_edit_split_rule_id')
+    
+    if not rule_id:
+        st.error("No rule selected for editing")
+        if st.button("Close"):
+            st.rerun()
+        return
+    
+    # Initialize queries
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Get existing rule data
+    df = setup_queries.get_kpi_split_data(limit=5000)
+    df = df[df['kpi_center_split_id'] == rule_id]
+    
+    if df.empty:
+        st.error(f"Rule #{rule_id} not found")
+        if st.button("Close"):
+            st.session_state.pop('_edit_split_rule_id', None)
+            st.rerun()
+        return
+    
+    existing = df.iloc[0]
+    
+    # =========================================================================
+    # HEADER: Rule Info
+    # =========================================================================
+    st.caption(f"Rule ID: #{rule_id}")
+    
+    header_col1, header_col2 = st.columns(2)
+    with header_col1:
+        customer_display = format_customer_display(
+            existing['customer_name'], 
+            existing.get('company_code')
+        )
+        st.markdown(f"**Customer:** {customer_display}")
+    
+    with header_col2:
+        product_display = format_product_display(
+            existing['product_name'],
+            existing.get('pt_code'),
+            existing.get('package_size'),
+            existing.get('brand'),
+            include_brand=True
+        )
+        st.markdown(f"**Product:** {product_display}")
+    
+    # Get KPI Center type for structure display
+    centers_df = setup_queries.get_kpi_centers_for_dropdown()
+    current_kpi_center_id = existing['kpi_center_id']
+    selected_type = None
+    if not centers_df.empty and current_kpi_center_id in centers_df['kpi_center_id'].values:
+        selected_type = centers_df[centers_df['kpi_center_id'] == current_kpi_center_id]['kpi_type'].iloc[0]
+    
+    # =========================================================================
+    # CURRENT SPLIT STRUCTURE INSIGHTS
+    # =========================================================================
+    _render_current_split_structure(
+        setup_queries=setup_queries,
+        customer_id=int(existing['customer_id']),
+        product_id=int(existing['product_id']),
+        kpi_type=selected_type,
+        exclude_rule_id=rule_id,
+        expanded=True  # Start expanded in Edit mode
+    )
+    
+    st.divider()
+    
+    # =========================================================================
+    # FORM FIELDS
+    # =========================================================================
+    form_col1, form_col2 = st.columns(2)
+    
+    with form_col1:
+        # KPI Center selection
+        if not centers_df.empty:
+            default_idx = 0
+            if current_kpi_center_id in centers_df['kpi_center_id'].values:
+                idx_list = centers_df['kpi_center_id'].tolist()
+                default_idx = idx_list.index(current_kpi_center_id)
+            
+            kpi_center_id = st.selectbox(
+                "KPI Center *",
+                options=centers_df['kpi_center_id'].tolist(),
+                index=default_idx,
+                format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
+                key="edit_dialog_kpi_center_id"
+            )
+        else:
+            kpi_center_id = current_kpi_center_id
+            st.warning("No KPI Centers available")
+    
+    with form_col2:
+        # Split percentage
+        default_split = float(existing['split_percentage']) if pd.notna(existing['split_percentage']) else 100.0
+        split_pct = st.number_input(
+            "Split % *",
+            min_value=0.0,
+            max_value=100.0,
+            value=default_split,
+            step=5.0,
+            key="edit_dialog_split_pct"
+        )
+    
+    # Period inputs
+    period_col1, period_col2 = st.columns(2)
+    
+    with period_col1:
+        default_from = pd.to_datetime(existing['effective_from']).date() if pd.notna(existing.get('effective_from')) else date.today()
+        valid_from = st.date_input(
+            "Valid From *",
+            value=default_from,
+            key="edit_dialog_valid_from"
+        )
+    
+    with period_col2:
+        default_to = pd.to_datetime(existing['effective_to']).date() if pd.notna(existing.get('effective_to')) else date(date.today().year, 12, 31)
+        valid_to = st.date_input(
+            "Valid To *",
+            value=default_to,
+            key="edit_dialog_valid_to"
+        )
+    
+    # =========================================================================
+    # VALIDATION SECTION
+    # =========================================================================
+    st.divider()
+    st.markdown("##### 🔍 Validation")
+    
+    validation_errors = []
+    validation_warnings = []
+    can_save = True
+    
+    # 1. Period Validation
+    period_validation = setup_queries.validate_period(valid_from, valid_to)
+    
+    if not period_validation['is_valid']:
+        for err in period_validation['errors']:
+            validation_errors.append(f"📅 {err}")
+        can_save = False
+    
+    for warn in period_validation.get('warnings', []):
+        validation_warnings.append(f"📅 {warn}")
+    
+    # 2. Period Overlap Check (for same KPI Center)
+    customer_id = int(existing['customer_id'])
+    product_id = int(existing['product_id'])
+    
+    if kpi_center_id and valid_from and valid_to:
+        overlap_check = setup_queries.check_period_overlap(
+            customer_id=customer_id,
+            product_id=product_id,
+            kpi_center_id=kpi_center_id,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            exclude_rule_id=rule_id
+        )
+        
+        if overlap_check['has_overlap']:
+            validation_errors.append(
+                f"📅 Period overlaps with {overlap_check['overlap_count']} existing rule(s) for this KPI Center"
+            )
+            can_save = False
+            
+            with st.expander(f"🔍 View {overlap_check['overlap_count']} overlapping rules", expanded=False):
+                for r in overlap_check['overlapping_rules']:
+                    st.caption(f"• Rule #{r['rule_id']}: {r['split_percentage']:.0f}% ({r['period_display']})")
+    
+    # 3. Split Percentage Validation
+    if kpi_center_id and not centers_df.empty:
+        new_selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
+        
+        split_validation = setup_queries.validate_split_percentage(
+            customer_id=customer_id,
+            product_id=product_id,
+            kpi_type=new_selected_type,
+            new_percentage=split_pct,
+            exclude_rule_id=rule_id
+        )
+        
+        # Display metrics
+        val_col1, val_col2, val_col3 = st.columns(3)
+        
+        with val_col1:
+            st.metric(
+                "Current Total",
+                f"{split_validation['current_total']:.0f}%",
+                help=f"Total for {new_selected_type} type (excluding this rule)"
+            )
+        
+        with val_col2:
+            delta_color = "inverse" if split_validation['new_total'] > 100 else "off"
+            st.metric(
+                "After Save",
+                f"{split_validation['new_total']:.0f}%",
+                delta=f"+{split_pct:.0f}%",
+                delta_color=delta_color
+            )
+        
+        with val_col3:
+            if split_validation['new_total'] == 100:
+                st.success("✅ Perfect!")
+            elif split_validation['new_total'] > 100:
+                over_pct = split_validation['new_total'] - 100
+                st.error(f"🔴 Over by {over_pct:.0f}%")
+                validation_errors.append(
+                    f"📊 Total split ({split_validation['new_total']:.0f}%) exceeds 100% for {new_selected_type}"
+                )
+                can_save = False
+            else:
+                st.warning(f"⚠️ {split_validation['remaining']:.0f}% remaining")
+                validation_warnings.append(
+                    f"📊 Under-allocated: {split_validation['remaining']:.0f}% remaining for {new_selected_type}"
+                )
+    
+    # Display validation summary
+    if validation_errors:
+        for err in validation_errors:
+            st.error(err)
+    
+    if validation_warnings and not validation_errors:
+        for warn in validation_warnings:
+            st.warning(warn)
+    
+    if not validation_errors and not validation_warnings:
+        st.success("✅ All validations passed")
+    
+    # =========================================================================
+    # APPROVE CHECKBOX (Admin only)
+    # =========================================================================
+    st.divider()
+    
+    current_approved = is_approved_truthy(existing.get('is_approved'))
+    approve_rule = current_approved
+    
+    if can_approve:
+        approve_rule = st.checkbox(
+            "✅ Approve this rule",
+            value=current_approved,
+            key="edit_dialog_approve",
+            help="Mark this rule as approved"
+        )
+    else:
+        # Show current status for non-admins
+        if current_approved:
+            st.info("✅ This rule is approved")
+        else:
+            st.warning("⏳ This rule is pending approval")
+    
+    # =========================================================================
+    # BUTTONS
+    # =========================================================================
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        if st.button("💾 Update", type="primary", use_container_width=True, disabled=not can_save):
+            # Update the rule
+            result = setup_queries.update_split_rule(
+                rule_id=rule_id,
+                split_percentage=split_pct,
+                valid_from=valid_from,
+                valid_to=valid_to,
+                kpi_center_id=kpi_center_id
+            )
+            
+            if result['success']:
+                # Handle approval change if admin
+                if can_approve:
+                    if approve_rule and not current_approved:
+                        # Approve
+                        setup_queries.approve_split_rules([rule_id], approved_by=user_id)
+                    elif not approve_rule and current_approved:
+                        # Disapprove
+                        setup_queries.bulk_disapprove_split_rules([rule_id], modified_by=user_id)
+                
+                st.toast("✅ Updated successfully!", icon="✅")
+                st.session_state.pop('_edit_split_rule_id', None)
+                st.session_state['split_selected_ids'] = set()  # Clear selection
+                st.rerun()  # Close dialog and refresh
+            else:
+                st.error(result['message'])
+    
+    with btn_col2:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.session_state.pop('_edit_split_rule_id', None)
+            st.rerun()  # Close dialog
+
+
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
                        mode: str = 'add', rule_id: int = None):
     """
     Render Add/Edit split rule form.
     
-    DEPRECATED for Add mode - use _add_split_rule_dialog() instead.
-    Still used for Edit mode (inline form).
+    ⚠️ DEPRECATED in v2.9.0:
+    - Add mode: Use _add_split_rule_dialog() instead
+    - Edit mode: Use _edit_split_rule_dialog() instead
+    
+    This function is kept for backward compatibility but should not be used.
     """
     
     existing = None
