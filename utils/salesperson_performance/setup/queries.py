@@ -1758,29 +1758,35 @@ class SalespersonSetupQueries:
         search: str = None,
         limit: int = 100
     ) -> pd.DataFrame:
-        """Get customers for dropdown selection."""
+        """
+        Get customers for dropdown selection.
+        
+        Uses companies_company_types join to filter by company_type = 'Customer'.
+        """
         query = """
-            SELECT 
-                id AS customer_id,
-                company_code,
-                english_name AS customer_name,
-                CONCAT(company_code, ' | ', english_name) AS display_name
-            FROM companies
-            WHERE delete_flag = 0
-              AND is_customer = 1
+            SELECT DISTINCT
+                c.id AS customer_id,
+                c.company_code,
+                c.english_name AS customer_name,
+                CONCAT(c.company_code, ' | ', c.english_name) AS display_name
+            FROM companies c
+            INNER JOIN companies_company_types cct ON c.id = cct.companies_id
+            INNER JOIN company_types ct ON cct.company_type_id = ct.id
+            WHERE (c.delete_flag = 0 OR c.delete_flag IS NULL)
+              AND ct.name = 'Customer'
         """
         
         params = {}
         
         if search:
             query += """ AND (
-                company_code LIKE :search 
-                OR english_name LIKE :search
-                OR vietnamese_name LIKE :search
+                c.company_code LIKE :search 
+                OR c.english_name LIKE :search
+                OR c.local_name LIKE :search
             )"""
             params['search'] = f"%{search}%"
         
-        query += f" ORDER BY company_code LIMIT {limit}"
+        query += f" ORDER BY c.company_code LIMIT {limit}"
         
         return self._execute_query(query, params, "customers_dropdown")
     
