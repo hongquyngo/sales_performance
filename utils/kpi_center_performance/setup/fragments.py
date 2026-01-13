@@ -21,6 +21,9 @@ from .renewal import renewal_section
 
 KPI_TYPES = ['TERRITORY', 'VERTICAL', 'BRAND', 'INTERNAL']
 
+# v2.8.1: Sentinel value for "ALL" selection in multiselect filters
+ALL_CENTERS = -1
+
 KPI_TYPE_ICONS = {
     'TERRITORY': '🌍',
     'VERTICAL': '📊',
@@ -308,16 +311,17 @@ def split_rules_section(
         # 'all' = no period filter
         
         # Entity filters
-        # v2.8.0: KPI Center filter from multiselect (overrides sidebar if set)
-        kpi_center_filter = st.session_state.get('split_kpi_center_filter', [])
-        if kpi_center_filter:
-            params['kpi_center_ids'] = kpi_center_filter
-        elif kpi_center_ids:
-            params['kpi_center_ids'] = kpi_center_ids
+        # v2.8.1: KPI Type is now required (no 'All' option)
+        kpi_type = st.session_state.get('split_kpi_type_filter', 'TERRITORY')
+        params['kpi_type'] = kpi_type
         
-        kpi_type = st.session_state.get('split_kpi_type_filter')
-        if kpi_type and kpi_type != 'All':
-            params['kpi_type'] = kpi_type
+        # v2.8.1: KPI Center filter with ALL sentinel handling
+        kpi_center_filter = st.session_state.get('split_kpi_center_filter', [])
+        # Filter out ALL sentinel - if ALL selected, don't filter by kpi_center
+        actual_centers = [c for c in kpi_center_filter if c != ALL_CENTERS]
+        if actual_centers:
+            params['kpi_center_ids'] = actual_centers
+        # Note: If ALL is selected (or empty), no kpi_center_ids filter = all centers
         
         brand_filter = st.session_state.get('split_brand_filter', [])
         if brand_filter:
@@ -439,39 +443,76 @@ def split_rules_section(
         st.divider()
         
         # ---------------------------------------------------------------------
-        # ROW 2: Entity Filters (v2.8.0 - Multiselect like Salesperson module)
+        # ROW 2: Entity Filters (v2.8.1 - Single KPI Type, Smart ALL selection)
         # ---------------------------------------------------------------------
         st.markdown("##### 🏢 Entity Filters")
         
         e_col1, e_col2, e_col3, e_col4 = st.columns(4)
         
         with e_col1:
-            kpi_type_options = ['All'] + KPI_TYPES
+            # v2.8.1: Single select KPI Type, default TERRITORY
             kpi_type_filter = st.selectbox(
                 "KPI Type",
-                options=kpi_type_options,
-                format_func=lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}" if x != 'All' else '📁 All Types',
+                options=KPI_TYPES,
+                index=0,  # Default: TERRITORY
+                format_func=lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}",
                 key="split_kpi_type_filter"
             )
         
         with e_col2:
-            # v2.8.0: KPI Center multiselect (overrides sidebar selection)
-            centers_df = setup_queries.get_kpi_centers_for_dropdown(
-                kpi_type=kpi_type_filter if kpi_type_filter != 'All' else None
-            )
-            center_options = centers_df['kpi_center_id'].tolist() if not centers_df.empty else []
+            # v2.8.1: KPI Center multiselect with ALL option
+            # Get centers filtered by selected KPI Type
+            centers_df = setup_queries.get_kpi_centers_for_dropdown(kpi_type=kpi_type_filter)
+            center_ids = centers_df['kpi_center_id'].tolist() if not centers_df.empty else []
             
-            # Default to sidebar selection if any
-            default_centers = list(kpi_center_ids) if kpi_center_ids else []
+            # Build options: ALL sentinel + individual centers
+            center_options = [ALL_CENTERS] + center_ids  # ALL_CENTERS defined in constants
+            
+            def format_center(x):
+                if x == ALL_CENTERS:
+                    return "🌐 ALL"
+                if not centers_df.empty and x in centers_df['kpi_center_id'].values:
+                    return centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]
+                return str(x)
+            
+            # v2.8.1: Smart ALL selection logic
+            # Get current selection
+            current_selection = st.session_state.get('split_kpi_center_filter', None)
+            prev_selection = st.session_state.get('_prev_kpi_center_filter', None)
+            
+            # Initialize if first time
+            if current_selection is None:
+                current_selection = [ALL_CENTERS]
+                st.session_state['split_kpi_center_filter'] = current_selection
+                prev_selection = []
+            
+            # Detect what changed and apply mutual exclusion logic
+            needs_rerun = False
+            if current_selection != prev_selection and prev_selection is not None:
+                # Something changed
+                newly_added = set(current_selection) - set(prev_selection)
+                
+                if ALL_CENTERS in newly_added and len(current_selection) > 1:
+                    # ALL was just added - clear others, keep only ALL
+                    st.session_state['split_kpi_center_filter'] = [ALL_CENTERS]
+                    needs_rerun = True
+                elif ALL_CENTERS in current_selection and len(newly_added) > 0 and ALL_CENTERS not in newly_added:
+                    # Individual center was added while ALL was selected - remove ALL
+                    st.session_state['split_kpi_center_filter'] = [x for x in current_selection if x != ALL_CENTERS]
+                    needs_rerun = True
+            
+            # Save current as prev BEFORE widget renders
+            st.session_state['_prev_kpi_center_filter'] = list(st.session_state.get('split_kpi_center_filter', [ALL_CENTERS]))
+            
+            if needs_rerun:
+                st.rerun(scope="fragment")
             
             kpi_center_filter = st.multiselect(
                 "KPI Center",
                 options=center_options,
-                default=[c for c in default_centers if c in center_options],
-                format_func=lambda x: centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0] if not centers_df.empty and x in centers_df['kpi_center_id'].values else str(x),
-                placeholder="All Centers",
+                format_func=format_center,
                 key="split_kpi_center_filter",
-                help="Filter by KPI Center (overrides sidebar)"
+                help="Select ALL or specific centers"
             )
         
         with e_col3:
@@ -663,11 +704,11 @@ def split_rules_section(
         
         with sys_col2:
             if st.button("🔄 Reset Filters", use_container_width=True):
-                # Reset all filter keys (v2.8.0 - updated list)
+                # Reset all filter keys (v2.8.1 - updated list)
                 keys_to_reset = [
                     'split_period_year', 'split_period_type', 'split_period_start', 'split_period_end',
-                    'split_kpi_type_filter', 'split_kpi_center_filter', 'split_brand_filter',
-                    'split_customer_filter', 'split_product_filter',
+                    'split_kpi_type_filter', 'split_kpi_center_filter', '_prev_kpi_center_filter',
+                    'split_brand_filter', 'split_customer_filter', 'split_product_filter',
                     'split_pct_min', 'split_pct_max', 'split_status_filter', 'split_approval_filter',
                     'split_created_by_filter', 'split_approved_by_filter', 
                     'split_created_date_from', 'split_created_date_to',
@@ -680,11 +721,14 @@ def split_rules_section(
                 st.rerun(scope="fragment")
         
         with sys_col3:
-            # v2.8.0: Updated filter count calculation
+            # v2.8.1: Updated filter count calculation
+            # KPI Center: count as active only if specific centers selected (not ALL)
+            kpi_center_active = len([c for c in kpi_center_filter if c != ALL_CENTERS]) > 0
+            
             active_filter_count = sum([
                 period_type != 'all',
-                kpi_type_filter != 'All',
-                len(kpi_center_filter) > 0,
+                kpi_type_filter != 'TERRITORY',  # v2.8.1: Only count if not default
+                kpi_center_active,  # v2.8.1: Only count if specific centers selected
                 len(brand_filter) > 0,
                 len(customer_filter) > 0,
                 len(product_filter) > 0,
