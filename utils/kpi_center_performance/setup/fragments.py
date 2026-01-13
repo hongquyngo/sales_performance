@@ -308,7 +308,11 @@ def split_rules_section(
         # 'all' = no period filter
         
         # Entity filters
-        if kpi_center_ids:
+        # v2.8.0: KPI Center filter from multiselect (overrides sidebar if set)
+        kpi_center_filter = st.session_state.get('split_kpi_center_filter', [])
+        if kpi_center_filter:
+            params['kpi_center_ids'] = kpi_center_filter
+        elif kpi_center_ids:
             params['kpi_center_ids'] = kpi_center_ids
         
         kpi_type = st.session_state.get('split_kpi_type_filter')
@@ -318,6 +322,15 @@ def split_rules_section(
         brand_filter = st.session_state.get('split_brand_filter', [])
         if brand_filter:
             params['brand_ids'] = brand_filter
+        
+        # v2.8.0: Customer & Product multiselect filters
+        customer_filter = st.session_state.get('split_customer_filter', [])
+        if customer_filter:
+            params['customer_ids'] = customer_filter
+        
+        product_filter = st.session_state.get('split_product_filter', [])
+        if product_filter:
+            params['product_ids'] = product_filter
         
         # Rule attribute filters
         status_filter = st.session_state.get('split_status_filter')
@@ -350,6 +363,14 @@ def split_rules_section(
             params['created_date_from'] = created_from
         if created_to:
             params['created_date_to'] = created_to
+        
+        # v2.8.0: Modified date filters
+        modified_from = st.session_state.get('split_modified_date_from')
+        modified_to = st.session_state.get('split_modified_date_to')
+        if modified_from:
+            params['modified_date_from'] = modified_from
+        if modified_to:
+            params['modified_date_to'] = modified_to
         
         # System filters
         include_deleted = st.session_state.get('split_show_deleted', False)
@@ -418,11 +439,11 @@ def split_rules_section(
         st.divider()
         
         # ---------------------------------------------------------------------
-        # ROW 2: Entity Filters
+        # ROW 2: Entity Filters (v2.8.0 - Multiselect like Salesperson module)
         # ---------------------------------------------------------------------
         st.markdown("##### 🏢 Entity Filters")
         
-        e_col1, e_col2, e_col3 = st.columns(3)
+        e_col1, e_col2, e_col3, e_col4 = st.columns(4)
         
         with e_col1:
             kpi_type_options = ['All'] + KPI_TYPES
@@ -434,6 +455,26 @@ def split_rules_section(
             )
         
         with e_col2:
+            # v2.8.0: KPI Center multiselect (overrides sidebar selection)
+            centers_df = setup_queries.get_kpi_centers_for_dropdown(
+                kpi_type=kpi_type_filter if kpi_type_filter != 'All' else None
+            )
+            center_options = centers_df['kpi_center_id'].tolist() if not centers_df.empty else []
+            
+            # Default to sidebar selection if any
+            default_centers = list(kpi_center_ids) if kpi_center_ids else []
+            
+            kpi_center_filter = st.multiselect(
+                "KPI Center",
+                options=center_options,
+                default=[c for c in default_centers if c in center_options],
+                format_func=lambda x: centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0] if not centers_df.empty and x in centers_df['kpi_center_id'].values else str(x),
+                placeholder="All Centers",
+                key="split_kpi_center_filter",
+                help="Filter by KPI Center (overrides sidebar)"
+            )
+        
+        with e_col3:
             # Brand filter (multi-select)
             brands_df = setup_queries.get_brands_for_dropdown()
             brand_options = brands_df['brand_id'].tolist() if not brands_df.empty else []
@@ -446,29 +487,32 @@ def split_rules_section(
                 key="split_brand_filter"
             )
         
-        with e_col3:
-            # KPI Center info (read-only, shows sidebar selection)
-            if kpi_center_ids:
-                st.info(f"📍 Filtering by {len(kpi_center_ids)} KPI Center(s) from sidebar")
-            else:
-                st.caption("📍 All KPI Centers (no sidebar filter)")
-        
-        # Search inputs
-        s_col1, s_col2 = st.columns(2)
-        
-        with s_col1:
-            customer_search = st.text_input(
-                "🔍 Search Customer",
-                placeholder="Company code or name...",
-                key="split_customer_search"
+        with e_col4:
+            # v2.8.0: Customer multiselect
+            customers_df = setup_queries.get_customers_for_dropdown(limit=500)
+            customer_options = customers_df['customer_id'].tolist() if not customers_df.empty else []
+            
+            customer_filter = st.multiselect(
+                "Customer",
+                options=customer_options,
+                format_func=lambda x: f"{customers_df[customers_df['customer_id'] == x]['company_code'].iloc[0]} | {customers_df[customers_df['customer_id'] == x]['customer_name'].iloc[0]}" if not customers_df.empty and x in customers_df['customer_id'].values else str(x),
+                placeholder="All Customers",
+                key="split_customer_filter",
+                help="Filter by customer"
             )
         
-        with s_col2:
-            product_search = st.text_input(
-                "🔍 Search Product",
-                placeholder="PT code or name...",
-                key="split_product_search"
-            )
+        # Row 2b: Product filter (full width for better UX with long product names)
+        products_df = setup_queries.get_products_for_dropdown(limit=500)
+        product_options = products_df['product_id'].tolist() if not products_df.empty else []
+        
+        product_filter = st.multiselect(
+            "Product",
+            options=product_options,
+            format_func=lambda x: f"{products_df[products_df['product_id'] == x]['pt_code'].iloc[0]} | {products_df[products_df['product_id'] == x]['product_name'].iloc[0]}" if not products_df.empty and x in products_df['product_id'].values else str(x),
+            placeholder="All Products",
+            key="split_product_filter",
+            help="Filter by product"
+        )
         
         st.divider()
         
@@ -529,32 +573,37 @@ def split_rules_section(
         st.divider()
         
         # ---------------------------------------------------------------------
-        # ROW 4: Audit Trail Filters
+        # ROW 4: Audit Trail Filters (v2.8.0 - Added Modified dates)
         # ---------------------------------------------------------------------
         st.markdown("##### 👤 Audit Trail")
         
         # Get users for dropdown
         users_df = setup_queries.get_users_for_dropdown()
-        user_options = [(0, "All Users")] + [
+        creator_options = [(0, "All Creators")] + [
             (row['user_id'], f"{row['full_name']} ({row['username']})")
             for _, row in users_df.iterrows()
-        ] if not users_df.empty else [(0, "All Users")]
+        ] if not users_df.empty else [(0, "All Creators")]
+        
+        approver_options = [(0, "All Approvers")] + [
+            (row['user_id'], f"{row['full_name']} ({row['username']})")
+            for _, row in users_df.iterrows()
+        ] if not users_df.empty else [(0, "All Approvers")]
         
         a_col1, a_col2, a_col3, a_col4 = st.columns(4)
         
         with a_col1:
             created_by_filter = st.selectbox(
                 "Created By",
-                options=[u[0] for u in user_options],
-                format_func=lambda x: next((u[1] for u in user_options if u[0] == x), "All"),
+                options=[u[0] for u in creator_options],
+                format_func=lambda x: next((u[1] for u in creator_options if u[0] == x), "All"),
                 key="split_created_by_filter"
             )
         
         with a_col2:
             approved_by_filter = st.selectbox(
                 "Approved By",
-                options=[u[0] for u in user_options],
-                format_func=lambda x: next((u[1] for u in user_options if u[0] == x), "All"),
+                options=[u[0] for u in approver_options],
+                format_func=lambda x: next((u[1] for u in approver_options if u[0] == x), "All"),
                 key="split_approved_by_filter"
             )
         
@@ -572,11 +621,36 @@ def split_rules_section(
                 key="split_created_date_to"
             )
         
+        # v2.8.0: Modified date filters row
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        
+        with m_col1:
+            modified_date_from = st.date_input(
+                "Modified From",
+                value=None,
+                key="split_modified_date_from"
+            )
+        
+        with m_col2:
+            modified_date_to = st.date_input(
+                "Modified To",
+                value=None,
+                key="split_modified_date_to"
+            )
+        
+        # Empty columns for alignment
+        with m_col3:
+            pass
+        with m_col4:
+            pass
+        
         st.divider()
         
         # ---------------------------------------------------------------------
-        # ROW 5: System Filters & Actions
+        # ROW 5: System Filters & Actions (v2.8.0)
         # ---------------------------------------------------------------------
+        st.markdown("##### ⚙️ System")
+        
         sys_col1, sys_col2, sys_col3 = st.columns([2, 1, 1])
         
         with sys_col1:
@@ -589,12 +663,15 @@ def split_rules_section(
         
         with sys_col2:
             if st.button("🔄 Reset Filters", use_container_width=True):
-                # Reset all filter keys
+                # Reset all filter keys (v2.8.0 - updated list)
                 keys_to_reset = [
                     'split_period_year', 'split_period_type', 'split_period_start', 'split_period_end',
-                    'split_kpi_type_filter', 'split_brand_filter', 'split_customer_search', 'split_product_search',
+                    'split_kpi_type_filter', 'split_kpi_center_filter', 'split_brand_filter',
+                    'split_customer_filter', 'split_product_filter',
                     'split_pct_min', 'split_pct_max', 'split_status_filter', 'split_approval_filter',
-                    'split_created_by_filter', 'split_approved_by_filter', 'split_created_date_from', 'split_created_date_to',
+                    'split_created_by_filter', 'split_approved_by_filter', 
+                    'split_created_date_from', 'split_created_date_to',
+                    'split_modified_date_from', 'split_modified_date_to',
                     'split_show_deleted'
                 ]
                 for key in keys_to_reset:
@@ -603,13 +680,14 @@ def split_rules_section(
                 st.rerun(scope="fragment")
         
         with sys_col3:
-            # Filter summary
+            # v2.8.0: Updated filter count calculation
             active_filter_count = sum([
                 period_type != 'all',
                 kpi_type_filter != 'All',
+                len(kpi_center_filter) > 0,
                 len(brand_filter) > 0,
-                bool(customer_search),
-                bool(product_search),
+                len(customer_filter) > 0,
+                len(product_filter) > 0,
                 split_min > 0,
                 split_max < 100,
                 status_filter != 'all',
@@ -618,6 +696,8 @@ def split_rules_section(
                 approved_by_filter > 0,
                 created_date_from is not None,
                 created_date_to is not None,
+                modified_date_from is not None,
+                modified_date_to is not None,
                 show_deleted
             ])
             st.metric("Active Filters", active_filter_count)
@@ -708,24 +788,6 @@ def split_rules_section(
     # GET DATA WITH FILTERS
     # =========================================================================
     split_df = setup_queries.get_kpi_split_data(**query_params)
-    
-    # Client-side text search (customer & product)
-    if not split_df.empty:
-        if customer_search:
-            search_lower = customer_search.lower()
-            mask = (
-                split_df['customer_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
-                split_df['company_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
-            )
-            split_df = split_df[mask]
-        
-        if product_search:
-            search_lower = product_search.lower()
-            mask = (
-                split_df['product_name'].fillna('').str.lower().str.contains(search_lower, regex=False) |
-                split_df['pt_code'].fillna('').str.lower().str.contains(search_lower, regex=False)
-            )
-            split_df = split_df[mask]
     
     if split_df.empty:
         st.info("No split rules found matching the filters")
