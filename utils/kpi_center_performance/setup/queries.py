@@ -8,6 +8,7 @@ Full CRUD operations for:
 - Hierarchy Management
 - Validation Dashboard
 
+
 """
 
 import logging
@@ -1079,6 +1080,140 @@ class SetupQueries:
         }
         
         return self._execute_update(query, params, "approve_split_rules")
+    
+    def bulk_disapprove_split_rules(self, rule_ids: List[int], modified_by: int = None) -> Dict:
+        """
+        Bulk disapprove (reset to pending) multiple split rules.
+        
+        v2.7.0: NEW - Sync with Salesperson Performance.
+        
+        Args:
+            rule_ids: List of rule IDs to disapprove
+            modified_by: User ID who made the change (FK -> users.id)
+            
+        Returns:
+            Dict with 'success': bool, 'count': int, 'message': str
+        """
+        if not rule_ids:
+            return {'success': False, 'count': 0, 'message': 'No rules to disapprove'}
+        
+        query = """
+            UPDATE kpi_center_split_by_customer_product
+            SET isApproved = 0,
+                approved_by = NULL,
+                modified_by = :modified_by,
+                modified_date = NOW(),
+                version = version + 1
+            WHERE id IN :rule_ids 
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        params = {
+            'rule_ids': tuple(rule_ids),
+            'modified_by': modified_by or self.user_id
+        }
+        
+        return self._execute_update(query, params, f"bulk_disapprove_{len(rule_ids)}_rules")
+    
+    def bulk_update_split_period(
+        self,
+        rule_ids: List[int],
+        valid_from: date = None,
+        valid_to: date = None,
+        modified_by: int = None
+    ) -> Dict:
+        """
+        Bulk update validity period for multiple split rules.
+        
+        v2.7.0: NEW - Sync with Salesperson Performance.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            valid_from: New start date (optional)
+            valid_to: New end date (optional)
+            modified_by: User ID who made the change (FK -> users.id)
+            
+        Returns:
+            Dict with 'success': bool, 'count': int, 'message': str
+        """
+        if not rule_ids:
+            return {'success': False, 'count': 0, 'message': 'No rules to update'}
+        
+        if valid_from is None and valid_to is None:
+            return {'success': False, 'count': 0, 'message': 'At least one date must be provided'}
+        
+        set_parts = [
+            "modified_by = :modified_by",
+            "modified_date = NOW()",
+            "version = version + 1"
+        ]
+        params = {
+            'rule_ids': tuple(rule_ids),
+            'modified_by': modified_by or self.user_id
+        }
+        
+        if valid_from is not None:
+            set_parts.append("valid_from = :valid_from")
+            params['valid_from'] = valid_from
+        
+        if valid_to is not None:
+            set_parts.append("valid_to = :valid_to")
+            params['valid_to'] = valid_to
+        
+        query = f"""
+            UPDATE kpi_center_split_by_customer_product
+            SET {', '.join(set_parts)}
+            WHERE id IN :rule_ids 
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        return self._execute_update(query, params, f"bulk_update_period_{len(rule_ids)}_rules")
+    
+    def bulk_update_split_percentage(
+        self,
+        rule_ids: List[int],
+        split_percentage: float,
+        modified_by: int = None
+    ) -> Dict:
+        """
+        Bulk update split percentage for multiple rules.
+        
+        v2.7.0: NEW - Sync with Salesperson Performance.
+        
+        WARNING: This sets the SAME percentage for all rules.
+        Use with caution - typically for resetting or adjusting en masse.
+        
+        Args:
+            rule_ids: List of rule IDs to update
+            split_percentage: New split percentage (0-100)
+            modified_by: User ID who made the change (FK -> users.id)
+            
+        Returns:
+            Dict with 'success': bool, 'count': int, 'message': str
+        """
+        if not rule_ids:
+            return {'success': False, 'count': 0, 'message': 'No rules to update'}
+        
+        if split_percentage < 0 or split_percentage > 100:
+            return {'success': False, 'count': 0, 'message': 'Split percentage must be between 0 and 100'}
+        
+        query = """
+            UPDATE kpi_center_split_by_customer_product
+            SET split_percentage = :split_percentage,
+                modified_by = :modified_by,
+                modified_date = NOW(),
+                version = version + 1
+            WHERE id IN :rule_ids 
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        params = {
+            'rule_ids': tuple(rule_ids),
+            'split_percentage': split_percentage,
+            'modified_by': modified_by or self.user_id
+        }
+        
+        return self._execute_update(query, params, f"bulk_update_split_{len(rule_ids)}_rules")
     
     # =========================================================================
     # KPI SPLIT RULES - DELETE

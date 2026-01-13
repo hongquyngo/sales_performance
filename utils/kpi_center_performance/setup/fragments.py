@@ -762,74 +762,288 @@ def split_rules_section(
     if show_deleted_flag and 'delete_flag' in display_df.columns:
         columns_to_show.append('Deleted')
     
-    st.dataframe(
-        display_df[columns_to_show],
-        hide_index=True,
-        column_config={
-            'ID': st.column_config.TextColumn('ID', width='small'),
-            'kpi_center_name': st.column_config.TextColumn('KPI Center', width='medium'),
-            'Type': st.column_config.TextColumn('Type', width='small'),
-            'Customer': st.column_config.TextColumn('Customer', width='large'),
-            'Product': st.column_config.TextColumn('Product', width='large'),
-            'brand': st.column_config.TextColumn('Brand', width='small'),
-            'Split': st.column_config.TextColumn('Split %', width='small'),
-            'effective_period': st.column_config.TextColumn('Period', width='medium'),
-            'Status': st.column_config.TextColumn('Status', width='small'),
-            'Approved': st.column_config.TextColumn('Approved', width='medium'),
-            'Created By': st.column_config.TextColumn('Created By', width='medium'),
-            'Deleted': st.column_config.TextColumn('🗑️', width='small'),
-        },
-        use_container_width=True
+    # =========================================================================
+    # DATA TABLE WITH MULTI-SELECTION (v2.7.0)
+    # =========================================================================
+    
+    # Initialize selection state
+    if 'split_selected_ids' not in st.session_state:
+        st.session_state['split_selected_ids'] = set()
+    
+    # Add Select column
+    display_df['Select'] = display_df['kpi_center_split_id'].isin(
+        st.session_state.get('split_selected_ids', set())
     )
     
+    # Move Select to front
+    columns_with_select = ['Select'] + columns_to_show
+    
+    # Use data_editor for selection
+    edited_df = st.data_editor(
+        display_df[columns_with_select],
+        hide_index=True,
+        column_config={
+            'Select': st.column_config.CheckboxColumn(
+                '✓',
+                width='small',
+                help="Select for bulk actions"
+            ),
+            'ID': st.column_config.TextColumn('ID', width='small', disabled=True),
+            'kpi_center_name': st.column_config.TextColumn('KPI Center', width='medium', disabled=True),
+            'Type': st.column_config.TextColumn('Type', width='small', disabled=True),
+            'Customer': st.column_config.TextColumn('Customer', width='large', disabled=True),
+            'Product': st.column_config.TextColumn('Product', width='large', disabled=True),
+            'brand': st.column_config.TextColumn('Brand', width='small', disabled=True),
+            'Split': st.column_config.TextColumn('Split %', width='small', disabled=True),
+            'effective_period': st.column_config.TextColumn('Period', width='medium', disabled=True),
+            'Status': st.column_config.TextColumn('Status', width='small', disabled=True),
+            'Approved': st.column_config.TextColumn('Approved', width='medium', disabled=True),
+            'Created By': st.column_config.TextColumn('Created By', width='medium', disabled=True),
+            'Deleted': st.column_config.TextColumn('🗑️', width='small', disabled=True),
+        },
+        use_container_width=True,
+        key="split_data_editor_v2"
+    )
+    
+    # Update selection state from editor
+    if edited_df is not None and 'Select' in edited_df.columns:
+        new_selected = set(display_df[edited_df['Select'] == True]['kpi_center_split_id'].tolist())
+        if new_selected != st.session_state.get('split_selected_ids', set()):
+            st.session_state['split_selected_ids'] = new_selected
+            st.rerun(scope="fragment")
+    
     # =========================================================================
-    # ROW ACTIONS
+    # BULK ACTIONS TOOLBAR (v2.7.1 - Enhanced UI matching Salesperson Performance)
     # =========================================================================
     if can_edit and not split_df.empty:
-        with st.expander("✏️ Edit / Delete Rule"):
-            col1, col2, col3 = st.columns([3, 1, 1])
+        
+        # Get current selection
+        selected_ids = st.session_state.get('split_selected_ids', set())
+        valid_selected = selected_ids & set(display_df['kpi_center_split_id'].tolist())
+        selected_count = len(valid_selected)
+        
+        # Get approver info for bulk approve
+        approver_user_id = st.session_state.get('user_id')  # users.id
+        
+        # Calculate totals for insights
+        total_pending = (display_df['is_approved'] != 1).sum()
+        total_approved = (display_df['is_approved'] == 1).sum()
+        
+        # Get IDs by approval status for quick selection
+        pending_ids = set(display_df[display_df['is_approved'] != 1]['kpi_center_split_id'].tolist())
+        approved_ids = set(display_df[display_df['is_approved'] == 1]['kpi_center_split_id'].tolist())
+        
+        with st.container(border=True):
+            # =================================================================
+            # ROW 1: Insights + Quick Selection Buttons
+            # =================================================================
+            ins_col1, ins_col2, ins_col3, ins_col4 = st.columns([2, 1, 1, 1])
             
-            with col1:
-                def format_rule_option(r):
-                    rule_id = r['kpi_center_split_id']
-                    customer_name = r.get('customer_name', '')
-                    company_code = r.get('company_code', '')
-                    customer = f"{customer_name} ({company_code})" if company_code else customer_name
-                    
-                    product_name = r.get('product_name', '')
-                    pt_code = r.get('pt_code', '')
-                    package_size = r.get('package_size', '')
-                    product_detail = " | ".join(filter(None, [pt_code, package_size]))
-                    product = f"{product_name} ({product_detail})" if product_detail else product_name
-                    
-                    split = r.get('split_percentage', 0)
-                    kpi_type = r.get('kpi_type', '')
-                    
-                    return (rule_id, f"#{rule_id} | {customer} | {product} ({split:.0f}%) → {kpi_type}")
-                
-                rule_options = split_df.head(100).apply(format_rule_option, axis=1).tolist()
-                rule_options = [(None, "Select a rule...")] + rule_options
-                
-                selected_rule = st.selectbox(
-                    "Rule",
-                    options=[r[0] for r in rule_options],
-                    format_func=lambda x: next((r[1] for r in rule_options if r[0] == x), ""),
-                    key="select_split_rule"
-                )
+            with ins_col1:
+                # Insights display
+                st.markdown(f"📋 **{total_pending:,}** pending · ✅ **{total_approved:,}** approved")
             
-            with col2:
-                if selected_rule and st.button("✏️ Edit", use_container_width=True):
-                    st.session_state['edit_split_id'] = selected_rule
+            with ins_col2:
+                if st.button("☑️ Select All Pending", use_container_width=True,
+                            disabled=total_pending == 0,
+                            help=f"Select all {total_pending} pending rules"):
+                    st.session_state['split_selected_ids'] = pending_ids
                     st.rerun(scope="fragment")
             
-            with col3:
-                if selected_rule and st.button("🗑️ Delete", use_container_width=True):
-                    result = setup_queries.delete_split_rule(selected_rule)
-                    if result['success']:
-                        st.success("Rule deleted")
-                        st.rerun(scope="fragment")
-                    else:
-                        st.error(result['message'])
+            with ins_col3:
+                if st.button("☑️ Select All Approved", use_container_width=True,
+                            disabled=total_approved == 0,
+                            help=f"Select all {total_approved} approved rules"):
+                    st.session_state['split_selected_ids'] = approved_ids
+                    st.rerun(scope="fragment")
+            
+            with ins_col4:
+                if st.button("✖️ Clear", use_container_width=True,
+                            disabled=selected_count == 0,
+                            help="Clear selection"):
+                    st.session_state['split_selected_ids'] = set()
+                    st.rerun(scope="fragment")
+            
+            # =================================================================
+            # ROW 2: Selection Summary + Actions (only when selected)
+            # =================================================================
+            if valid_selected:
+                selected_df = display_df[display_df['kpi_center_split_id'].isin(valid_selected)]
+                selected_pending = (selected_df['is_approved'] != 1).sum()
+                selected_approved = (selected_df['is_approved'] == 1).sum()
+                
+                st.divider()
+                
+                # Selection summary
+                st.caption(f"📌 **{selected_count}** rules selected: {selected_pending} pending, {selected_approved} approved")
+                
+                # =================================================================
+                # APPROVAL ACTIONS (Approve/Disapprove)
+                # =================================================================
+                if can_approve:
+                    appr_col1, appr_col2, appr_col3 = st.columns([1, 1, 2])
+                    
+                    with appr_col1:
+                        if selected_pending > 0:
+                            with st.popover(f"✅ Approve {selected_pending}", use_container_width=True):
+                                st.warning(f"Approve **{selected_pending}** pending rules?")
+                                if st.button("✅ Yes, Approve All", type="primary", 
+                                            key="split_dt_bulk_approve", use_container_width=True):
+                                    pending_to_approve = selected_df[selected_df['is_approved'] != 1]['kpi_center_split_id'].tolist()
+                                    result = setup_queries.approve_split_rules(
+                                        rule_ids=pending_to_approve,
+                                        approved_by=approver_user_id
+                                    )
+                                    if result['success']:
+                                        st.session_state['split_selected_ids'] = set()
+                                        st.toast(f"✅ Approved {result['count']} rules", icon="✅")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(result['message'])
+                        else:
+                            st.button("✅ Approve", disabled=True, use_container_width=True,
+                                     help="No pending rules selected", key="split_dt_bulk_approve_dis")
+                    
+                    with appr_col2:
+                        if selected_approved > 0:
+                            with st.popover(f"⏳ Disapprove", use_container_width=True):
+                                st.warning(f"Reset **{selected_approved}** rules to Pending?")
+                                if st.button("⏳ Yes, Reset to Pending", type="primary",
+                                            key="split_dt_bulk_disapprove", use_container_width=True):
+                                    approved_to_reset = selected_df[selected_df['is_approved'] == 1]['kpi_center_split_id'].tolist()
+                                    result = setup_queries.bulk_disapprove_split_rules(
+                                        rule_ids=approved_to_reset,
+                                        modified_by=approver_user_id
+                                    )
+                                    if result['success']:
+                                        st.session_state['split_selected_ids'] = set()
+                                        st.toast(f"⏳ Reset {result['count']} rules to Pending", icon="⏳")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(result['message'])
+                        else:
+                            st.button("⏳ Disapprove", disabled=True, use_container_width=True,
+                                     help="No approved rules selected", key="split_dt_bulk_disapprove_dis")
+                
+                # =================================================================
+                # BULK UPDATE ACTIONS
+                # =================================================================
+                st.divider()
+                st.caption("📝 Bulk Update Actions")
+                
+                upd_col1, upd_col2, upd_col3 = st.columns([1, 1, 2])
+                
+                # Bulk Update Period
+                with upd_col1:
+                    with st.popover(f"📅 Update Period ({selected_count})", use_container_width=True):
+                        st.markdown(f"**Set validity period for {selected_count} rules**")
+                        
+                        bulk_valid_from = st.date_input(
+                            "Valid From",
+                            value=date.today(),
+                            key="split_bulk_valid_from"
+                        )
+                        bulk_valid_to = st.date_input(
+                            "Valid To",
+                            value=date(date.today().year, 12, 31),
+                            key="split_bulk_valid_to"
+                        )
+                        
+                        st.caption(f"This will update {selected_count} rules")
+                        
+                        if st.button("📅 Update Period", type="primary", 
+                                    key="split_bulk_update_period", use_container_width=True):
+                            result = setup_queries.bulk_update_split_period(
+                                rule_ids=list(valid_selected),
+                                valid_from=bulk_valid_from,
+                                valid_to=bulk_valid_to,
+                                modified_by=approver_user_id
+                            )
+                            if result['success']:
+                                st.session_state['split_selected_ids'] = set()
+                                st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error(result['message'])
+                
+                # Bulk Update Split %
+                with upd_col2:
+                    with st.popover(f"📊 Update Split % ({selected_count})", use_container_width=True):
+                        st.markdown(f"**Set split % for {selected_count} rules**")
+                        st.warning("⚠️ This sets the SAME percentage for ALL selected rules!")
+                        
+                        bulk_split_pct = st.number_input(
+                            "Split %",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=100.0,
+                            step=5.0,
+                            key="split_bulk_split_pct"
+                        )
+                        
+                        if st.button("📊 Update Split %", type="primary",
+                                    key="split_bulk_update_split", use_container_width=True):
+                            result = setup_queries.bulk_update_split_percentage(
+                                rule_ids=list(valid_selected),
+                                split_percentage=bulk_split_pct,
+                                modified_by=approver_user_id
+                            )
+                            if result['success']:
+                                st.session_state['split_selected_ids'] = set()
+                                st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error(result['message'])
+                
+                # =================================================================
+                # EDIT/DELETE ACTIONS
+                # =================================================================
+                st.divider()
+                
+                if selected_count == 1:
+                    # Single selection: Edit + Delete
+                    selected_rule_id = list(valid_selected)[0]
+                    selected_row = selected_df.iloc[0]
+                    
+                    st.caption(f"📌 Rule **#{selected_rule_id}** | {selected_row['kpi_center_name']} | {selected_row['Customer']}")
+                    
+                    edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 2])
+                    
+                    with edit_col1:
+                        if st.button("✏️ Edit", use_container_width=True, type="secondary", key="split_dt_edit"):
+                            st.session_state['edit_split_id'] = selected_rule_id
+                            st.rerun(scope="fragment")
+                    
+                    with edit_col2:
+                        with st.popover("🗑️ Delete", use_container_width=True):
+                            st.warning(f"Delete rule **#{selected_rule_id}**?")
+                            if st.button("🗑️ Yes, Delete", type="primary", 
+                                        key="split_dt_confirm_delete", use_container_width=True):
+                                result = setup_queries.delete_split_rule(selected_rule_id)
+                                if result['success']:
+                                    st.session_state['split_selected_ids'] = set()
+                                    st.toast("Rule deleted", icon="🗑️")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
+                else:
+                    # Multi selection: Bulk Delete
+                    del_col1, del_col2, del_col3 = st.columns([1, 1, 2])
+                    
+                    with del_col1:
+                        with st.popover(f"🗑️ Delete {selected_count} Rules", use_container_width=True):
+                            st.error(f"⚠️ Delete **{selected_count}** rules?")
+                            st.caption("This action cannot be undone easily.")
+                            
+                            if st.button("🗑️ Yes, Delete All", type="primary",
+                                        key="split_bulk_delete", use_container_width=True):
+                                result = setup_queries.delete_split_rules_bulk(list(valid_selected))
+                                if result['success']:
+                                    st.session_state['split_selected_ids'] = set()
+                                    st.toast(f"🗑️ Deleted {result['count']} rules", icon="🗑️")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
 
 
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
