@@ -145,6 +145,46 @@ def get_period_warning(valid_to) -> tuple:
         return ("❓", "Unknown", "off")
 
 
+def is_approved_truthy(val) -> bool:
+    """
+    Check if is_approved value is truthy.
+    
+    Handles all possible representations from MySQL BIT(1):
+    - bytes: b'\\x01' (True), b'\\x00' (False)
+    - bool: True, False
+    - int: 1, 0
+    - str: '1', 'true', 'True'
+    - None/NaN: False
+    
+    Args:
+        val: Value from is_approved column
+        
+    Returns:
+        bool: True if approved, False otherwise
+    """
+    if pd.isna(val) or val is None:
+        return False
+    
+    # Handle bytes (MySQL BIT type)
+    if isinstance(val, bytes):
+        return val == b'\x01'
+    
+    # Handle bool
+    if isinstance(val, bool):
+        return val
+    
+    # Handle int/float
+    if isinstance(val, (int, float)):
+        return val == 1
+    
+    # Handle string
+    if isinstance(val, str):
+        return val.lower() in ('1', 'true', 'yes')
+    
+    # Fallback
+    return bool(val)
+
+
 # =============================================================================
 # MAIN SETUP TAB FRAGMENT
 # =============================================================================
@@ -740,8 +780,11 @@ def split_rules_section(
         lambda x: get_status_display(x)[0]
     )
     
+    # v2.7.3: Compute boolean column once for consistent BIT(1) handling
+    display_df['_is_approved_bool'] = display_df['is_approved'].apply(is_approved_truthy)
+    
     display_df['Approved'] = display_df.apply(
-        lambda r: f"✅ {r.get('approved_by_name', '').strip()}" if r.get('is_approved') else '⏳ Pending',
+        lambda r: f"✅ {r.get('approved_by_name', '').strip()}" if r['_is_approved_bool'] else '⏳ Pending',
         axis=1
     )
     
@@ -773,13 +816,13 @@ def split_rules_section(
     valid_selected = selected_ids & set(display_df['kpi_center_split_id'].tolist())
     selected_count = len(valid_selected)
     
-    # Calculate totals for insights
-    total_pending = (display_df['is_approved'] != 1).sum()
-    total_approved = (display_df['is_approved'] == 1).sum()
+    # v2.7.3: Calculate totals using pre-computed boolean column
+    total_pending = (~display_df['_is_approved_bool']).sum()
+    total_approved = display_df['_is_approved_bool'].sum()
     
     # Get IDs by approval status for quick selection
-    pending_ids = set(display_df[display_df['is_approved'] != 1]['kpi_center_split_id'].tolist())
-    approved_ids = set(display_df[display_df['is_approved'] == 1]['kpi_center_split_id'].tolist())
+    pending_ids = set(display_df[~display_df['_is_approved_bool']]['kpi_center_split_id'].tolist())
+    approved_ids = set(display_df[display_df['_is_approved_bool']]['kpi_center_split_id'].tolist())
     
     # Get approver info
     approver_user_id = st.session_state.get('user_id')  # users.id
@@ -866,8 +909,9 @@ def split_rules_section(
     # =========================================================================
     if can_edit and not split_df.empty and valid_selected:
         selected_df = display_df[display_df['kpi_center_split_id'].isin(valid_selected)]
-        selected_pending = (selected_df['is_approved'] != 1).sum()
-        selected_approved = (selected_df['is_approved'] == 1).sum()
+        # v2.7.3: Use pre-computed boolean column for consistent BIT(1) handling
+        selected_pending = (~selected_df['_is_approved_bool']).sum()
+        selected_approved = selected_df['_is_approved_bool'].sum()
         
         with st.container(border=True):
             # Selection summary
@@ -885,7 +929,7 @@ def split_rules_section(
                             st.warning(f"Approve **{selected_pending}** pending rules?")
                             if st.button("✅ Yes, Approve All", type="primary", 
                                         key="split_dt_bulk_approve", use_container_width=True):
-                                pending_to_approve = selected_df[selected_df['is_approved'] != 1]['kpi_center_split_id'].tolist()
+                                pending_to_approve = selected_df[~selected_df['_is_approved_bool']]['kpi_center_split_id'].tolist()
                                 result = setup_queries.approve_split_rules(
                                     rule_ids=pending_to_approve,
                                     approved_by=approver_user_id
@@ -906,7 +950,7 @@ def split_rules_section(
                             st.warning(f"Reset **{selected_approved}** rules to Pending?")
                             if st.button("⏳ Yes, Reset to Pending", type="primary",
                                         key="split_dt_bulk_disapprove", use_container_width=True):
-                                approved_to_reset = selected_df[selected_df['is_approved'] == 1]['kpi_center_split_id'].tolist()
+                                approved_to_reset = selected_df[selected_df['_is_approved_bool']]['kpi_center_split_id'].tolist()
                                 result = setup_queries.bulk_disapprove_split_rules(
                                     rule_ids=approved_to_reset,
                                     modified_by=approver_user_id
