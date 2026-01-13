@@ -1130,7 +1130,7 @@ class SetupQueries:
                     p.name as product_name
                 FROM kpi_center_split_by_customer_product ks
                 JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
-                JOIN customers c ON ks.customer_id = c.id
+                JOIN companies c ON ks.customer_id = c.id
                 JOIN products p ON ks.product_id = p.id
                 WHERE ks.id IN :rule_ids
                   AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
@@ -1166,7 +1166,7 @@ class SetupQueries:
                 c.english_name as customer_name,
                 p.name as product_name
             FROM combo_totals ct
-            JOIN customers c ON ct.customer_id = c.id
+            JOIN companies c ON ct.customer_id = c.id
             JOIN products p ON ct.product_id = p.id
             ORDER BY ct.kpi_type, customer_name, product_name
         """
