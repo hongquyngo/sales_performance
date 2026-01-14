@@ -1706,30 +1706,43 @@ def _render_split_form_content(
         )
     
     with st.form(f"sp_{mode}_split_form_dialog", clear_on_submit=False):
+            if mode == 'add':
+                # v1.7.2: Customer and Product in full-width rows for better readability
+                # Customer dropdown - full width
+                customers_df = setup_queries.get_customers_for_dropdown(limit=99999)
+                
+                if not customers_df.empty:
+                    customer_id = st.selectbox(
+                        "Customer *",
+                        options=customers_df['customer_id'].tolist(),
+                        format_func=lambda x: customers_df[customers_df['customer_id'] == x]['display_name'].iloc[0],
+                        key=f"sp_{mode}_customer_id"
+                    )
+                else:
+                    customer_id = None
+                    st.caption("No customers found")
+                
+                # Product dropdown - full width
+                products_df = setup_queries.get_products_for_dropdown(limit=99999)
+                
+                if not products_df.empty:
+                    product_id = st.selectbox(
+                        "Product *",
+                        options=products_df['product_id'].tolist(),
+                        format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0],
+                        key=f"sp_{mode}_product_id"
+                    )
+                else:
+                    product_id = None
+                    st.caption("No products found")
+            else:
+                customer_id = existing['customer_id']
+                product_id = existing['product_id']
+            
+            # Salesperson and Split % in 2 columns
             col1, col2 = st.columns(2)
             
             with col1:
-                if mode == 'add':
-                    # Customer search
-                    customer_search = st.text_input("🔍 Search Customer", key=f"sp_{mode}_cust_search")
-                    customers_df = setup_queries.get_customers_for_dropdown(
-                        search=customer_search if customer_search else None, 
-                        limit=50
-                    )
-                    
-                    if not customers_df.empty:
-                        customer_id = st.selectbox(
-                            "Customer *",
-                            options=customers_df['customer_id'].tolist(),
-                            format_func=lambda x: customers_df[customers_df['customer_id'] == x]['display_name'].iloc[0],
-                            key=f"sp_{mode}_customer_id"
-                        )
-                    else:
-                        customer_id = None
-                        st.caption("No customers found")
-                else:
-                    customer_id = existing['customer_id']
-                
                 # Salesperson selection (v1.2.0: Filter by editable scope)
                 salespeople_df = setup_queries.get_salespeople_for_dropdown()
                 
@@ -1764,27 +1777,6 @@ def _render_split_form_content(
                     sale_person_id = None
             
             with col2:
-                if mode == 'add':
-                    # Product search
-                    product_search = st.text_input("🔍 Search Product", key=f"sp_{mode}_prod_search")
-                    products_df = setup_queries.get_products_for_dropdown(
-                        search=product_search if product_search else None,
-                        limit=50
-                    )
-                    
-                    if not products_df.empty:
-                        product_id = st.selectbox(
-                            "Product *",
-                            options=products_df['product_id'].tolist(),
-                            format_func=lambda x: products_df[products_df['product_id'] == x]['display_name'].iloc[0],
-                            key=f"sp_{mode}_product_id"
-                        )
-                    else:
-                        product_id = None
-                        st.caption("No products found")
-                else:
-                    product_id = existing['product_id']
-                
                 # Split percentage
                 default_split = float(existing['split_percentage']) if existing is not None else 100.0
                 split_pct = st.number_input(
