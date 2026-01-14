@@ -2524,10 +2524,20 @@ def _add_kpi_assignment_dialog():
                 key="kpi_batch_target"
             )
             
-            if is_currency and annual_target > 0:
-                st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
-            elif not is_currency and annual_target > 0:
-                st.caption(f"= {annual_target / 12:.1f}/month • {annual_target / 4:.1f}/quarter")
+            # v2.1.0: Show breakdown with year/quarter/month - all with proper formatting
+            if annual_target > 0:
+                if is_currency:
+                    # Currency format with commas
+                    year_display = format_currency(annual_target)
+                    quarter_display = format_currency(annual_target / 4)
+                    month_display = format_currency(annual_target / 12)
+                    st.caption(f"💡 {year_display}/year • {quarter_display}/quarter • {month_display}/month")
+                else:
+                    # Count format with commas
+                    year_display = f"{annual_target:,.0f}"
+                    quarter_display = f"{annual_target / 4:,.1f}"
+                    month_display = f"{annual_target / 12:,.1f}"
+                    st.caption(f"💡 {year_display}/year • {quarter_display}/quarter • {month_display}/month")
         
         with input_col2:
             weight = st.number_input(
@@ -2797,8 +2807,20 @@ def _edit_kpi_assignment_dialog(assignment_id: int):
                 key="kpi_edit_target"
             )
             
-            if selected_uom == 'USD' and annual_target > 0:
-                st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+            # v2.1.0: Show breakdown with year/quarter/month - consistent with add dialog
+            if annual_target > 0:
+                if selected_uom == 'USD':
+                    # Currency format with commas
+                    year_display = format_currency(annual_target)
+                    quarter_display = format_currency(annual_target / 4)
+                    month_display = format_currency(annual_target / 12)
+                    st.caption(f"💡 {year_display}/year • {quarter_display}/quarter • {month_display}/month")
+                else:
+                    # Count format with commas
+                    year_display = f"{annual_target:,.0f}"
+                    quarter_display = f"{annual_target / 4:,.1f}"
+                    month_display = f"{annual_target / 12:,.1f}"
+                    st.caption(f"💡 {year_display}/year • {quarter_display}/quarter • {month_display}/month")
         
         with col2:
             # Weight

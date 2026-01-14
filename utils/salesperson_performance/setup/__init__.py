@@ -13,6 +13,11 @@ v2.1.0: UX IMPROVEMENT - Add KPI Assignment dialog flow:
         - Natural UX flow: fill form → add to queue → review queue below → save
         - Added confirmation popover for "Save All Assignments" 
         - Shows summary by employee with weight totals before save
+        - Improved target breakdown display:
+          * Shows all three periods: year/quarter/month (was only quarter/month)
+          * Better formatting with commas for large numbers (1,000,000)
+          * Clear icon (💡) and bold formatting
+          * Helps users validate input and spot errors
         - Clear visual separation with borders and section headers
         - Improved button placement to reduce mis-clicks
 v2.0.3: FIX - Add KPI Assignment dialog batch queue:
