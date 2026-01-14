@@ -7,11 +7,12 @@ UI Fragments for Setup Tab - Salesperson Performance
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments
 3. Salespeople - List/manage salespeople
 
-v2.0.2: FIX - Add KPI Assignment dialog batch queue:
-        - Removed st.form (incompatible with dialog rerun behavior)
-        - "Add to Queue" now uses reopen flag pattern
-        - Dialog briefly closes and reopens with updated batch queue
-        - All UI elements update correctly on KPI Type change
+v2.0.3: FIX - Add KPI Assignment dialog batch queue:
+        - "Add to Queue" now uses callback pattern (on_click)
+        - Callback runs BEFORE re-render → batch queue updates immediately
+        - No full page rerun, dialog stays open smoothly
+        - Removed _kpi_reopen_dialog flag (no longer needed)
+v2.0.2: (Deprecated) Used reopen flag pattern with full page rerun
 v2.0.1: FIX - KPI Type selector moved outside form for immediate UI update
 v2.0.0: KPI Assignments refactored with Modal/Dialog pattern
         - Batch Add support
@@ -2315,16 +2316,91 @@ def _render_split_form_content(
 # KPI ASSIGNMENT DIALOGS (v2.0.0 - NEW Modal Pattern with Batch Add)
 # =============================================================================
 
+def _add_to_queue_callback():
+    """
+    Callback for Add to Queue button.
+    
+    v2.0.3: NEW - Callback runs BEFORE dialog re-renders, so batch queue
+            updates immediately without full page rerun.
+    """
+    # Get context from session state
+    ctx = st.session_state.get('_kpi_dialog_context', {})
+    year = ctx.get('year', date.today().year)
+    
+    # Get values from widget session state keys
+    employee_id = st.session_state.get('kpi_batch_employee')
+    kpi_type_id = st.session_state.get('kpi_batch_type')
+    annual_target = st.session_state.get('kpi_batch_target', 0)
+    weight = st.session_state.get('kpi_batch_weight', 0)
+    notes = st.session_state.get('kpi_batch_notes', '')
+    
+    # Skip if invalid values (validation will show error in UI)
+    if annual_target <= 0 or weight <= 0:
+        return
+    
+    # Check if already exists in DB (set by dialog before callback)
+    if st.session_state.get('_kpi_batch_already_exists_in_db', False):
+        st.session_state['_kpi_batch_error'] = "Assignment already exists for this employee/KPI/year in database"
+        return
+    
+    # Get KPI type info from cached context
+    kpi_info = st.session_state.get('_kpi_batch_current_kpi_info', {})
+    employee_name = st.session_state.get('_kpi_batch_current_employee_name', 'Unknown')
+    
+    # Check for duplicates in batch
+    batch_items = st.session_state.get('_kpi_batch_items', [])
+    is_duplicate = any(
+        item['employee_id'] == employee_id and 
+        item['kpi_type_id'] == kpi_type_id and 
+        item['year'] == year
+        for item in batch_items
+    )
+    
+    if is_duplicate:
+        st.session_state['_kpi_batch_error'] = "This employee/KPI/year combination is already in the queue"
+        return
+    
+    # Create new item
+    new_item = {
+        'employee_id': employee_id,
+        'employee_name': employee_name,
+        'kpi_type_id': kpi_type_id,
+        'kpi_name': kpi_info.get('kpi_name', 'Unknown'),
+        'uom': kpi_info.get('uom', 'USD'),
+        'year': year,
+        'annual_target': annual_target,
+        'weight': weight,
+        'notes': notes if notes else None
+    }
+    
+    # Add to batch
+    if '_kpi_batch_items' not in st.session_state:
+        st.session_state['_kpi_batch_items'] = []
+    st.session_state['_kpi_batch_items'].append(new_item)
+    
+    # Reset input values for next entry
+    default_weight = kpi_info.get('default_weight', 0)
+    st.session_state['kpi_batch_target'] = 0
+    st.session_state['kpi_batch_weight'] = default_weight
+    st.session_state['kpi_batch_notes'] = ""
+    
+    # Set success message to show
+    st.session_state['_kpi_batch_success'] = f"Added **{kpi_info.get('kpi_name', 'KPI')}** for **{employee_name}**"
+    
+    # Clear any previous error
+    st.session_state.pop('_kpi_batch_error', None)
+
+
 @st.dialog("➕ Add KPI Assignments", width="large")
 def _add_kpi_assignment_dialog():
     """
     Dialog for adding KPI assignments with BATCH ADD support.
     
-    v2.0.2: FIX - Batch queue now updates correctly:
-            - Removed st.form (caused issues with dialog rerun)
-            - "Add to Queue" uses reopen flag pattern
-            - st.rerun() closes dialog, flag triggers immediate re-open
-            - User sees dialog "flash" briefly but batch queue is updated
+    v2.0.3: FIX - Add to Queue now uses callback pattern:
+            - Callback runs BEFORE re-render → batch queue updates immediately
+            - No full page rerun, dialog stays open smoothly
+            - Much better UX than v2.0.2's "flash" pattern
+    v2.0.2: (Deprecated) Used reopen flag pattern with full page rerun
     v2.0.1: FIX - KPI Type change now updates fields immediately
     v2.0.0: NEW - Modal pattern with batch add capability.
     """
@@ -2506,6 +2582,17 @@ def _add_kpi_assignment_dialog():
     selected_kpi_name = selected_kpi['kpi_name']
     default_weight = int(selected_kpi.get('default_weight', 0) or 0)
     
+    # v2.0.3: Store info in session state for callback to access
+    employee_name = salespeople_df[
+        salespeople_df['employee_id'] == employee_id
+    ]['employee_name'].iloc[0] if employee_id else 'Unknown'
+    st.session_state['_kpi_batch_current_employee_name'] = employee_name
+    st.session_state['_kpi_batch_current_kpi_info'] = {
+        'kpi_name': selected_kpi_name,
+        'uom': selected_uom,
+        'default_weight': default_weight
+    }
+    
     # Determine step and label based on UOM
     is_currency = selected_uom == 'USD'
     target_step = 10000 if is_currency else 1
@@ -2583,6 +2670,9 @@ def _add_kpi_assignment_dialog():
     existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
     already_exists_in_db = not existing_for_kpi.empty
     
+    # Store DB exists info for callback
+    st.session_state['_kpi_batch_already_exists_in_db'] = already_exists_in_db
+    
     # Show validation errors before buttons
     validation_error = None
     if annual_target <= 0:
@@ -2594,14 +2684,23 @@ def _add_kpi_assignment_dialog():
     elif already_exists_in_db:
         validation_error = "Assignment already exists for this employee/KPI/year in database"
     
-    # ROW 3: Action buttons (regular buttons, not form_submit)
+    # v2.0.3: Show success/error messages from callback
+    if '_kpi_batch_success' in st.session_state:
+        st.success(f"✅ {st.session_state.pop('_kpi_batch_success')}")
+    if '_kpi_batch_error' in st.session_state:
+        st.error(f"❌ {st.session_state.pop('_kpi_batch_error')}")
+    
+    # ROW 3: Action buttons
     btn_col1, btn_col2 = st.columns(2)
     
     with btn_col1:
-        add_to_queue_clicked = st.button(
+        # v2.0.3: Use callback for Add to Queue - no full page rerun!
+        st.button(
             "➕ Add to Queue", 
             use_container_width=True,
-            disabled=(validation_error is not None and annual_target > 0 and weight > 0)
+            disabled=(validation_error is not None),
+            on_click=_add_to_queue_callback,
+            key="kpi_add_to_queue_btn"
         )
     
     with btn_col2:
@@ -2609,43 +2708,12 @@ def _add_kpi_assignment_dialog():
             "💾 Add & Save All", 
             type="primary", 
             use_container_width=True,
-            disabled=(validation_error is not None and annual_target > 0 and weight > 0)
+            disabled=(validation_error is not None)
         )
     
-    # Show validation error if any
-    if validation_error and (add_to_queue_clicked or save_all_clicked):
+    # Show validation error only for Save All (Add to Queue validates in callback)
+    if validation_error and save_all_clicked:
         st.error(f"❌ {validation_error}")
-    
-    # Handle button clicks
-    if add_to_queue_clicked and validation_error is None:
-        # Get employee name
-        employee_name = salespeople_df[
-            salespeople_df['employee_id'] == employee_id
-        ]['employee_name'].iloc[0]
-        
-        # Create item and add directly to batch
-        new_item = {
-            'employee_id': employee_id,
-            'employee_name': employee_name,
-            'kpi_type_id': kpi_type_id,
-            'kpi_name': selected_kpi_name,
-            'uom': selected_uom,
-            'year': year,
-            'annual_target': annual_target,
-            'weight': weight,
-            'notes': notes if notes else None
-        }
-        st.session_state['_kpi_batch_items'].append(new_item)
-        
-        # Clear input values for next entry
-        for key in ['kpi_batch_target', 'kpi_batch_weight', 'kpi_batch_notes']:
-            if key in st.session_state:
-                del st.session_state[key]
-        
-        # v2.0.2: Set flag to re-open dialog after rerun
-        # st.rerun() closes dialog, but flag tells main page to re-open it
-        st.session_state['_kpi_reopen_dialog'] = True
-        st.rerun()
     
     if save_all_clicked:
         if validation_error is None:
@@ -2694,6 +2762,11 @@ def _add_kpi_assignment_dialog():
             for key in ['kpi_batch_target', 'kpi_batch_weight', 'kpi_batch_notes']:
                 if key in st.session_state:
                     del st.session_state[key]
+            
+            # v2.0.3: Clean up callback helper keys
+            for key in ['_kpi_batch_current_employee_name', '_kpi_batch_current_kpi_info', 
+                        '_kpi_batch_already_exists_in_db', '_kpi_batch_success', '_kpi_batch_error']:
+                st.session_state.pop(key, None)
             
             if success_count > 0:
                 _set_notification(
@@ -2942,12 +3015,8 @@ def kpi_assignments_section(
         'pre_selected_employee_id': None  # Will be set when clicking Add from employee card
     }
     
-    # =========================================================================
-    # v2.0.2: Check if we need to re-open dialog after Add to Queue
-    # This makes batch queue update appear seamless (dialog closes briefly, reopens)
-    # =========================================================================
-    if st.session_state.pop('_kpi_reopen_dialog', False):
-        _add_kpi_assignment_dialog()
+    # v2.0.3: Removed _kpi_reopen_dialog flag - no longer needed
+    # Add to Queue now works without closing dialog
     
     # -------------------------------------------------------------------------
     # FILTER BAR
