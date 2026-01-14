@@ -7,6 +7,10 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
+v2.0.1: FIX - Add KPI Assignment dialog bugs:
+        - KPI Type selector moved outside form -> Annual Target label & step update immediately
+        - "Add to Queue" uses pending state pattern -> batch queue updates correctly
+        - Dialog no longer closes on Add to Queue
 v2.0.0: KPI Assignments refactored with Modal/Dialog pattern
         - Batch Add support (add multiple assignments before saving)
         - Improved notifications with row highlighting
@@ -91,4 +95,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '2.0.0'
+__version__ = '2.0.1'
