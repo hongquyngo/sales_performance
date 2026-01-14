@@ -2396,10 +2396,15 @@ def _add_kpi_assignment_dialog():
     """
     Dialog for adding KPI assignments with BATCH ADD support.
     
+    v2.1.0: UX IMPROVEMENT - Separated sections with confirmation:
+            - "Add New Assignment" section with "Add to Queue" only
+            - "Pending Assignments" section with "Clear All" and "Save All"
+            - Added confirmation popover for "Save All Assignments"
+            - Removed "Add & Save" button to prevent accidental saves
+            - Visual separation between sections with borders
     v2.0.3: FIX - Add to Queue now uses callback pattern:
             - Callback runs BEFORE re-render → batch queue updates immediately
             - No full page rerun, dialog stays open smoothly
-            - Much better UX than v2.0.2's "flash" pattern
     v2.0.2: (Deprecated) Used reopen flag pattern with full page rerun
     v2.0.1: FIX - KPI Type change now updates fields immediately
     v2.0.0: NEW - Modal pattern with batch add capability.
@@ -2421,185 +2426,93 @@ def _add_kpi_assignment_dialog():
     batch_items = st.session_state['_kpi_batch_items']
     
     # =========================================================================
-    # BATCH QUEUE SECTION (shown at top if items exist)
+    # ADD NEW ASSIGNMENT SECTION - v2.1.0: At TOP for better UX flow
     # =========================================================================
-    if batch_items:
-        st.markdown("### 📋 Pending Assignments")
-        st.caption(f"{len(batch_items)} assignment(s) ready to save")
-        
-        # Display batch items in a table-like format
-        for idx, item in enumerate(batch_items):
-            with st.container(border=True):
-                cols = st.columns([3, 2, 2, 1, 1])
-                
-                with cols[0]:
-                    st.markdown(f"**👤 {item['employee_name']}**")
-                with cols[1]:
-                    icon = KPI_ICONS.get(item['kpi_name'].lower().replace(' ', '_'), '📋')
-                    st.markdown(f"{icon} {item['kpi_name']}")
-                with cols[2]:
-                    if item.get('uom') == 'USD':
-                        target_display = format_currency(item['annual_target'])
-                    else:
-                        target_display = f"{item['annual_target']:,.0f}"
-                    st.caption(f"Target: {target_display} • Weight: {item['weight']}%")
-                with cols[3]:
-                    st.caption(f"Year: {item['year']}")
-                with cols[4]:
-                    if st.button("🗑️", key=f"kpi_batch_remove_{idx}", help="Remove from queue"):
-                        st.session_state['_kpi_batch_items'].pop(idx)
-                        st.rerun()
-        
-        st.divider()
-        
-        # Batch actions
-        action_col1, action_col2, action_col3 = st.columns([2, 2, 1])
-        
-        with action_col1:
-            if st.button("💾 Save All Assignments", type="primary", use_container_width=True):
-                success_count = 0
-                error_count = 0
-                error_messages = []
-                created_ids = []
-                
-                progress_bar = st.progress(0, text="Saving assignments...")
-                
-                for i, item in enumerate(batch_items):
-                    progress_bar.progress((i + 1) / len(batch_items), text=f"Saving {i+1}/{len(batch_items)}...")
-                    
-                    result = setup_queries.create_assignment(
-                        employee_id=item['employee_id'],
-                        kpi_type_id=item['kpi_type_id'],
-                        year=item['year'],
-                        annual_target_value=item['annual_target'],
-                        weight=item['weight'],
-                        notes=item.get('notes')
-                    )
-                    if result['success']:
-                        success_count += 1
-                        created_ids.append(result['id'])
-                    else:
-                        error_count += 1
-                        error_messages.append(f"{item['employee_name']}/{item['kpi_name']}: {result['message']}")
-                
-                progress_bar.empty()
-                
-                # Clear batch
-                st.session_state['_kpi_batch_items'] = []
-                
-                if success_count > 0:
-                    _set_notification(
-                        '_kpi_assignments_notification', 'success',
-                        f"Created {success_count} KPI assignment(s)",
-                        f"Assignment IDs: {', '.join(map(str, created_ids[:5]))}{'...' if len(created_ids) > 5 else ''}",
-                        affected_ids=created_ids
-                    )
-                    _bump_data_version('kpi')
-                
-                if error_count > 0:
-                    st.error(f"❌ Failed to create {error_count} assignment(s)")
-                    for msg in error_messages[:3]:
-                        st.caption(f"• {msg}")
-                else:
-                    st.rerun()
-        
-        with action_col2:
-            if st.button("🗑️ Clear All", use_container_width=True):
-                st.session_state['_kpi_batch_items'] = []
-                st.rerun()
-        
-        with action_col3:
-            st.metric("Pending", len(batch_items))
-        
-        st.divider()
-    
-    # =========================================================================
-    # ADD NEW ITEM SECTION (v2.0.2: No form - direct widgets for dialog rerun)
-    # =========================================================================
-    st.markdown("### ➕ Add New Assignment")
-    
-    # Get dropdown data
-    salespeople_df = setup_queries.get_salespeople_for_dropdown()
-    
-    # Filter by accessible scope first
-    if employee_ids_scope is not None and not salespeople_df.empty:
-        salespeople_df = salespeople_df[
-            salespeople_df['employee_id'].isin(employee_ids_scope)
-        ]
-    
-    # Then filter by editable scope
-    if editable_employee_ids is not None and not salespeople_df.empty:
-        salespeople_df = salespeople_df[
-            salespeople_df['employee_id'].isin(editable_employee_ids)
-        ].reset_index(drop=True)
-    
-    kpi_types_df = setup_queries.get_kpi_types()
-    
-    if salespeople_df.empty:
-        st.warning("No salespeople available for assignment")
-        return
-    
-    if kpi_types_df.empty:
-        st.warning("No KPI types defined in the system")
-        return
-    
-    # ROW 1: Salesperson and KPI Type
-    selector_col1, selector_col2 = st.columns(2)
-    
-    with selector_col1:
-        sp_label = "Salesperson *"
-        if access_level == 'self':
-            sp_label = "Salesperson * (your account)"
-        elif access_level == 'team':
-            sp_label = "Salesperson * (team members)"
-        
-        # Pre-select employee if provided
-        default_idx = 0
-        if pre_selected_employee_id and not salespeople_df.empty:
-            matches = salespeople_df[salespeople_df['employee_id'] == pre_selected_employee_id]
-            if not matches.empty:
-                default_idx = salespeople_df.index.tolist().index(matches.index[0])
-        
-        employee_id = st.selectbox(
-            sp_label,
-            options=salespeople_df['employee_id'].tolist(),
-            index=default_idx,
-            format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
-            key="kpi_batch_employee"
-        )
-    
-    with selector_col2:
-        kpi_type_id = st.selectbox(
-            "KPI Type *",
-            options=kpi_types_df['kpi_type_id'].tolist(),
-            format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
-            key="kpi_batch_type"
-        )
-    
-    # Get UOM and defaults for selected KPI type
-    selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
-    selected_uom = selected_kpi['unit_of_measure']
-    selected_kpi_name = selected_kpi['kpi_name']
-    default_weight = int(selected_kpi.get('default_weight', 0) or 0)
-    
-    # v2.0.3: Store info in session state for callback to access
-    employee_name = salespeople_df[
-        salespeople_df['employee_id'] == employee_id
-    ]['employee_name'].iloc[0] if employee_id else 'Unknown'
-    st.session_state['_kpi_batch_current_employee_name'] = employee_name
-    st.session_state['_kpi_batch_current_kpi_info'] = {
-        'kpi_name': selected_kpi_name,
-        'uom': selected_uom,
-        'default_weight': default_weight
-    }
-    
-    # Determine step and label based on UOM
-    is_currency = selected_uom == 'USD'
-    target_step = 10000 if is_currency else 1
-    target_label = f"Annual Target ({selected_uom}) *"
-    
-    # ROW 2: Target and Weight (inside container for visual grouping)
     with st.container(border=True):
+        st.markdown("### ➕ Add New Assignment")
+        st.caption("Fill in the details below and click 'Add to Queue'")
+        
+        # Get dropdown data
+        salespeople_df = setup_queries.get_salespeople_for_dropdown()
+        
+        # Filter by accessible scope first
+        if employee_ids_scope is not None and not salespeople_df.empty:
+            salespeople_df = salespeople_df[
+                salespeople_df['employee_id'].isin(employee_ids_scope)
+            ]
+        
+        # Then filter by editable scope
+        if editable_employee_ids is not None and not salespeople_df.empty:
+            salespeople_df = salespeople_df[
+                salespeople_df['employee_id'].isin(editable_employee_ids)
+            ].reset_index(drop=True)
+        
+        kpi_types_df = setup_queries.get_kpi_types()
+        
+        if salespeople_df.empty:
+            st.warning("No salespeople available for assignment")
+            return
+        
+        if kpi_types_df.empty:
+            st.warning("No KPI types defined in the system")
+            return
+        
+        # ROW 1: Salesperson and KPI Type
+        selector_col1, selector_col2 = st.columns(2)
+        
+        with selector_col1:
+            sp_label = "Salesperson *"
+            if access_level == 'self':
+                sp_label = "Salesperson * (your account)"
+            elif access_level == 'team':
+                sp_label = "Salesperson * (team members)"
+            
+            # Pre-select employee if provided
+            default_idx = 0
+            if pre_selected_employee_id and not salespeople_df.empty:
+                matches = salespeople_df[salespeople_df['employee_id'] == pre_selected_employee_id]
+                if not matches.empty:
+                    default_idx = salespeople_df.index.tolist().index(matches.index[0])
+            
+            employee_id = st.selectbox(
+                sp_label,
+                options=salespeople_df['employee_id'].tolist(),
+                index=default_idx,
+                format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
+                key="kpi_batch_employee"
+            )
+        
+        with selector_col2:
+            kpi_type_id = st.selectbox(
+                "KPI Type *",
+                options=kpi_types_df['kpi_type_id'].tolist(),
+                format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
+                key="kpi_batch_type"
+            )
+        
+        # Get UOM and defaults for selected KPI type
+        selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
+        selected_uom = selected_kpi['unit_of_measure']
+        selected_kpi_name = selected_kpi['kpi_name']
+        default_weight = int(selected_kpi.get('default_weight', 0) or 0)
+        
+        # v2.0.3: Store info in session state for callback to access
+        employee_name = salespeople_df[
+            salespeople_df['employee_id'] == employee_id
+        ]['employee_name'].iloc[0] if employee_id else 'Unknown'
+        st.session_state['_kpi_batch_current_employee_name'] = employee_name
+        st.session_state['_kpi_batch_current_kpi_info'] = {
+            'kpi_name': selected_kpi_name,
+            'uom': selected_uom,
+            'default_weight': default_weight
+        }
+        
+        # Determine step and label based on UOM
+        is_currency = selected_uom == 'USD'
+        target_step = 10000 if is_currency else 1
+        target_label = f"Annual Target ({selected_uom}) *"
+        
+        # ROW 2: Target and Weight
         input_col1, input_col2 = st.columns(2)
         
         with input_col1:
@@ -2653,131 +2566,180 @@ def _add_kpi_assignment_dialog():
         
         # Notes
         notes = st.text_input("Notes (optional)", key="kpi_batch_notes")
-    
-    # Check for duplicates
-    is_duplicate_in_batch = any(
-        item['employee_id'] == employee_id and 
-        item['kpi_type_id'] == kpi_type_id and 
-        item['year'] == year
-        for item in batch_items
-    )
-    
-    # Check if already exists in DB
-    existing_check = setup_queries.get_kpi_assignments(
-        year=year, 
-        employee_ids=[employee_id]
-    )
-    existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
-    already_exists_in_db = not existing_for_kpi.empty
-    
-    # Store DB exists info for callback
-    st.session_state['_kpi_batch_already_exists_in_db'] = already_exists_in_db
-    
-    # Show validation errors before buttons
-    validation_error = None
-    if annual_target <= 0:
-        validation_error = "Annual target must be greater than 0"
-    elif weight <= 0:
-        validation_error = "Weight must be greater than 0"
-    elif is_duplicate_in_batch:
-        validation_error = "This employee/KPI/year combination is already in the queue"
-    elif already_exists_in_db:
-        validation_error = "Assignment already exists for this employee/KPI/year in database"
-    
-    # v2.0.3: Show success/error messages from callback
-    if '_kpi_batch_success' in st.session_state:
-        st.success(f"✅ {st.session_state.pop('_kpi_batch_success')}")
-    if '_kpi_batch_error' in st.session_state:
-        st.error(f"❌ {st.session_state.pop('_kpi_batch_error')}")
-    
-    # ROW 3: Action buttons
-    btn_col1, btn_col2 = st.columns(2)
-    
-    with btn_col1:
-        # v2.0.3: Use callback for Add to Queue - no full page rerun!
+        
+        # Check for duplicates
+        is_duplicate_in_batch = any(
+            item['employee_id'] == employee_id and 
+            item['kpi_type_id'] == kpi_type_id and 
+            item['year'] == year
+            for item in batch_items
+        )
+        
+        # Check if already exists in DB
+        existing_check = setup_queries.get_kpi_assignments(
+            year=year, 
+            employee_ids=[employee_id]
+        )
+        existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
+        already_exists_in_db = not existing_for_kpi.empty
+        
+        # Store DB exists info for callback
+        st.session_state['_kpi_batch_already_exists_in_db'] = already_exists_in_db
+        
+        # Show validation errors before buttons
+        validation_error = None
+        if annual_target <= 0:
+            validation_error = "Annual target must be greater than 0"
+        elif weight <= 0:
+            validation_error = "Weight must be greater than 0"
+        elif is_duplicate_in_batch:
+            validation_error = "This employee/KPI/year combination is already in the queue"
+        elif already_exists_in_db:
+            validation_error = "Assignment already exists for this employee/KPI/year in database"
+        
+        if validation_error:
+            st.error(f"❌ {validation_error}")
+        
+        # Show success/error messages from callback
+        if '_kpi_batch_success' in st.session_state:
+            st.success(f"✅ {st.session_state['_kpi_batch_success']}")
+            del st.session_state['_kpi_batch_success']
+        
+        if '_kpi_batch_error' in st.session_state:
+            st.error(f"❌ {st.session_state['_kpi_batch_error']}")
+            del st.session_state['_kpi_batch_error']
+        
+        st.divider()
+        
+        # v2.1.0: Only "Add to Queue" button - no "Add & Save"
         st.button(
-            "➕ Add to Queue", 
+            "➕ Add to Queue",
+            type="primary",
             use_container_width=True,
             disabled=(validation_error is not None),
             on_click=_add_to_queue_callback,
             key="kpi_add_to_queue_btn"
         )
     
-    with btn_col2:
-        save_all_clicked = st.button(
-            "💾 Add & Save All", 
-            type="primary", 
-            use_container_width=True,
-            disabled=(validation_error is not None)
-        )
-    
-    # Show validation error only for Save All (Add to Queue validates in callback)
-    if validation_error and save_all_clicked:
-        st.error(f"❌ {validation_error}")
-    
-    if save_all_clicked:
-        if validation_error is None:
-            # Add current item first
-            employee_name = salespeople_df[
-                salespeople_df['employee_id'] == employee_id
-            ]['employee_name'].iloc[0]
-            
-            new_item = {
-                'employee_id': employee_id,
-                'employee_name': employee_name,
-                'kpi_type_id': kpi_type_id,
-                'kpi_name': selected_kpi_name,
-                'uom': selected_uom,
-                'year': year,
-                'annual_target': annual_target,
-                'weight': weight,
-                'notes': notes if notes else None
-            }
-            st.session_state['_kpi_batch_items'].append(new_item)
+    # =========================================================================
+    # PENDING ASSIGNMENTS SECTION - v2.1.0: At BOTTOM after form
+    # =========================================================================
+    if batch_items:
+        st.divider()
         
-        # Save all items in batch
-        batch_items = st.session_state['_kpi_batch_items']
-        
-        if not batch_items:
-            st.warning("No items to save")
-        else:
-            success_count = 0
-            created_ids = []
+        with st.container(border=True):
+            st.markdown("### 📋 Pending Assignments")
+            st.caption(f"{len(batch_items)} assignment(s) ready to save")
             
-            for item in batch_items:
-                result = setup_queries.create_assignment(
-                    employee_id=item['employee_id'],
-                    kpi_type_id=item['kpi_type_id'],
-                    year=item['year'],
-                    annual_target_value=item['annual_target'],
-                    weight=item['weight'],
-                    notes=item.get('notes')
-                )
-                if result['success']:
-                    success_count += 1
-                    created_ids.append(result['id'])
+            st.divider()
             
-            # Clear batch and input keys
-            st.session_state['_kpi_batch_items'] = []
-            for key in ['kpi_batch_target', 'kpi_batch_weight', 'kpi_batch_notes']:
-                if key in st.session_state:
-                    del st.session_state[key]
+            # Display batch items in a compact format
+            for idx, item in enumerate(batch_items):
+                cols = st.columns([3, 2, 2, 1, 1])
+                
+                with cols[0]:
+                    st.markdown(f"**👤 {item['employee_name']}**")
+                with cols[1]:
+                    icon = KPI_ICONS.get(item['kpi_name'].lower().replace(' ', '_'), '📋')
+                    st.markdown(f"{icon} {item['kpi_name']}")
+                with cols[2]:
+                    if item.get('uom') == 'USD':
+                        target_display = format_currency(item['annual_target'])
+                    else:
+                        target_display = f"{item['annual_target']:,.0f}"
+                    st.caption(f"Target: {target_display} • Weight: {item['weight']}%")
+                with cols[3]:
+                    st.caption(f"Year: {item['year']}")
+                with cols[4]:
+                    if st.button("🗑️", key=f"kpi_batch_remove_{idx}", help="Remove from queue"):
+                        st.session_state['_kpi_batch_items'].pop(idx)
+                        st.rerun()
+                
+                if idx < len(batch_items) - 1:
+                    st.divider()
             
-            # v2.0.3: Clean up callback helper keys
-            for key in ['_kpi_batch_current_employee_name', '_kpi_batch_current_kpi_info', 
-                        '_kpi_batch_already_exists_in_db', '_kpi_batch_success', '_kpi_batch_error']:
-                st.session_state.pop(key, None)
+            st.divider()
             
-            if success_count > 0:
-                _set_notification(
-                    '_kpi_assignments_notification', 'success',
-                    f"Created {success_count} KPI assignment(s)",
-                    f"Assignments saved successfully",
-                    affected_ids=created_ids
-                )
-                _bump_data_version('kpi')
+            # Batch actions - v2.1.0: Save All with confirmation popover
+            action_col1, action_col2 = st.columns([1, 1])
             
-            st.rerun()  # Close dialog and refresh main page
+            with action_col1:
+                if st.button("🗑️ Clear All", use_container_width=True, type="secondary", key="kpi_clear_all_bottom"):
+                    st.session_state['_kpi_batch_items'] = []
+                    st.rerun()
+            
+            with action_col2:
+                # v2.1.0: Use popover for confirmation
+                with st.popover("💾 Save All Assignments", use_container_width=True):
+                    st.warning(f"⚠️ **Confirm Save**")
+                    st.caption(f"About to create **{len(batch_items)} assignment(s)** in database")
+                    
+                    # Show summary by employee
+                    emp_summary = {}
+                    for item in batch_items:
+                        emp_id = item['employee_id']
+                        if emp_id not in emp_summary:
+                            emp_summary[emp_id] = {
+                                'name': item['employee_name'],
+                                'count': 0,
+                                'total_weight': 0
+                            }
+                        emp_summary[emp_id]['count'] += 1
+                        emp_summary[emp_id]['total_weight'] += item['weight']
+                    
+                    st.markdown("**Summary by Employee:**")
+                    for emp_id, info in emp_summary.items():
+                        weight_status = "✅" if info['total_weight'] == 100 else "⚠️"
+                        st.caption(f"{weight_status} {info['name']}: {info['count']} KPI{'s' if info['count'] > 1 else ''} ({info['total_weight']:.0f}% weight)")
+                    
+                    st.divider()
+                    
+                    if st.button("✅ Confirm & Save All", type="primary", use_container_width=True, key="kpi_confirm_save_all"):
+                        success_count = 0
+                        error_count = 0
+                        error_messages = []
+                        created_ids = []
+                        
+                        progress_bar = st.progress(0, text="Saving assignments...")
+                        
+                        for i, item in enumerate(batch_items):
+                            progress_bar.progress((i + 1) / len(batch_items), text=f"Saving {i+1}/{len(batch_items)}...")
+                            
+                            result = setup_queries.create_assignment(
+                                employee_id=item['employee_id'],
+                                kpi_type_id=item['kpi_type_id'],
+                                year=item['year'],
+                                annual_target_value=item['annual_target'],
+                                weight=item['weight'],
+                                notes=item.get('notes')
+                            )
+                            if result['success']:
+                                success_count += 1
+                                created_ids.append(result['id'])
+                            else:
+                                error_count += 1
+                                error_messages.append(f"{item['employee_name']}/{item['kpi_name']}: {result['message']}")
+                        
+                        progress_bar.empty()
+                        
+                        # Clear batch
+                        st.session_state['_kpi_batch_items'] = []
+                        
+                        if success_count > 0:
+                            _set_notification(
+                                '_kpi_assignments_notification', 'success',
+                                f"Created {success_count} KPI assignment(s)",
+                                f"Assignment IDs: {', '.join(map(str, created_ids[:5]))}{'...' if len(created_ids) > 5 else ''}",
+                                affected_ids=created_ids
+                            )
+                            _bump_data_version('kpi')
+                        
+                        if error_count > 0:
+                            st.error(f"❌ Failed to create {error_count} assignment(s)")
+                            for msg in error_messages[:3]:
+                                st.caption(f"• {msg}")
+                        else:
+                            st.rerun()
 
 
 @st.dialog("✏️ Edit KPI Assignment", width="large")

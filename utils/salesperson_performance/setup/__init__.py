@@ -7,6 +7,14 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
+v2.1.0: UX IMPROVEMENT - Add KPI Assignment dialog flow:
+        - Removed "Add & Save All" button to prevent accidental saves
+        - Reordered sections: "Add New Assignment" at TOP, "Pending Assignments" at BOTTOM
+        - Natural UX flow: fill form → add to queue → review queue below → save
+        - Added confirmation popover for "Save All Assignments" 
+        - Shows summary by employee with weight totals before save
+        - Clear visual separation with borders and section headers
+        - Improved button placement to reduce mis-clicks
 v2.0.3: FIX - Add KPI Assignment dialog batch queue:
         - "Add to Queue" now uses callback pattern (on_click)
         - No full page rerun, dialog stays open smoothly
@@ -97,4 +105,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '2.0.3'
+__version__ = '2.1.0'
