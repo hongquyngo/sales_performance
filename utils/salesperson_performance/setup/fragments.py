@@ -7,10 +7,12 @@ UI Fragments for Setup Tab - Salesperson Performance
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments
 3. Salespeople - List/manage salespeople
 
-v2.0.1: FIX - Add KPI Assignment dialog:
-        - KPI Type selector moved outside form for immediate UI update
-        - "Add to Queue" uses pending state pattern for correct batch queue update
-        - Dialog stays open on Add to Queue (form clears, ready for next item)
+v2.0.2: FIX - Add KPI Assignment dialog batch queue:
+        - Removed st.form (incompatible with dialog rerun behavior)
+        - "Add to Queue" now uses reopen flag pattern
+        - Dialog briefly closes and reopens with updated batch queue
+        - All UI elements update correctly on KPI Type change
+v2.0.1: FIX - KPI Type selector moved outside form for immediate UI update
 v2.0.0: KPI Assignments refactored with Modal/Dialog pattern
         - Batch Add support
         - Improved notifications with row highlighting
@@ -2318,11 +2320,13 @@ def _add_kpi_assignment_dialog():
     """
     Dialog for adding KPI assignments with BATCH ADD support.
     
-    v2.0.1: FIX - KPI Type change now updates fields (label, step) immediately
-            FIX - "Add to Queue" now correctly updates batch queue (pending state pattern)
-            CHANGE - Salesperson & KPI Type selectors moved outside form
+    v2.0.2: FIX - Batch queue now updates correctly:
+            - Removed st.form (caused issues with dialog rerun)
+            - "Add to Queue" uses reopen flag pattern
+            - st.rerun() closes dialog, flag triggers immediate re-open
+            - User sees dialog "flash" briefly but batch queue is updated
+    v2.0.1: FIX - KPI Type change now updates fields immediately
     v2.0.0: NEW - Modal pattern with batch add capability.
-            Users can add multiple assignments and save them all at once.
     """
     ctx = st.session_state.get('_kpi_dialog_context', {})
     user_id = ctx.get('user_id')
@@ -2330,27 +2334,18 @@ def _add_kpi_assignment_dialog():
     access_level = ctx.get('access_level', 'self')
     year = ctx.get('year', date.today().year)
     pre_selected_employee_id = ctx.get('pre_selected_employee_id')
-    employee_ids_scope = ctx.get('employee_ids_scope')  # For filtering dropdown
+    employee_ids_scope = ctx.get('employee_ids_scope')
     
     setup_queries = SalespersonSetupQueries(user_id=user_id)
     
-    # Initialize batch list in session state
+    # Initialize batch list
     if '_kpi_batch_items' not in st.session_state:
         st.session_state['_kpi_batch_items'] = []
-    
-    # =========================================================================
-    # v2.0.1 FIX: Process pending add item BEFORE rendering batch queue
-    # This ensures batch queue shows the newly added item
-    # =========================================================================
-    pending_item = st.session_state.pop('_kpi_pending_add_item', None)
-    if pending_item:
-        st.session_state['_kpi_batch_items'].append(pending_item)
-        st.toast(f"✅ Added {pending_item['kpi_name']} for {pending_item['employee_name']}", icon="✅")
     
     batch_items = st.session_state['_kpi_batch_items']
     
     # =========================================================================
-    # BATCH QUEUE SECTION
+    # BATCH QUEUE SECTION (shown at top if items exist)
     # =========================================================================
     if batch_items:
         st.markdown("### 📋 Pending Assignments")
@@ -2443,7 +2438,7 @@ def _add_kpi_assignment_dialog():
         st.divider()
     
     # =========================================================================
-    # ADD NEW ITEM FORM (v2.0.1: Fixed KPI Type change not updating fields)
+    # ADD NEW ITEM SECTION (v2.0.2: No form - direct widgets for dialog rerun)
     # =========================================================================
     st.markdown("### ➕ Add New Assignment")
     
@@ -2472,14 +2467,10 @@ def _add_kpi_assignment_dialog():
         st.warning("No KPI types defined in the system")
         return
     
-    # =========================================================================
-    # v2.0.1 FIX: Move Salesperson and KPI Type OUTSIDE form
-    # This allows immediate UI update when KPI type changes
-    # =========================================================================
+    # ROW 1: Salesperson and KPI Type
     selector_col1, selector_col2 = st.columns(2)
     
     with selector_col1:
-        # Salesperson selector (outside form for reactivity)
         sp_label = "Salesperson *"
         if access_level == 'self':
             sp_label = "Salesperson * (your account)"
@@ -2502,7 +2493,6 @@ def _add_kpi_assignment_dialog():
         )
     
     with selector_col2:
-        # KPI Type selector (outside form - enables dynamic field updates)
         kpi_type_id = st.selectbox(
             "KPI Type *",
             options=kpi_types_df['kpi_type_id'].tolist(),
@@ -2510,7 +2500,7 @@ def _add_kpi_assignment_dialog():
             key="kpi_batch_type"
         )
     
-    # Get UOM and defaults for selected KPI type (reactive to selection)
+    # Get UOM and defaults for selected KPI type
     selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
     selected_uom = selected_kpi['unit_of_measure']
     selected_kpi_name = selected_kpi['kpi_name']
@@ -2521,12 +2511,11 @@ def _add_kpi_assignment_dialog():
     target_step = 10000 if is_currency else 1
     target_label = f"Annual Target ({selected_uom}) *"
     
-    # Form for numeric inputs and submit
-    with st.form("kpi_add_to_batch_form", clear_on_submit=True):
+    # ROW 2: Target and Weight (inside container for visual grouping)
+    with st.container(border=True):
         input_col1, input_col2 = st.columns(2)
         
         with input_col1:
-            # Annual target (label and step now reactive to KPI type)
             annual_target = st.number_input(
                 target_label,
                 min_value=0,
@@ -2535,14 +2524,12 @@ def _add_kpi_assignment_dialog():
                 key="kpi_batch_target"
             )
             
-            # Show monthly/quarterly breakdown for currency KPIs
             if is_currency and annual_target > 0:
                 st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
             elif not is_currency and annual_target > 0:
                 st.caption(f"= {annual_target / 12:.1f}/month • {annual_target / 4:.1f}/quarter")
         
         with input_col2:
-            # Weight (default from KPI type definition)
             weight = st.number_input(
                 "Weight % *",
                 min_value=0,
@@ -2560,7 +2547,6 @@ def _add_kpi_assignment_dialog():
                 new_weight=weight
             )
             
-            # Add weights from batch items for same employee
             batch_weight_for_emp = sum(
                 item['weight'] for item in batch_items 
                 if item['employee_id'] == employee_id and item['year'] == year
@@ -2580,106 +2566,145 @@ def _add_kpi_assignment_dialog():
         
         # Notes
         notes = st.text_input("Notes (optional)", key="kpi_batch_notes")
-        
-        # Check for duplicates in batch
-        is_duplicate_in_batch = any(
-            item['employee_id'] == employee_id and 
-            item['kpi_type_id'] == kpi_type_id and 
-            item['year'] == year
-            for item in batch_items
+    
+    # Check for duplicates
+    is_duplicate_in_batch = any(
+        item['employee_id'] == employee_id and 
+        item['kpi_type_id'] == kpi_type_id and 
+        item['year'] == year
+        for item in batch_items
+    )
+    
+    # Check if already exists in DB
+    existing_check = setup_queries.get_kpi_assignments(
+        year=year, 
+        employee_ids=[employee_id]
+    )
+    existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
+    already_exists_in_db = not existing_for_kpi.empty
+    
+    # Show validation errors before buttons
+    validation_error = None
+    if annual_target <= 0:
+        validation_error = "Annual target must be greater than 0"
+    elif weight <= 0:
+        validation_error = "Weight must be greater than 0"
+    elif is_duplicate_in_batch:
+        validation_error = "This employee/KPI/year combination is already in the queue"
+    elif already_exists_in_db:
+        validation_error = "Assignment already exists for this employee/KPI/year in database"
+    
+    # ROW 3: Action buttons (regular buttons, not form_submit)
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        add_to_queue_clicked = st.button(
+            "➕ Add to Queue", 
+            use_container_width=True,
+            disabled=(validation_error is not None and annual_target > 0 and weight > 0)
         )
+    
+    with btn_col2:
+        save_all_clicked = st.button(
+            "💾 Add & Save All", 
+            type="primary", 
+            use_container_width=True,
+            disabled=(validation_error is not None and annual_target > 0 and weight > 0)
+        )
+    
+    # Show validation error if any
+    if validation_error and (add_to_queue_clicked or save_all_clicked):
+        st.error(f"❌ {validation_error}")
+    
+    # Handle button clicks
+    if add_to_queue_clicked and validation_error is None:
+        # Get employee name
+        employee_name = salespeople_df[
+            salespeople_df['employee_id'] == employee_id
+        ]['employee_name'].iloc[0]
         
-        # Form buttons
-        col_add, col_add_close = st.columns(2)
+        # Create item and add directly to batch
+        new_item = {
+            'employee_id': employee_id,
+            'employee_name': employee_name,
+            'kpi_type_id': kpi_type_id,
+            'kpi_name': selected_kpi_name,
+            'uom': selected_uom,
+            'year': year,
+            'annual_target': annual_target,
+            'weight': weight,
+            'notes': notes if notes else None
+        }
+        st.session_state['_kpi_batch_items'].append(new_item)
         
-        with col_add:
-            add_more = st.form_submit_button("➕ Add to Queue", use_container_width=True)
+        # Clear input values for next entry
+        for key in ['kpi_batch_target', 'kpi_batch_weight', 'kpi_batch_notes']:
+            if key in st.session_state:
+                del st.session_state[key]
         
-        with col_add_close:
-            add_and_close = st.form_submit_button("💾 Add & Save All", type="primary", use_container_width=True)
-        
-        if add_more or add_and_close:
-            # Validation
-            has_error = False
+        # v2.0.2: Set flag to re-open dialog after rerun
+        # st.rerun() closes dialog, but flag tells main page to re-open it
+        st.session_state['_kpi_reopen_dialog'] = True
+        st.rerun()
+    
+    if save_all_clicked:
+        if validation_error is None:
+            # Add current item first
+            employee_name = salespeople_df[
+                salespeople_df['employee_id'] == employee_id
+            ]['employee_name'].iloc[0]
             
-            if annual_target <= 0:
-                st.error("Annual target must be greater than 0")
-                has_error = True
-            elif weight <= 0:
-                st.error("Weight must be greater than 0")
-                has_error = True
-            elif is_duplicate_in_batch:
-                st.error("This employee/KPI/year combination is already in the queue")
-                has_error = True
-            else:
-                # Check if assignment already exists in DB
-                existing_check = setup_queries.get_kpi_assignments(
-                    year=year, 
-                    employee_ids=[employee_id]
+            new_item = {
+                'employee_id': employee_id,
+                'employee_name': employee_name,
+                'kpi_type_id': kpi_type_id,
+                'kpi_name': selected_kpi_name,
+                'uom': selected_uom,
+                'year': year,
+                'annual_target': annual_target,
+                'weight': weight,
+                'notes': notes if notes else None
+            }
+            st.session_state['_kpi_batch_items'].append(new_item)
+        
+        # Save all items in batch
+        batch_items = st.session_state['_kpi_batch_items']
+        
+        if not batch_items:
+            st.warning("No items to save")
+        else:
+            success_count = 0
+            created_ids = []
+            
+            for item in batch_items:
+                result = setup_queries.create_assignment(
+                    employee_id=item['employee_id'],
+                    kpi_type_id=item['kpi_type_id'],
+                    year=item['year'],
+                    annual_target_value=item['annual_target'],
+                    weight=item['weight'],
+                    notes=item.get('notes')
                 )
-                existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
-                
-                if not existing_for_kpi.empty:
-                    st.error(f"Assignment already exists for this employee/KPI/year in database")
-                    has_error = True
+                if result['success']:
+                    success_count += 1
+                    created_ids.append(result['id'])
             
-            if not has_error:
-                # Get names for display
-                employee_name = salespeople_df[
-                    salespeople_df['employee_id'] == employee_id
-                ]['employee_name'].iloc[0]
-                
-                # Create item to add
-                new_item = {
-                    'employee_id': employee_id,
-                    'employee_name': employee_name,
-                    'kpi_type_id': kpi_type_id,
-                    'kpi_name': selected_kpi_name,
-                    'uom': selected_uom,
-                    'year': year,
-                    'annual_target': annual_target,
-                    'weight': weight,
-                    'notes': notes if notes else None
-                }
-                
-                if add_and_close:
-                    # Add current item to batch first
-                    st.session_state['_kpi_batch_items'].append(new_item)
-                    
-                    # Save all immediately and close dialog
-                    batch_items = st.session_state['_kpi_batch_items']
-                    success_count = 0
-                    created_ids = []
-                    
-                    for item in batch_items:
-                        result = setup_queries.create_assignment(
-                            employee_id=item['employee_id'],
-                            kpi_type_id=item['kpi_type_id'],
-                            year=item['year'],
-                            annual_target_value=item['annual_target'],
-                            weight=item['weight'],
-                            notes=item.get('notes')
-                        )
-                        if result['success']:
-                            success_count += 1
-                            created_ids.append(result['id'])
-                    
-                    st.session_state['_kpi_batch_items'] = []
-                    
-                    if success_count > 0:
-                        _set_notification(
-                            '_kpi_assignments_notification', 'success',
-                            f"Created {success_count} KPI assignment(s)",
-                            f"Assignments saved successfully",
-                            affected_ids=created_ids
-                        )
-                        _bump_data_version('kpi')
-                    st.rerun()  # Close dialog and refresh main page
-                else:
-                    # v2.0.1 FIX: Add to Queue using pending state pattern
-                    # Set pending item - will be processed at TOP of dialog on next rerun
-                    # Form submit already triggers rerun, so batch queue will show new item
-                    st.session_state['_kpi_pending_add_item'] = new_item
+            # Clear batch and input keys
+            st.session_state['_kpi_batch_items'] = []
+            for key in ['kpi_batch_target', 'kpi_batch_weight', 'kpi_batch_notes']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            if success_count > 0:
+                _set_notification(
+                    '_kpi_assignments_notification', 'success',
+                    f"Created {success_count} KPI assignment(s)",
+                    f"Assignments saved successfully",
+                    affected_ids=created_ids
+                )
+                _bump_data_version('kpi')
+            
+            st.rerun()  # Close dialog and refresh main page
 
 
 @st.dialog("✏️ Edit KPI Assignment", width="large")
@@ -2916,6 +2941,13 @@ def kpi_assignments_section(
         'employee_ids_scope': employee_ids,
         'pre_selected_employee_id': None  # Will be set when clicking Add from employee card
     }
+    
+    # =========================================================================
+    # v2.0.2: Check if we need to re-open dialog after Add to Queue
+    # This makes batch queue update appear seamless (dialog closes briefly, reopens)
+    # =========================================================================
+    if st.session_state.pop('_kpi_reopen_dialog', False):
+        _add_kpi_assignment_dialog()
     
     # -------------------------------------------------------------------------
     # FILTER BAR
