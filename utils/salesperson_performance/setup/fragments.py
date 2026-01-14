@@ -120,6 +120,153 @@ def _show_notification(notification_key: str, auto_clear: bool = True) -> set:
 
 
 # =============================================================================
+# DATA CACHING SYSTEM (v1.9.0 - NEW)
+# =============================================================================
+# Version-based caching to ensure data refresh after CRUD operations.
+# Each data type (split, kpi) has its own version counter.
+# When CRUD succeeds, version is bumped, causing cache miss on next render.
+
+def _get_data_version(data_type: str) -> int:
+    """
+    Get current data version for cache invalidation.
+    
+    Args:
+        data_type: 'split' or 'kpi'
+        
+    Returns:
+        Current version number (starts at 0)
+    """
+    return st.session_state.get(f'_setup_{data_type}_version', 0)
+
+
+def _bump_data_version(data_type: str):
+    """
+    Increment version to invalidate cache after CRUD operation.
+    
+    Call this after successful create/update/delete operations.
+    Next render will fetch fresh data from database.
+    
+    Args:
+        data_type: 'split' or 'kpi'
+    """
+    key = f'_setup_{data_type}_version'
+    current = st.session_state.get(key, 0)
+    st.session_state[key] = current + 1
+    
+    # Also clear any cached data for this type
+    keys_to_clear = [k for k in st.session_state.keys() 
+                     if k.startswith(f'_setup_{data_type}_cache')]
+    for k in keys_to_clear:
+        del st.session_state[k]
+
+
+def _get_cached_split_data(
+    setup_queries: SalespersonSetupQueries,
+    query_params: Dict,
+    force_refresh: bool = False
+) -> pd.DataFrame:
+    """
+    Get split data with version-based caching.
+    
+    Cache is automatically invalidated when:
+    - Version changes (after CRUD operations)
+    - Query params change (filters changed)
+    - force_refresh=True
+    
+    Args:
+        setup_queries: Query handler instance
+        query_params: Dict of filter parameters
+        force_refresh: Force fresh fetch even if cached
+        
+    Returns:
+        DataFrame with split rules data
+    """
+    version = _get_data_version('split')
+    
+    # Create deterministic hash of params for cache key
+    # Sort to ensure consistent ordering
+    params_items = []
+    for k, v in sorted(query_params.items()):
+        if isinstance(v, (list, tuple)):
+            params_items.append((k, tuple(sorted(v)) if v else ()))
+        elif isinstance(v, date):
+            params_items.append((k, v.isoformat()))
+        else:
+            params_items.append((k, v))
+    params_hash = hash(tuple(params_items))
+    
+    cache_key = f'_setup_split_cache_v{version}'
+    params_key = f'_setup_split_params_v{version}'
+    
+    cached_params_hash = st.session_state.get(params_key)
+    
+    need_refresh = (
+        force_refresh or
+        cache_key not in st.session_state or
+        cached_params_hash != params_hash
+    )
+    
+    if need_refresh:
+        # Fetch fresh data from database
+        split_df = setup_queries.get_sales_split_data(**query_params)
+        st.session_state[cache_key] = split_df
+        st.session_state[params_key] = params_hash
+    
+    return st.session_state[cache_key]
+
+
+def _get_cached_kpi_data(
+    setup_queries: SalespersonSetupQueries,
+    year: int,
+    employee_ids: List[int] = None,
+    force_refresh: bool = False
+) -> pd.DataFrame:
+    """
+    Get KPI assignments data with version-based caching.
+    
+    Args:
+        setup_queries: Query handler instance
+        year: Year to filter
+        employee_ids: Optional list of employee IDs to filter
+        force_refresh: Force fresh fetch
+        
+    Returns:
+        DataFrame with KPI assignments
+    """
+    version = _get_data_version('kpi')
+    
+    # Create cache key including params
+    emp_hash = hash(tuple(sorted(employee_ids))) if employee_ids else 0
+    cache_key = f'_setup_kpi_cache_v{version}_y{year}_e{emp_hash}'
+    
+    if force_refresh or cache_key not in st.session_state:
+        query_params = {'year': year}
+        if employee_ids:
+            query_params['employee_ids'] = employee_ids
+        
+        kpi_df = setup_queries.get_kpi_assignments(**query_params)
+        st.session_state[cache_key] = kpi_df
+    
+    return st.session_state[cache_key]
+
+
+def _clear_all_setup_cache():
+    """
+    Clear all setup-related cache.
+    
+    Use when major changes happen that affect multiple data types.
+    """
+    keys_to_clear = [k for k in list(st.session_state.keys()) 
+                     if k.startswith('_setup_') and 'cache' in k]
+    for k in keys_to_clear:
+        del st.session_state[k]
+    
+    # Reset versions
+    st.session_state['_setup_split_version'] = 0
+    st.session_state['_setup_kpi_version'] = 0
+
+
+# =============================================================================
 # AUTHORIZATION HELPERS (v1.2.0)
 # =============================================================================
 
@@ -354,22 +501,28 @@ def get_period_warning(valid_to) -> tuple:
 
 @st.fragment
 def setup_tab_fragment(
-    sales_split_df: pd.DataFrame = None,
-    sales_df: pd.DataFrame = None,
-    active_filters: Dict = None,
+    sales_split_df: pd.DataFrame = None,  # DEPRECATED v1.9.0 - data fetched internally
+    sales_df: pd.DataFrame = None,         # DEPRECATED v1.9.0 - not used
+    active_filters: Dict = None,           # DEPRECATED v1.9.0 - uses own filters
     fragment_key: str = "setup"
 ):
     """
     Main fragment for Setup tab with 3 sub-tabs.
+    
+    v1.9.0: MAJOR REFACTOR - Self-contained data management
+            - Data is now fetched INTERNALLY within each sub-tab
+            - Uses version-based caching for CRUD refresh
+            - No longer depends on main page's cached data
+            - Parameters kept for backward compatibility but IGNORED
     
     v1.2.0: Setup tab now uses AccessControl for employee filtering instead of
             main page's active_filters. This prevents "Only with KPI assignment"
             filter from affecting Setup tab.
     
     Args:
-        sales_split_df: Pre-loaded split data (optional, for backward compatibility)
-        sales_df: Pre-loaded sales data (optional)
-        active_filters: Dict of active filters from sidebar (year used, employee_ids ignored)
+        sales_split_df: DEPRECATED - data fetched internally with caching
+        sales_df: DEPRECATED - not used
+        active_filters: DEPRECATED - Setup tab has its own filter system
         fragment_key: Unique key for fragment
     """
     # Initialize queries with user context
@@ -555,6 +708,11 @@ def split_rules_section(
 ):
     """
     Split Rules sub-tab with CRUD operations and comprehensive filters.
+    
+    v1.9.0: REFACTOR - Self-contained data fetching with version-based cache
+            - Data fetched internally using _get_cached_split_data()
+            - Cache invalidated automatically after CRUD via _bump_data_version()
+            - Fragment rerun now correctly shows fresh data
     
     v1.1.0: Added Audit Trail filter group (Created By, Approved By, Date Ranges)
     v1.2.0: Hybrid authorization (Option C):
@@ -1102,18 +1260,7 @@ def split_rules_section(
             _add_split_rule_dialog()
     
     # =========================================================================
-    # GET DATA WITH FILTERS
-    # =========================================================================
-    split_df = setup_queries.get_sales_split_data(**query_params)
-    
-    # v1.5.2: Removed client-side text search - now using server-side multiselect filters
-    
-    if split_df.empty:
-        st.info("No split rules found matching the filters")
-        return
-    
-    # =========================================================================
-    # RESULTS SUMMARY
+    # RESULTS SUMMARY - Build period description
     # =========================================================================
     period_desc = ""
     if period_type == 'ytd':
@@ -1125,15 +1272,14 @@ def split_rules_section(
     else:
         period_desc = "All Periods"
     
-    st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
-    
     # =========================================================================
-    # v1.5.2: Call nested fragment for data table
-    # This prevents full page rerun when selecting/deselecting rows
+    # v1.9.0: Pass query_params to nested fragment for internal data fetching
+    # This ensures CRUD operations trigger fresh data fetch on fragment rerun
     # =========================================================================
     _render_split_data_table(
-        split_df=split_df,
         setup_queries=setup_queries,
+        query_params=query_params,
+        period_desc=period_desc,
         can_edit_base=can_edit_base,
         can_approve=can_approve,
         editable_employee_ids=editable_employee_ids,
@@ -1143,23 +1289,37 @@ def split_rules_section(
 
 @st.fragment
 def _render_split_data_table(
-    split_df: pd.DataFrame,
     setup_queries: SalespersonSetupQueries,
+    query_params: Dict,
+    period_desc: str,
     can_edit_base: bool,
     can_approve: bool,
     editable_employee_ids: List[int],
     access_level: str
 ):
     """
+    v1.9.0: REFACTORED - Now fetches data internally for proper CRUD refresh.
     v1.5.2: Nested fragment for data table and action bar.
     v1.8.0: Added notification banner and row highlighting.
     This allows row selection to only rerun this section, not the entire filters.
+    
+    Data is now fetched INSIDE this fragment using version-based caching.
+    When CRUD operations call _bump_data_version() and st.rerun(scope="fragment"),
+    this fragment will re-fetch fresh data from the database.
     """
     # =========================================================================
     # v1.8.0: Show notification banner (persists after action)
     # =========================================================================
     NOTIF_KEY = '_split_rules_notification'
     highlighted_ids = _show_notification(NOTIF_KEY)
+    
+    # =========================================================================
+    # v1.9.0: Fetch data INSIDE fragment for proper CRUD refresh
+    # =========================================================================
+    split_df = _get_cached_split_data(setup_queries, query_params)
+    
+    # Show count
+    st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
     
     if split_df.empty:
         st.info("No split rules found matching the filters")
@@ -1286,6 +1446,7 @@ def _render_split_data_table(
                                         f"Removed from database"
                                     )
                                     st.session_state['sp_split_selected_ids'] = set()
+                                    _bump_data_version('split')  # v1.9.0: Invalidate cache
                                     st.rerun(scope="fragment")
                                 else:
                                     _set_notification(
@@ -1315,6 +1476,7 @@ def _render_split_data_table(
                                         affected_ids=[selected_rule_id]
                                     )
                                     st.session_state['sp_split_selected_ids'] = set()
+                                    _bump_data_version('split')  # v1.9.0: Invalidate cache
                                     st.rerun(scope="fragment")
                                 else:
                                     _set_notification(
@@ -1342,6 +1504,7 @@ def _render_split_data_table(
                                         affected_ids=[selected_rule_id]
                                     )
                                     st.session_state['sp_split_selected_ids'] = set()
+                                    _bump_data_version('split')  # v1.9.0: Invalidate cache
                                     st.rerun(scope="fragment")
                                 else:
                                     _set_notification(
@@ -1382,6 +1545,7 @@ def _render_split_data_table(
                                             affected_ids=pending_to_approve
                                         )
                                         st.session_state['sp_split_selected_ids'] = set()
+                                        _bump_data_version('split')  # v1.9.0: Invalidate cache
                                         st.rerun(scope="fragment")
                                     else:
                                         _set_notification(
@@ -1413,6 +1577,7 @@ def _render_split_data_table(
                                             affected_ids=approved_to_reset
                                         )
                                         st.session_state['sp_split_selected_ids'] = set()
+                                        _bump_data_version('split')  # v1.9.0: Invalidate cache
                                         st.rerun(scope="fragment")
                                     else:
                                         _set_notification(
@@ -1496,6 +1661,7 @@ def _render_split_data_table(
                                             affected_ids=selected_rule_ids
                                         )
                                         st.session_state['sp_split_selected_ids'] = set()
+                                        _bump_data_version('split')  # v1.9.0: Invalidate cache
                                         st.rerun(scope="fragment")
                                     else:
                                         _set_notification(
@@ -1576,6 +1742,7 @@ def _render_split_data_table(
                                             affected_ids=selected_rule_ids
                                         )
                                         st.session_state['sp_split_selected_ids'] = set()
+                                        _bump_data_version('split')  # v1.9.0: Invalidate cache
                                         st.rerun(scope="fragment")
                                     else:
                                         _set_notification(
@@ -2126,6 +2293,8 @@ def _render_split_form_content(
                             f"Rule #{result.get('id', rule_id)} • Split: {split_pct}%",
                             affected_ids=[result.get('id', rule_id)]
                         )
+                        # v1.9.0: Invalidate cache before rerun
+                        _bump_data_version('split')
                         # v1.7.0: Dialog closes automatically on rerun
                         st.rerun(scope="fragment")
                     else:
@@ -2149,6 +2318,9 @@ def kpi_assignments_section(
     """
     KPI Assignments sub-tab.
     
+    v1.9.0: REFACTOR - Self-contained data fetching with version-based cache
+            - Data fetched internally using _get_cached_kpi_data()
+            - Cache invalidated automatically after CRUD via _bump_data_version()
     v1.1.0: Added KPI Summary by Type section (synced with KPI Center Performance)
     v1.2.0: Hybrid authorization - record-level permissions
     v1.8.0: Added notification banner
@@ -2341,15 +2513,19 @@ def kpi_assignments_section(
         )
     
     # -------------------------------------------------------------------------
-    # GET DATA
+    # GET DATA (v1.9.0: Using version-based cache)
     # -------------------------------------------------------------------------
-    query_params = {'year': selected_year}
+    filter_employee_ids = None
     if selected_employee_id > 0:
-        query_params['employee_ids'] = [selected_employee_id]
+        filter_employee_ids = [selected_employee_id]
     elif employee_ids:
-        query_params['employee_ids'] = employee_ids
+        filter_employee_ids = employee_ids
     
-    assignments_df = setup_queries.get_kpi_assignments(**query_params)
+    assignments_df = _get_cached_kpi_data(
+        setup_queries, 
+        year=selected_year, 
+        employee_ids=filter_employee_ids
+    )
     weight_summary_df = setup_queries.get_assignment_weight_summary(selected_year)
     
     if assignments_df.empty:
@@ -2462,6 +2638,7 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Sa
                             f"KPI assignment deleted",
                             f"Assignment #{kpi['assignment_id']} removed"
                         )
+                        _bump_data_version('kpi')  # v1.9.0: Invalidate cache
                         st.rerun(scope="fragment")
                     else:
                         _set_notification(
@@ -2659,6 +2836,7 @@ def _render_assignment_form(
                         st.session_state['sp_show_add_assignment_form'] = False
                         st.session_state['sp_edit_assignment_id'] = None
                         st.session_state['sp_add_assignment_employee_id'] = None
+                        _bump_data_version('kpi')  # v1.9.0: Invalidate cache
                         st.rerun(scope="fragment")
                     else:
                         st.error(f"❌ {result['message']}")

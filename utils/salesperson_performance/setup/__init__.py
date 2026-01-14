@@ -7,7 +7,7 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
-
+v1.9.0: Added version-based caching for data refresh after CRUD
 """
 
 # Queries
@@ -32,6 +32,13 @@ from .fragments import (
     # Authorization helpers (v1.2.0)
     can_modify_record,
     get_editable_employee_ids,
+    
+    # Data caching helpers (v1.9.0 - NEW)
+    _get_data_version,
+    _bump_data_version,
+    _get_cached_split_data,
+    _get_cached_kpi_data,
+    _clear_all_setup_cache,
     
     # Constants
     KPI_ICONS,
@@ -60,9 +67,16 @@ __all__ = [
     'can_modify_record',
     'get_editable_employee_ids',
     
+    # Data caching helpers (v1.9.0 - NEW)
+    '_get_data_version',
+    '_bump_data_version',
+    '_get_cached_split_data',
+    '_get_cached_kpi_data',
+    '_clear_all_setup_cache',
+    
     # Constants
     'KPI_ICONS',
     'STATUS_ICONS',
 ]
 
-__version__ = '1.8.0'
+__version__ = '1.9.0'
