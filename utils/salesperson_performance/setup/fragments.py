@@ -41,6 +41,85 @@ STATUS_ICONS = {
 
 
 # =============================================================================
+# NOTIFICATION SYSTEM (v1.8.0 - NEW)
+# =============================================================================
+
+def _set_notification(
+    notification_key: str,
+    ntype: str, 
+    message: str, 
+    details: str = None,
+    affected_ids: List[int] = None
+):
+    """
+    Set notification to display after rerun.
+    
+    Args:
+        notification_key: Session state key for this notification area
+        ntype: 'success', 'error', 'warning', 'info'
+        message: Main notification message
+        details: Optional additional details
+        affected_ids: List of IDs that were affected (for row highlighting)
+    """
+    st.session_state[notification_key] = {
+        'type': ntype,
+        'message': message,
+        'details': details,
+        'affected_ids': set(affected_ids) if affected_ids else set(),
+        'timestamp': datetime.now()
+    }
+
+
+def _show_notification(notification_key: str, auto_clear: bool = True) -> set:
+    """
+    Display persistent notification banner.
+    
+    Args:
+        notification_key: Session state key for this notification area
+        auto_clear: If True, clear notification after display
+        
+    Returns:
+        Set of affected IDs for row highlighting
+    """
+    notif = st.session_state.get(notification_key)
+    affected_ids = set()
+    
+    if notif:
+        ntype = notif.get('type', 'info')
+        message = notif.get('message', '')
+        details = notif.get('details', '')
+        affected_ids = notif.get('affected_ids', set())
+        timestamp = notif.get('timestamp')
+        
+        # Format timestamp
+        time_str = timestamp.strftime('%H:%M:%S') if timestamp else ''
+        
+        # Display notification with appropriate style
+        if ntype == 'success':
+            st.success(f"✅ **{message}**")
+            if details:
+                st.caption(f"ℹ️ {details} • {time_str}")
+        elif ntype == 'error':
+            st.error(f"❌ **{message}**")
+            if details:
+                st.caption(f"⚠️ {details}")
+        elif ntype == 'warning':
+            st.warning(f"⚠️ **{message}**")
+            if details:
+                st.caption(details)
+        else:
+            st.info(f"ℹ️ **{message}**")
+            if details:
+                st.caption(details)
+        
+        # Clear after display
+        if auto_clear:
+            del st.session_state[notification_key]
+    
+    return affected_ids
+
+
+# =============================================================================
 # AUTHORIZATION HELPERS (v1.2.0)
 # =============================================================================
 
@@ -1073,8 +1152,15 @@ def _render_split_data_table(
 ):
     """
     v1.5.2: Nested fragment for data table and action bar.
+    v1.8.0: Added notification banner and row highlighting.
     This allows row selection to only rerun this section, not the entire filters.
     """
+    # =========================================================================
+    # v1.8.0: Show notification banner (persists after action)
+    # =========================================================================
+    NOTIF_KEY = '_split_rules_notification'
+    highlighted_ids = _show_notification(NOTIF_KEY)
+    
     if split_df.empty:
         st.info("No split rules found matching the filters")
         return
@@ -1191,13 +1277,23 @@ def _render_split_data_table(
                             st.warning(f"Delete rule **#{selected_rule_id}**?")
                             if st.button("🗑️ Yes, Delete", type="primary", 
                                         key="sp_dt_confirm_delete", use_container_width=True):
-                                result = setup_queries.delete_split_rule(selected_rule_id)
+                                with st.spinner("Deleting..."):
+                                    result = setup_queries.delete_split_rule(selected_rule_id)
                                 if result['success']:
+                                    _set_notification(
+                                        NOTIF_KEY, 'success',
+                                        f"Rule #{selected_rule_id} deleted",
+                                        f"Removed from database"
+                                    )
                                     st.session_state['sp_split_selected_ids'] = set()
-                                    st.toast("Rule deleted", icon="🗑️")
                                     st.rerun(scope="fragment")
                                 else:
-                                    st.error(result['message'])
+                                    _set_notification(
+                                        NOTIF_KEY, 'error',
+                                        f"Failed to delete rule #{selected_rule_id}",
+                                        result['message']
+                                    )
+                                    st.rerun(scope="fragment")
                     else:
                         st.button("🗑️ Delete", use_container_width=True, disabled=True,
                                  help="You can only delete records for your team members", key="sp_dt_del_dis")
@@ -1206,15 +1302,27 @@ def _render_split_data_table(
                     with act_col3:
                         if not is_rule_approved:
                             if st.button("✅ Approve", use_container_width=True, type="primary", key="sp_dt_approve"):
-                                result = setup_queries.bulk_approve_split_rules(
-                                    rule_ids=[selected_rule_id],
-                                    approver_employee_id=approver_employee_id
-                                )
+                                with st.spinner("Approving..."):
+                                    result = setup_queries.bulk_approve_split_rules(
+                                        rule_ids=[selected_rule_id],
+                                        approver_employee_id=approver_employee_id
+                                    )
                                 if result['success']:
-                                    st.toast(f"Rule #{selected_rule_id} approved", icon="✅")
+                                    _set_notification(
+                                        NOTIF_KEY, 'success',
+                                        f"Rule #{selected_rule_id} approved",
+                                        f"Approved by you",
+                                        affected_ids=[selected_rule_id]
+                                    )
+                                    st.session_state['sp_split_selected_ids'] = set()
                                     st.rerun(scope="fragment")
                                 else:
-                                    st.error(result['message'])
+                                    _set_notification(
+                                        NOTIF_KEY, 'error',
+                                        f"Failed to approve rule #{selected_rule_id}",
+                                        result['message']
+                                    )
+                                    st.rerun(scope="fragment")
                         else:
                             st.button("✅ Approve", use_container_width=True, disabled=True,
                                      help="Already approved", key="sp_dt_approve_dis")
@@ -1222,14 +1330,26 @@ def _render_split_data_table(
                     with act_col4:
                         if is_rule_approved:
                             if st.button("⏳ Disapprove", use_container_width=True, key="sp_dt_disapprove"):
-                                result = setup_queries.bulk_disapprove_split_rules(
-                                    rule_ids=[selected_rule_id]
-                                )
+                                with st.spinner("Processing..."):
+                                    result = setup_queries.bulk_disapprove_split_rules(
+                                        rule_ids=[selected_rule_id]
+                                    )
                                 if result['success']:
-                                    st.toast(f"Rule #{selected_rule_id} reset to Pending", icon="⏳")
+                                    _set_notification(
+                                        NOTIF_KEY, 'success',
+                                        f"Rule #{selected_rule_id} reset to Pending",
+                                        f"Requires re-approval",
+                                        affected_ids=[selected_rule_id]
+                                    )
+                                    st.session_state['sp_split_selected_ids'] = set()
                                     st.rerun(scope="fragment")
                                 else:
-                                    st.error(result['message'])
+                                    _set_notification(
+                                        NOTIF_KEY, 'error',
+                                        f"Failed to reset rule #{selected_rule_id}",
+                                        result['message']
+                                    )
+                                    st.rerun(scope="fragment")
                         else:
                             st.button("⏳ Disapprove", use_container_width=True, disabled=True,
                                      help="Not approved yet", key="sp_dt_disapprove_dis")
@@ -1249,16 +1369,27 @@ def _render_split_data_table(
                                 if st.button("✅ Yes, Approve All", type="primary", 
                                             key="sp_dt_bulk_approve", use_container_width=True):
                                     pending_to_approve = selected_df[selected_df['is_approved'] != 1]['split_id'].tolist()
-                                    result = setup_queries.bulk_approve_split_rules(
-                                        rule_ids=pending_to_approve,
-                                        approver_employee_id=approver_employee_id
-                                    )
+                                    with st.spinner(f"Approving {len(pending_to_approve)} rules..."):
+                                        result = setup_queries.bulk_approve_split_rules(
+                                            rule_ids=pending_to_approve,
+                                            approver_employee_id=approver_employee_id
+                                        )
                                     if result['success']:
+                                        _set_notification(
+                                            NOTIF_KEY, 'success',
+                                            f"Approved {result['count']} rules",
+                                            f"All selected pending rules are now approved",
+                                            affected_ids=pending_to_approve
+                                        )
                                         st.session_state['sp_split_selected_ids'] = set()
-                                        st.toast(f"✅ Approved {result['count']} rules", icon="✅")
                                         st.rerun(scope="fragment")
                                     else:
-                                        st.error(result['message'])
+                                        _set_notification(
+                                            NOTIF_KEY, 'error',
+                                            f"Failed to approve rules",
+                                            result['message']
+                                        )
+                                        st.rerun(scope="fragment")
                         else:
                             st.button("✅ Approve", disabled=True, use_container_width=True,
                                      help="No pending rules selected", key="sp_dt_bulk_approve_dis")
@@ -1270,15 +1401,26 @@ def _render_split_data_table(
                                 if st.button("⏳ Yes, Reset to Pending", type="primary",
                                             key="sp_dt_bulk_disapprove", use_container_width=True):
                                     approved_to_reset = selected_df[selected_df['is_approved'] == 1]['split_id'].tolist()
-                                    result = setup_queries.bulk_disapprove_split_rules(
-                                        rule_ids=approved_to_reset
-                                    )
+                                    with st.spinner(f"Resetting {len(approved_to_reset)} rules..."):
+                                        result = setup_queries.bulk_disapprove_split_rules(
+                                            rule_ids=approved_to_reset
+                                        )
                                     if result['success']:
+                                        _set_notification(
+                                            NOTIF_KEY, 'success',
+                                            f"Reset {result['count']} rules to Pending",
+                                            f"These rules now require re-approval",
+                                            affected_ids=approved_to_reset
+                                        )
                                         st.session_state['sp_split_selected_ids'] = set()
-                                        st.toast(f"⏳ Reset {result['count']} rules to Pending", icon="⏳")
                                         st.rerun(scope="fragment")
                                     else:
-                                        st.error(result['message'])
+                                        _set_notification(
+                                            NOTIF_KEY, 'error',
+                                            f"Failed to reset rules",
+                                            result['message']
+                                        )
+                                        st.rerun(scope="fragment")
                         else:
                             st.button("⏳ Disapprove", disabled=True, use_container_width=True,
                                      help="No approved rules selected", key="sp_dt_bulk_disapprove_dis")
@@ -1340,17 +1482,28 @@ def _render_split_data_table(
                             if can_proceed_period:
                                 if st.button("📅 Apply Period", type="primary", 
                                             key="sp_dt_bulk_period", use_container_width=True):
-                                    result = setup_queries.bulk_update_split_period(
-                                        rule_ids=selected_rule_ids,
-                                        valid_from=bulk_valid_from,
-                                        valid_to=bulk_valid_to
-                                    )
+                                    with st.spinner(f"Updating {len(selected_rule_ids)} rules..."):
+                                        result = setup_queries.bulk_update_split_period(
+                                            rule_ids=selected_rule_ids,
+                                            valid_from=bulk_valid_from,
+                                            valid_to=bulk_valid_to
+                                        )
                                     if result['success']:
+                                        _set_notification(
+                                            NOTIF_KEY, 'success',
+                                            f"Updated period for {result['count']} rules",
+                                            f"New period: {bulk_valid_from} → {bulk_valid_to}",
+                                            affected_ids=selected_rule_ids
+                                        )
                                         st.session_state['sp_split_selected_ids'] = set()
-                                        st.toast(f"📅 Updated period for {result['count']} rules", icon="📅")
                                         st.rerun(scope="fragment")
                                     else:
-                                        st.error(result['message'])
+                                        _set_notification(
+                                            NOTIF_KEY, 'error',
+                                            f"Failed to update period",
+                                            result['message']
+                                        )
+                                        st.rerun(scope="fragment")
                             else:
                                 st.button("📅 Apply Period", type="primary", disabled=True,
                                          key="sp_dt_bulk_period_dis", use_container_width=True)
@@ -1410,16 +1563,27 @@ def _render_split_data_table(
                             if can_bulk_update:
                                 if st.button("📊 Apply Split %", type="primary",
                                             key="sp_dt_bulk_split", use_container_width=True):
-                                    result = setup_queries.bulk_update_split_percentage(
-                                        rule_ids=selected_rule_ids,
-                                        split_percentage=bulk_split_pct
-                                    )
+                                    with st.spinner(f"Updating {len(selected_rule_ids)} rules..."):
+                                        result = setup_queries.bulk_update_split_percentage(
+                                            rule_ids=selected_rule_ids,
+                                            split_percentage=bulk_split_pct
+                                        )
                                     if result['success']:
+                                        _set_notification(
+                                            NOTIF_KEY, 'success',
+                                            f"Updated split % for {result['count']} rules",
+                                            f"New split: {bulk_split_pct}%",
+                                            affected_ids=selected_rule_ids
+                                        )
                                         st.session_state['sp_split_selected_ids'] = set()
-                                        st.toast(f"📊 Updated split % for {result['count']} rules", icon="📊")
                                         st.rerun(scope="fragment")
                                     else:
-                                        st.error(result['message'])
+                                        _set_notification(
+                                            NOTIF_KEY, 'error',
+                                            f"Failed to update split %",
+                                            result['message']
+                                        )
+                                        st.rerun(scope="fragment")
                             else:
                                 st.button("📊 Apply Split %", type="primary", disabled=True,
                                          key="sp_dt_bulk_split_dis", use_container_width=True)
@@ -1955,11 +2119,17 @@ def _render_split_form_content(
                         result = setup_queries.update_split_rule(**update_kwargs)
                     
                     if result['success']:
-                        st.toast(f"✅ {'Created' if mode == 'add' else 'Updated'} successfully!", icon="✅")
+                        # v1.8.0: Set notification for display after rerun
+                        _set_notification(
+                            '_split_rules_notification', 'success',
+                            f"Rule {'created' if mode == 'add' else 'updated'} successfully",
+                            f"Rule #{result.get('id', rule_id)} • Split: {split_pct}%",
+                            affected_ids=[result.get('id', rule_id)]
+                        )
                         # v1.7.0: Dialog closes automatically on rerun
                         st.rerun(scope="fragment")
                     else:
-                        st.error(result['message'])
+                        st.error(f"❌ {result['message']}")
 
 
 # =============================================================================
@@ -1981,7 +2151,13 @@ def kpi_assignments_section(
     
     v1.1.0: Added KPI Summary by Type section (synced with KPI Center Performance)
     v1.2.0: Hybrid authorization - record-level permissions
+    v1.8.0: Added notification banner
     """
+    # =========================================================================
+    # v1.8.0: Show notification banner (persists after action)
+    # =========================================================================
+    KPI_NOTIF_KEY = '_kpi_assignments_notification'
+    _show_notification(KPI_NOTIF_KEY)
     
     # Helper to check if user can modify a specific record
     def can_modify_this_record(record_owner_id: int) -> bool:
@@ -2278,8 +2454,21 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Sa
                     st.rerun(scope="fragment")
             with btn_col2:
                 if st.button("🗑️", key=f"sp_del_assign_{kpi['assignment_id']}", help="Delete"):
-                    result = setup_queries.delete_assignment(kpi['assignment_id'])
+                    with st.spinner("Deleting..."):
+                        result = setup_queries.delete_assignment(kpi['assignment_id'])
                     if result['success']:
+                        _set_notification(
+                            '_kpi_assignments_notification', 'success',
+                            f"KPI assignment deleted",
+                            f"Assignment #{kpi['assignment_id']} removed"
+                        )
+                        st.rerun(scope="fragment")
+                    else:
+                        _set_notification(
+                            '_kpi_assignments_notification', 'error',
+                            f"Failed to delete assignment",
+                            result.get('message', 'Unknown error')
+                        )
                         st.rerun(scope="fragment")
 
 
@@ -2461,13 +2650,18 @@ def _render_assignment_form(
                         )
                     
                     if result['success']:
-                        st.success("Saved!")
+                        # v1.8.0: Set notification for display after rerun
+                        _set_notification(
+                            '_kpi_assignments_notification', 'success',
+                            f"KPI assignment {'created' if mode == 'add' else 'updated'}",
+                            f"Target: ${annual_target:,.0f} • Weight: {weight}%"
+                        )
                         st.session_state['sp_show_add_assignment_form'] = False
                         st.session_state['sp_edit_assignment_id'] = None
                         st.session_state['sp_add_assignment_employee_id'] = None
                         st.rerun(scope="fragment")
                     else:
-                        st.error(result['message'])
+                        st.error(f"❌ {result['message']}")
             
             if cancelled:
                 st.session_state['sp_show_add_assignment_form'] = False
