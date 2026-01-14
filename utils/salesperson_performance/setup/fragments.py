@@ -2302,7 +2302,519 @@ def _render_split_form_content(
 
 
 # =============================================================================
-# KPI ASSIGNMENTS SECTION (v1.1.0 - Added Summary by Type)
+# KPI ASSIGNMENT DIALOGS (v2.0.0 - NEW Modal Pattern with Batch Add)
+# =============================================================================
+
+@st.dialog("➕ Add KPI Assignments", width="large")
+def _add_kpi_assignment_dialog():
+    """
+    Dialog for adding KPI assignments with BATCH ADD support.
+    
+    v2.0.0: NEW - Modal pattern with batch add capability.
+    Users can add multiple assignments and save them all at once.
+    """
+    ctx = st.session_state.get('_kpi_dialog_context', {})
+    user_id = ctx.get('user_id')
+    editable_employee_ids = ctx.get('editable_employee_ids')
+    access_level = ctx.get('access_level', 'self')
+    year = ctx.get('year', date.today().year)
+    pre_selected_employee_id = ctx.get('pre_selected_employee_id')
+    employee_ids_scope = ctx.get('employee_ids_scope')  # For filtering dropdown
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    # Initialize batch list in session state
+    if '_kpi_batch_items' not in st.session_state:
+        st.session_state['_kpi_batch_items'] = []
+    
+    batch_items = st.session_state['_kpi_batch_items']
+    
+    # =========================================================================
+    # BATCH QUEUE SECTION
+    # =========================================================================
+    if batch_items:
+        st.markdown("### 📋 Pending Assignments")
+        st.caption(f"{len(batch_items)} assignment(s) ready to save")
+        
+        # Display batch items in a table-like format
+        for idx, item in enumerate(batch_items):
+            with st.container(border=True):
+                cols = st.columns([3, 2, 2, 1, 1])
+                
+                with cols[0]:
+                    st.markdown(f"**👤 {item['employee_name']}**")
+                with cols[1]:
+                    icon = KPI_ICONS.get(item['kpi_name'].lower().replace(' ', '_'), '📋')
+                    st.markdown(f"{icon} {item['kpi_name']}")
+                with cols[2]:
+                    if item.get('uom') == 'USD':
+                        target_display = format_currency(item['annual_target'])
+                    else:
+                        target_display = f"{item['annual_target']:,.0f}"
+                    st.caption(f"Target: {target_display} • Weight: {item['weight']}%")
+                with cols[3]:
+                    st.caption(f"Year: {item['year']}")
+                with cols[4]:
+                    if st.button("🗑️", key=f"kpi_batch_remove_{idx}", help="Remove from queue"):
+                        st.session_state['_kpi_batch_items'].pop(idx)
+                        st.rerun()
+        
+        st.divider()
+        
+        # Batch actions
+        action_col1, action_col2, action_col3 = st.columns([2, 2, 1])
+        
+        with action_col1:
+            if st.button("💾 Save All Assignments", type="primary", use_container_width=True):
+                success_count = 0
+                error_count = 0
+                error_messages = []
+                created_ids = []
+                
+                progress_bar = st.progress(0, text="Saving assignments...")
+                
+                for i, item in enumerate(batch_items):
+                    progress_bar.progress((i + 1) / len(batch_items), text=f"Saving {i+1}/{len(batch_items)}...")
+                    
+                    result = setup_queries.create_assignment(
+                        employee_id=item['employee_id'],
+                        kpi_type_id=item['kpi_type_id'],
+                        year=item['year'],
+                        annual_target_value=item['annual_target'],
+                        weight=item['weight'],
+                        notes=item.get('notes')
+                    )
+                    if result['success']:
+                        success_count += 1
+                        created_ids.append(result['id'])
+                    else:
+                        error_count += 1
+                        error_messages.append(f"{item['employee_name']}/{item['kpi_name']}: {result['message']}")
+                
+                progress_bar.empty()
+                
+                # Clear batch
+                st.session_state['_kpi_batch_items'] = []
+                
+                if success_count > 0:
+                    _set_notification(
+                        '_kpi_assignments_notification', 'success',
+                        f"Created {success_count} KPI assignment(s)",
+                        f"Assignment IDs: {', '.join(map(str, created_ids[:5]))}{'...' if len(created_ids) > 5 else ''}",
+                        affected_ids=created_ids
+                    )
+                    _bump_data_version('kpi')
+                
+                if error_count > 0:
+                    st.error(f"❌ Failed to create {error_count} assignment(s)")
+                    for msg in error_messages[:3]:
+                        st.caption(f"• {msg}")
+                else:
+                    st.rerun()
+        
+        with action_col2:
+            if st.button("🗑️ Clear All", use_container_width=True):
+                st.session_state['_kpi_batch_items'] = []
+                st.rerun()
+        
+        with action_col3:
+            st.metric("Pending", len(batch_items))
+        
+        st.divider()
+    
+    # =========================================================================
+    # ADD NEW ITEM FORM
+    # =========================================================================
+    st.markdown("### ➕ Add New Assignment")
+    
+    # Get dropdown data
+    salespeople_df = setup_queries.get_salespeople_for_dropdown()
+    
+    # Filter by accessible scope first
+    if employee_ids_scope is not None and not salespeople_df.empty:
+        salespeople_df = salespeople_df[
+            salespeople_df['employee_id'].isin(employee_ids_scope)
+        ]
+    
+    # Then filter by editable scope
+    if editable_employee_ids is not None and not salespeople_df.empty:
+        salespeople_df = salespeople_df[
+            salespeople_df['employee_id'].isin(editable_employee_ids)
+        ].reset_index(drop=True)
+    
+    kpi_types_df = setup_queries.get_kpi_types()
+    
+    if salespeople_df.empty:
+        st.warning("No salespeople available for assignment")
+        return
+    
+    if kpi_types_df.empty:
+        st.warning("No KPI types defined in the system")
+        return
+    
+    # Form for adding to batch
+    with st.form("kpi_add_to_batch_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Salesperson
+            sp_label = "Salesperson *"
+            if access_level == 'self':
+                sp_label = "Salesperson * (your account)"
+            elif access_level == 'team':
+                sp_label = "Salesperson * (team members)"
+            
+            # Pre-select employee if provided
+            default_idx = 0
+            if pre_selected_employee_id and not salespeople_df.empty:
+                matches = salespeople_df[salespeople_df['employee_id'] == pre_selected_employee_id]
+                if not matches.empty:
+                    default_idx = salespeople_df.index.tolist().index(matches.index[0])
+            
+            employee_id = st.selectbox(
+                sp_label,
+                options=salespeople_df['employee_id'].tolist(),
+                index=default_idx,
+                format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
+                key="kpi_batch_employee"
+            )
+            
+            # KPI Type
+            kpi_type_id = st.selectbox(
+                "KPI Type *",
+                options=kpi_types_df['kpi_type_id'].tolist(),
+                format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
+                key="kpi_batch_type"
+            )
+        
+        with col2:
+            # Get UOM for selected KPI type
+            selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
+            selected_uom = selected_kpi['unit_of_measure']
+            selected_kpi_name = selected_kpi['kpi_name']
+            default_weight = int(selected_kpi.get('default_weight', 0) or 0)
+            
+            # Annual target
+            annual_target = st.number_input(
+                f"Annual Target ({selected_uom}) *",
+                min_value=0,
+                value=0,
+                step=10000 if selected_uom == 'USD' else 1,
+                key="kpi_batch_target"
+            )
+            
+            if selected_uom == 'USD' and annual_target > 0:
+                st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+            
+            # Weight
+            weight = st.number_input(
+                "Weight % *",
+                min_value=0,
+                max_value=100,
+                value=default_weight,
+                step=5,
+                key="kpi_batch_weight"
+            )
+        
+        # Validation preview
+        if employee_id:
+            validation = setup_queries.validate_assignment_weight(
+                employee_id=employee_id,
+                year=year,
+                new_weight=weight
+            )
+            
+            # Add weights from batch items for same employee
+            batch_weight_for_emp = sum(
+                item['weight'] for item in batch_items 
+                if item['employee_id'] == employee_id and item['year'] == year
+            )
+            total_with_batch = validation['current_total'] + batch_weight_for_emp + weight
+            
+            val_col1, val_col2 = st.columns(2)
+            with val_col1:
+                st.metric("Current DB Weight", f"{validation['current_total']}%")
+            with val_col2:
+                if total_with_batch == 100:
+                    st.success(f"✅ Total after save: {total_with_batch}%")
+                elif total_with_batch > 100:
+                    st.error(f"🔴 Total after save: {total_with_batch}% (over limit!)")
+                else:
+                    st.warning(f"⚠️ Total after save: {total_with_batch}% ({100 - total_with_batch}% remaining)")
+        
+        # Notes
+        notes = st.text_input("Notes (optional)", key="kpi_batch_notes")
+        
+        # Check for duplicates
+        is_duplicate = any(
+            item['employee_id'] == employee_id and 
+            item['kpi_type_id'] == kpi_type_id and 
+            item['year'] == year
+            for item in batch_items
+        )
+        
+        # Form buttons
+        col_add, col_add_close = st.columns(2)
+        
+        with col_add:
+            add_more = st.form_submit_button("➕ Add to Queue", use_container_width=True)
+        
+        with col_add_close:
+            add_and_close = st.form_submit_button("💾 Add & Save All", type="primary", use_container_width=True)
+        
+        if add_more or add_and_close:
+            # Validation
+            if annual_target <= 0:
+                st.error("Annual target must be greater than 0")
+            elif weight <= 0:
+                st.error("Weight must be greater than 0")
+            elif is_duplicate:
+                st.error("This employee/KPI/year combination is already in the queue")
+            else:
+                # Check if assignment already exists in DB
+                existing_check = setup_queries.get_kpi_assignments(
+                    year=year, 
+                    employee_ids=[employee_id]
+                )
+                existing_for_kpi = existing_check[existing_check['kpi_type_id'] == kpi_type_id] if not existing_check.empty else pd.DataFrame()
+                
+                if not existing_for_kpi.empty:
+                    st.error(f"Assignment already exists for this employee/KPI/year in database")
+                else:
+                    # Get names for display
+                    employee_name = salespeople_df[
+                        salespeople_df['employee_id'] == employee_id
+                    ]['employee_name'].iloc[0]
+                    
+                    # Add to batch
+                    new_item = {
+                        'employee_id': employee_id,
+                        'employee_name': employee_name,
+                        'kpi_type_id': kpi_type_id,
+                        'kpi_name': selected_kpi_name,
+                        'uom': selected_uom,
+                        'year': year,
+                        'annual_target': annual_target,
+                        'weight': weight,
+                        'notes': notes if notes else None
+                    }
+                    st.session_state['_kpi_batch_items'].append(new_item)
+                    
+                    if add_and_close:
+                        # Save all immediately
+                        batch_items = st.session_state['_kpi_batch_items']
+                        success_count = 0
+                        created_ids = []
+                        
+                        for item in batch_items:
+                            result = setup_queries.create_assignment(
+                                employee_id=item['employee_id'],
+                                kpi_type_id=item['kpi_type_id'],
+                                year=item['year'],
+                                annual_target_value=item['annual_target'],
+                                weight=item['weight'],
+                                notes=item.get('notes')
+                            )
+                            if result['success']:
+                                success_count += 1
+                                created_ids.append(result['id'])
+                        
+                        st.session_state['_kpi_batch_items'] = []
+                        
+                        if success_count > 0:
+                            _set_notification(
+                                '_kpi_assignments_notification', 'success',
+                                f"Created {success_count} KPI assignment(s)",
+                                f"Assignments saved successfully",
+                                affected_ids=created_ids
+                            )
+                            _bump_data_version('kpi')
+                        st.rerun()
+                    else:
+                        st.rerun()
+
+
+@st.dialog("✏️ Edit KPI Assignment", width="large")
+def _edit_kpi_assignment_dialog(assignment_id: int):
+    """
+    Dialog for editing existing KPI assignment.
+    
+    v2.0.0: NEW - Modal pattern for edit.
+    """
+    ctx = st.session_state.get('_kpi_dialog_context', {})
+    user_id = ctx.get('user_id')
+    year = ctx.get('year', date.today().year)
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    # Get existing assignment
+    assignments_df = setup_queries.get_kpi_assignments()
+    existing_df = assignments_df[assignments_df['assignment_id'] == assignment_id]
+    
+    if existing_df.empty:
+        st.error("Assignment not found")
+        return
+    
+    existing = existing_df.iloc[0]
+    
+    # Header info
+    st.markdown(f"**Assignment ID:** #{assignment_id}")
+    
+    info_col1, info_col2 = st.columns(2)
+    with info_col1:
+        st.markdown(f"**👤 Salesperson:** {existing['employee_name']}")
+    with info_col2:
+        icon = KPI_ICONS.get(existing['kpi_name'].lower().replace(' ', '_'), '📋')
+        st.markdown(f"**{icon} KPI:** {existing['kpi_name']}")
+    
+    st.divider()
+    
+    # Current weight summary for this employee
+    weight_summary = setup_queries.get_assignment_weight_summary(existing['year'])
+    emp_weight = weight_summary[weight_summary['employee_id'] == existing['employee_id']]
+    current_total_weight = int(emp_weight['total_weight'].iloc[0]) if not emp_weight.empty else 0
+    
+    # Edit form
+    with st.form("kpi_edit_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Annual target
+            selected_uom = existing['unit_of_measure']
+            annual_target = st.number_input(
+                f"Annual Target ({selected_uom}) *",
+                min_value=0,
+                value=int(existing['annual_target_value_numeric']),
+                step=10000 if selected_uom == 'USD' else 1,
+                key="kpi_edit_target"
+            )
+            
+            if selected_uom == 'USD' and annual_target > 0:
+                st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+        
+        with col2:
+            # Weight
+            weight = st.number_input(
+                "Weight % *",
+                min_value=0,
+                max_value=100,
+                value=int(existing['weight_numeric']),
+                step=5,
+                key="kpi_edit_weight"
+            )
+        
+        # Weight validation
+        old_weight = int(existing['weight_numeric'])
+        weight_diff = weight - old_weight
+        new_total = current_total_weight + weight_diff
+        
+        val_col1, val_col2 = st.columns(2)
+        with val_col1:
+            st.metric("Current Total Weight", f"{current_total_weight}%")
+        with val_col2:
+            if new_total == 100:
+                st.success(f"✅ After save: {new_total}%")
+            elif new_total > 100:
+                st.error(f"🔴 After save: {new_total}% (over limit!)")
+            else:
+                st.warning(f"⚠️ After save: {new_total}% ({100 - new_total}% remaining)")
+        
+        # Notes
+        notes = st.text_input(
+            "Notes (optional)",
+            value=existing['notes'] if pd.notna(existing.get('notes')) else "",
+            key="kpi_edit_notes"
+        )
+        
+        st.divider()
+        
+        # Form buttons
+        col_save, col_cancel = st.columns(2)
+        
+        with col_save:
+            submitted = st.form_submit_button("💾 Update", type="primary", use_container_width=True)
+        
+        with col_cancel:
+            cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
+        
+        if submitted:
+            if annual_target <= 0:
+                st.error("Annual target must be greater than 0")
+            elif weight <= 0:
+                st.error("Weight must be greater than 0")
+            else:
+                result = setup_queries.update_assignment(
+                    assignment_id=assignment_id,
+                    annual_target_value=annual_target,
+                    weight=weight,
+                    notes=notes if notes else None
+                )
+                
+                if result['success']:
+                    _set_notification(
+                        '_kpi_assignments_notification', 'success',
+                        f"KPI assignment updated",
+                        f"#{assignment_id} • Target: {format_currency(annual_target) if selected_uom == 'USD' else annual_target} • Weight: {weight}%",
+                        affected_ids=[assignment_id]
+                    )
+                    _bump_data_version('kpi')
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result['message']}")
+        
+        if cancelled:
+            st.rerun()
+
+
+@st.dialog("🗑️ Delete KPI Assignment", width="small")
+def _delete_kpi_assignment_dialog(assignment_id: int, assignment_info: dict):
+    """
+    Confirmation dialog for deleting KPI assignment.
+    
+    v2.0.0: NEW - Confirmation modal before delete.
+    """
+    ctx = st.session_state.get('_kpi_dialog_context', {})
+    user_id = ctx.get('user_id')
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    st.warning("⚠️ **Are you sure you want to delete this assignment?**")
+    
+    st.markdown(f"""
+    - **Assignment ID:** #{assignment_id}
+    - **Salesperson:** {assignment_info.get('employee_name', 'N/A')}
+    - **KPI:** {assignment_info.get('kpi_name', 'N/A')}
+    - **Target:** {assignment_info.get('target_display', 'N/A')}
+    - **Weight:** {assignment_info.get('weight', 0)}%
+    """)
+    
+    st.caption("This action cannot be undone.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
+            result = setup_queries.delete_assignment(assignment_id)
+            
+            if result['success']:
+                _set_notification(
+                    '_kpi_assignments_notification', 'success',
+                    f"KPI assignment deleted",
+                    f"Assignment #{assignment_id} removed",
+                    affected_ids=[assignment_id]
+                )
+                _bump_data_version('kpi')
+                st.rerun()
+            else:
+                st.error(f"❌ {result['message']}")
+    
+    with col2:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()
+
+
+# =============================================================================
+# KPI ASSIGNMENTS SECTION (v2.0.0 - Refactored with Modal Pattern)
 # =============================================================================
 
 @st.fragment
@@ -2318,6 +2830,10 @@ def kpi_assignments_section(
     """
     KPI Assignments sub-tab.
     
+    v2.0.0: MAJOR REFACTOR - Modal/Dialog pattern with Batch Add
+            - Uses dialogs instead of inline forms (like Split Rules)
+            - Batch add support for creating multiple assignments at once
+            - Improved notifications with row highlighting
     v1.9.0: REFACTOR - Self-contained data fetching with version-based cache
             - Data fetched internally using _get_cached_kpi_data()
             - Cache invalidated automatically after CRUD via _bump_data_version()
@@ -2329,7 +2845,7 @@ def kpi_assignments_section(
     # v1.8.0: Show notification banner (persists after action)
     # =========================================================================
     KPI_NOTIF_KEY = '_kpi_assignments_notification'
-    _show_notification(KPI_NOTIF_KEY)
+    highlighted_ids = _show_notification(KPI_NOTIF_KEY)
     
     # Helper to check if user can modify a specific record
     def can_modify_this_record(record_owner_id: int) -> bool:
@@ -2339,6 +2855,19 @@ def kpi_assignments_section(
         return can_modify_record(record_owner_id, access_level, editable_employee_ids)
     
     current_year = current_year or date.today().year
+    
+    # =========================================================================
+    # v2.0.0: Store dialog context for modal functions
+    # =========================================================================
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    st.session_state['_kpi_dialog_context'] = {
+        'user_id': user_id,
+        'editable_employee_ids': editable_employee_ids,
+        'access_level': access_level,
+        'year': current_year,
+        'employee_ids_scope': employee_ids,
+        'pre_selected_employee_id': None  # Will be set when clicking Add from employee card
+    }
     
     # -------------------------------------------------------------------------
     # FILTER BAR
@@ -2357,6 +2886,9 @@ def kpi_assignments_section(
             index=available_years.index(current_year) if current_year in available_years else 0,
             key="sp_assign_year_filter"
         )
+        
+        # Update context with selected year
+        st.session_state['_kpi_dialog_context']['year'] = selected_year
     
     with col2:
         salespeople_df = setup_queries.get_salespeople_for_dropdown(include_inactive=True)
@@ -2379,10 +2911,15 @@ def kpi_assignments_section(
         )
     
     with col3:
+        # v2.0.0: Use dialog instead of inline form
         if can_edit_base:
             st.write("")
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
-                st.session_state['sp_show_add_assignment_form'] = True
+                # Clear any pre-selection and batch items
+                st.session_state['_kpi_dialog_context']['pre_selected_employee_id'] = None
+                if '_kpi_batch_items' in st.session_state:
+                    st.session_state['_kpi_batch_items'] = []
+                _add_kpi_assignment_dialog()
     
     # -------------------------------------------------------------------------
     # KPI SUMMARY BY TYPE (v1.1.0 - NEW - Synced with KPI Center Performance)
@@ -2422,6 +2959,7 @@ def kpi_assignments_section(
     # -------------------------------------------------------------------------
     # ISSUES SECTION
     # FIX v1.5.3: Pass employee_ids to filter by team scope (was missing)
+    # v2.0.0: Use dialog for adding assignments
     # -------------------------------------------------------------------------
     issues = setup_queries.get_assignment_issues_summary(selected_year, employee_ids=employee_ids)
     
@@ -2450,15 +2988,18 @@ def kpi_assignments_section(
                             st.markdown(f"👤 **{emp['name']}**")
                             st.caption(emp.get('email', ''))
                         with col_action:
-                            # v1.2.0: Check record-level permission for this employee
-                            if can_edit_base and can_modify_this_record(emp['id']) and st.button(
-                                "➕ Add", 
-                                key=f"sp_add_assign_{emp['id']}", 
-                                use_container_width=True
-                            ):
-                                st.session_state['sp_add_assignment_employee_id'] = emp['id']
-                                st.session_state['sp_show_add_assignment_form'] = True
-                                st.rerun(scope="fragment")
+                            # v2.0.0: Use dialog instead of inline form
+                            if can_edit_base and can_modify_this_record(emp['id']):
+                                if st.button(
+                                    "➕ Add", 
+                                    key=f"sp_add_assign_{emp['id']}", 
+                                    use_container_width=True
+                                ):
+                                    # Pre-select this employee in dialog
+                                    st.session_state['_kpi_dialog_context']['pre_selected_employee_id'] = emp['id']
+                                    if '_kpi_batch_items' in st.session_state:
+                                        st.session_state['_kpi_batch_items'] = []
+                                    _add_kpi_assignment_dialog()
                 
                 st.divider()
             
@@ -2491,26 +3032,9 @@ def kpi_assignments_section(
     st.divider()
     
     # -------------------------------------------------------------------------
-    # ADD/EDIT FORMS
+    # v2.0.0: Inline forms removed - Now using Modal Dialogs
+    # See: _add_kpi_assignment_dialog(), _edit_kpi_assignment_dialog()
     # -------------------------------------------------------------------------
-    if st.session_state.get('sp_show_add_assignment_form', False):
-        _render_assignment_form(
-            setup_queries, 
-            selected_year, 
-            mode='add',
-            editable_employee_ids=editable_employee_ids,  # v1.2.0
-            access_level=access_level
-        )
-    
-    if st.session_state.get('sp_edit_assignment_id'):
-        _render_assignment_form(
-            setup_queries, 
-            selected_year, 
-            mode='edit',
-            assignment_id=st.session_state['sp_edit_assignment_id'],
-            editable_employee_ids=editable_employee_ids,  # v1.2.0
-            access_level=access_level
-        )
     
     # -------------------------------------------------------------------------
     # GET DATA (v1.9.0: Using version-based cache)
@@ -2580,32 +3104,66 @@ def kpi_assignments_section(
                     help="Total weight should equal 100%"
                 )
             
-            # KPI rows (v1.2.0: Pass per-employee edit permission)
+            # KPI rows (v2.0.0: Pass highlighted_ids for row highlighting)
             for _, kpi in emp_data.iterrows():
-                _render_kpi_assignment_row(kpi, can_modify_for_emp, setup_queries)
+                is_highlighted = kpi['assignment_id'] in highlighted_ids
+                _render_kpi_assignment_row(kpi, can_modify_for_emp, setup_queries, is_highlighted)
             
-            # Add KPI button (v1.2.0: Only show if user can add for this employee)
+            # Add KPI button (v2.0.0: Use dialog instead of inline form)
             if can_edit_base and can_modify_for_emp:
                 if st.button(
                     f"➕ Add KPI to {emp_name}", 
                     key=f"sp_add_kpi_btn_{emp_id}",
                     use_container_width=True
                 ):
-                    st.session_state['sp_add_assignment_employee_id'] = emp_id
-                    st.session_state['sp_show_add_assignment_form'] = True
-                    st.rerun(scope="fragment")
+                    # Pre-select this employee in dialog
+                    st.session_state['_kpi_dialog_context']['pre_selected_employee_id'] = emp_id
+                    if '_kpi_batch_items' in st.session_state:
+                        st.session_state['_kpi_batch_items'] = []
+                    _add_kpi_assignment_dialog()
 
 
-def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SalespersonSetupQueries):
-    """Render a single KPI assignment row."""
+def _render_kpi_assignment_row(
+    kpi: pd.Series, 
+    can_edit: bool, 
+    setup_queries: SalespersonSetupQueries,
+    is_highlighted: bool = False
+):
+    """
+    Render a single KPI assignment row.
     
+    v2.0.0: Added dialog support and row highlighting.
+    
+    Args:
+        kpi: Series with KPI assignment data
+        can_edit: Whether user can edit this assignment
+        setup_queries: Query handler
+        is_highlighted: Whether this row was recently modified (for visual highlight)
+    """
     kpi_lower = kpi['kpi_name'].lower().replace(' ', '_')
     icon = KPI_ICONS.get(kpi_lower, '📋')
+    
+    # v2.0.0: Add visual highlight for recently modified rows
+    if is_highlighted:
+        st.markdown("""
+            <style>
+            .highlighted-row {
+                background-color: #d4edda;
+                border-left: 4px solid #28a745;
+                padding-left: 8px;
+                margin: 4px 0;
+                border-radius: 4px;
+            }
+            </style>
+        """, unsafe_allow_html=True)
     
     col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
     
     with col1:
-        st.markdown(f"**{icon} {kpi['kpi_name']}**")
+        if is_highlighted:
+            st.markdown(f"**{icon} {kpi['kpi_name']}** ✨")
+        else:
+            st.markdown(f"**{icon} {kpi['kpi_name']}**")
         st.caption(f"ID: {kpi['assignment_id']}")
     
     with col2:
@@ -2625,227 +3183,35 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Sa
         if can_edit:
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:
+                # v2.0.0: Use edit dialog
                 if st.button("✏️", key=f"sp_edit_assign_{kpi['assignment_id']}", help="Edit"):
-                    st.session_state['sp_edit_assignment_id'] = kpi['assignment_id']
-                    st.rerun(scope="fragment")
+                    _edit_kpi_assignment_dialog(kpi['assignment_id'])
+            
             with btn_col2:
+                # v2.0.0: Use delete confirmation dialog
                 if st.button("🗑️", key=f"sp_del_assign_{kpi['assignment_id']}", help="Delete"):
-                    with st.spinner("Deleting..."):
-                        result = setup_queries.delete_assignment(kpi['assignment_id'])
-                    if result['success']:
-                        _set_notification(
-                            '_kpi_assignments_notification', 'success',
-                            f"KPI assignment deleted",
-                            f"Assignment #{kpi['assignment_id']} removed"
-                        )
-                        _bump_data_version('kpi')  # v1.9.0: Invalidate cache
-                        st.rerun(scope="fragment")
+                    # Prepare info for confirmation dialog
+                    if kpi['unit_of_measure'] == 'USD':
+                        target_display = format_currency(kpi['annual_target_value_numeric'])
                     else:
-                        _set_notification(
-                            '_kpi_assignments_notification', 'error',
-                            f"Failed to delete assignment",
-                            result.get('message', 'Unknown error')
-                        )
-                        st.rerun(scope="fragment")
-
-
-def _render_assignment_form(
-    setup_queries: SalespersonSetupQueries, 
-    year: int,
-    mode: str = 'add', 
-    assignment_id: int = None,
-    editable_employee_ids: List[int] = None,  # v1.2.0
-    access_level: str = 'self'  # v1.2.0
-):
-    """
-    Render Add/Edit assignment form.
-    
-    v1.2.0: Added editable_employee_ids to restrict salesperson dropdown.
-    """
-    
-    existing = None
-    if mode == 'edit' and assignment_id:
-        df = setup_queries.get_kpi_assignments()
-        df = df[df['assignment_id'] == assignment_id]
-        if not df.empty:
-            existing = df.iloc[0]
-        else:
-            st.error("Assignment not found")
-            st.session_state['sp_edit_assignment_id'] = None
-            return
-    
-    title = "✏️ Edit KPI Assignment" if mode == 'edit' else "➕ Add KPI Assignment"
-    
-    with st.container(border=True):
-        st.markdown(f"### {title}")
-        
-        with st.form(f"sp_{mode}_assignment_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Salesperson (v1.2.0: Filter by editable scope)
-                salespeople_df = setup_queries.get_salespeople_for_dropdown()
-                
-                # v1.2.0: Filter to only show editable employees
-                if editable_employee_ids is not None and not salespeople_df.empty:
-                    salespeople_df = salespeople_df[
-                        salespeople_df['employee_id'].isin(editable_employee_ids)
-                    ].reset_index(drop=True)
-                
-                default_employee = st.session_state.get('sp_add_assignment_employee_id')
-                if existing is not None:
-                    default_employee = existing['employee_id']
-                
-                default_idx = 0
-                if default_employee and not salespeople_df.empty:
-                    matches = salespeople_df[salespeople_df['employee_id'] == default_employee]
-                    if not matches.empty:
-                        default_idx = salespeople_df.index.tolist().index(matches.index[0])
-                
-                # v1.2.0: Add label hint based on access level
-                sp_label = "Salesperson *"
-                if access_level == 'self':
-                    sp_label = "Salesperson * (your account)"
-                elif access_level == 'team':
-                    sp_label = "Salesperson * (team members)"
-                
-                employee_id = st.selectbox(
-                    sp_label,
-                    options=salespeople_df['employee_id'].tolist(),
-                    index=default_idx,
-                    format_func=lambda x: f"👤 {salespeople_df[salespeople_df['employee_id'] == x]['employee_name'].iloc[0]}",
-                    key=f"sp_{mode}_assign_employee",
-                    disabled=(mode == 'edit')
-                )
-                
-                # KPI Type
-                kpi_types_df = setup_queries.get_kpi_types()
-                
-                default_type_idx = 0
-                if existing is not None:
-                    matches = kpi_types_df[kpi_types_df['kpi_type_id'] == existing['kpi_type_id']]
-                    if not matches.empty:
-                        default_type_idx = kpi_types_df.index.tolist().index(matches.index[0])
-                
-                kpi_type_id = st.selectbox(
-                    "KPI Type *",
-                    options=kpi_types_df['kpi_type_id'].tolist(),
-                    index=default_type_idx,
-                    format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
-                    key=f"sp_{mode}_assign_type",
-                    disabled=(mode == 'edit')
-                )
-            
-            with col2:
-                # Get UOM
-                selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
-                selected_uom = selected_kpi['unit_of_measure']
-                
-                # Annual target
-                default_target = int(existing['annual_target_value_numeric']) if existing is not None else 0
-                annual_target = st.number_input(
-                    f"Annual Target ({selected_uom}) *",
-                    min_value=0,
-                    value=default_target,
-                    step=10000 if selected_uom == 'USD' else 1,
-                    key=f"sp_{mode}_assign_target"
-                )
-                
-                if selected_uom == 'USD' and annual_target > 0:
-                    st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
-                
-                # Weight
-                default_weight = int(existing['weight_numeric']) if existing is not None else 0
-                weight = st.number_input(
-                    "Weight % *",
-                    min_value=0,
-                    max_value=100,
-                    value=default_weight,
-                    step=5,
-                    key=f"sp_{mode}_assign_weight"
-                )
-            
-            # Weight validation
-            validation = setup_queries.validate_assignment_weight(
-                employee_id=employee_id,
-                year=year,
-                new_weight=weight,
-                exclude_assignment_id=assignment_id if mode == 'edit' else None
-            )
-            
-            val_col1, val_col2 = st.columns(2)
-            with val_col1:
-                st.metric("Current Weight Sum", f"{validation['current_total']}%")
-            with val_col2:
-                if validation['new_total'] == 100:
-                    st.success(f"✅ After save: {validation['new_total']}%")
-                elif validation['new_total'] > 100:
-                    st.error(f"🔴 After save: {validation['new_total']}% (over limit!)")
-                else:
-                    st.warning(f"⚠️ After save: {validation['new_total']}% ({100 - validation['new_total']}% remaining)")
-            
-            notes = st.text_input(
-                "Notes (optional)",
-                value=existing['notes'] if existing is not None and pd.notna(existing.get('notes')) else "",
-                key=f"sp_{mode}_assign_notes"
-            )
-            
-            # Buttons
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                submitted = st.form_submit_button(
-                    "💾 Save" if mode == 'add' else "💾 Update",
-                    type="primary",
-                    use_container_width=True
-                )
-            
-            with col_cancel:
-                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
-            
-            if submitted:
-                if annual_target <= 0:
-                    st.error("Annual target must be > 0")
-                elif weight <= 0:
-                    st.error("Weight must be > 0")
-                else:
-                    if mode == 'add':
-                        result = setup_queries.create_assignment(
-                            employee_id=employee_id,
-                            kpi_type_id=kpi_type_id,
-                            year=year,
-                            annual_target_value=annual_target,
-                            weight=weight,
-                            notes=notes if notes else None
-                        )
-                    else:
-                        result = setup_queries.update_assignment(
-                            assignment_id=assignment_id,
-                            annual_target_value=annual_target,
-                            weight=weight,
-                            notes=notes if notes else None
-                        )
+                        target_display = f"{kpi['annual_target_value_numeric']:,.0f}"
                     
-                    if result['success']:
-                        # v1.8.0: Set notification for display after rerun
-                        _set_notification(
-                            '_kpi_assignments_notification', 'success',
-                            f"KPI assignment {'created' if mode == 'add' else 'updated'}",
-                            f"Target: ${annual_target:,.0f} • Weight: {weight}%"
-                        )
-                        st.session_state['sp_show_add_assignment_form'] = False
-                        st.session_state['sp_edit_assignment_id'] = None
-                        st.session_state['sp_add_assignment_employee_id'] = None
-                        _bump_data_version('kpi')  # v1.9.0: Invalidate cache
-                        st.rerun(scope="fragment")
-                    else:
-                        st.error(f"❌ {result['message']}")
-            
-            if cancelled:
-                st.session_state['sp_show_add_assignment_form'] = False
-                st.session_state['sp_edit_assignment_id'] = None
-                st.session_state['sp_add_assignment_employee_id'] = None
-                st.rerun(scope="fragment")
+                    assignment_info = {
+                        'employee_name': kpi['employee_name'],
+                        'kpi_name': kpi['kpi_name'],
+                        'target_display': target_display,
+                        'weight': int(kpi['weight_numeric'])
+                    }
+                    _delete_kpi_assignment_dialog(kpi['assignment_id'], assignment_info)
+
+
+# =============================================================================
+# v2.0.0: _render_assignment_form() has been REMOVED
+# Functionality replaced by:
+# - _add_kpi_assignment_dialog() - Modal for adding (with batch support)
+# - _edit_kpi_assignment_dialog() - Modal for editing
+# - _delete_kpi_assignment_dialog() - Confirmation modal for delete
+# =============================================================================
 
 
 # =============================================================================

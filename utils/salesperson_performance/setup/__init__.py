@@ -7,6 +7,10 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
+v2.0.0: KPI Assignments refactored with Modal/Dialog pattern
+        - Batch Add support (add multiple assignments before saving)
+        - Improved notifications with row highlighting
+        - Delete confirmation dialog
 v1.9.0: Added version-based caching for data refresh after CRUD
 """
 
@@ -33,12 +37,16 @@ from .fragments import (
     can_modify_record,
     get_editable_employee_ids,
     
-    # Data caching helpers (v1.9.0 - NEW)
+    # Data caching helpers (v1.9.0)
     _get_data_version,
     _bump_data_version,
     _get_cached_split_data,
     _get_cached_kpi_data,
     _clear_all_setup_cache,
+    
+    # Notification helpers (v1.8.0)
+    _set_notification,
+    _show_notification,
     
     # Constants
     KPI_ICONS,
@@ -67,16 +75,20 @@ __all__ = [
     'can_modify_record',
     'get_editable_employee_ids',
     
-    # Data caching helpers (v1.9.0 - NEW)
+    # Data caching helpers (v1.9.0)
     '_get_data_version',
     '_bump_data_version',
     '_get_cached_split_data',
     '_get_cached_kpi_data',
     '_clear_all_setup_cache',
     
+    # Notification helpers (v1.8.0)
+    '_set_notification',
+    '_show_notification',
+    
     # Constants
     'KPI_ICONS',
     'STATUS_ICONS',
 ]
 
-__version__ = '1.9.0'
+__version__ = '2.0.0'
