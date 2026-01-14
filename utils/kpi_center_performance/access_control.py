@@ -4,14 +4,15 @@ Access Control for KPI Center Performance Module
 
 Handles role-based access control for KPI Center data.
 
-VERSION: 2.0.0
+VERSION: 2.1.0 - Integrated with permissions.py for granular CRUD control
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 import streamlit as st
 
 from .constants import ALLOWED_ROLES
+from .permissions import SetupPermissions, get_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +21,22 @@ class AccessControl:
     """
     Access control for KPI Center Performance page.
     
-    KPI Center uses a simpler access model than Salesperson:
-    - ALLOWED_ROLES can access all KPI Centers
-    - No hierarchy-based restrictions (parent-child access is for rollup, not restriction)
+    v2.1.0: Integrated with SetupPermissions for granular CRUD control
     
     Usage:
         access = AccessControl(user_role)
+        
+        # Page-level access
         if access.can_access_page():
-            kpi_centers = access.get_accessible_kpi_center_ids()
+            ...
+        
+        # Setup tab access
+        if access.can_access_setup_tab():
+            ...
+        
+        # CRUD permissions
+        if access.can_edit():
+            st.button("Edit")
     """
     
     def __init__(self, user_role: str):
@@ -38,7 +47,12 @@ class AccessControl:
             user_role: Current user's role
         """
         self.user_role = user_role
+        self._perms = get_permissions(user_role)
         self._kpi_center_ids = None
+    
+    # =========================================================================
+    # PAGE-LEVEL ACCESS (for main KPI Center Performance page)
+    # =========================================================================
     
     def can_access_page(self) -> bool:
         """Check if user can access KPI Center Performance page."""
@@ -54,6 +68,54 @@ class AccessControl:
         if self.user_role in ALLOWED_ROLES:
             return 'full'
         return 'none'
+    
+    # =========================================================================
+    # SETUP TAB ACCESS
+    # =========================================================================
+    
+    def can_access_setup_tab(self) -> bool:
+        """Check if user can access Setup Tab."""
+        return self._perms.can_access_setup_tab
+    
+    # =========================================================================
+    # CRUD PERMISSIONS
+    # =========================================================================
+    
+    def can_view(self) -> bool:
+        """Check if user can view data in Setup Tab."""
+        return self._perms.can_view
+    
+    def can_create(self) -> bool:
+        """Check if user can create split rules / assignments."""
+        return self._perms.can_create
+    
+    def can_edit(self) -> bool:
+        """Check if user can edit split rules / assignments."""
+        return self._perms.can_edit
+    
+    def can_delete(self) -> bool:
+        """Check if user can delete split rules / assignments."""
+        return self._perms.can_delete
+    
+    def can_approve(self) -> bool:
+        """Check if user can approve split rules."""
+        return self._perms.can_approve
+    
+    def can_bulk_operations(self) -> bool:
+        """Check if user can perform bulk operations."""
+        return self._perms.can_bulk_operations
+    
+    def can_manage_hierarchy(self) -> bool:
+        """Check if user can manage KPI Center hierarchy."""
+        return self._perms.can_manage_hierarchy
+    
+    def can_export(self) -> bool:
+        """Check if user can export data."""
+        return self._perms.can_export
+    
+    # =========================================================================
+    # KPI CENTER ACCESS
+    # =========================================================================
     
     def get_accessible_kpi_center_ids(self) -> List[int]:
         """
@@ -109,9 +171,30 @@ class AccessControl:
         # For full access, all selections are valid
         return selected_ids
     
+    # =========================================================================
+    # MESSAGES
+    # =========================================================================
+    
     def get_denied_message(self) -> str:
-        """Get message to show when access is denied."""
+        """Get message to show when page access is denied."""
         return f"⚠️ Access Denied. Your role ({self.user_role}) does not have permission to view KPI Center Performance. Required roles: {', '.join(ALLOWED_ROLES)}"
     
+    def get_setup_denied_message(self) -> str:
+        """Get message to show when Setup Tab access is denied."""
+        return self._perms.get_denied_message()
+    
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
+    
+    def get_permission_summary(self) -> Dict[str, bool]:
+        """
+        Get all permissions as dictionary for UI rendering.
+        
+        Returns:
+            Dict with all permission flags
+        """
+        return self._perms.to_dict()
+    
     def __repr__(self) -> str:
-        return f"AccessControl(role={self.user_role}, level={self.get_access_level()})"
+        return f"AccessControl(role={self.user_role}, level={self.get_access_level()}, perms={self._perms})"

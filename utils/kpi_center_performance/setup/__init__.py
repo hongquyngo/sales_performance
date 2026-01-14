@@ -13,6 +13,12 @@ Features:
 - Comprehensive Filters: Full filtering by period, entity, attributes, audit trail (v2.6.0)
 - Bulk Operations: Multi-selection with bulk approve/disapprove/update (v2.7.0)
 
+v2.10.0 Changes (RBAC Integration):
+- Integrated with permissions.py for granular CRUD control
+- Setup tab access controlled by role
+- Granular permissions: can_create, can_edit, can_delete, can_approve, can_bulk
+- Permission indicator shown in Setup tab header
+
 v2.9.0 Changes (Synced with Salesperson Performance):
 - Dialog-based Edit Form: @st.dialog for Edit Split Rule (same as Add)
 - Current Split Structure Insights: Shows existing allocations in Add/Edit dialogs
@@ -110,4 +116,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.9.1'
+__version__ = '2.10.0'

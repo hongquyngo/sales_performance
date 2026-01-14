@@ -2,6 +2,7 @@
 """
 UI Fragments for Setup Tab - KPI Center Performance
 
+v2.10.0: Integrated with permissions.py for granular CRUD control
 """
 
 import streamlit as st
@@ -13,6 +14,9 @@ from .queries import SetupQueries
 
 # Renewal module - single component handles button + dialog
 from .renewal import renewal_section
+
+# v2.10.0: Permission system
+from ..permissions import SetupPermissions, get_permissions
 
 
 # =============================================================================
@@ -198,7 +202,9 @@ def setup_tab_fragment(
     active_filters: Dict = None
 ):
     """
-    Main fragment for Setup tab with 4 sub-tabs.
+    Main fragment for Setup tab with 3 sub-tabs.
+    
+    v2.10.0: Integrated with permissions.py for granular CRUD control
     
     Args:
         kpi_center_ids: List of selected KPI Center IDs from sidebar
@@ -206,18 +212,38 @@ def setup_tab_fragment(
     """
     st.subheader("⚙️ KPI Center Configuration")
     
-    # Initialize queries with user context
-    # Note: user_id should be users.id (INT), not UUID
-    # The auth system should store this in session_state
+    # Get user context
     user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    user_role = st.session_state.get('user_role', 'viewer')
+    
+    # Initialize permission checker (v2.10.0)
+    perms = get_permissions(user_role)
+    
+    # Check Setup Tab access
+    if not perms.can_access_setup_tab:
+        st.error(perms.get_denied_message())
+        return
+    
+    # Initialize queries with user context
     setup_queries = SetupQueries(user_id=user_id)
     
-    # Get user role for permission check
-    # FIX: Case-insensitive check to match auth.py which stores lowercase role from DB
-    user_role = st.session_state.get('user_role', 'viewer')
-    user_role_lower = str(user_role).lower() if user_role else ''
-    can_edit = user_role_lower in ['admin', 'gm', 'md', 'director']
-    can_approve = user_role_lower == 'admin'
+    # Permission flags for UI rendering (v2.10.0)
+    can_create = perms.can_create
+    can_edit = perms.can_edit
+    can_delete = perms.can_delete
+    can_approve = perms.can_approve
+    can_bulk = perms.can_bulk_operations
+    can_manage_hierarchy = perms.can_manage_hierarchy
+    
+    # Show permission indicator (collapsible)
+    with st.expander("🔐 Your Permissions", expanded=False):
+        perm_cols = st.columns(6)
+        perm_cols[0].metric("Create", "✅" if can_create else "❌")
+        perm_cols[1].metric("Edit", "✅" if can_edit else "❌")
+        perm_cols[2].metric("Delete", "✅" if can_delete else "❌")
+        perm_cols[3].metric("Approve", "✅" if can_approve else "❌")
+        perm_cols[4].metric("Bulk Ops", "✅" if can_bulk else "❌")
+        perm_cols[5].metric("Hierarchy", "✅" if can_manage_hierarchy else "❌")
     
     # Get year from filters
     current_year = active_filters.get('year', date.today().year) if active_filters else date.today().year
@@ -244,22 +270,27 @@ def setup_tab_fragment(
         split_rules_section(
             setup_queries=setup_queries,
             kpi_center_ids=kpi_center_ids,
+            can_create=can_create,
             can_edit=can_edit,
-            can_approve=can_approve
+            can_delete=can_delete,
+            can_approve=can_approve,
+            can_bulk=can_bulk
         )
     
     with tab2:
         kpi_assignments_section(
             setup_queries=setup_queries,
             kpi_center_ids=kpi_center_ids,
+            can_create=can_create,
             can_edit=can_edit,
+            can_delete=can_delete,
             current_year=current_year
         )
     
     with tab3:
         hierarchy_section(
             setup_queries=setup_queries,
-            can_edit=can_edit
+            can_edit=can_manage_hierarchy  # Only admin can manage hierarchy
         )
 
 
@@ -271,12 +302,16 @@ def setup_tab_fragment(
 def split_rules_section(
     setup_queries: SetupQueries,
     kpi_center_ids: List[int] = None,
+    can_create: bool = False,
     can_edit: bool = False,
-    can_approve: bool = False
+    can_delete: bool = False,
+    can_approve: bool = False,
+    can_bulk: bool = False
 ):
     """
     Split Rules sub-tab with CRUD operations and comprehensive filters.
     
+    v2.10.0: Updated with granular permissions (can_create, can_edit, can_delete, can_approve, can_bulk)
     v2.6.0: Added comprehensive filter system with 5 filter groups:
     - Period: Year, Period Type, Date Range
     - Entity: KPI Type, Brand, Customer/Product Search
@@ -801,9 +836,9 @@ def split_rules_section(
     st.divider()
     
     # =========================================================================
-    # TOOLBAR (v2.8.2: Dialog-based Add form)
+    # TOOLBAR (v2.10.0: Uses can_create permission for Add button)
     # =========================================================================
-    if can_edit:
+    if can_create:
         # Store context for dialog to access
         st.session_state['_split_dialog_can_approve'] = can_approve
         
@@ -820,6 +855,9 @@ def split_rules_section(
                 can_approve=can_approve,
                 threshold_days=90  # Match renewal module default
             )
+    elif not can_edit:
+        # Show read-only notice for users without any write permission
+        st.info("👁️ View-only mode. You don't have permission to create or edit split rules.")
     
     # =========================================================================
     # v2.9.0: Edit form removed - now using dialog (_edit_split_rule_dialog)
@@ -851,14 +889,15 @@ def split_rules_section(
     st.caption(f"📊 Showing **{len(split_df):,}** rules | Period: {period_desc}")
     
     # =========================================================================
-    # v2.8.2: Call nested fragment for data table
-    # This prevents full page rerun when selecting/deselecting rows
+    # v2.10.0: Call nested fragment with granular permissions
     # =========================================================================
     _render_split_data_table(
         split_df=split_df,
         setup_queries=setup_queries,
         can_edit=can_edit,
-        can_approve=can_approve
+        can_delete=can_delete,
+        can_approve=can_approve,
+        can_bulk=can_bulk
     )
 
 
@@ -870,10 +909,13 @@ def split_rules_section(
 def _render_split_data_table(
     split_df: pd.DataFrame,
     setup_queries: SetupQueries,
-    can_edit: bool,
-    can_approve: bool
+    can_edit: bool = False,
+    can_delete: bool = False,
+    can_approve: bool = False,
+    can_bulk: bool = False
 ):
     """
+    v2.10.0: Updated with granular permissions (can_edit, can_delete, can_approve, can_bulk)
     v2.8.2: Nested fragment for data table and action bar.
     This allows row selection to only rerun this section, not the entire filters.
     
@@ -1039,9 +1081,9 @@ def _render_split_data_table(
             st.rerun(scope="fragment")
     
     # =========================================================================
-    # BULK ACTIONS (BELOW DATA TABLE) - Only when items selected
+    # BULK ACTIONS (BELOW DATA TABLE) - v2.10.0: Granular permission checks
     # =========================================================================
-    if can_edit and not split_df.empty and valid_selected:
+    if not split_df.empty and valid_selected:
         selected_df = display_df[display_df['kpi_center_split_id'].isin(valid_selected)]
         # v2.7.3: Use pre-computed boolean column for consistent BIT(1) handling
         selected_pending = (~selected_df['_is_approved_bool']).sum()
@@ -1052,7 +1094,7 @@ def _render_split_data_table(
             st.caption(f"📌 **{selected_count}** rules selected: {selected_pending} pending, {selected_approved} approved")
             
             # =================================================================
-            # APPROVAL ACTIONS (Approve/Disapprove)
+            # APPROVAL ACTIONS (Requires can_approve)
             # =================================================================
             if can_approve:
                 appr_col1, appr_col2, appr_col3 = st.columns([1, 1, 2])
@@ -1100,10 +1142,11 @@ def _render_split_data_table(
                                  help="No approved rules selected", key="split_dt_bulk_disapprove_dis")
             
             # =================================================================
-            # BULK UPDATE ACTIONS (v2.8.2: Enhanced with period validation)
+            # BULK UPDATE ACTIONS (v2.10.0: Requires can_bulk AND can_edit)
             # =================================================================
-            st.divider()
-            st.caption("📝 Bulk Update Actions")
+            if can_bulk and can_edit:
+                st.divider()
+                st.caption("📝 Bulk Update Actions")
             
             upd_col1, upd_col2, upd_col3 = st.columns([1, 1, 2])
             
@@ -1250,9 +1293,10 @@ def _render_split_data_table(
                                  key="split_bulk_update_split_dis", use_container_width=True)
             
             # =================================================================
-            # EDIT/DELETE ACTIONS
+            # EDIT/DELETE ACTIONS (v2.10.0: Granular permission checks)
             # =================================================================
-            st.divider()
+            if can_edit or can_delete:
+                st.divider()
             
             if selected_count == 1:
                 # Single selection: Edit + Delete
@@ -1264,41 +1308,52 @@ def _render_split_data_table(
                 edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 2])
                 
                 with edit_col1:
-                    # v2.9.0: Open dialog instead of inline form
-                    if st.button("✏️ Edit", use_container_width=True, type="secondary", key="split_dt_edit"):
-                        st.session_state['_edit_split_rule_id'] = selected_rule_id
-                        _edit_split_rule_dialog()
+                    # v2.10.0: Check can_edit permission
+                    if can_edit:
+                        # v2.9.0: Open dialog instead of inline form
+                        if st.button("✏️ Edit", use_container_width=True, type="secondary", key="split_dt_edit"):
+                            st.session_state['_edit_split_rule_id'] = selected_rule_id
+                            _edit_split_rule_dialog()
+                    else:
+                        st.button("✏️ Edit", disabled=True, use_container_width=True, 
+                                 help="You don't have edit permission", key="split_dt_edit_disabled")
                 
                 with edit_col2:
-                    with st.popover("🗑️ Delete", use_container_width=True):
-                        st.warning(f"Delete rule **#{selected_rule_id}**?")
-                        if st.button("🗑️ Yes, Delete", type="primary", 
-                                    key="split_dt_confirm_delete", use_container_width=True):
-                            result = setup_queries.delete_split_rule(selected_rule_id)
-                            if result['success']:
-                                st.session_state['split_selected_ids'] = set()
-                                st.toast("Rule deleted", icon="🗑️")
-                                st.rerun(scope="fragment")
-                            else:
-                                st.error(result['message'])
+                    # v2.10.0: Check can_delete permission
+                    if can_delete:
+                        with st.popover("🗑️ Delete", use_container_width=True):
+                            st.warning(f"Delete rule **#{selected_rule_id}**?")
+                            if st.button("🗑️ Yes, Delete", type="primary", 
+                                        key="split_dt_confirm_delete", use_container_width=True):
+                                result = setup_queries.delete_split_rule(selected_rule_id)
+                                if result['success']:
+                                    st.session_state['split_selected_ids'] = set()
+                                    st.toast("Rule deleted", icon="🗑️")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
+                    else:
+                        st.button("🗑️ Delete", disabled=True, use_container_width=True,
+                                 help="You don't have delete permission", key="split_dt_delete_disabled")
             else:
-                # Multi selection: Bulk Delete
-                del_col1, del_col2, del_col3 = st.columns([1, 1, 2])
-                
-                with del_col1:
-                    with st.popover(f"🗑️ Delete {selected_count} Rules", use_container_width=True):
-                        st.error(f"⚠️ Delete **{selected_count}** rules?")
-                        st.caption("This action cannot be undone easily.")
-                        
-                        if st.button("🗑️ Yes, Delete All", type="primary",
-                                    key="split_bulk_delete", use_container_width=True):
-                            result = setup_queries.delete_split_rules_bulk(list(valid_selected))
-                            if result['success']:
-                                st.session_state['split_selected_ids'] = set()
-                                st.toast(f"🗑️ Deleted {result['count']} rules", icon="🗑️")
-                                st.rerun(scope="fragment")
-                            else:
-                                st.error(result['message'])
+                # Multi selection: Bulk Delete (requires can_bulk AND can_delete)
+                if can_bulk and can_delete:
+                    del_col1, del_col2, del_col3 = st.columns([1, 1, 2])
+                    
+                    with del_col1:
+                        with st.popover(f"🗑️ Delete {selected_count} Rules", use_container_width=True):
+                            st.error(f"⚠️ Delete **{selected_count}** rules?")
+                            st.caption("This action cannot be undone easily.")
+                            
+                            if st.button("🗑️ Yes, Delete All", type="primary",
+                                        key="split_bulk_delete", use_container_width=True):
+                                result = setup_queries.delete_split_rules_bulk(list(valid_selected))
+                                if result['success']:
+                                    st.session_state['split_selected_ids'] = set()
+                                    st.toast(f"🗑️ Deleted {result['count']} rules", icon="🗑️")
+                                    st.rerun(scope="fragment")
+                                else:
+                                    st.error(result['message'])
 
 
 # =============================================================================
@@ -2304,10 +2359,16 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
 def kpi_assignments_section(
     setup_queries: SetupQueries,
     kpi_center_ids: List[int] = None,
+    can_create: bool = False,
     can_edit: bool = False,
+    can_delete: bool = False,
     current_year: int = None
 ):
-    """KPI Assignments sub-tab - styled like KPI & Targets tab."""
+    """
+    KPI Assignments sub-tab - styled like KPI & Targets tab.
+    
+    v2.10.0: Updated with granular permissions (can_create, can_edit, can_delete)
+    """
     
     current_year = current_year or date.today().year
     
@@ -2343,7 +2404,8 @@ def kpi_assignments_section(
         )
     
     with col3:
-        if can_edit:
+        # v2.10.0: Use can_create for Add button
+        if can_create:
             st.write("")  # Spacer
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
                 st.session_state['show_add_assignment_form'] = True
