@@ -2179,7 +2179,7 @@ def kpi_progress_fragment(
                         st.error(f"🔴 {achievement:.1f}%")
                 
                 with col_progress:
-                    st.progress(min(achievement / 100, 1.0))
+                    st.progress(max(0.0, min(achievement / 100, 1.0)))
                     
                     if row.get('is_currency', False):
                         actual_str = f"${row['Actual']:,.0f}"
@@ -2372,7 +2372,7 @@ def kpi_progress_fragment(
                                 st.caption(f"{actual:.1f} / {prorated_target:.1f}")
                         
                         with col_k2:
-                            st.progress(min(kpi_achievement / 100, 1.0))
+                            st.progress(max(0.0, min(kpi_achievement / 100, 1.0)))
                         
                         with col_k3:
                             kpi_style = _get_achievement_style(kpi_achievement)
