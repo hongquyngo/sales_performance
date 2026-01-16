@@ -7,6 +7,14 @@ Full management console with 3 sub-tabs:
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments  
 3. Salespeople - List/manage salespeople
 
+v2.2.0: NEW FEATURE - Copy to New Period:
+        - Single rule: Copy button in Edit dialog area
+        - Bulk: "Copy to New Period" button in Bulk Update Actions
+        - Creates NEW rules with same details but different period
+        - Original rules are NOT modified
+        - Admin/Sales Manager can choose to copy approval status
+        - Sales role: new rules always Pending
+        - Validation: duplicate check, overlap check, split% check
 v2.1.0: UX IMPROVEMENT - Add KPI Assignment dialog flow:
         - Removed "Add & Save All" button to prevent accidental saves
         - Reordered sections: "Add New Assignment" at TOP, "Pending Assignments" at BOTTOM
@@ -110,4 +118,4 @@ __all__ = [
     'STATUS_ICONS',
 ]
 
-__version__ = '2.1.0'
+__version__ = '2.2.0'

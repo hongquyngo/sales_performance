@@ -2074,6 +2074,483 @@ class SalespersonSetupQueries:
         }
     
     # =========================================================================
+    # COPY TO NEW PERIOD (v2.2.0 - NEW)
+    # =========================================================================
+    
+    def check_duplicate_rule(
+        self,
+        customer_id: int,
+        product_id: int,
+        sale_person_id: int,
+        valid_from: date,
+        valid_to: date = None
+    ) -> Dict:
+        """
+        Check if an exact duplicate rule exists for the given period.
+        
+        v2.2.0: New method for Copy to New Period validation.
+        
+        Args:
+            customer_id: Customer ID
+            product_id: Product ID
+            sale_person_id: Salesperson ID
+            valid_from: Period start date
+            valid_to: Period end date (can be None)
+            
+        Returns:
+            Dict with exists (bool), existing_rule_id (int or None)
+        """
+        if valid_to is not None:
+            query = """
+                SELECT id
+                FROM sales_split_by_customer_product
+                WHERE customer_id = :customer_id
+                  AND product_id = :product_id
+                  AND sale_person_id = :sale_person_id
+                  AND valid_from = :valid_from
+                  AND valid_to = :valid_to
+                  AND (delete_flag = 0 OR delete_flag IS NULL)
+                LIMIT 1
+            """
+            params = {
+                'customer_id': customer_id,
+                'product_id': product_id,
+                'sale_person_id': sale_person_id,
+                'valid_from': valid_from,
+                'valid_to': valid_to
+            }
+        else:
+            query = """
+                SELECT id
+                FROM sales_split_by_customer_product
+                WHERE customer_id = :customer_id
+                  AND product_id = :product_id
+                  AND sale_person_id = :sale_person_id
+                  AND valid_from = :valid_from
+                  AND valid_to IS NULL
+                  AND (delete_flag = 0 OR delete_flag IS NULL)
+                LIMIT 1
+            """
+            params = {
+                'customer_id': customer_id,
+                'product_id': product_id,
+                'sale_person_id': sale_person_id,
+                'valid_from': valid_from
+            }
+        
+        df = self._execute_query(query, params, "check_duplicate_rule")
+        
+        if df.empty:
+            return {'exists': False, 'existing_rule_id': None}
+        
+        return {'exists': True, 'existing_rule_id': int(df.iloc[0]['id'])}
+    
+    def get_rule_details(self, rule_id: int) -> Dict:
+        """
+        Get full details of a single rule for copy operation.
+        
+        v2.2.0: New method for Copy to New Period.
+        
+        Returns:
+            Dict with rule details or None if not found
+        """
+        query = """
+            SELECT 
+                ss.id AS rule_id,
+                ss.customer_id,
+                ss.product_id,
+                ss.sale_person_id,
+                ss.split_percentage,
+                ss.valid_from,
+                ss.valid_to,
+                ss.is_approved,
+                ss.approved_by,
+                c.company_code,
+                c.english_name AS customer_name,
+                CONCAT(c.company_code, ' | ', c.english_name) AS customer_display,
+                p.pt_code,
+                p.name AS product_name,
+                CONCAT(p.pt_code, ' | ', p.name) AS product_display,
+                CONCAT(e.first_name, ' ', e.last_name) AS salesperson_name,
+                e.email AS salesperson_email,
+                CONCAT(ap.first_name, ' ', ap.last_name) AS approved_by_name
+            FROM sales_split_by_customer_product ss
+            JOIN companies c ON ss.customer_id = c.id
+            JOIN products p ON ss.product_id = p.id
+            JOIN employees e ON ss.sale_person_id = e.id
+            LEFT JOIN employees ap ON ss.approved_by = ap.id
+            WHERE ss.id = :rule_id
+              AND (ss.delete_flag = 0 OR ss.delete_flag IS NULL)
+        """
+        
+        df = self._execute_query(query, {'rule_id': rule_id}, "get_rule_details")
+        
+        if df.empty:
+            return None
+        
+        row = df.iloc[0]
+        return row.to_dict()
+    
+    def validate_copy_to_period(
+        self,
+        source_rule_ids: List[int],
+        new_valid_from: date,
+        new_valid_to: date = None
+    ) -> Dict:
+        """
+        Pre-validate copy operation without executing.
+        
+        v2.2.0: New method for Copy to New Period bulk validation.
+        
+        Args:
+            source_rule_ids: List of rule IDs to copy
+            new_valid_from: New period start date
+            new_valid_to: New period end date
+            
+        Returns:
+            Dict with:
+            - valid_count: Rules ready to copy
+            - warning_count: Rules with warnings
+            - error_count: Rules that cannot be copied
+            - details: List of per-rule validation results
+        """
+        if not source_rule_ids:
+            return {
+                'valid_count': 0,
+                'warning_count': 0,
+                'error_count': 0,
+                'details': []
+            }
+        
+        # Period validation
+        if new_valid_from is None:
+            return {
+                'valid_count': 0,
+                'warning_count': 0,
+                'error_count': len(source_rule_ids),
+                'details': [{'rule_id': rid, 'status': 'error', 'message': 'Valid From is required'} 
+                           for rid in source_rule_ids]
+            }
+        
+        if new_valid_to is not None and new_valid_from > new_valid_to:
+            return {
+                'valid_count': 0,
+                'warning_count': 0,
+                'error_count': len(source_rule_ids),
+                'details': [{'rule_id': rid, 'status': 'error', 'message': 'Valid From must be before Valid To'} 
+                           for rid in source_rule_ids]
+            }
+        
+        details = []
+        valid_count = 0
+        warning_count = 0
+        error_count = 0
+        
+        for rule_id in source_rule_ids:
+            rule = self.get_rule_details(rule_id)
+            
+            if rule is None:
+                details.append({
+                    'rule_id': rule_id,
+                    'status': 'error',
+                    'message': 'Rule not found',
+                    'rule_info': None
+                })
+                error_count += 1
+                continue
+            
+            warnings = []
+            
+            # Check for exact duplicate
+            dup_check = self.check_duplicate_rule(
+                customer_id=rule['customer_id'],
+                product_id=rule['product_id'],
+                sale_person_id=rule['sale_person_id'],
+                valid_from=new_valid_from,
+                valid_to=new_valid_to
+            )
+            
+            if dup_check['exists']:
+                warnings.append(f"Exact rule already exists (#{dup_check['existing_rule_id']})")
+            
+            # Check for period overlap
+            overlap_check = self.check_period_overlap(
+                customer_id=rule['customer_id'],
+                product_id=rule['product_id'],
+                sale_person_id=rule['sale_person_id'],
+                valid_from=new_valid_from,
+                valid_to=new_valid_to,
+                exclude_rule_id=rule_id  # Exclude source rule
+            )
+            
+            if overlap_check['has_overlap']:
+                overlapping_ids = [r['rule_id'] for r in overlap_check['overlapping_rules']]
+                warnings.append(f"Overlaps with existing rule(s): #{', #'.join(map(str, overlapping_ids))}")
+            
+            # Check total split percentage
+            split_validation = self.validate_split_percentage(
+                customer_id=rule['customer_id'],
+                product_id=rule['product_id'],
+                new_percentage=rule['split_percentage'],
+                exclude_rule_id=rule_id,  # Exclude source rule from calculation
+                valid_from=new_valid_from,
+                valid_to=new_valid_to
+            )
+            
+            if split_validation['new_total'] > 100:
+                warnings.append(f"Total split will be {split_validation['new_total']:.0f}% (>100%)")
+            
+            # Determine status
+            if warnings:
+                status = 'warning'
+                warning_count += 1
+            else:
+                status = 'valid'
+                valid_count += 1
+            
+            details.append({
+                'rule_id': rule_id,
+                'status': status,
+                'warnings': warnings,
+                'message': '; '.join(warnings) if warnings else 'Ready to copy',
+                'rule_info': {
+                    'customer_id': rule['customer_id'],
+                    'product_id': rule['product_id'],
+                    'sale_person_id': rule['sale_person_id'],
+                    'split_percentage': rule['split_percentage'],
+                    'salesperson_name': rule['salesperson_name'],
+                    'customer_display': rule['customer_display'],
+                    'product_display': rule['product_display'],
+                    'original_period': f"{rule['valid_from']} → {rule['valid_to'] or 'No End'}",
+                    'is_approved': rule['is_approved']
+                }
+            })
+        
+        return {
+            'valid_count': valid_count,
+            'warning_count': warning_count,
+            'error_count': error_count,
+            'total_count': len(source_rule_ids),
+            'details': details
+        }
+    
+    def copy_rule_to_new_period(
+        self,
+        source_rule_id: int,
+        new_valid_from: date,
+        new_valid_to: date = None,
+        copy_approval: bool = False,
+        approver_employee_id: int = None
+    ) -> Dict:
+        """
+        Copy a single split rule to a new period.
+        
+        v2.2.0: New method for Copy to New Period feature.
+        
+        Args:
+            source_rule_id: ID of rule to copy
+            new_valid_from: New period start date
+            new_valid_to: New period end date (can be None)
+            copy_approval: If True, copy is_approved from source
+            approver_employee_id: If copy_approval and source is approved, set as approver
+            
+        Returns:
+            Dict with success, new_id, message
+        """
+        # Validate period
+        if new_valid_from is None:
+            return {
+                'success': False,
+                'id': None,
+                'message': 'Valid From is required'
+            }
+        
+        if new_valid_to is not None and new_valid_from > new_valid_to:
+            return {
+                'success': False,
+                'id': None,
+                'message': 'Valid From must be before Valid To'
+            }
+        
+        # Get source rule
+        source_rule = self.get_rule_details(source_rule_id)
+        if source_rule is None:
+            return {
+                'success': False,
+                'id': None,
+                'message': f'Source rule #{source_rule_id} not found'
+            }
+        
+        # Determine approval status for new rule
+        if copy_approval and source_rule.get('is_approved'):
+            new_is_approved = 1
+            new_approved_by = approver_employee_id
+        else:
+            new_is_approved = 0
+            new_approved_by = None
+        
+        # Insert new rule
+        query = """
+            INSERT INTO sales_split_by_customer_product (
+                customer_id, 
+                product_id, 
+                sale_person_id, 
+                split_percentage,
+                valid_from, 
+                valid_to, 
+                is_approved,
+                approved_by,
+                created_by, 
+                created_date, 
+                version, 
+                delete_flag
+            ) VALUES (
+                :customer_id,
+                :product_id,
+                :sale_person_id,
+                :split_percentage,
+                :valid_from,
+                :valid_to,
+                :is_approved,
+                :approved_by,
+                :created_by,
+                NOW(),
+                0,
+                0
+            )
+        """
+        
+        params = {
+            'customer_id': source_rule['customer_id'],
+            'product_id': source_rule['product_id'],
+            'sale_person_id': source_rule['sale_person_id'],
+            'split_percentage': source_rule['split_percentage'],
+            'valid_from': new_valid_from,
+            'valid_to': new_valid_to,
+            'is_approved': new_is_approved,
+            'approved_by': new_approved_by,
+            'created_by': self.user_id
+        }
+        
+        result = self._execute_insert(query, params, f"copy_rule_{source_rule_id}_to_new_period")
+        
+        if result['success']:
+            result['source_rule_id'] = source_rule_id
+            result['message'] = f"Copied rule #{source_rule_id} → #{result['id']}"
+        
+        return result
+    
+    def bulk_copy_rules_to_new_period(
+        self,
+        source_rule_ids: List[int],
+        new_valid_from: date,
+        new_valid_to: date = None,
+        copy_approval: bool = False,
+        approver_employee_id: int = None,
+        include_warnings: bool = True
+    ) -> Dict:
+        """
+        Bulk copy multiple rules to a new period.
+        
+        v2.2.0: New method for bulk Copy to New Period feature.
+        
+        Args:
+            source_rule_ids: List of rule IDs to copy
+            new_valid_from: New period start date
+            new_valid_to: New period end date
+            copy_approval: If True, copy approval status from source
+            approver_employee_id: Employee ID for approval attribution
+            include_warnings: If True, also copy rules with warnings
+            
+        Returns:
+            Dict with success_count, created_ids, skipped_count, etc.
+        """
+        if not source_rule_ids:
+            return {
+                'success': True,
+                'success_count': 0,
+                'created_ids': [],
+                'skipped_count': 0,
+                'skipped_details': [],
+                'error_count': 0,
+                'error_details': [],
+                'message': 'No rules to copy'
+            }
+        
+        # Pre-validate all rules
+        validation = self.validate_copy_to_period(source_rule_ids, new_valid_from, new_valid_to)
+        
+        # If there are errors (not warnings), handle them
+        if validation['error_count'] > 0 and validation['valid_count'] == 0 and validation['warning_count'] == 0:
+            return {
+                'success': False,
+                'success_count': 0,
+                'created_ids': [],
+                'skipped_count': 0,
+                'skipped_details': [],
+                'error_count': validation['error_count'],
+                'error_details': [d for d in validation['details'] if d['status'] == 'error'],
+                'message': 'All rules failed validation'
+            }
+        
+        # Determine which rules to process
+        rules_to_copy = []
+        skipped = []
+        
+        for detail in validation['details']:
+            if detail['status'] == 'valid':
+                rules_to_copy.append(detail['rule_id'])
+            elif detail['status'] == 'warning':
+                if include_warnings:
+                    rules_to_copy.append(detail['rule_id'])
+                else:
+                    skipped.append({
+                        'rule_id': detail['rule_id'],
+                        'reason': detail['message']
+                    })
+            else:  # error
+                skipped.append({
+                    'rule_id': detail['rule_id'],
+                    'reason': detail['message']
+                })
+        
+        # Copy each rule
+        created_ids = []
+        errors = []
+        
+        for rule_id in rules_to_copy:
+            result = self.copy_rule_to_new_period(
+                source_rule_id=rule_id,
+                new_valid_from=new_valid_from,
+                new_valid_to=new_valid_to,
+                copy_approval=copy_approval,
+                approver_employee_id=approver_employee_id
+            )
+            
+            if result['success']:
+                created_ids.append(result['id'])
+            else:
+                errors.append({
+                    'rule_id': rule_id,
+                    'reason': result['message']
+                })
+        
+        success_count = len(created_ids)
+        
+        return {
+            'success': success_count > 0,
+            'success_count': success_count,
+            'created_ids': created_ids,
+            'skipped_count': len(skipped),
+            'skipped_details': skipped,
+            'error_count': len(errors),
+            'error_details': errors,
+            'message': f"Created {success_count} new rule(s)" + 
+                      (f", skipped {len(skipped)}" if skipped else "") +
+                      (f", {len(errors)} error(s)" if errors else "")
+        }
+    
+    # =========================================================================
     # HELPER METHODS
     # =========================================================================
     

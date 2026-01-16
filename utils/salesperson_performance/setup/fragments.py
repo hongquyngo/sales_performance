@@ -1527,6 +1527,14 @@ def _render_split_data_table(
                         else:
                             st.button("⏳ Disapprove", use_container_width=True, disabled=True,
                                      help="Not approved yet", key="sp_dt_disapprove_dis")
+                
+                # v2.2.0: Copy to New Period button for single rule
+                if can_modify:
+                    st.divider()
+                    copy_col1, copy_col2, copy_col3 = st.columns([1, 1, 2])
+                    with copy_col1:
+                        if st.button("📋 Copy to New Period", use_container_width=True, key="sp_dt_copy_period"):
+                            _copy_to_period_dialog(rule_id=selected_rule_id)
             
             # Multi selection: Show bulk actions only
             else:
@@ -1765,6 +1773,15 @@ def _render_split_data_table(
                             else:
                                 st.button("📊 Apply Split %", type="primary", disabled=True,
                                          key="sp_dt_bulk_split_dis", use_container_width=True)
+                    
+                    # v2.2.0: Bulk Copy to New Period
+                    with upd_col3:
+                        if st.button(
+                            f"📋 Copy to New Period ({selected_count})",
+                            use_container_width=True,
+                            key="sp_dt_bulk_copy_period"
+                        ):
+                            _bulk_copy_to_period_dialog(list(valid_selected))
                 
                 if not can_approve and not can_edit_base:
                     st.info("💡 Select a single rule to view details")
@@ -2000,6 +2017,360 @@ def _edit_split_rule_dialog(rule_id: int):
         editable_employee_ids=editable_employee_ids,
         access_level=access_level
     )
+
+
+# =============================================================================
+# COPY TO NEW PERIOD DIALOGS (v2.2.0 - NEW)
+# =============================================================================
+
+@st.dialog("📋 Copy Rule to New Period", width="large")
+def _copy_to_period_dialog(rule_id: int):
+    """
+    Dialog for copying a single split rule to a new period.
+    
+    v2.2.0: NEW - Single rule copy to new period.
+    
+    Args:
+        rule_id: ID of rule to copy
+    """
+    ctx = st.session_state.get('_split_dialog_context', {})
+    user_id = ctx.get('user_id')
+    can_approve = ctx.get('can_approve', False)
+    access_level = ctx.get('access_level', 'self')
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    # Get rule details
+    rule = setup_queries.get_rule_details(rule_id)
+    
+    if rule is None:
+        st.error(f"Rule #{rule_id} not found")
+        return
+    
+    # Header info
+    st.markdown("""
+    ℹ️ Create a **NEW** rule with same details but different period.  
+    Original rule will **NOT** be modified.
+    """)
+    
+    st.divider()
+    
+    # Original Rule Info
+    st.markdown("##### 📌 Original Rule")
+    
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(f"**👤 Salesperson:** {rule['salesperson_name']}")
+            st.markdown(f"**🏢 Customer:** {rule['customer_display']}")
+        
+        with col2:
+            st.markdown(f"**📦 Product:** {rule['product_display']}")
+            st.markdown(f"**📊 Split:** {rule['split_percentage']:.0f}%")
+        
+        # Period and approval
+        original_period = f"{rule['valid_from']} → {rule['valid_to'] or 'No End'}"
+        approval_status = "✅ Approved" if rule.get('is_approved') else "⏳ Pending"
+        if rule.get('approved_by_name'):
+            approval_status += f" (by {rule['approved_by_name']})"
+        
+        st.caption(f"📅 Period: {original_period} | {approval_status}")
+    
+    st.divider()
+    
+    # New Period Section
+    st.markdown("##### 📅 New Period")
+    
+    col_from, col_to = st.columns(2)
+    
+    with col_from:
+        new_valid_from = st.date_input(
+            "Valid From *",
+            value=date(date.today().year + 1, 1, 1),
+            key="copy_single_valid_from"
+        )
+    
+    with col_to:
+        new_valid_to = st.date_input(
+            "Valid To",
+            value=date(date.today().year + 1, 12, 31),
+            key="copy_single_valid_to"
+        )
+    
+    st.divider()
+    
+    # Options Section - Only for admin/sales_manager
+    user_role = st.session_state.get('user_role', 'viewer')
+    user_role_lower = str(user_role).lower() if user_role else ''
+    can_choose_approval = user_role_lower in ['admin', 'sales_manager']
+    
+    copy_approval = False
+    if can_choose_approval and rule.get('is_approved'):
+        st.markdown("##### ⚙️ Options")
+        copy_approval = st.checkbox(
+            "Copy approval status (new rule will be Approved)",
+            value=False,
+            key="copy_single_approval",
+            help="If unchecked, new rule will be Pending"
+        )
+        if not copy_approval:
+            st.caption("ℹ️ New rule will be created as **Pending** (requires approval)")
+    else:
+        st.caption("ℹ️ New rule will be created as **Pending** (requires approval)")
+    
+    st.divider()
+    
+    # Validation Section
+    st.markdown("##### 🔍 Validation")
+    
+    validation = setup_queries.validate_copy_to_period(
+        source_rule_ids=[rule_id],
+        new_valid_from=new_valid_from,
+        new_valid_to=new_valid_to
+    )
+    
+    if validation['details']:
+        detail = validation['details'][0]
+        
+        if detail['status'] == 'valid':
+            st.success("✅ Ready to create")
+        elif detail['status'] == 'warning':
+            st.warning(f"⚠️ Warnings: {detail['message']}")
+            st.caption("You can still proceed, but please review the warnings above.")
+        else:
+            st.error(f"❌ Error: {detail['message']}")
+    
+    st.divider()
+    
+    # Action Buttons
+    col_cancel, col_create = st.columns(2)
+    
+    with col_cancel:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()
+    
+    with col_create:
+        can_proceed = validation['error_count'] == 0
+        
+        if st.button(
+            "📋 Create New Rule",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_proceed
+        ):
+            approver_id = st.session_state.get('employee_id') if copy_approval else None
+            
+            with st.spinner("Creating new rule..."):
+                result = setup_queries.copy_rule_to_new_period(
+                    source_rule_id=rule_id,
+                    new_valid_from=new_valid_from,
+                    new_valid_to=new_valid_to,
+                    copy_approval=copy_approval,
+                    approver_employee_id=approver_id
+                )
+            
+            if result['success']:
+                _set_notification(
+                    '_split_rules_notification', 'success',
+                    f"Created new rule #{result['id']}",
+                    f"Copied from #{rule_id} | Period: {new_valid_from} → {new_valid_to}",
+                    affected_ids=[result['id']]
+                )
+                _bump_data_version('split')
+                st.rerun()
+            else:
+                st.error(f"❌ {result['message']}")
+
+
+@st.dialog("📋 Copy Rules to New Period", width="large")
+def _bulk_copy_to_period_dialog(rule_ids: List[int]):
+    """
+    Dialog for bulk copying multiple split rules to a new period.
+    
+    v2.2.0: NEW - Bulk copy to new period.
+    
+    Args:
+        rule_ids: List of rule IDs to copy
+    """
+    ctx = st.session_state.get('_split_dialog_context', {})
+    user_id = ctx.get('user_id')
+    can_approve = ctx.get('can_approve', False)
+    access_level = ctx.get('access_level', 'self')
+    
+    setup_queries = SalespersonSetupQueries(user_id=user_id)
+    
+    rule_count = len(rule_ids)
+    
+    # Header
+    st.markdown(f"""
+    ℹ️ Create **{rule_count} NEW** rules with same details but different period.  
+    Original rules will **NOT** be modified.
+    """)
+    
+    st.divider()
+    
+    # New Period Section
+    st.markdown("##### 📅 New Period")
+    
+    col_from, col_to = st.columns(2)
+    
+    with col_from:
+        new_valid_from = st.date_input(
+            "Valid From *",
+            value=date(date.today().year + 1, 1, 1),
+            key="copy_bulk_valid_from"
+        )
+    
+    with col_to:
+        new_valid_to = st.date_input(
+            "Valid To",
+            value=date(date.today().year + 1, 12, 31),
+            key="copy_bulk_valid_to"
+        )
+    
+    st.divider()
+    
+    # Options Section - Only for admin/sales_manager
+    user_role = st.session_state.get('user_role', 'viewer')
+    user_role_lower = str(user_role).lower() if user_role else ''
+    can_choose_approval = user_role_lower in ['admin', 'sales_manager']
+    
+    copy_approval = False
+    if can_choose_approval:
+        st.markdown("##### ⚙️ Options")
+        copy_approval = st.checkbox(
+            "Copy approval status from original rules",
+            value=False,
+            key="copy_bulk_approval",
+            help="If unchecked, all new rules will be Pending"
+        )
+        if not copy_approval:
+            st.caption("ℹ️ All new rules will be created as **Pending**")
+    else:
+        st.caption("ℹ️ All new rules will be created as **Pending** (requires approval)")
+    
+    st.divider()
+    
+    # Validation Section
+    st.markdown("##### 🔍 Preview & Validation")
+    
+    validation = setup_queries.validate_copy_to_period(
+        source_rule_ids=rule_ids,
+        new_valid_from=new_valid_from,
+        new_valid_to=new_valid_to
+    )
+    
+    # Summary metrics
+    sum_col1, sum_col2, sum_col3 = st.columns(3)
+    
+    with sum_col1:
+        st.metric("✅ Ready", validation['valid_count'])
+    with sum_col2:
+        st.metric("⚠️ Warnings", validation['warning_count'])
+    with sum_col3:
+        st.metric("❌ Errors", validation['error_count'])
+    
+    # Details table
+    if validation['details']:
+        with st.expander(f"📋 View Details ({len(validation['details'])} rules)", expanded=False):
+            for detail in validation['details']:
+                rule_info = detail.get('rule_info', {})
+                status_icon = "✅" if detail['status'] == 'valid' else ("⚠️" if detail['status'] == 'warning' else "❌")
+                
+                cols = st.columns([1, 2, 2, 3])
+                with cols[0]:
+                    st.markdown(f"{status_icon} #{detail['rule_id']}")
+                with cols[1]:
+                    st.caption(rule_info.get('salesperson_name', 'N/A'))
+                with cols[2]:
+                    customer_short = rule_info.get('customer_display', 'N/A')[:25] + "..." if len(rule_info.get('customer_display', '')) > 25 else rule_info.get('customer_display', 'N/A')
+                    st.caption(customer_short)
+                with cols[3]:
+                    st.caption(detail['message'][:50] + "..." if len(detail['message']) > 50 else detail['message'])
+    
+    # Warning details
+    warning_details = [d for d in validation['details'] if d['status'] == 'warning']
+    if warning_details:
+        with st.expander(f"⚠️ Warnings ({len(warning_details)})", expanded=True):
+            for wd in warning_details[:5]:
+                rule_info = wd.get('rule_info', {})
+                st.caption(f"• **#{wd['rule_id']}** ({rule_info.get('salesperson_name', 'N/A')}): {wd['message']}")
+            if len(warning_details) > 5:
+                st.caption(f"... and {len(warning_details) - 5} more")
+    
+    st.divider()
+    
+    # Include warnings checkbox
+    include_warnings = True
+    if validation['warning_count'] > 0:
+        include_warnings = st.checkbox(
+            f"Include {validation['warning_count']} rules with warnings",
+            value=True,
+            key="copy_bulk_include_warnings"
+        )
+    
+    # Calculate how many will be created
+    if include_warnings:
+        to_create_count = validation['valid_count'] + validation['warning_count']
+    else:
+        to_create_count = validation['valid_count']
+    
+    st.divider()
+    
+    # Action Buttons
+    col_cancel, col_create = st.columns(2)
+    
+    with col_cancel:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.session_state['sp_split_selected_ids'] = set()
+            st.rerun()
+    
+    with col_create:
+        can_proceed = to_create_count > 0
+        
+        button_text = f"📋 Create {to_create_count} Rules"
+        if validation['warning_count'] > 0 and not include_warnings:
+            button_text = f"📋 Create {to_create_count} Rules (skip {validation['warning_count']} warnings)"
+        
+        if st.button(
+            button_text,
+            type="primary",
+            use_container_width=True,
+            disabled=not can_proceed
+        ):
+            approver_id = st.session_state.get('employee_id') if copy_approval else None
+            
+            progress_bar = st.progress(0, text="Creating rules...")
+            
+            with st.spinner(f"Creating {to_create_count} rules..."):
+                result = setup_queries.bulk_copy_rules_to_new_period(
+                    source_rule_ids=rule_ids,
+                    new_valid_from=new_valid_from,
+                    new_valid_to=new_valid_to,
+                    copy_approval=copy_approval,
+                    approver_employee_id=approver_id,
+                    include_warnings=include_warnings
+                )
+            
+            progress_bar.empty()
+            
+            if result['success']:
+                _set_notification(
+                    '_split_rules_notification', 'success',
+                    f"Created {result['success_count']} new rule(s)",
+                    f"Period: {new_valid_from} → {new_valid_to}" + 
+                    (f" | Skipped: {result['skipped_count']}" if result['skipped_count'] > 0 else ""),
+                    affected_ids=result['created_ids']
+                )
+                _bump_data_version('split')
+                st.session_state['sp_split_selected_ids'] = set()
+                st.rerun()
+            else:
+                st.error(f"❌ {result['message']}")
+                if result['error_details']:
+                    for err in result['error_details'][:3]:
+                        st.caption(f"• #{err['rule_id']}: {err['reason']}")
 
 
 def _render_split_form_content(
