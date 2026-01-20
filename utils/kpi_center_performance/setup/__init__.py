@@ -47,4 +47,4 @@ __all__ = [
     'KPI_ICONS',
 ]
 
-__version__ = '2.11.0'
+__version__ = '2.12.0'

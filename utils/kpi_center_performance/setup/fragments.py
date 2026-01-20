@@ -2,6 +2,7 @@
 """
 UI Fragments for Setup Tab - KPI Center Performance
 
+v2.12.0: Converted KPI Assignments and Hierarchy CRUD to dialog fashion
 v2.10.0: Integrated with permissions.py for granular CRUD control
 """
 
@@ -2581,7 +2582,353 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
 
 
 # =============================================================================
-# KPI ASSIGNMENTS SECTION (v2.10.1 - Removed @st.fragment, called from parent fragment)
+# ADD ASSIGNMENT DIALOG (v2.12.0 - Dialog fashion)
+# =============================================================================
+
+@st.dialog("➕ Add KPI Assignment", width="large")
+def _add_assignment_dialog():
+    """
+    Dialog for adding a new KPI assignment.
+    
+    v2.12.0: NEW - Converted from inline form to dialog for cleaner UX.
+    """
+    # Get context from session state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    selected_year = st.session_state.get('_assignment_dialog_year', date.today().year)
+    default_center_id = st.session_state.get('_assignment_dialog_center_id')
+    
+    # Initialize queries
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Form layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # KPI Center
+        centers_df = setup_queries.get_kpi_centers_for_dropdown()
+        
+        default_idx = 0
+        if default_center_id and not centers_df.empty:
+            matches = centers_df[centers_df['kpi_center_id'] == default_center_id]
+            if not matches.empty:
+                default_idx = centers_df.index.tolist().index(matches.index[0])
+        
+        kpi_center_id = st.selectbox(
+            "KPI Center *",
+            options=centers_df['kpi_center_id'].tolist(),
+            index=default_idx,
+            format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
+            key="dialog_assign_center"
+        )
+        
+        # KPI Type
+        kpi_types_df = setup_queries.get_kpi_types()
+        
+        kpi_type_id = st.selectbox(
+            "KPI Type *",
+            options=kpi_types_df['kpi_type_id'].tolist(),
+            format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
+            key="dialog_assign_type"
+        )
+    
+    with col2:
+        # Get UOM for selected KPI
+        selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
+        selected_uom = selected_kpi['unit_of_measure']
+        
+        # Annual target
+        annual_target = st.number_input(
+            f"Annual Target ({selected_uom}) *",
+            min_value=0,
+            value=0,
+            step=10000 if selected_uom == 'USD' else 1,
+            key="dialog_assign_target"
+        )
+        
+        if selected_uom == 'USD' and annual_target > 0:
+            st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+        
+        # Weight
+        weight = st.number_input(
+            "Weight % *",
+            min_value=0,
+            max_value=100,
+            value=0,
+            step=5,
+            key="dialog_assign_weight"
+        )
+    
+    # Validation
+    st.divider()
+    st.markdown("##### 🔍 Validation")
+    
+    validation = setup_queries.validate_assignment_weight(
+        kpi_center_id=kpi_center_id,
+        year=selected_year,
+        new_weight=weight,
+        exclude_assignment_id=None
+    )
+    
+    val_col1, val_col2, val_col3 = st.columns(3)
+    
+    with val_col1:
+        st.metric("Current Weight Sum", f"{validation['current_total']}%")
+    
+    with val_col2:
+        delta_color = "inverse" if validation['new_total'] > 100 else "off"
+        st.metric(
+            "After Save",
+            f"{validation['new_total']}%",
+            delta=f"+{weight}%",
+            delta_color=delta_color
+        )
+    
+    with val_col3:
+        if validation['new_total'] == 100:
+            st.success("✅ Perfect!")
+        elif validation['new_total'] > 100:
+            st.error(f"🔴 Over by {validation['new_total'] - 100}%")
+        else:
+            st.warning(f"⚠️ {100 - validation['new_total']}% remaining")
+    
+    # Notes
+    notes = st.text_input(
+        "Notes (optional)",
+        value="",
+        key="dialog_assign_notes"
+    )
+    
+    # Validation errors
+    can_save = True
+    if annual_target <= 0:
+        st.error("Annual target must be > 0")
+        can_save = False
+    if weight <= 0:
+        st.error("Weight must be > 0")
+        can_save = False
+    
+    # Save button
+    st.divider()
+    if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
+        result = setup_queries.create_assignment(
+            kpi_center_id=kpi_center_id,
+            kpi_type_id=kpi_type_id,
+            year=selected_year,
+            annual_target_value=annual_target,
+            weight=weight,
+            notes=notes if notes else None
+        )
+        
+        if result['success']:
+            st.toast("✅ Created successfully!", icon="✅")
+            st.rerun()  # Close dialog and refresh
+        else:
+            st.error(result['message'])
+
+
+# =============================================================================
+# EDIT ASSIGNMENT DIALOG (v2.12.0 - Dialog fashion)
+# =============================================================================
+
+@st.dialog("✏️ Edit KPI Assignment", width="large")
+def _edit_assignment_dialog():
+    """
+    Dialog for editing an existing KPI assignment.
+    
+    v2.12.0: NEW - Converted from inline form to dialog for cleaner UX.
+    """
+    # Get context from session state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    assignment_id = st.session_state.get('_edit_assignment_id')
+    selected_year = st.session_state.get('_assignment_dialog_year', date.today().year)
+    
+    if not assignment_id:
+        st.error("No assignment selected for editing. Please close this dialog and try again.")
+        return
+    
+    # Initialize queries
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Get existing assignment data
+    df = setup_queries.get_kpi_assignments()
+    df = df[df['assignment_id'] == assignment_id]
+    
+    if df.empty:
+        st.error(f"Assignment #{assignment_id} not found. Please close this dialog and try again.")
+        return
+    
+    existing = df.iloc[0]
+    
+    # Header info
+    st.markdown(f"**Assignment #{assignment_id}**")
+    st.caption(f"📍 {existing['kpi_center_name']} • {existing['kpi_name']} • Year {existing['year']}")
+    
+    st.divider()
+    
+    # Form layout - KPI Center and Type are read-only in edit mode
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # KPI Center (read-only)
+        center_display = f"{KPI_TYPE_ICONS.get(existing['kpi_center_type'], '📁')} {existing['kpi_center_name']}"
+        st.text_input("KPI Center", value=center_display, disabled=True)
+        
+        # KPI Type (read-only)
+        kpi_display = f"{KPI_ICONS.get(existing['kpi_name'].lower().replace(' ', '_'), '📋')} {existing['kpi_name']}"
+        st.text_input("KPI Type", value=kpi_display, disabled=True)
+    
+    with col2:
+        # Get UOM
+        selected_uom = existing['unit_of_measure']
+        
+        # Annual target
+        default_target = int(existing['annual_target_value_numeric'])
+        annual_target = st.number_input(
+            f"Annual Target ({selected_uom}) *",
+            min_value=0,
+            value=default_target,
+            step=10000 if selected_uom == 'USD' else 1,
+            key="dialog_edit_assign_target"
+        )
+        
+        if selected_uom == 'USD' and annual_target > 0:
+            st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
+        
+        # Weight
+        default_weight = int(existing['weight_numeric'])
+        weight = st.number_input(
+            "Weight % *",
+            min_value=0,
+            max_value=100,
+            value=default_weight,
+            step=5,
+            key="dialog_edit_assign_weight"
+        )
+    
+    # Validation
+    st.divider()
+    st.markdown("##### 🔍 Validation")
+    
+    validation = setup_queries.validate_assignment_weight(
+        kpi_center_id=existing['kpi_center_id'],
+        year=existing['year'],
+        new_weight=weight,
+        exclude_assignment_id=assignment_id
+    )
+    
+    val_col1, val_col2, val_col3 = st.columns(3)
+    
+    with val_col1:
+        st.metric("Current Weight Sum", f"{validation['current_total']}%")
+    
+    with val_col2:
+        delta_color = "inverse" if validation['new_total'] > 100 else "off"
+        st.metric(
+            "After Save",
+            f"{validation['new_total']}%",
+            delta=f"+{weight}%",
+            delta_color=delta_color
+        )
+    
+    with val_col3:
+        if validation['new_total'] == 100:
+            st.success("✅ Perfect!")
+        elif validation['new_total'] > 100:
+            st.error(f"🔴 Over by {validation['new_total'] - 100}%")
+        else:
+            st.warning(f"⚠️ {100 - validation['new_total']}% remaining")
+    
+    # Notes
+    notes = st.text_input(
+        "Notes (optional)",
+        value=existing['notes'] if pd.notna(existing.get('notes')) else "",
+        key="dialog_edit_assign_notes"
+    )
+    
+    # Validation errors
+    can_save = True
+    if annual_target <= 0:
+        st.error("Annual target must be > 0")
+        can_save = False
+    if weight <= 0:
+        st.error("Weight must be > 0")
+        can_save = False
+    
+    # Save button
+    st.divider()
+    if st.button("💾 Update", type="primary", use_container_width=True, disabled=not can_save):
+        result = setup_queries.update_assignment(
+            assignment_id=assignment_id,
+            annual_target_value=annual_target,
+            weight=weight,
+            notes=notes if notes else None
+        )
+        
+        if result['success']:
+            st.toast("✅ Updated successfully!", icon="✅")
+            st.rerun()  # Close dialog and refresh
+        else:
+            st.error(result['message'])
+
+
+# =============================================================================
+# DELETE ASSIGNMENT DIALOG (v2.12.0 - Confirmation dialog)
+# =============================================================================
+
+@st.dialog("🗑️ Delete KPI Assignment")
+def _delete_assignment_dialog():
+    """
+    Confirmation dialog for deleting a KPI assignment.
+    
+    v2.12.0: NEW - Separate confirmation dialog for better UX.
+    """
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    assignment_id = st.session_state.get('_delete_assignment_id')
+    
+    if not assignment_id:
+        st.error("No assignment selected for deletion.")
+        return
+    
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Get assignment info
+    df = setup_queries.get_kpi_assignments()
+    df = df[df['assignment_id'] == assignment_id]
+    
+    if df.empty:
+        st.error(f"Assignment #{assignment_id} not found.")
+        return
+    
+    existing = df.iloc[0]
+    
+    st.warning(f"⚠️ Are you sure you want to delete this assignment?")
+    
+    st.markdown(f"""
+    **Assignment #{assignment_id}**
+    - KPI Center: {existing['kpi_center_name']}
+    - KPI Type: {existing['kpi_name']}
+    - Target: {format_currency(existing['annual_target_value_numeric']) if existing['unit_of_measure'] == 'USD' else f"{existing['annual_target_value_numeric']:,.0f}"}
+    - Weight: {existing['weight_numeric']:.0f}%
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
+            result = setup_queries.delete_assignment(assignment_id)
+            if result['success']:
+                st.toast("🗑️ Deleted successfully!", icon="🗑️")
+                st.rerun()
+            else:
+                st.error(result['message'])
+    
+    with col2:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.rerun()
+
+
+# =============================================================================
+# KPI ASSIGNMENTS SECTION (v2.12.0 - Updated with dialogs)
 # =============================================================================
 
 def kpi_assignments_section(
@@ -2595,6 +2942,7 @@ def kpi_assignments_section(
     """
     KPI Assignments sub-tab - styled like KPI & Targets tab.
     
+    v2.12.0: Updated with dialog fashion for CRUD operations.
     v2.10.1: Removed @st.fragment decorator to fix nested fragment bug.
     v2.10.0: Updated with granular permissions (can_create, can_edit, can_delete)
     """
@@ -2633,11 +2981,13 @@ def kpi_assignments_section(
         )
     
     with col3:
-        # v2.10.0: Use can_create for Add button
+        # v2.12.0: Use dialog for Add Assignment
         if can_create:
             st.write("")  # Spacer
             if st.button("➕ Add Assignment", type="primary", use_container_width=True):
-                st.session_state['show_add_assignment_form'] = True
+                st.session_state['_assignment_dialog_year'] = selected_year
+                st.session_state['_assignment_dialog_center_id'] = None
+                _add_assignment_dialog()
     
     # -------------------------------------------------------------------------
     # ISSUES SECTION (Enhanced v2.4.0 - Leaf/Parent distinction with rollup)
@@ -2688,9 +3038,9 @@ def kpi_assignments_section(
                                 key=f"add_assign_leaf_{center['id']}", 
                                 use_container_width=True
                             ):
-                                st.session_state['add_assignment_center_id'] = center['id']
-                                st.session_state['show_add_assignment_form'] = True
-                                st.rerun(scope="fragment")
+                                st.session_state['_assignment_dialog_year'] = selected_year
+                                st.session_state['_assignment_dialog_center_id'] = center['id']
+                                _add_assignment_dialog()
                 
                 st.divider()
             
@@ -2716,9 +3066,9 @@ def kpi_assignments_section(
                                 key=f"add_assign_parent_{center['id']}", 
                                 use_container_width=True
                             ):
-                                st.session_state['add_assignment_center_id'] = center['id']
-                                st.session_state['show_add_assignment_form'] = True
-                                st.rerun(scope="fragment")
+                                st.session_state['_assignment_dialog_year'] = selected_year
+                                st.session_state['_assignment_dialog_center_id'] = center['id']
+                                _add_assignment_dialog()
                 
                 st.divider()
             
@@ -2748,9 +3098,9 @@ def kpi_assignments_section(
                                 use_container_width=True,
                                 help="Add direct assignment to override rollup"
                             ):
-                                st.session_state['add_assignment_center_id'] = center['id']
-                                st.session_state['show_add_assignment_form'] = True
-                                st.rerun(scope="fragment")
+                                st.session_state['_assignment_dialog_year'] = selected_year
+                                st.session_state['_assignment_dialog_center_id'] = center['id']
+                                _add_assignment_dialog()
                         
                         # Show rollup targets
                         rollup_data = setup_queries.get_rollup_targets_for_center(center['id'], selected_year)
@@ -2809,16 +3159,6 @@ def kpi_assignments_section(
         st.success(f"✅ All {selected_year} assignments are healthy!")
     
     st.divider()
-    
-    # -------------------------------------------------------------------------
-    # ADD/EDIT FORMS
-    # -------------------------------------------------------------------------
-    if st.session_state.get('show_add_assignment_form', False):
-        _render_assignment_form(setup_queries, selected_year, mode='add')
-    
-    if st.session_state.get('edit_assignment_id'):
-        _render_assignment_form(setup_queries, selected_year, mode='edit',
-                               assignment_id=st.session_state['edit_assignment_id'])
     
     # -------------------------------------------------------------------------
     # KPI TYPE SUMMARY - Like Overview tab metrics
@@ -2911,7 +3251,7 @@ def kpi_assignments_section(
             
             # KPI rows
             for _, kpi in center_data.iterrows():
-                _render_kpi_assignment_row(kpi, can_edit, setup_queries)
+                _render_kpi_assignment_row(kpi, can_edit, can_delete, setup_queries, selected_year)
             
             # Add KPI button
             if can_edit:
@@ -2920,13 +3260,17 @@ def kpi_assignments_section(
                     key=f"add_kpi_btn_{center_id}",
                     use_container_width=True
                 ):
-                    st.session_state['add_assignment_center_id'] = center_id
-                    st.session_state['show_add_assignment_form'] = True
-                    st.rerun(scope="fragment")
+                    st.session_state['_assignment_dialog_year'] = selected_year
+                    st.session_state['_assignment_dialog_center_id'] = center_id
+                    _add_assignment_dialog()
 
 
-def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: SetupQueries):
-    """Render a single KPI assignment row - Updated with creator/modifier info."""
+def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, can_delete: bool, setup_queries: SetupQueries, selected_year: int):
+    """
+    Render a single KPI assignment row - Updated with dialog triggers.
+    
+    v2.12.0: Updated to use dialogs instead of session state forms.
+    """
     
     kpi_lower = kpi['kpi_name'].lower().replace(' ', '_')
     icon = KPI_ICONS.get(kpi_lower, '📋')
@@ -2962,191 +3306,196 @@ def _render_kpi_assignment_row(kpi: pd.Series, can_edit: bool, setup_queries: Se
             st.caption(f"👤 {created_by}")
     
     with col5:
-        if can_edit:
+        if can_edit or can_delete:
             btn_col1, btn_col2 = st.columns(2)
             with btn_col1:
-                if st.button("✏️", key=f"edit_assign_{kpi['assignment_id']}", help="Edit"):
-                    st.session_state['edit_assignment_id'] = kpi['assignment_id']
-                    st.rerun(scope="fragment")
+                if can_edit and st.button("✏️", key=f"edit_assign_{kpi['assignment_id']}", help="Edit"):
+                    st.session_state['_edit_assignment_id'] = kpi['assignment_id']
+                    st.session_state['_assignment_dialog_year'] = selected_year
+                    _edit_assignment_dialog()
             with btn_col2:
-                if st.button("🗑️", key=f"del_assign_{kpi['assignment_id']}", help="Delete"):
-                    result = setup_queries.delete_assignment(kpi['assignment_id'])
-                    if result['success']:
-                        st.rerun(scope="fragment")
-
-
-def _render_assignment_form(setup_queries: SetupQueries, year: int,
-                           mode: str = 'add', assignment_id: int = None):
-    """Render Add/Edit assignment form."""
-    
-    existing = None
-    if mode == 'edit' and assignment_id:
-        df = setup_queries.get_kpi_assignments()
-        df = df[df['assignment_id'] == assignment_id]
-        if not df.empty:
-            existing = df.iloc[0]
-        else:
-            st.error("Assignment not found")
-            st.session_state['edit_assignment_id'] = None
-            return
-    
-    title = "✏️ Edit KPI Assignment" if mode == 'edit' else "➕ Add KPI Assignment"
-    
-    with st.container(border=True):
-        st.markdown(f"### {title}")
-        
-        with st.form(f"{mode}_assignment_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # KPI Center
-                centers_df = setup_queries.get_kpi_centers_for_dropdown()
-                
-                default_center = st.session_state.get('add_assignment_center_id')
-                if existing is not None:
-                    default_center = existing['kpi_center_id']
-                
-                default_idx = 0
-                if default_center and not centers_df.empty:
-                    matches = centers_df[centers_df['kpi_center_id'] == default_center]
-                    if not matches.empty:
-                        default_idx = centers_df.index.tolist().index(matches.index[0])
-                
-                kpi_center_id = st.selectbox(
-                    "KPI Center *",
-                    options=centers_df['kpi_center_id'].tolist(),
-                    index=default_idx,
-                    format_func=lambda x: f"{KPI_TYPE_ICONS.get(centers_df[centers_df['kpi_center_id'] == x]['kpi_type'].iloc[0], '📁')} {centers_df[centers_df['kpi_center_id'] == x]['kpi_center_name'].iloc[0]}",
-                    key=f"{mode}_assign_center",
-                    disabled=(mode == 'edit')
-                )
-                
-                # KPI Type
-                kpi_types_df = setup_queries.get_kpi_types()
-                
-                default_type_idx = 0
-                if existing is not None:
-                    matches = kpi_types_df[kpi_types_df['kpi_type_id'] == existing['kpi_type_id']]
-                    if not matches.empty:
-                        default_type_idx = kpi_types_df.index.tolist().index(matches.index[0])
-                
-                kpi_type_id = st.selectbox(
-                    "KPI Type *",
-                    options=kpi_types_df['kpi_type_id'].tolist(),
-                    index=default_type_idx,
-                    format_func=lambda x: f"{KPI_ICONS.get(kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0].lower().replace(' ', '_'), '📋')} {kpi_types_df[kpi_types_df['kpi_type_id'] == x]['kpi_name'].iloc[0]}",
-                    key=f"{mode}_assign_type",
-                    disabled=(mode == 'edit')
-                )
-            
-            with col2:
-                # Get UOM
-                selected_kpi = kpi_types_df[kpi_types_df['kpi_type_id'] == kpi_type_id].iloc[0]
-                selected_uom = selected_kpi['unit_of_measure']
-                
-                # Annual target
-                default_target = int(existing['annual_target_value_numeric']) if existing is not None else 0
-                annual_target = st.number_input(
-                    f"Annual Target ({selected_uom}) *",
-                    min_value=0,
-                    value=default_target,
-                    step=10000 if selected_uom == 'USD' else 1,
-                    key=f"{mode}_assign_target"
-                )
-                
-                if selected_uom == 'USD' and annual_target > 0:
-                    st.caption(f"= {format_currency(annual_target / 12)}/month • {format_currency(annual_target / 4)}/quarter")
-                
-                # Weight
-                default_weight = int(existing['weight_numeric']) if existing is not None else 0
-                weight = st.number_input(
-                    "Weight % *",
-                    min_value=0,
-                    max_value=100,
-                    value=default_weight,
-                    step=5,
-                    key=f"{mode}_assign_weight"
-                )
-            
-            # Weight validation
-            validation = setup_queries.validate_assignment_weight(
-                kpi_center_id=kpi_center_id,
-                year=year,
-                new_weight=weight,
-                exclude_assignment_id=assignment_id if mode == 'edit' else None
-            )
-            
-            val_col1, val_col2 = st.columns(2)
-            with val_col1:
-                st.metric("Current Weight Sum", f"{validation['current_total']}%")
-            with val_col2:
-                if validation['new_total'] == 100:
-                    st.success(f"✅ After save: {validation['new_total']}%")
-                elif validation['new_total'] > 100:
-                    st.error(f"🔴 After save: {validation['new_total']}% (over limit!)")
-                else:
-                    st.warning(f"⚠️ After save: {validation['new_total']}% ({100 - validation['new_total']}% remaining)")
-            
-            notes = st.text_input(
-                "Notes (optional)",
-                value=existing['notes'] if existing is not None and pd.notna(existing.get('notes')) else "",
-                key=f"{mode}_assign_notes"
-            )
-            
-            # Buttons
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                submitted = st.form_submit_button(
-                    "💾 Save" if mode == 'add' else "💾 Update",
-                    type="primary",
-                    use_container_width=True
-                )
-            
-            with col_cancel:
-                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
-            
-            if submitted:
-                if annual_target <= 0:
-                    st.error("Annual target must be > 0")
-                elif weight <= 0:
-                    st.error("Weight must be > 0")
-                else:
-                    if mode == 'add':
-                        result = setup_queries.create_assignment(
-                            kpi_center_id=kpi_center_id,
-                            kpi_type_id=kpi_type_id,
-                            year=year,
-                            annual_target_value=annual_target,
-                            weight=weight,
-                            notes=notes if notes else None
-                        )
-                    else:
-                        result = setup_queries.update_assignment(
-                            assignment_id=assignment_id,
-                            annual_target_value=annual_target,
-                            weight=weight,
-                            notes=notes if notes else None
-                        )
-                    
-                    if result['success']:
-                        st.success("Saved!")
-                        st.session_state['show_add_assignment_form'] = False
-                        st.session_state['edit_assignment_id'] = None
-                        st.session_state['add_assignment_center_id'] = None
-                        st.rerun(scope="fragment")
-                    else:
-                        st.error(result['message'])
-            
-            if cancelled:
-                st.session_state['show_add_assignment_form'] = False
-                st.session_state['edit_assignment_id'] = None
-                st.session_state['add_assignment_center_id'] = None
-                st.rerun(scope="fragment")
+                if can_delete and st.button("🗑️", key=f"del_assign_{kpi['assignment_id']}", help="Delete"):
+                    st.session_state['_delete_assignment_id'] = kpi['assignment_id']
+                    _delete_assignment_dialog()
 
 
 # =============================================================================
-# HIERARCHY SECTION (v2.10.1 - Removed @st.fragment, called from parent fragment)
+# ADD KPI CENTER DIALOG (v2.12.0 - Dialog fashion)
+# =============================================================================
+
+@st.dialog("➕ Add KPI Center", width="large")
+def _add_center_dialog():
+    """
+    Dialog for adding a new KPI Center.
+    
+    v2.12.0: NEW - Converted from inline form to dialog for cleaner UX.
+    """
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Form layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        name = st.text_input(
+            "Name *",
+            value="",
+            key="dialog_center_name"
+        )
+    
+    with col2:
+        kpi_type = st.selectbox(
+            "Type *",
+            options=KPI_TYPES,
+            format_func=lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}",
+            key="dialog_center_type"
+        )
+    
+    description = st.text_input(
+        "Description",
+        value="",
+        key="dialog_center_desc"
+    )
+    
+    # Parent selection (filtered by selected type)
+    centers_df = setup_queries.get_kpi_centers_for_dropdown(kpi_type=kpi_type)
+    
+    parent_options = [(0, "No Parent (Root)")] + [
+        (row['kpi_center_id'], f"└ {row['kpi_center_name']}")
+        for _, row in centers_df.iterrows()
+    ]
+    
+    parent_id = st.selectbox(
+        "Parent Center",
+        options=[p[0] for p in parent_options],
+        format_func=lambda x: next((p[1] for p in parent_options if p[0] == x), ""),
+        key="dialog_center_parent"
+    )
+    
+    # Validation
+    can_save = True
+    if not name or not name.strip():
+        st.warning("Name is required")
+        can_save = False
+    
+    # Save button
+    st.divider()
+    if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
+        result = setup_queries.create_kpi_center(
+            name=name.strip(),
+            kpi_type=kpi_type,
+            description=description.strip() if description else None,
+            parent_center_id=parent_id if parent_id > 0 else None
+        )
+        
+        if result['success']:
+            st.toast("✅ Created successfully!", icon="✅")
+            st.rerun()  # Close dialog and refresh
+        else:
+            st.error(result['message'])
+
+
+# =============================================================================
+# EDIT KPI CENTER DIALOG (v2.12.0 - Dialog fashion)
+# =============================================================================
+
+@st.dialog("✏️ Edit KPI Center", width="large")
+def _edit_center_dialog():
+    """
+    Dialog for editing an existing KPI Center.
+    
+    v2.12.0: NEW - Converted from inline form to dialog for cleaner UX.
+    """
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    center_id = st.session_state.get('_edit_center_id')
+    
+    if not center_id:
+        st.error("No center selected for editing. Please close this dialog and try again.")
+        return
+    
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Get existing center data
+    existing = setup_queries.get_kpi_center_detail(center_id)
+    
+    if not existing:
+        st.error(f"Center #{center_id} not found. Please close this dialog and try again.")
+        return
+    
+    # Header info
+    st.markdown(f"**KPI Center #{center_id}**")
+    st.caption(f"📍 {existing['kpi_type']} • {existing.get('description', 'No description')}")
+    
+    st.divider()
+    
+    # Form layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        name = st.text_input(
+            "Name *",
+            value=existing['kpi_center_name'],
+            key="dialog_edit_center_name"
+        )
+    
+    with col2:
+        # Type is read-only in edit mode
+        kpi_type = existing['kpi_type']
+        st.text_input("Type", value=f"{KPI_TYPE_ICONS.get(kpi_type, '📁')} {kpi_type}", disabled=True)
+    
+    description = st.text_input(
+        "Description",
+        value=existing.get('description', '') or '',
+        key="dialog_edit_center_desc"
+    )
+    
+    # Parent selection (filtered by same type, exclude self and descendants)
+    centers_df = setup_queries.get_kpi_centers_for_dropdown(
+        kpi_type=kpi_type,
+        exclude_ids=[center_id]
+    )
+    
+    parent_options = [(0, "No Parent (Root)")] + [
+        (row['kpi_center_id'], f"└ {row['kpi_center_name']}")
+        for _, row in centers_df.iterrows()
+    ]
+    
+    current_parent = existing.get('parent_center_id', 0) or 0
+    default_idx = next((i for i, p in enumerate(parent_options) if p[0] == current_parent), 0)
+    
+    parent_id = st.selectbox(
+        "Parent Center",
+        options=[p[0] for p in parent_options],
+        index=default_idx,
+        format_func=lambda x: next((p[1] for p in parent_options if p[0] == x), ""),
+        key="dialog_edit_center_parent"
+    )
+    
+    # Validation
+    can_save = True
+    if not name or not name.strip():
+        st.warning("Name is required")
+        can_save = False
+    
+    # Save button
+    st.divider()
+    if st.button("💾 Update", type="primary", use_container_width=True, disabled=not can_save):
+        result = setup_queries.update_kpi_center(
+            kpi_center_id=center_id,
+            name=name.strip(),
+            description=description.strip() if description else None,
+            parent_center_id=parent_id if parent_id > 0 else None
+        )
+        
+        if result['success']:
+            st.toast("✅ Updated successfully!", icon="✅")
+            st.rerun()  # Close dialog and refresh
+        else:
+            st.error(result['message'])
+
+
+# =============================================================================
+# HIERARCHY SECTION (v2.12.0 - Updated with dialogs)
 # =============================================================================
 
 def hierarchy_section(
@@ -3156,6 +3505,7 @@ def hierarchy_section(
     """
     Hierarchy sub-tab with tree view.
     
+    v2.12.0: Updated with dialog fashion for CRUD operations.
     v2.10.1: Removed @st.fragment decorator to fix nested fragment bug.
     """
     
@@ -3165,18 +3515,10 @@ def hierarchy_section(
     with col1:
         if can_edit:
             if st.button("➕ Add Center", type="primary"):
-                st.session_state['show_add_center_form'] = True
+                _add_center_dialog()
     
     with col2:
         expand_all = st.checkbox("Expand All", value=True, key="hier_expand_all")
-    
-    # Forms
-    if st.session_state.get('show_add_center_form', False):
-        _render_center_form(setup_queries, mode='add')
-    
-    if st.session_state.get('edit_center_id'):
-        _render_center_form(setup_queries, mode='edit',
-                           center_id=st.session_state['edit_center_id'])
     
     st.divider()
     
@@ -3231,7 +3573,11 @@ def _render_hierarchy_tree(df: pd.DataFrame, can_edit: bool, setup_queries: Setu
 
 
 def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQueries, level: int = 0):
-    """Render a single hierarchy node with proper indentation."""
+    """
+    Render a single hierarchy node with proper indentation.
+    
+    v2.12.0: Updated to use dialog instead of session state form.
+    """
     
     # Visual indent using CSS margin
     indent_px = level * 24
@@ -3276,115 +3622,5 @@ def _render_hierarchy_node(row: pd.Series, can_edit: bool, setup_queries: SetupQ
         with col3:
             if can_edit:
                 if st.button("✏️", key=f"edit_hier_{row['kpi_center_id']}", help="Edit"):
-                    st.session_state['edit_center_id'] = row['kpi_center_id']
-                    st.rerun(scope="fragment")
-
-
-def _render_center_form(setup_queries: SetupQueries, mode: str = 'add', center_id: int = None):
-    """Render Add/Edit KPI Center form."""
-    
-    existing = None
-    if mode == 'edit' and center_id:
-        existing = setup_queries.get_kpi_center_detail(center_id)
-        if not existing:
-            st.error("Center not found")
-            st.session_state['edit_center_id'] = None
-            return
-    
-    title = "✏️ Edit KPI Center" if mode == 'edit' else "➕ Add KPI Center"
-    
-    with st.container(border=True):
-        st.markdown(f"### {title}")
-        
-        with st.form(f"{mode}_center_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                name = st.text_input(
-                    "Name *",
-                    value=existing['kpi_center_name'] if existing else "",
-                    key=f"{mode}_center_name"
-                )
-            
-            with col2:
-                if mode == 'add':
-                    kpi_type = st.selectbox(
-                        "Type *",
-                        options=KPI_TYPES,
-                        format_func=lambda x: f"{KPI_TYPE_ICONS.get(x, '📁')} {x}",
-                        key=f"{mode}_center_type"
-                    )
-                else:
-                    kpi_type = existing['kpi_type']
-                    st.text_input("Type", value=f"{KPI_TYPE_ICONS.get(kpi_type, '📁')} {kpi_type}", disabled=True)
-            
-            description = st.text_input(
-                "Description",
-                value=existing.get('description', '') if existing else "",
-                key=f"{mode}_center_desc"
-            )
-            
-            # Parent selection
-            current_type = kpi_type if mode == 'add' else existing['kpi_type']
-            centers_df = setup_queries.get_kpi_centers_for_dropdown(
-                kpi_type=current_type,
-                exclude_ids=[center_id] if center_id else None
-            )
-            
-            parent_options = [(0, "No Parent (Root)")] + [
-                (row['kpi_center_id'], f"└ {row['kpi_center_name']}")
-                for _, row in centers_df.iterrows()
-            ]
-            
-            current_parent = existing.get('parent_center_id', 0) if existing else 0
-            current_parent = current_parent if current_parent else 0
-            default_idx = next((i for i, p in enumerate(parent_options) if p[0] == current_parent), 0)
-            
-            parent_id = st.selectbox(
-                "Parent Center",
-                options=[p[0] for p in parent_options],
-                index=default_idx,
-                format_func=lambda x: next((p[1] for p in parent_options if p[0] == x), ""),
-                key=f"{mode}_center_parent"
-            )
-            
-            # Buttons
-            col_submit, col_cancel = st.columns(2)
-            
-            with col_submit:
-                submitted = st.form_submit_button("💾 Save", type="primary", use_container_width=True)
-            
-            with col_cancel:
-                cancelled = st.form_submit_button("❌ Cancel", use_container_width=True)
-            
-            if submitted:
-                if not name:
-                    st.error("Name is required")
-                else:
-                    if mode == 'add':
-                        result = setup_queries.create_kpi_center(
-                            name=name,
-                            kpi_type=kpi_type,
-                            description=description if description else None,
-                            parent_center_id=parent_id if parent_id > 0 else None
-                        )
-                    else:
-                        result = setup_queries.update_kpi_center(
-                            kpi_center_id=center_id,
-                            name=name,
-                            description=description if description else None,
-                            parent_center_id=parent_id
-                        )
-                    
-                    if result['success']:
-                        st.success("Saved!")
-                        st.session_state['show_add_center_form'] = False
-                        st.session_state['edit_center_id'] = None
-                        st.rerun(scope="fragment")
-                    else:
-                        st.error(result['message'])
-            
-            if cancelled:
-                st.session_state['show_add_center_form'] = False
-                st.session_state['edit_center_id'] = None
-                st.rerun(scope="fragment")
+                    st.session_state['_edit_center_id'] = row['kpi_center_id']
+                    _edit_center_dialog()
