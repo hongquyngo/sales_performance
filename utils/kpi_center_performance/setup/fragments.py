@@ -12,9 +12,6 @@ from typing import Dict, List, Optional, Any
 
 from .queries import SetupQueries
 
-# Renewal module - single component handles button + dialog
-from .renewal import renewal_section
-
 # v2.10.0: Permission system
 from ..permissions import SetupPermissions, get_permissions
 
@@ -842,19 +839,8 @@ def split_rules_section(
         # Store context for dialog to access
         st.session_state['_split_dialog_can_approve'] = can_approve
         
-        toolbar_col1, toolbar_col2 = st.columns([1, 1])
-        
-        with toolbar_col1:
-            if st.button("➕ Add Split Rule", type="primary"):
-                _add_split_rule_dialog()
-        
-        with toolbar_col2:
-            # Renewal section - handles both button and dialog
-            renewal_section(
-                user_id=setup_queries.user_id,
-                can_approve=can_approve,
-                threshold_days=90  # Match renewal module default
-            )
+        if st.button("➕ Add Split Rule", type="primary"):
+            _add_split_rule_dialog()
     elif not can_edit:
         # Show read-only notice for users without any write permission
         st.info("👁️ View-only mode. You don't have permission to create or edit split rules.")
