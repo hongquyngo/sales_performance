@@ -292,10 +292,9 @@ def setup_tab_fragment(
 
 
 # =============================================================================
-# SPLIT RULES SECTION (v2.6.0 - Comprehensive Filters)
+# SPLIT RULES SECTION (v2.10.1 - Removed @st.fragment, called from parent fragment)
 # =============================================================================
 
-@st.fragment
 def split_rules_section(
     setup_queries: SetupQueries,
     kpi_center_ids: List[int] = None,
@@ -888,10 +887,9 @@ def split_rules_section(
 
 
 # =============================================================================
-# NESTED FRAGMENT: SPLIT DATA TABLE (v2.8.2)
+# SPLIT DATA TABLE HELPER (v2.10.1 - Removed @st.fragment to fix nested fragment bug)
 # =============================================================================
 
-@st.fragment
 def _render_split_data_table(
     split_df: pd.DataFrame,
     setup_queries: SetupQueries,
@@ -901,9 +899,10 @@ def _render_split_data_table(
     can_bulk: bool = False
 ):
     """
+    v2.10.1: Removed @st.fragment decorator to fix nested fragment AssertionError.
+             Row selection rerun now handled by parent fragment (split_rules_section).
     v2.10.0: Updated with granular permissions (can_edit, can_delete, can_approve, can_bulk)
     v2.8.2: Nested fragment for data table and action bar.
-    This allows row selection to only rerun this section, not the entire filters.
     
     Synced with Salesperson Performance pattern.
     """
@@ -2338,10 +2337,9 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
 
 
 # =============================================================================
-# KPI ASSIGNMENTS SECTION - Styled like KPI & Targets > Progress tab
+# KPI ASSIGNMENTS SECTION (v2.10.1 - Removed @st.fragment, called from parent fragment)
 # =============================================================================
 
-@st.fragment
 def kpi_assignments_section(
     setup_queries: SetupQueries,
     kpi_center_ids: List[int] = None,
@@ -2353,6 +2351,7 @@ def kpi_assignments_section(
     """
     KPI Assignments sub-tab - styled like KPI & Targets tab.
     
+    v2.10.1: Removed @st.fragment decorator to fix nested fragment bug.
     v2.10.0: Updated with granular permissions (can_create, can_edit, can_delete)
     """
     
@@ -2903,15 +2902,18 @@ def _render_assignment_form(setup_queries: SetupQueries, year: int,
 
 
 # =============================================================================
-# HIERARCHY SECTION
+# HIERARCHY SECTION (v2.10.1 - Removed @st.fragment, called from parent fragment)
 # =============================================================================
 
-@st.fragment  
 def hierarchy_section(
     setup_queries: SetupQueries,
     can_edit: bool = False
 ):
-    """Hierarchy sub-tab with tree view."""
+    """
+    Hierarchy sub-tab with tree view.
+    
+    v2.10.1: Removed @st.fragment decorator to fix nested fragment bug.
+    """
     
     # Toolbar
     col1, col2 = st.columns([1, 5])
