@@ -1792,6 +1792,315 @@ class SetupQueries:
         return self._execute_update(query, params, f"bulk_update_split_{len(rule_ids)}_rules")
     
     # =========================================================================
+    # KPI SPLIT RULES - COPY TO NEW PERIOD (v2.11.0)
+    # =========================================================================
+    
+    def validate_copy_to_period(
+        self,
+        rule_ids: List[int],
+        new_valid_from: date,
+        new_valid_to: date
+    ) -> Dict:
+        """
+        Validate copy to new period operation before execution.
+        
+        v2.11.0: NEW - Pre-validation for copy operation.
+        
+        Checks:
+        1. Period validity (from < to)
+        2. Period overlap with existing rules (same customer/product/kpi_center)
+        3. Split % total after copy (will it exceed 100%?)
+        
+        Args:
+            rule_ids: List of rule IDs to copy
+            new_valid_from: New period start date
+            new_valid_to: New period end date
+            
+        Returns:
+            Dict with:
+            - can_proceed: bool
+            - period_errors: List of period validation errors
+            - period_warnings: List of period warnings
+            - overlap_count: Number of rules with overlaps
+            - overlap_details: List of overlap details
+            - split_warnings: List of split % warnings (will exceed 100%)
+        """
+        if not rule_ids:
+            return {
+                'can_proceed': True,
+                'total_rules': 0,
+                'period_errors': [],
+                'period_warnings': [],
+                'overlap_count': 0,
+                'overlap_details': [],
+                'split_warnings': []
+            }
+        
+        # 1. Basic period validation
+        period_validation = self.validate_period(new_valid_from, new_valid_to)
+        
+        if not period_validation['is_valid']:
+            return {
+                'can_proceed': False,
+                'total_rules': len(rule_ids),
+                'period_errors': period_validation['errors'],
+                'period_warnings': [],
+                'overlap_count': 0,
+                'overlap_details': [],
+                'split_warnings': []
+            }
+        
+        # 2. Get source rules info
+        query = """
+            SELECT 
+                ks.id AS rule_id,
+                ks.customer_id,
+                ks.product_id,
+                ks.kpi_center_id,
+                ks.split_percentage,
+                kc.name AS kpi_center_name,
+                kc.type AS kpi_type,
+                c.english_name AS customer_name,
+                p.name AS product_name
+            FROM kpi_center_split_by_customer_product ks
+            JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+            JOIN companies c ON ks.customer_id = c.id
+            JOIN products p ON ks.product_id = p.id
+            WHERE ks.id IN :rule_ids
+              AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+        """
+        
+        rules_df = self._execute_query(query, {'rule_ids': tuple(rule_ids)}, "copy_source_rules")
+        
+        if rules_df.empty:
+            return {
+                'can_proceed': False,
+                'total_rules': 0,
+                'period_errors': ['No valid rules found to copy'],
+                'period_warnings': [],
+                'overlap_count': 0,
+                'overlap_details': [],
+                'split_warnings': []
+            }
+        
+        overlap_details = []
+        split_warnings = []
+        
+        # 3. Check each rule for overlaps and split % impact
+        for _, rule in rules_df.iterrows():
+            customer_id = int(rule['customer_id'])
+            product_id = int(rule['product_id'])
+            kpi_center_id = int(rule['kpi_center_id'])
+            split_pct = float(rule['split_percentage'])
+            
+            # Check period overlap (for the NEW copy, not excluding any rule)
+            overlap_check = self.check_period_overlap(
+                customer_id=customer_id,
+                product_id=product_id,
+                kpi_center_id=kpi_center_id,
+                valid_from=new_valid_from,
+                valid_to=new_valid_to,
+                exclude_rule_id=None  # Don't exclude - we're creating NEW
+            )
+            
+            if overlap_check['has_overlap']:
+                overlap_details.append({
+                    'rule_id': int(rule['rule_id']),
+                    'kpi_center_name': rule['kpi_center_name'],
+                    'kpi_type': rule['kpi_type'],
+                    'customer_name': rule['customer_name'],
+                    'product_name': rule['product_name'],
+                    'overlap_count': overlap_check['overlap_count'],
+                    'message': overlap_check['message']
+                })
+            
+            # Check split % impact for new period
+            # Get existing splits for the new period
+            existing_query = """
+                SELECT COALESCE(SUM(split_percentage), 0) AS total_split
+                FROM kpi_center_split_by_customer_product ks
+                JOIN kpi_centers kc ON ks.kpi_center_id = kc.id
+                WHERE ks.customer_id = :customer_id
+                  AND ks.product_id = :product_id
+                  AND kc.type = :kpi_type
+                  AND (ks.delete_flag = 0 OR ks.delete_flag IS NULL)
+                  AND (ks.valid_from <= :valid_to OR ks.valid_from IS NULL)
+                  AND (ks.valid_to >= :valid_from OR ks.valid_to IS NULL)
+            """
+            
+            existing_df = self._execute_query(existing_query, {
+                'customer_id': customer_id,
+                'product_id': product_id,
+                'kpi_type': rule['kpi_type'],
+                'valid_from': new_valid_from,
+                'valid_to': new_valid_to
+            }, "existing_split_check")
+            
+            current_total = float(existing_df.iloc[0]['total_split']) if not existing_df.empty else 0
+            new_total = current_total + split_pct
+            
+            if new_total > 100:
+                split_warnings.append({
+                    'rule_id': int(rule['rule_id']),
+                    'kpi_center_name': rule['kpi_center_name'],
+                    'kpi_type': rule['kpi_type'],
+                    'customer_name': rule['customer_name'],
+                    'product_name': rule['product_name'],
+                    'current_total': current_total,
+                    'add_pct': split_pct,
+                    'new_total': new_total,
+                    'message': f"Will exceed 100% ({new_total:.0f}%)"
+                })
+        
+        # Overlaps are blocking, split warnings are not
+        can_proceed = len(period_validation['errors']) == 0 and len(overlap_details) == 0
+        
+        return {
+            'can_proceed': can_proceed,
+            'total_rules': len(rules_df),
+            'period_errors': period_validation['errors'],
+            'period_warnings': period_validation.get('warnings', []),
+            'overlap_count': len(overlap_details),
+            'overlap_details': overlap_details,
+            'split_warnings': split_warnings,
+            'message': 'OK' if can_proceed else f"BLOCKED: {len(overlap_details)} overlap(s) found"
+        }
+    
+    def copy_split_rules_to_period(
+        self,
+        rule_ids: List[int],
+        new_valid_from: date,
+        new_valid_to: date,
+        copy_approval_status: bool = False,
+        created_by: int = None
+    ) -> Dict:
+        """
+        Copy split rules to a new validity period.
+        
+        v2.11.0: NEW - Copy existing rules to new period.
+        
+        Creates NEW records with same customer/product/kpi_center/split_percentage
+        but different validity period.
+        
+        Args:
+            rule_ids: List of rule IDs to copy
+            new_valid_from: New period start date
+            new_valid_to: New period end date
+            copy_approval_status: If True, copy isApproved status. If False, set to pending.
+            created_by: User ID who created the copies (FK -> users.id)
+            
+        Returns:
+            Dict with:
+            - success: bool
+            - copied_count: Number of rules copied
+            - new_rule_ids: List of new rule IDs
+            - skipped_count: Number of rules skipped (due to errors)
+            - message: Status message
+        """
+        if not rule_ids:
+            return {
+                'success': False,
+                'copied_count': 0,
+                'new_rule_ids': [],
+                'skipped_count': 0,
+                'message': 'No rules to copy'
+            }
+        
+        # Get source rules
+        query = """
+            SELECT 
+                id,
+                customer_id,
+                product_id,
+                kpi_center_id,
+                split_percentage,
+                salesperson_id,
+                isApproved,
+                approved_by
+            FROM kpi_center_split_by_customer_product
+            WHERE id IN :rule_ids
+              AND (delete_flag = 0 OR delete_flag IS NULL)
+        """
+        
+        source_df = self._execute_query(query, {'rule_ids': tuple(rule_ids)}, "copy_source_rules")
+        
+        if source_df.empty:
+            return {
+                'success': False,
+                'copied_count': 0,
+                'new_rule_ids': [],
+                'skipped_count': len(rule_ids),
+                'message': 'No valid source rules found'
+            }
+        
+        new_rule_ids = []
+        skipped_count = 0
+        user_id = created_by or self.user_id
+        
+        # Insert each rule
+        for _, rule in source_df.iterrows():
+            try:
+                # Determine approval status
+                if copy_approval_status:
+                    is_approved = 1 if rule['isApproved'] else 0
+                    approved_by = rule['approved_by'] if rule['isApproved'] else None
+                else:
+                    is_approved = 0
+                    approved_by = None
+                
+                insert_query = """
+                    INSERT INTO kpi_center_split_by_customer_product (
+                        customer_id, product_id, kpi_center_id, split_percentage,
+                        salesperson_id, valid_from, valid_to,
+                        isApproved, approved_by,
+                        created_date, modified_date, created_by, modified_by,
+                        delete_flag, version
+                    ) VALUES (
+                        :customer_id, :product_id, :kpi_center_id, :split_percentage,
+                        :salesperson_id, :valid_from, :valid_to,
+                        :is_approved, :approved_by,
+                        NOW(), NOW(), :created_by, :created_by,
+                        0, 0
+                    )
+                """
+                
+                params = {
+                    'customer_id': int(rule['customer_id']),
+                    'product_id': int(rule['product_id']),
+                    'kpi_center_id': int(rule['kpi_center_id']),
+                    'split_percentage': float(rule['split_percentage']),
+                    'salesperson_id': int(rule['salesperson_id']) if rule['salesperson_id'] else None,
+                    'valid_from': new_valid_from,
+                    'valid_to': new_valid_to,
+                    'is_approved': is_approved,
+                    'approved_by': approved_by,
+                    'created_by': user_id
+                }
+                
+                result = self._execute_insert(insert_query, params, f"copy_rule_{rule['id']}")
+                
+                if result['success'] and result['id']:
+                    new_rule_ids.append(result['id'])
+                else:
+                    skipped_count += 1
+                    logger.warning(f"Failed to copy rule {rule['id']}: {result.get('message')}")
+                    
+            except Exception as e:
+                skipped_count += 1
+                logger.error(f"Error copying rule {rule['id']}: {e}")
+        
+        copied_count = len(new_rule_ids)
+        success = copied_count > 0
+        
+        return {
+            'success': success,
+            'copied_count': copied_count,
+            'new_rule_ids': new_rule_ids,
+            'skipped_count': skipped_count,
+            'message': f"Copied {copied_count} rules" + (f", {skipped_count} skipped" if skipped_count else "")
+        }
+    
+    # =========================================================================
     # KPI SPLIT RULES - DELETE
     # =========================================================================
     

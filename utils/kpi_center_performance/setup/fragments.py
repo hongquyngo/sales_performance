@@ -875,10 +875,12 @@ def split_rules_section(
     
     # =========================================================================
     # v2.10.0: Call nested fragment with granular permissions
+    # v2.11.0: Added can_create for Copy to New Period feature
     # =========================================================================
     _render_split_data_table(
         split_df=split_df,
         setup_queries=setup_queries,
+        can_create=can_create,
         can_edit=can_edit,
         can_delete=can_delete,
         can_approve=can_approve,
@@ -893,12 +895,14 @@ def split_rules_section(
 def _render_split_data_table(
     split_df: pd.DataFrame,
     setup_queries: SetupQueries,
+    can_create: bool = False,
     can_edit: bool = False,
     can_delete: bool = False,
     can_approve: bool = False,
     can_bulk: bool = False
 ):
     """
+    v2.11.0: Added can_create for Copy to New Period feature.
     v2.10.1: Removed @st.fragment decorator to fix nested fragment AssertionError.
              Row selection rerun now handled by parent fragment (split_rules_section).
     v2.10.0: Updated with granular permissions (can_edit, can_delete, can_approve, can_bulk)
@@ -1284,13 +1288,13 @@ def _render_split_data_table(
                 st.divider()
             
             if selected_count == 1:
-                # Single selection: Edit + Delete
+                # Single selection: Edit + Delete + Copy
                 selected_rule_id = list(valid_selected)[0]
                 selected_row = selected_df.iloc[0]
                 
                 st.caption(f"📌 Rule **#{selected_rule_id}** | {selected_row['kpi_center_name']} | {selected_row['Customer']}")
                 
-                edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 2])
+                edit_col1, edit_col2, edit_col3, edit_col4 = st.columns([1, 1, 1, 1])
                 
                 with edit_col1:
                     # v2.10.0: Check can_edit permission
@@ -1320,25 +1324,52 @@ def _render_split_data_table(
                     else:
                         st.button("🗑️ Delete", disabled=True, use_container_width=True,
                                  help="You don't have delete permission", key="split_dt_delete_disabled")
+                
+                with edit_col3:
+                    # v2.11.0: Copy to New Period (requires can_create)
+                    if can_create:
+                        if st.button("📋 Copy to New Period", use_container_width=True, key="split_dt_copy"):
+                            st.session_state['_copy_to_period_rule_ids'] = [selected_rule_id]
+                            st.session_state['_copy_dialog_can_approve'] = can_approve
+                            _copy_to_period_dialog()
+                    else:
+                        st.button("📋 Copy", disabled=True, use_container_width=True,
+                                 help="You don't have create permission", key="split_dt_copy_disabled")
             else:
-                # Multi selection: Bulk Delete (requires can_bulk AND can_delete)
-                if can_bulk and can_delete:
-                    del_col1, del_col2, del_col3 = st.columns([1, 1, 2])
+                # Multi selection: Bulk Delete + Copy (requires can_bulk)
+                if can_bulk:
+                    bulk_col1, bulk_col2, bulk_col3 = st.columns([1, 1, 2])
                     
-                    with del_col1:
-                        with st.popover(f"🗑️ Delete {selected_count} Rules", use_container_width=True):
-                            st.error(f"⚠️ Delete **{selected_count}** rules?")
-                            st.caption("This action cannot be undone easily.")
-                            
-                            if st.button("🗑️ Yes, Delete All", type="primary",
-                                        key="split_bulk_delete", use_container_width=True):
-                                result = setup_queries.delete_split_rules_bulk(list(valid_selected))
-                                if result['success']:
-                                    st.session_state['split_selected_ids'] = set()
-                                    st.toast(f"🗑️ Deleted {result['count']} rules", icon="🗑️")
-                                    st.rerun(scope="fragment")
-                                else:
-                                    st.error(result['message'])
+                    with bulk_col1:
+                        if can_delete:
+                            with st.popover(f"🗑️ Delete {selected_count} Rules", use_container_width=True):
+                                st.error(f"⚠️ Delete **{selected_count}** rules?")
+                                st.caption("This action cannot be undone easily.")
+                                
+                                if st.button("🗑️ Yes, Delete All", type="primary",
+                                            key="split_bulk_delete", use_container_width=True):
+                                    result = setup_queries.delete_split_rules_bulk(list(valid_selected))
+                                    if result['success']:
+                                        st.session_state['split_selected_ids'] = set()
+                                        st.toast(f"🗑️ Deleted {result['count']} rules", icon="🗑️")
+                                        st.rerun(scope="fragment")
+                                    else:
+                                        st.error(result['message'])
+                        else:
+                            st.button(f"🗑️ Delete {selected_count}", disabled=True, use_container_width=True,
+                                     help="You don't have delete permission", key="split_bulk_delete_disabled")
+                    
+                    with bulk_col2:
+                        # v2.11.0: Bulk Copy to New Period (requires can_create)
+                        if can_create:
+                            if st.button(f"📋 Copy {selected_count} to New Period", use_container_width=True, 
+                                        key="split_bulk_copy"):
+                                st.session_state['_copy_to_period_rule_ids'] = list(valid_selected)
+                                st.session_state['_copy_dialog_can_approve'] = can_approve
+                                _copy_to_period_dialog()
+                        else:
+                            st.button(f"📋 Copy {selected_count}", disabled=True, use_container_width=True,
+                                     help="You don't have create permission", key="split_bulk_copy_disabled")
 
 
 # =============================================================================
@@ -1700,34 +1731,27 @@ def _add_split_rule_dialog():
             help="Automatically approve this rule upon creation"
         )
     
-    # Buttons
-    col_submit, col_cancel = st.columns(2)
-    
-    with col_submit:
-        if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
-            if not all([customer_id, product_id, kpi_center_id]):
-                st.error("Please fill all required fields")
+    # Button (Cancel removed - use dialog X button to close)
+    if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
+        if not all([customer_id, product_id, kpi_center_id]):
+            st.error("Please fill all required fields")
+        else:
+            result = setup_queries.create_split_rule(
+                customer_id=customer_id,
+                product_id=product_id,
+                kpi_center_id=kpi_center_id,
+                split_percentage=split_pct,
+                valid_from=valid_from,
+                valid_to=valid_to,
+                is_approved=approve_on_create,
+                approved_by=user_id if approve_on_create else None
+            )
+            
+            if result['success']:
+                st.toast("✅ Created successfully!", icon="✅")
+                st.rerun()  # Close dialog and refresh
             else:
-                result = setup_queries.create_split_rule(
-                    customer_id=customer_id,
-                    product_id=product_id,
-                    kpi_center_id=kpi_center_id,
-                    split_percentage=split_pct,
-                    valid_from=valid_from,
-                    valid_to=valid_to,
-                    is_approved=approve_on_create,
-                    approved_by=user_id if approve_on_create else None
-                )
-                
-                if result['success']:
-                    st.toast("✅ Created successfully!", icon="✅")
-                    st.rerun()  # Close dialog and refresh
-                else:
-                    st.error(result['message'])
-    
-    with col_cancel:
-        if st.button("❌ Cancel", use_container_width=True):
-            st.rerun()  # Close dialog
+                st.error(result['message'])
 
 
 # =============================================================================
@@ -1747,7 +1771,7 @@ def _edit_split_rule_dialog():
     - Form: KPI Center, Split %, Valid From, Valid To
     - Validation section with metrics
     - Approve checkbox (admin only)
-    - Update/Cancel buttons
+    - Update button (use X to close/cancel)
     """
     # Get context from session state
     user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
@@ -1755,9 +1779,7 @@ def _edit_split_rule_dialog():
     rule_id = st.session_state.get('_edit_split_rule_id')
     
     if not rule_id:
-        st.error("No rule selected for editing")
-        if st.button("Close"):
-            st.rerun()
+        st.error("No rule selected for editing. Please close this dialog and select a rule first.")
         return
     
     # Initialize queries
@@ -1768,10 +1790,7 @@ def _edit_split_rule_dialog():
     df = df[df['kpi_center_split_id'] == rule_id]
     
     if df.empty:
-        st.error(f"Rule #{rule_id} not found")
-        if st.button("Close"):
-            st.session_state.pop('_edit_split_rule_id', None)
-            st.rerun()
+        st.error(f"Rule #{rule_id} not found. Please close this dialog and try again.")
         return
     
     existing = df.iloc[0]
@@ -2002,42 +2021,267 @@ def _edit_split_rule_dialog():
             st.warning("⏳ This rule is pending approval")
     
     # =========================================================================
-    # BUTTONS
+    # BUTTON (Cancel removed - use dialog X button to close)
     # =========================================================================
-    btn_col1, btn_col2 = st.columns(2)
+    st.divider()
     
-    with btn_col1:
-        if st.button("💾 Update", type="primary", use_container_width=True, disabled=not can_save):
-            # Update the rule
-            result = setup_queries.update_split_rule(
-                rule_id=rule_id,
-                split_percentage=split_pct,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                kpi_center_id=kpi_center_id
-            )
+    if st.button("💾 Update", type="primary", use_container_width=True, disabled=not can_save):
+        # Update the rule
+        result = setup_queries.update_split_rule(
+            rule_id=rule_id,
+            split_percentage=split_pct,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            kpi_center_id=kpi_center_id
+        )
+        
+        if result['success']:
+            # Handle approval change if admin
+            if can_approve:
+                if approve_rule and not current_approved:
+                    # Approve
+                    setup_queries.approve_split_rules([rule_id], approved_by=user_id)
+                elif not approve_rule and current_approved:
+                    # Disapprove
+                    setup_queries.bulk_disapprove_split_rules([rule_id], modified_by=user_id)
             
-            if result['success']:
-                # Handle approval change if admin
-                if can_approve:
-                    if approve_rule and not current_approved:
-                        # Approve
-                        setup_queries.approve_split_rules([rule_id], approved_by=user_id)
-                    elif not approve_rule and current_approved:
-                        # Disapprove
-                        setup_queries.bulk_disapprove_split_rules([rule_id], modified_by=user_id)
-                
-                st.toast("✅ Updated successfully!", icon="✅")
-                st.session_state.pop('_edit_split_rule_id', None)
-                st.session_state['split_selected_ids'] = set()  # Clear selection
-                st.rerun()  # Close dialog and refresh
-            else:
-                st.error(result['message'])
-    
-    with btn_col2:
-        if st.button("❌ Cancel", use_container_width=True):
+            st.toast("✅ Updated successfully!", icon="✅")
             st.session_state.pop('_edit_split_rule_id', None)
-            st.rerun()  # Close dialog
+            st.session_state['split_selected_ids'] = set()  # Clear selection
+            st.rerun()  # Close dialog and refresh
+        else:
+            st.error(result['message'])
+
+
+# =============================================================================
+# COPY TO NEW PERIOD DIALOG (v2.11.0)
+# =============================================================================
+
+@st.dialog("📋 Copy to New Period", width="large")
+def _copy_to_period_dialog():
+    """
+    Dialog for copying selected split rules to a new validity period.
+    
+    v2.11.0: NEW - Bulk copy split rules to new period.
+    
+    Features:
+    - Preview selected rules
+    - Set new validity period
+    - Option to copy approval status
+    - Validation: period overlap, split % exceeds 100%
+    """
+    # Get context from session state
+    user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
+    selected_ids = st.session_state.get('_copy_to_period_rule_ids', [])
+    can_approve = st.session_state.get('_copy_dialog_can_approve', False)
+    
+    if not selected_ids:
+        st.error("No rules selected for copying. Please close this dialog and select rules first.")
+        return
+    
+    # Initialize queries
+    setup_queries = SetupQueries(user_id=user_id)
+    
+    # Get selected rules info for preview
+    rules_df = setup_queries.get_kpi_split_data(limit=5000)
+    selected_rules = rules_df[rules_df['kpi_center_split_id'].isin(selected_ids)]
+    
+    if selected_rules.empty:
+        st.error("Selected rules not found. Please close this dialog and try again.")
+        return
+    
+    # ==========================================================================
+    # HEADER: Selection Summary
+    # ==========================================================================
+    st.markdown(f"### 📋 Copy {len(selected_ids)} Rule(s) to New Period")
+    
+    # Show summary
+    summary_col1, summary_col2, summary_col3 = st.columns(3)
+    with summary_col1:
+        unique_customers = selected_rules['customer_id'].nunique()
+        st.metric("Customers", unique_customers)
+    with summary_col2:
+        unique_products = selected_rules['product_id'].nunique()
+        st.metric("Products", unique_products)
+    with summary_col3:
+        unique_centers = selected_rules['kpi_center_id'].nunique()
+        st.metric("KPI Centers", unique_centers)
+    
+    # ==========================================================================
+    # PREVIEW: Selected Rules (collapsible)
+    # ==========================================================================
+    with st.expander(f"📄 Preview Selected Rules ({len(selected_ids)})", expanded=False):
+        preview_df = selected_rules[[
+            'kpi_center_split_id', 'kpi_center_name', 'customer_name', 
+            'product_name', 'split_percentage', 'effective_period'
+        ]].copy()
+        preview_df.columns = ['ID', 'KPI Center', 'Customer', 'Product', 'Split %', 'Current Period']
+        st.dataframe(preview_df, hide_index=True, use_container_width=True)
+    
+    st.divider()
+    
+    # ==========================================================================
+    # NEW PERIOD INPUTS
+    # ==========================================================================
+    st.markdown("##### 📅 New Validity Period")
+    
+    # Default: next year
+    current_year = date.today().year
+    default_from = date(current_year + 1, 1, 1)
+    default_to = date(current_year + 1, 12, 31)
+    
+    period_col1, period_col2 = st.columns(2)
+    
+    with period_col1:
+        new_valid_from = st.date_input(
+            "Valid From *",
+            value=default_from,
+            key="copy_dialog_valid_from"
+        )
+    
+    with period_col2:
+        new_valid_to = st.date_input(
+            "Valid To *",
+            value=default_to,
+            key="copy_dialog_valid_to"
+        )
+    
+    # Quick period presets
+    st.caption("Quick presets:")
+    preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+    
+    with preset_col1:
+        if st.button(f"📅 {current_year + 1}", use_container_width=True, 
+                     help=f"Full year {current_year + 1}"):
+            st.session_state['copy_dialog_valid_from'] = date(current_year + 1, 1, 1)
+            st.session_state['copy_dialog_valid_to'] = date(current_year + 1, 12, 31)
+            st.rerun()
+    
+    with preset_col2:
+        if st.button(f"📅 H1 {current_year + 1}", use_container_width=True,
+                     help=f"First half of {current_year + 1}"):
+            st.session_state['copy_dialog_valid_from'] = date(current_year + 1, 1, 1)
+            st.session_state['copy_dialog_valid_to'] = date(current_year + 1, 6, 30)
+            st.rerun()
+    
+    with preset_col3:
+        if st.button(f"📅 H2 {current_year + 1}", use_container_width=True,
+                     help=f"Second half of {current_year + 1}"):
+            st.session_state['copy_dialog_valid_from'] = date(current_year + 1, 7, 1)
+            st.session_state['copy_dialog_valid_to'] = date(current_year + 1, 12, 31)
+            st.rerun()
+    
+    with preset_col4:
+        if st.button(f"📅 {current_year + 2}", use_container_width=True,
+                     help=f"Full year {current_year + 2}"):
+            st.session_state['copy_dialog_valid_from'] = date(current_year + 2, 1, 1)
+            st.session_state['copy_dialog_valid_to'] = date(current_year + 2, 12, 31)
+            st.rerun()
+    
+    # ==========================================================================
+    # OPTIONS
+    # ==========================================================================
+    st.divider()
+    st.markdown("##### ⚙️ Options")
+    
+    copy_approval = st.checkbox(
+        "Copy approval status",
+        value=False,
+        help="If checked, approved rules will be copied as approved. Otherwise, all copies will be pending.",
+        disabled=not can_approve,
+        key="copy_dialog_copy_approval"
+    )
+    
+    if not can_approve:
+        st.caption("ℹ️ You don't have approval permission. All copies will be set to pending.")
+    
+    # ==========================================================================
+    # VALIDATION
+    # ==========================================================================
+    st.divider()
+    st.markdown("##### 🔍 Validation")
+    
+    # Run validation
+    validation = setup_queries.validate_copy_to_period(
+        rule_ids=list(selected_ids),
+        new_valid_from=new_valid_from,
+        new_valid_to=new_valid_to
+    )
+    
+    can_proceed = validation['can_proceed']
+    
+    # Show validation results
+    if validation['period_errors']:
+        for err in validation['period_errors']:
+            st.error(f"📅 {err}")
+        can_proceed = False
+    
+    if validation['period_warnings']:
+        for warn in validation['period_warnings']:
+            st.warning(f"📅 {warn}")
+    
+    # Overlap check
+    if validation['overlap_count'] > 0:
+        st.error(f"🔴 {validation['overlap_count']} rule(s) would overlap with existing rules")
+        
+        with st.expander(f"View {validation['overlap_count']} overlapping rules", expanded=True):
+            for detail in validation['overlap_details'][:10]:
+                st.caption(
+                    f"• #{detail['rule_id']} | {detail['kpi_center_name']} | "
+                    f"{detail['customer_name'][:25]}... | {detail['product_name'][:25]}..."
+                )
+            if validation['overlap_count'] > 10:
+                st.caption(f"... and {validation['overlap_count'] - 10} more")
+        
+        can_proceed = False
+    
+    # Split % warnings (not blocking, just warning)
+    if validation.get('split_warnings'):
+        st.warning(f"⚠️ {len(validation['split_warnings'])} rule(s) may exceed 100% split after copy")
+        
+        with st.expander(f"View {len(validation['split_warnings'])} split warnings", expanded=False):
+            for detail in validation['split_warnings'][:10]:
+                st.caption(
+                    f"• #{detail['rule_id']} | {detail['kpi_type']} | "
+                    f"{detail['customer_name'][:20]}... → {detail['new_total']:.0f}%"
+                )
+            if len(validation['split_warnings']) > 10:
+                st.caption(f"... and {len(validation['split_warnings']) - 10} more")
+    
+    # Success message if all good
+    if can_proceed and not validation.get('split_warnings'):
+        st.success("✅ All validations passed")
+    elif can_proceed and validation.get('split_warnings'):
+        st.info("✅ Can proceed (with split % warnings)")
+    
+    # ==========================================================================
+    # BUTTON (Cancel removed - use dialog X button to close)
+    # ==========================================================================
+    st.divider()
+    
+    if st.button(
+        f"📋 Copy {len(selected_ids)} Rules",
+        type="primary",
+        use_container_width=True,
+        disabled=not can_proceed
+    ):
+        # Execute copy
+        result = setup_queries.copy_split_rules_to_period(
+            rule_ids=list(selected_ids),
+            new_valid_from=new_valid_from,
+            new_valid_to=new_valid_to,
+            copy_approval_status=copy_approval,
+            created_by=user_id
+        )
+        
+        if result['success']:
+            st.toast(f"✅ {result['message']}", icon="✅")
+            # Clear selection and close dialog
+            st.session_state.pop('_copy_to_period_rule_ids', None)
+            st.session_state['split_selected_ids'] = set()
+            st.rerun()
+        else:
+            st.error(f"❌ {result['message']}")
 
 
 def _render_split_form(setup_queries: SetupQueries, can_approve: bool, 
