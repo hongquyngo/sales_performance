@@ -2,8 +2,18 @@
 """
 Streamlit Fragments for KPI Center Performance - Overview Tab.
 
-VERSION: 4.6.0
+VERSION: 4.6.1
 CHANGELOG:
+- v4.6.1: BUGFIX - YoY Comparison data mismatch with KPI Cards
+  - ROOT CAUSE: Previous year filtered by WHOLE YEAR instead of SAME PERIOD
+    - KPI Cards: Jan 1-27, 2025 (same period as current) → ~$199k
+    - YoY Section: Jan 1 - Dec 31, 2025 (whole year) → $1.79M
+  - Fixed: Filter by same date range (sync with DataProcessor._extract_previous_year)
+  - Fixed: Use 'sales_raw_df' instead of 'sales_raw' (wrong cache key)
+  - Fixed: Use 'exclude_internal_revenue' instead of 'exclude_internal' (wrong filter key)
+  - Fixed: Use 'legal_entity_id' instead of 'entity_id' (wrong column name)
+  - Fixed: Add missing 'kpi_type' filter
+  - Fixed: Exclude internal logic - set revenue=0 instead of removing rows
 - v4.6.0: Refactored Overview tab
   - Added overview_tab_fragment() as main entry point
   - Moved _render_backlog_forecast_section() from main page
@@ -347,9 +357,11 @@ def yoy_comparison_fragment(
     # MULTI-YEAR vs YOY COMPARISON
     # =========================================================================
     
-    exclude_internal = filter_values.get('exclude_internal', False)
+    # FIXED v4.6.1: Use correct filter keys (sync with data_processor)
+    exclude_internal = filter_values.get('exclude_internal_revenue', True)  # Was 'exclude_internal'
     kpi_center_ids = filter_values.get('kpi_center_ids_expanded', [])
     entity_ids = filter_values.get('entity_ids', [])
+    kpi_type = filter_values.get('kpi_type_filter')  # NEW: Add KPI type filter
     
     if len(unique_years) >= 2:
         # =================================================================
@@ -454,30 +466,52 @@ def yoy_comparison_fragment(
             st.warning("No data matches the selected filters")
             return
         
-        # Try to get previous year data from cache
-        prev_start = date(previous_year, 1, 1)
-        prev_end = date(previous_year, 12, 31)
+        # FIXED v4.6.1: Calculate previous year dates for SAME PERIOD (sync with DataProcessor)
+        # Get current period dates from filter_values
+        current_start = filter_values.get('start_date', date(current_year, 1, 1))
+        current_end = filter_values.get('end_date', date(current_year, 12, 31))
+        
+        # Calculate same period in previous year
+        try:
+            prev_start = date(current_start.year - 1, current_start.month, current_start.day)
+        except ValueError:  # Feb 29 handling
+            prev_start = date(current_start.year - 1, current_start.month, 28)
+        
+        try:
+            prev_end = date(current_end.year - 1, current_end.month, current_end.day)
+        except ValueError:  # Feb 29 handling
+            prev_end = date(current_end.year - 1, current_end.month, 28)
         
         previous_df = pd.DataFrame()
         cache_hit = False
         
         # Check raw_cached_data for previous year data
-        if raw_cached_data and 'sales_raw' in raw_cached_data:
-            cached_sales = raw_cached_data['sales_raw']
+        # FIXED v4.6.1: Use correct key 'sales_raw_df' (was 'sales_raw')
+        if raw_cached_data and 'sales_raw_df' in raw_cached_data:
+            cached_sales = raw_cached_data['sales_raw_df']
             if not cached_sales.empty and 'inv_date' in cached_sales.columns:
                 cached_sales['inv_date'] = pd.to_datetime(cached_sales['inv_date'], errors='coerce')
-                cached_sales['inv_year'] = cached_sales['inv_date'].dt.year
                 
-                if previous_year in cached_sales['inv_year'].values:
-                    previous_df = cached_sales[cached_sales['inv_year'] == previous_year].copy()
-                    
+                # FIXED v4.6.1: Filter by DATE RANGE, not just year (sync with DataProcessor)
+                prev_start_ts = pd.Timestamp(prev_start)
+                prev_end_ts = pd.Timestamp(prev_end)
+                previous_df = cached_sales[
+                    (cached_sales['inv_date'] >= prev_start_ts) & 
+                    (cached_sales['inv_date'] <= prev_end_ts)
+                ].copy()
+                
+                if not previous_df.empty:
                     # Apply KPI Center filter
                     if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
                         previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
                     
-                    # Apply entity filter
-                    if entity_ids and 'entity_id' in previous_df.columns:
-                        previous_df = previous_df[previous_df['entity_id'].isin(entity_ids)]
+                    # FIXED v4.6.1: Use correct column name 'legal_entity_id' (was 'entity_id')
+                    if entity_ids and 'legal_entity_id' in previous_df.columns:
+                        previous_df = previous_df[previous_df['legal_entity_id'].isin(entity_ids)]
+                    
+                    # FIXED v4.6.1: Add KPI type filter (was missing)
+                    if kpi_type and 'kpi_type' in previous_df.columns:
+                        previous_df = previous_df[previous_df['kpi_type'] == kpi_type]
                     
                     cache_hit = True
         
@@ -494,9 +528,12 @@ def yoy_comparison_fragment(
                 logger.error(f"Error querying previous year data: {e}")
                 previous_df = pd.DataFrame()
         
-        # Exclude internal revenue
+        # FIXED v4.6.1: Exclude internal revenue - set to 0, don't remove rows (sync with data_processor)
         if exclude_internal and not previous_df.empty and 'customer_type' in previous_df.columns:
-            previous_df = previous_df[previous_df['customer_type'] != 'Internal']
+            internal_mask = previous_df['customer_type'].str.lower() == 'internal'
+            if internal_mask.any():
+                previous_df = previous_df.copy()
+                previous_df.loc[internal_mask, 'sales_by_kpi_center_usd'] = 0
         
         # Apply local filters to previous year
         previous_filtered = apply_local_filters(previous_df)
