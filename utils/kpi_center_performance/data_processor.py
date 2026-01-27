@@ -2,7 +2,15 @@
 """
 Data Processor for KPI Center Performance
 
-VERSION: 4.0.0
+VERSION: 4.0.1
+CHANGELOG:
+- v4.0.1: BUGFIX - In-Period Backlog date range
+  - Fixed: Use period boundary for backlog ETD filter (not filter date range)
+  - YTD: ETD in Jan 1 - Dec 31 (full year)
+  - QTD: ETD in quarter start - quarter end
+  - MTD: ETD in month start - month end
+  - Root cause: Backlog ETD was filtered by filter dates (Jan 1-27) instead of period boundary
+- v4.0.0: Initial unified data loading architecture
 
 Process cached raw data based on filter values.
 All operations are Pandas-based (instant, no SQL).
@@ -13,6 +21,7 @@ This module implements the "Filter Many" part of
 
 import logging
 import time
+import calendar
 from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 import pandas as pd
@@ -66,6 +75,67 @@ class DataProcessor:
             if not pd.api.types.is_datetime64_any_dtype(self.backlog_raw['etd']):
                 self.backlog_raw['etd'] = pd.to_datetime(self.backlog_raw['etd'], errors='coerce')
     
+    def _get_backlog_period_end(
+        self,
+        period_type: str,
+        year: int,
+        start_date: date,
+        end_date: date
+    ) -> date:
+        """
+        Calculate the correct end date for In-Period Backlog ETD filter.
+        
+        NEW v4.0.1: Backlog ETD should be filtered by PERIOD BOUNDARY, not filter date range.
+        
+        Logic:
+        - Backlog = pending orders (not yet invoiced)
+        - ETD = Expected delivery date (should be in future)
+        - "In-Period" = orders expected to be delivered within the KPI period
+        
+        Period boundaries:
+        - YTD: Jan 1 → Dec 31 of selected year
+        - QTD: Quarter start → Quarter end
+        - MTD: Month start → Month end
+        - LY: Jan 1 → Dec 31 of previous year
+        - Custom: Use filter dates as-is
+        
+        Args:
+            period_type: 'YTD', 'QTD', 'MTD', 'LY', or 'Custom'
+            year: Selected year
+            start_date: Filter start date
+            end_date: Filter end date
+            
+        Returns:
+            Correct end date for backlog ETD filter
+            
+        Example:
+            Filter: YTD 2026, Jan 1 - Jan 27
+            → Returns: Dec 31, 2026 (full year)
+        """
+        if period_type == 'YTD':
+            # Full year
+            return date(year, 12, 31)
+        
+        elif period_type == 'QTD':
+            # End of quarter containing start_date
+            quarter = (start_date.month - 1) // 3 + 1
+            quarter_end_month = quarter * 3
+            last_day = calendar.monthrange(year, quarter_end_month)[1]
+            return date(year, quarter_end_month, last_day)
+        
+        elif period_type == 'MTD':
+            # End of month containing start_date
+            last_day = calendar.monthrange(year, start_date.month)[1]
+            return date(year, start_date.month, last_day)
+        
+        elif period_type == 'LY':
+            # Full year (previous year is already in 'year' variable)
+            return date(year, 12, 31)
+        
+        else:  # Custom or unknown
+            # Use filter end_date as-is
+            return end_date
+    
     # =========================================================================
     # MAIN ENTRY POINT
     # =========================================================================
@@ -108,6 +178,7 @@ class DataProcessor:
         start_date = filter_values.get('start_date', date.today())
         end_date = filter_values.get('end_date', date.today())
         year = filter_values.get('year', date.today().year)
+        period_type = filter_values.get('period_type', 'YTD')  # NEW v4.0.1
         
         # Use expanded IDs (includes children) if available
         kpi_center_ids = filter_values.get(
@@ -117,6 +188,12 @@ class DataProcessor:
         entity_ids = filter_values.get('entity_ids', [])
         kpi_type = filter_values.get('kpi_type_filter')
         exclude_internal = filter_values.get('exclude_internal_revenue', True)
+        
+        # FIXED v4.0.1: Calculate backlog period end based on period_type
+        # Backlog ETD should be filtered by full period boundary, not current date range
+        backlog_period_end = self._get_backlog_period_end(period_type, year, start_date, end_date)
+        if DEBUG_TIMING:
+            print(f"   📅 [backlog_period] {period_type}: {start_date} → {backlog_period_end} (ETD filter)")
         
         # =====================================================================
         # 1. FILTER SALES DATA
@@ -164,9 +241,10 @@ class DataProcessor:
         # 4. PROCESS BACKLOG
         # =====================================================================
         t = time.perf_counter()
+        # FIXED v4.0.1: Use backlog_period_end for ETD filter (not end_date)
         backlog_results = self._process_backlog(
             start_date=start_date,
-            end_date=end_date,
+            end_date=backlog_period_end,  # Use period boundary, not filter end_date
             kpi_center_ids=kpi_center_ids,
             entity_ids=entity_ids,
             kpi_type=kpi_type,

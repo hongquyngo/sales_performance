@@ -4,16 +4,20 @@ Streamlit Fragments for KPI Center Performance - Overview Tab.
 
 VERSION: 4.6.1
 CHANGELOG:
-- v4.6.1: BUGFIX - YoY Comparison data mismatch with KPI Cards
-  - ROOT CAUSE: Previous year filtered by WHOLE YEAR instead of SAME PERIOD
-    - KPI Cards: Jan 1-27, 2025 (same period as current) → ~$199k
-    - YoY Section: Jan 1 - Dec 31, 2025 (whole year) → $1.79M
-  - Fixed: Filter by same date range (sync with DataProcessor._extract_previous_year)
-  - Fixed: Use 'sales_raw_df' instead of 'sales_raw' (wrong cache key)
-  - Fixed: Use 'exclude_internal_revenue' instead of 'exclude_internal' (wrong filter key)
-  - Fixed: Use 'legal_entity_id' instead of 'entity_id' (wrong column name)
-  - Fixed: Add missing 'kpi_type' filter
-  - Fixed: Exclude internal logic - set revenue=0 instead of removing rows
+- v4.6.1: BUGFIX & UI IMPROVEMENT - YoY Comparison clarity
+  - Issue: KPI Cards YoY (-59.1%) vs YoY Section (-95.5%) showed different values
+  - Reason: KPI Cards compare SAME PERIOD, YoY Section shows FULL YEAR (by design)
+  - Solution: Improved labeling to clarify the difference:
+    - Added Help popover explaining the two comparisons
+    - Current year label: "2026 Revenue (YTD)"
+    - Previous year label: "2025 Revenue (Full Year)"
+    - Changed "% YoY" to "% vs Full Year" for clarity
+  - Technical fixes (filter consistency):
+    - Fixed: Use 'sales_raw_df' instead of 'sales_raw' (wrong cache key)
+    - Fixed: Use 'exclude_internal_revenue' instead of 'exclude_internal'
+    - Fixed: Use 'legal_entity_id' instead of 'entity_id' (wrong column)
+    - Fixed: Add missing 'kpi_type' filter
+    - Fixed: Exclude internal logic - set revenue=0 instead of removing rows
 - v4.6.0: Refactored Overview tab
   - Added overview_tab_fragment() as main entry point
   - Moved _render_backlog_forecast_section() from main page
@@ -235,8 +239,24 @@ def yoy_comparison_fragment(
     - Monthly comparison charts
     - Cumulative performance charts
     """
-    # Header
-    st.subheader("📊 Year-over-Year Comparison")
+    # Header with explanation
+    col_header, col_help = st.columns([6, 1])
+    with col_header:
+        st.subheader("📊 Year-over-Year Comparison")
+    with col_help:
+        with st.popover("ℹ️"):
+            st.markdown("""
+**📊 Year-over-Year Comparison**
+
+This section shows **full year** trends for context:
+- **Current Year**: YTD performance (selected period)
+- **Previous Year**: Full 12-month performance
+
+**Note:** The YoY % in KPI Cards above compares the **same period** 
+(e.g., Jan 1-27, 2026 vs Jan 1-27, 2025) for accurate growth measurement.
+
+This section shows full previous year to visualize monthly patterns and seasonality.
+            """)
     
     if current_year is None:
         current_year = filter_values.get('year', date.today().year)
@@ -466,21 +486,11 @@ def yoy_comparison_fragment(
             st.warning("No data matches the selected filters")
             return
         
-        # FIXED v4.6.1: Calculate previous year dates for SAME PERIOD (sync with DataProcessor)
-        # Get current period dates from filter_values
-        current_start = filter_values.get('start_date', date(current_year, 1, 1))
-        current_end = filter_values.get('end_date', date(current_year, 12, 31))
-        
-        # Calculate same period in previous year
-        try:
-            prev_start = date(current_start.year - 1, current_start.month, current_start.day)
-        except ValueError:  # Feb 29 handling
-            prev_start = date(current_start.year - 1, current_start.month, 28)
-        
-        try:
-            prev_end = date(current_end.year - 1, current_end.month, current_end.day)
-        except ValueError:  # Feb 29 handling
-            prev_end = date(current_end.year - 1, current_end.month, 28)
+        # Get previous year data (FULL YEAR for context)
+        # NOTE: This intentionally shows full previous year for comparison context
+        # KPI Cards show same-period YoY, this section shows full year trend
+        prev_start = date(previous_year, 1, 1)
+        prev_end = date(previous_year, 12, 31)
         
         previous_df = pd.DataFrame()
         cache_hit = False
@@ -491,16 +501,11 @@ def yoy_comparison_fragment(
             cached_sales = raw_cached_data['sales_raw_df']
             if not cached_sales.empty and 'inv_date' in cached_sales.columns:
                 cached_sales['inv_date'] = pd.to_datetime(cached_sales['inv_date'], errors='coerce')
+                cached_sales['inv_year'] = cached_sales['inv_date'].dt.year
                 
-                # FIXED v4.6.1: Filter by DATE RANGE, not just year (sync with DataProcessor)
-                prev_start_ts = pd.Timestamp(prev_start)
-                prev_end_ts = pd.Timestamp(prev_end)
-                previous_df = cached_sales[
-                    (cached_sales['inv_date'] >= prev_start_ts) & 
-                    (cached_sales['inv_date'] <= prev_end_ts)
-                ].copy()
-                
-                if not previous_df.empty:
+                if previous_year in cached_sales['inv_year'].values:
+                    previous_df = cached_sales[cached_sales['inv_year'] == previous_year].copy()
+                    
                     # Apply KPI Center filter
                     if kpi_center_ids and 'kpi_center_id' in previous_df.columns:
                         previous_df = previous_df[previous_df['kpi_center_id'].isin(kpi_center_ids)]
@@ -568,17 +573,17 @@ def yoy_comparison_fragment(
                 col_curr, col_prev = st.columns(2)
                 
                 with col_curr:
-                    st.markdown(f"**{primary_year} {metric_name}**")
+                    st.markdown(f"**{primary_year} {metric_name} (YTD)**")
                     st.markdown(f"### ${current_total:,.0f}")
                     if yoy_change != 0:
                         color = "green" if yoy_change > 0 else "red"
                         arrow = "↑" if yoy_change > 0 else "↓"
-                        st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% YoY]")
+                        st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% vs Full Year]")
                 
                 with col_prev:
-                    st.markdown(f"**{previous_year} {metric_name}**")
+                    st.markdown(f"**{previous_year} {metric_name} (Full Year)**")
                     st.markdown(f"### ${previous_total:,.0f}")
-                    st.markdown(f"↑ ${yoy_diff:+,.0f} difference" if yoy_diff != 0 else "")
+                    st.caption(f"Difference: ${yoy_diff:+,.0f}" if yoy_diff != 0 else "")
                 
                 st.markdown("")
                 

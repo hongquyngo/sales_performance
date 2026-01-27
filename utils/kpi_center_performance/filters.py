@@ -2,8 +2,13 @@
 """
 Sidebar Filter Components for KPI Center Performance
 
-VERSION: 5.0.0
+VERSION: 5.0.1
 CHANGELOG:
+- v5.0.1: Added get_backlog_period_dates() function
+  - Helper to calculate correct ETD filter range for In-Period Backlog
+  - YTD: Jan 1 - Dec 31 (full year)
+  - QTD: Quarter start - Quarter end
+  - MTD: Month start - Month end
 - v5.0.0: Replaced multiselect with single-selection tree component
   - Prevents parent-child double counting
   - New "Include sub-centers" toggle
@@ -1526,3 +1531,71 @@ def analyze_period(filter_values: Dict) -> Dict:
         'days_until_end': days_until_end,
         'period_status': period_status,
     }
+
+
+def get_backlog_period_dates(filter_values: Dict) -> tuple:
+    """
+    Get correct date range for In-Period Backlog calculation.
+    
+    NEW v5.0.1: Backlog ETD should be filtered by PERIOD BOUNDARY, not current date range.
+    
+    Logic:
+    - Backlog = pending orders (not yet invoiced)
+    - ETD = Expected delivery date (future)
+    - "In-Period" = orders expected to be delivered within the KPI period
+    
+    Period boundaries:
+    - YTD: Jan 1 → Dec 31 of selected year
+    - QTD: Quarter start → Quarter end
+    - MTD: Month start → Month end
+    - LY: Jan 1 → Dec 31 of previous year
+    - Custom: Use filter dates as-is
+    
+    Args:
+        filter_values: Dict with period_type, year, start_date, end_date
+        
+    Returns:
+        Tuple of (backlog_start_date, backlog_end_date)
+    
+    Example:
+        Filter: YTD 2026, Jan 1 - Jan 27
+        → Backlog Period: Jan 1, 2026 - Dec 31, 2026
+        
+        Filter: QTD Q1 2026, Jan 1 - Jan 27
+        → Backlog Period: Jan 1, 2026 - Mar 31, 2026
+    """
+    import calendar
+    
+    period_type = filter_values.get('period_type', 'YTD')
+    year = filter_values.get('year', date.today().year)
+    start_date = filter_values.get('start_date', date(year, 1, 1))
+    end_date = filter_values.get('end_date', date(year, 12, 31))
+    
+    # Start date is always the period start
+    backlog_start = start_date
+    
+    if period_type == 'YTD':
+        # Full year
+        backlog_end = date(year, 12, 31)
+        
+    elif period_type == 'QTD':
+        # End of quarter
+        quarter = (start_date.month - 1) // 3 + 1
+        quarter_end_month = quarter * 3
+        last_day = calendar.monthrange(year, quarter_end_month)[1]
+        backlog_end = date(year, quarter_end_month, last_day)
+        
+    elif period_type == 'MTD':
+        # End of month
+        last_day = calendar.monthrange(year, start_date.month)[1]
+        backlog_end = date(year, start_date.month, last_day)
+        
+    elif period_type == 'LY':
+        # Full previous year
+        backlog_end = date(year, 12, 31)
+        
+    else:  # Custom or unknown
+        # Use filter dates as-is
+        backlog_end = end_date
+    
+    return (backlog_start, backlog_end)

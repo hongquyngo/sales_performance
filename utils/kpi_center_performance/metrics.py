@@ -2,9 +2,18 @@
 """
 KPI Calculations for KPI Center Performance
 
+VERSION: 4.0.1
+CHANGELOG:
+- v4.0.1: BUGFIX - Forecast Target proration
+  - Added: _calculate_forecast_proration() for full period target
+  - Fixed: calculate_pipeline_forecast_metrics uses forecast proration
+  - YTD: Target = 100% of annual (not prorated to filter date)
+  - QTD: Target = 25% of annual (full quarter)
+  - MTD: Target = 1/12 of annual (full month)
 """
 
 import logging
+import calendar
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
@@ -453,6 +462,57 @@ class KPICenterMetrics:
             return 1.0
         
         elif period_type == 'Custom' and start_date and end_date:
+            total_days = (end_date - start_date).days + 1
+            days_in_year = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
+            return total_days / days_in_year
+        
+        return 1.0
+    
+    def _calculate_forecast_proration(
+        self,
+        period_type: str,
+        year: int = None,
+        start_date: date = None,
+        end_date: date = None
+    ) -> float:
+        """
+        Calculate proration factor for FORECAST targets (full period).
+        
+        NEW v4.0.1: Different from _calculate_proration which uses current date.
+        This returns proration for the FULL period boundary.
+        
+        Used in Backlog & Forecast section where:
+        - In-Period Backlog = orders with ETD in FULL period
+        - Target = FULL period target (not prorated to filter date)
+        
+        Returns:
+            Float representing portion of year for the full period:
+            - YTD: 1.0 (100% = full year)
+            - QTD: 0.25 (25% = full quarter)
+            - MTD: 1/12 ≈ 0.0833 (full month)
+            - LY: 1.0 (100% = full year)
+            - Custom: actual days / 365
+        """
+        year = year or date.today().year
+        
+        if period_type == 'YTD':
+            # Full year
+            return 1.0
+        
+        elif period_type == 'QTD':
+            # Full quarter = 25% of year
+            return 0.25
+        
+        elif period_type == 'MTD':
+            # Full month = 1/12 of year
+            return 1.0 / 12
+        
+        elif period_type == 'LY':
+            # Full previous year
+            return 1.0
+        
+        elif period_type == 'Custom' and start_date and end_date:
+            # Custom period: use actual days
             total_days = (end_date - start_date).days + 1
             days_in_year = 366 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 365
             return total_days / days_in_year
@@ -1734,8 +1794,15 @@ class KPICenterMetrics:
         
         For each KPI (Revenue/GP/GP1): Only includes invoiced + backlog from 
         KPI centers who have that specific KPI target assigned.
+        
+        UPDATED v4.0.1: Uses forecast proration (full period) for target calculation.
+        - YTD: Target = 100% of annual (full year forecast)
+        - QTD: Target = 25% of annual (full quarter)
+        - MTD: Target = 1/12 of annual (full month)
         """
-        proration = self._calculate_proration(period_type, year, start_date, end_date)
+        # FIXED v4.0.1: Use FORECAST proration (full period), not current date proration
+        # This aligns with In-Period Backlog which also uses full period
+        proration = self._calculate_forecast_proration(period_type, year, start_date, end_date)
         
         # GP1/GP ratio for estimation
         gp1_gp_ratio = 1.0
