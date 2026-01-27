@@ -2,6 +2,17 @@
 """
 Streamlit Fragments for KPI Center Performance - Backlog Tab.
 
+VERSION: 4.2.1
+CHANGELOG:
+- v4.2.1: BUGFIX - In-Period Backlog uses period boundary
+  - Fixed: Use period boundary for ETD filter (not filter date range)
+  - YTD: ETD in Jan 1 - Dec 31 (full year)
+  - QTD: ETD in quarter start - quarter end
+  - MTD: ETD in month start - month end
+  - Added: _get_backlog_period_end() helper function
+  - Updated: Labels clarify the period boundary
+- v4.2.0: Tab-level wrapper with filters
+
 Contains:
 - backlog_tab_fragment: Tab-level wrapper with filters
 - backlog_list_fragment: Backlog transaction list
@@ -10,6 +21,7 @@ Contains:
 """
 
 import logging
+import calendar
 from typing import Dict, Optional
 from datetime import date
 import pandas as pd
@@ -31,6 +43,94 @@ from ..filters import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# HELPER FUNCTION - v4.2.1
+# =============================================================================
+
+def _get_backlog_period_end(filter_values: Dict) -> date:
+    """
+    Calculate the correct end date for In-Period Backlog ETD filter.
+    
+    NEW v4.2.1: Aligns with Overview tab logic.
+    
+    Logic:
+    - Backlog = pending orders (not yet invoiced)
+    - ETD = Expected delivery date (should be in future)
+    - "In-Period" = orders expected to be delivered within the KPI period
+    
+    Period boundaries:
+    - YTD: Jan 1 → Dec 31 of selected year
+    - QTD: Quarter start → Quarter end
+    - MTD: Month start → Month end
+    - LY: Jan 1 → Dec 31 of previous year
+    - Custom: Use filter dates as-is
+    
+    Args:
+        filter_values: Dict with period_type, year, start_date, end_date
+        
+    Returns:
+        Correct end date for backlog ETD filter
+    """
+    if not filter_values:
+        return date.today()
+    
+    period_type = filter_values.get('period_type', 'YTD')
+    year = filter_values.get('year', date.today().year)
+    start_date = filter_values.get('start_date', date(year, 1, 1))
+    end_date = filter_values.get('end_date', date.today())
+    
+    if period_type == 'YTD':
+        # Full year
+        return date(year, 12, 31)
+    
+    elif period_type == 'QTD':
+        # End of quarter containing start_date
+        quarter = (start_date.month - 1) // 3 + 1
+        quarter_end_month = quarter * 3
+        last_day = calendar.monthrange(year, quarter_end_month)[1]
+        return date(year, quarter_end_month, last_day)
+    
+    elif period_type == 'MTD':
+        # End of month containing start_date
+        last_day = calendar.monthrange(year, start_date.month)[1]
+        return date(year, start_date.month, last_day)
+    
+    elif period_type == 'LY':
+        # Full year (previous year is already in 'year' variable)
+        return date(year, 12, 31)
+    
+    else:  # Custom or unknown
+        # Use filter end_date as-is
+        return end_date
+
+
+def _get_period_label(filter_values: Dict) -> str:
+    """
+    Get human-readable label for the period boundary.
+    
+    Returns label like "YTD 2026 (Jan 1 - Dec 31)" or "Q1 2026 (Jan 1 - Mar 31)"
+    """
+    if not filter_values:
+        return "Current Period"
+    
+    period_type = filter_values.get('period_type', 'YTD')
+    year = filter_values.get('year', date.today().year)
+    start_date = filter_values.get('start_date', date(year, 1, 1))
+    end_date = _get_backlog_period_end(filter_values)
+    
+    if period_type == 'YTD':
+        return f"YTD {year} (Jan 1 - Dec 31)"
+    elif period_type == 'QTD':
+        quarter = (start_date.month - 1) // 3 + 1
+        return f"Q{quarter} {year} ({start_date.strftime('%b %d')} - {end_date.strftime('%b %d')})"
+    elif period_type == 'MTD':
+        return f"{start_date.strftime('%b')} {year} ({start_date.strftime('%b %d')} - {end_date.strftime('%b %d')})"
+    elif period_type == 'LY':
+        return f"Full Year {year}"
+    else:
+        return f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
 
 
 # =============================================================================
@@ -63,14 +163,16 @@ def backlog_tab_fragment(
     # Store original count
     total_count = len(backlog_df)
     
-    # Check for overdue warning (on original data)
+    # FIXED v4.2.1: Use period boundary for In-Period analysis (not filter date range)
+    # This aligns with Overview tab's Backlog & Forecast section
     start_date = filter_values.get('start_date', date.today()) if filter_values else date.today()
-    end_date = filter_values.get('end_date', date.today()) if filter_values else date.today()
+    backlog_period_end = _get_backlog_period_end(filter_values)
+    period_label = _get_period_label(filter_values)
     
     in_period_analysis = KPICenterMetrics.analyze_in_period_backlog(
         backlog_detail_df=backlog_df,
         start_date=start_date,
-        end_date=end_date
+        end_date=backlog_period_end  # Use period boundary, not filter end_date
     )
     
     if in_period_analysis.get('overdue_warning'):
@@ -178,7 +280,8 @@ def backlog_tab_fragment(
         backlog_list_fragment(
             backlog_df=filtered_df,
             filter_values=filter_values,
-            total_count=total_count
+            total_count=total_count,
+            period_label=period_label  # NEW v4.2.1
         )
     
     with backlog_tab2:
@@ -205,11 +308,13 @@ def backlog_list_fragment(
     filter_values: Dict = None,
     total_backlog_df: pd.DataFrame = None,  # DEPRECATED v4.2.0 - kept for backward compatibility
     fragment_key: str = "kpc_backlog",
-    total_count: int = None
+    total_count: int = None,
+    period_label: str = None  # NEW v4.2.1: Label for period boundary
 ):
     """
     Backlog List fragment - displays backlog data table.
     
+    UPDATED v4.2.1: Uses period boundary for In-Period analysis.
     UPDATED v4.2.0: Filters moved to tab level.
     - Receives pre-filtered data
     - Metrics calculated from filtered backlog_df
@@ -221,6 +326,7 @@ def backlog_list_fragment(
         total_backlog_df: DEPRECATED - no longer used, kept for backward compatibility
         fragment_key: Unique key prefix for widgets
         total_count: Original total count before filtering (for display)
+        period_label: Human-readable label for period boundary (e.g., "YTD 2026 (Jan 1 - Dec 31)")
     """
     from ..metrics import KPICenterMetrics
     
@@ -233,22 +339,24 @@ def backlog_list_fragment(
     
     # =========================================================================
     # CALCULATE IN-PERIOD BACKLOG ANALYSIS
+    # FIXED v4.2.1: Use period boundary (not filter date range)
     # =========================================================================
-    if filter_values:
-        start_date = filter_values.get('start_date', date.today())
-        end_date = filter_values.get('end_date', date.today())
-    else:
-        start_date = date.today()
-        end_date = date.today()
+    start_date = filter_values.get('start_date', date.today()) if filter_values else date.today()
+    backlog_period_end = _get_backlog_period_end(filter_values)
+    
+    # Generate period_label if not provided
+    if not period_label:
+        period_label = _get_period_label(filter_values)
     
     in_period_analysis = KPICenterMetrics.analyze_in_period_backlog(
         backlog_detail_df=backlog_df,
         start_date=start_date,
-        end_date=end_date
+        end_date=backlog_period_end  # Use period boundary, not filter end_date
     )
     
     # =========================================================================
     # SUMMARY CARDS - 7 columns (synced with Salesperson)
+    # UPDATED v4.2.1: Labels clarify period boundary
     # =========================================================================
     col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
@@ -276,7 +384,7 @@ def backlog_list_fragment(
             f"${total_backlog_value:,.0f}", 
             f"{total_orders:,} orders",
             delta_color="off",
-            help="Total backlog value (filtered)"
+            help="Total backlog value (all pending orders)"
         )
     with col_s2:
         st.metric(
@@ -284,7 +392,7 @@ def backlog_list_fragment(
             f"${total_backlog_gp:,.0f}",
             f"{total_customers:,} customers",
             delta_color="off",
-            help="Total gross profit (filtered)"
+            help="Total gross profit from all backlog"
         )
     with col_s3:
         in_period_value = in_period_analysis.get('total_value', 0)
@@ -294,7 +402,7 @@ def backlog_list_fragment(
             f"${in_period_value:,.0f}",
             f"{in_period_count:,} orders",
             delta_color="off",
-            help="Backlog with ETD within selected date range"
+            help=f"Backlog with ETD within {period_label}"
         )
     with col_s4:
         in_period_gp = in_period_analysis.get('total_gp', 0)
@@ -302,7 +410,7 @@ def backlog_list_fragment(
             "📊 In-Period GP",
             f"${in_period_gp:,.0f}",
             delta_color="off",
-            help="Gross profit from in-period backlog"
+            help=f"Gross profit from in-period backlog ({period_label})"
         )
     with col_s5:
         on_track_value = in_period_analysis.get('on_track_value', 0)
@@ -312,7 +420,7 @@ def backlog_list_fragment(
             f"${on_track_value:,.0f}",
             f"{on_track_count:,} orders",
             delta_color="off",
-            help="In-period orders with ETD ≥ today"
+            help="In-period orders with ETD ≥ today (future delivery)"
         )
     with col_s6:
         overdue_value = in_period_analysis.get('overdue_value', 0)
