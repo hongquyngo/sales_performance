@@ -231,12 +231,16 @@ def main():
     st.caption(f"Logged in as: {st.session_state.get('user_fullname', 'User')} ({st.session_state.get('user_role', '')})")
     
     # =========================================================================
-    # STEP 1: LOAD UNIFIED RAW DATA (cached)
+    # STEP 1: LOAD UNIFIED RAW DATA (cached) - Initial load
     # =========================================================================
     # This replaces both load_lookup_data() and load_data_for_year_range()
     # Single source of truth for all data
+    # 
+    # NEW v4.1.0: Dynamic Loading support
+    # - Initial load uses default range
+    # - After filters rendered, check if extended range needed and reload
     
-    with timer("Load unified raw data"):
+    with timer("Load unified raw data (initial)"):
         loader = UnifiedDataLoader(access)
         unified_cache = loader.get_unified_data()
     
@@ -298,6 +302,37 @@ def main():
             active_filters['kpi_center_ids']
         )
         active_filters['kpi_center_ids_expanded'] = expanded_ids
+    
+    # =========================================================================
+    # STEP 4.1: DYNAMIC RELOAD IF CUSTOM PERIOD REQUIRES EXTENDED DATA
+    # =========================================================================
+    # Check if current filter requires data beyond cached range
+    # This handles the case where user selects Custom period before default range
+    
+    custom_start_date = active_filters.get('custom_start_date')
+    if custom_start_date:
+        # Check if reload needed
+        cache_range = loader.get_cached_data_range()
+        if cache_range:
+            cached_start = cache_range.get('lookback_start')
+            if cached_start and custom_start_date < cached_start:
+                with timer("Load unified raw data (extended range)"):
+                    unified_cache = loader.get_unified_data(custom_start_date=custom_start_date)
+                
+                if DEBUG_TIMING:
+                    print(f"📅 Extended data loaded: {custom_start_date} → {cached_start} (was cached)")
+    
+    # Show info if extended data was loaded
+    cache_range = loader.get_cached_data_range()
+    if cache_range and custom_start_date:
+        from utils.kpi_center_performance.constants import LOOKBACK_YEARS, MIN_DATA_YEAR
+        default_start = date(max(date.today().year - LOOKBACK_YEARS, MIN_DATA_YEAR), 1, 1)
+        actual_start = cache_range.get('lookback_start')
+        if actual_start and actual_start < default_start:
+            st.info(
+                f"📅 Extended data loaded from **{actual_start.strftime('%Y-%m-%d')}** "
+                f"(default: {default_start.strftime('%Y-%m-%d')})"
+            )
     
     # =========================================================================
     # STEP 5: PROCESS DATA (Pandas - instant)

@@ -2,8 +2,13 @@
 """
 Sidebar Filter Components for KPI Center Performance
 
-VERSION: 5.0.1
+VERSION: 5.1.0
 CHANGELOG:
+- v5.1.0: Optimized caching for filters
+  - _get_kpi_centers_with_assignments() now uses cached targets_raw_df (no SQL)
+  - Added warning message when Custom period is before cached data range
+  - Added custom_start_date to filter_values for dynamic loading trigger
+  - Simplified _expand_kpi_center_ids_with_children() (deprecated, uses cache)
 - v5.0.1: Added get_backlog_period_dates() function
   - Helper to calculate correct ETD filter range for In-Period Backlog
   - YTD: Jan 1 - Dec 31 (full year)
@@ -45,6 +50,10 @@ def _get_kpi_centers_with_assignments(
     """
     Get list of KPI Center IDs that have KPI assignments in given years.
     
+    UPDATED v4.1.0: Now uses cached targets_raw_df from UnifiedDataLoader
+    instead of executing SQL query every time. Falls back to SQL only if
+    cache is not available.
+    
     UPDATED v2.14.0: Added kpi_type parameter to filter by KPI Type.
     This fixes the bug where TERRITORY filter shows 0 results when only
     VERTICAL has assignments for the selected year.
@@ -62,6 +71,58 @@ def _get_kpi_centers_with_assignments(
     """
     if not years:
         return []
+    
+    # TRY 1: Use cached data (instant) - NEW v4.1.0
+    from .constants import CACHE_KEY_UNIFIED
+    
+    cache = st.session_state.get(CACHE_KEY_UNIFIED)
+    if cache and not cache.get('targets_raw_df', pd.DataFrame()).empty:
+        targets_df = cache['targets_raw_df']
+        hierarchy_df = cache.get('hierarchy_df', pd.DataFrame())
+        
+        # Step 1: Filter targets by years
+        mask = targets_df['year'].isin(years)
+        
+        # Step 2: Filter by KPI Type if specified
+        if kpi_type and 'kpi_center_type' in targets_df.columns:
+            mask = mask & (targets_df['kpi_center_type'] == kpi_type)
+        
+        direct_ids = set(targets_df[mask]['kpi_center_id'].unique().tolist())
+        
+        if not direct_ids:
+            logger.debug(f"No direct assignments (cached) for years={years}, kpi_type={kpi_type}")
+            return []
+        
+        if hierarchy_df.empty:
+            return list(direct_ids)
+        
+        # Step 3: Add ancestors (parents) using cached hierarchy
+        all_ids = direct_ids.copy()
+        
+        # Build parent lookup from hierarchy
+        parent_lookup = {}
+        for _, row in hierarchy_df.iterrows():
+            kpc_id = row['kpi_center_id']
+            parent_id = row.get('parent_center_id')
+            if pd.notna(parent_id):
+                parent_lookup[kpc_id] = int(parent_id)
+        
+        # Get ancestors for each direct ID
+        for kpc_id in list(direct_ids):  # list() to avoid set modification during iteration
+            current = kpc_id
+            while current in parent_lookup:
+                parent = parent_lookup[current]
+                all_ids.add(parent)
+                current = parent
+        
+        logger.debug(
+            f"KPI Centers with assignments (cached): {len(all_ids)} "
+            f"({len(direct_ids)} direct) for years={years}, kpi_type={kpi_type}"
+        )
+        return list(all_ids)
+    
+    # TRY 2: Fallback to SQL query (only if cache not available)
+    logger.debug("Cache not available, falling back to SQL query for KPI assignments")
     
     try:
         from utils.db import get_db_engine
@@ -145,7 +206,7 @@ def _get_kpi_centers_with_assignments(
         with engine.connect() as conn:
             result = conn.execute(text(query), params)
             ids = [row[0] for row in result]
-            logger.debug(f"KPI Centers with assignments (incl. parents): {len(ids)} for years {years}, kpi_type={kpi_type}")
+            logger.debug(f"KPI Centers with assignments (SQL fallback): {len(ids)} for years {years}, kpi_type={kpi_type}")
             return ids
             
     except Exception as e:
@@ -216,6 +277,9 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
     """
     Expand KPI Center IDs to include all children (recursive).
     
+    DEPRECATED v4.1.0: This function is now a thin wrapper around cached hierarchy.
+    Consider using UnifiedDataLoader.expand_kpi_center_ids_with_children() directly.
+    
     UPDATED v4.1.0: Now uses cached hierarchy from UnifiedDataLoader when available,
     falling back to SQL query only if cache is not present.
     
@@ -228,8 +292,7 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
     if not kpi_center_ids:
         return kpi_center_ids
     
-    # Try to use cached hierarchy from session state (faster)
-    import streamlit as st
+    # Use cached hierarchy from session state (instant)
     from .constants import CACHE_KEY_UNIFIED
     
     cache = st.session_state.get(CACHE_KEY_UNIFIED)
@@ -260,6 +323,7 @@ def _expand_kpi_center_ids_with_children(kpi_center_ids: List[int]) -> List[int]
         return list(expanded)
     
     # Fallback: SQL query (only if cache not available)
+    logger.debug("Cache not available, falling back to SQL for hierarchy expansion")
     try:
         from utils.db import get_db_engine
         engine = get_db_engine()
@@ -1153,11 +1217,14 @@ class KPICenterFilters:
                     with col_start:
                         if is_custom:
                             # ENABLED - user can edit
+                            # v5.1.0: Allow selection from MIN_DATA_YEAR
+                            from .constants import MIN_DATA_YEAR
                             start_date_input = st.date_input(
                                 "Start",
                                 value=display_start,
+                                min_value=date(MIN_DATA_YEAR, 1, 1),
                                 key="frag_start_date",
-                                help="Start date for Custom period"
+                                help=f"Start date for Custom period (data available from {MIN_DATA_YEAR})"
                             )
                             # Store custom date
                             st.session_state.frag_custom_start = start_date_input
@@ -1175,11 +1242,14 @@ class KPICenterFilters:
                     with col_end:
                         if is_custom:
                             # ENABLED - user can edit
+                            # v5.1.0: Allow selection from MIN_DATA_YEAR
+                            from .constants import MIN_DATA_YEAR
                             end_date_input = st.date_input(
                                 "End",
                                 value=display_end,
+                                min_value=date(MIN_DATA_YEAR, 1, 1),
                                 key="frag_end_date",
-                                help="End date for Custom period"
+                                help=f"End date for Custom period (data available from {MIN_DATA_YEAR})"
                             )
                             # Store custom date
                             st.session_state.frag_custom_end = end_date_input
@@ -1214,6 +1284,34 @@ class KPICenterFilters:
                         if final_start > final_end:
                             final_end = final_start
                             st.warning("⚠️ End date adjusted to match Start date")
+                        
+                        # NEW v4.1.0: Check if Custom period requires extended data loading
+                        from .constants import CACHE_KEY_UNIFIED, LOOKBACK_YEARS, MIN_DATA_YEAR
+                        cache = st.session_state.get(CACHE_KEY_UNIFIED)
+                        
+                        # Check if selected date is before MIN_DATA_YEAR (no data available)
+                        if final_start.year < MIN_DATA_YEAR:
+                            st.warning(
+                                f"⚠️ No data available before **{MIN_DATA_YEAR}**. "
+                                f"Results will start from {MIN_DATA_YEAR}-01-01."
+                            )
+                        elif cache:
+                            cached_start = cache.get('_lookback_start')
+                            if cached_start and final_start < cached_start:
+                                st.info(
+                                    f"📅 Selected date ({final_start.strftime('%Y-%m-%d')}) is before "
+                                    f"default data range ({cached_start.strftime('%Y-%m-%d')}). "
+                                    f"Click **Apply** to load extended data."
+                                )
+                        else:
+                            # No cache yet - calculate default start
+                            default_start = date(max(today.year - LOOKBACK_YEARS, MIN_DATA_YEAR), 1, 1)
+                            if final_start < default_start:
+                                st.info(
+                                    f"📅 Selected date ({final_start.strftime('%Y-%m-%d')}) is before "
+                                    f"default data range ({default_start.strftime('%Y-%m-%d')}). "
+                                    f"Click **Apply** to load extended data."
+                                )
                     
                     st.divider()
                     
@@ -1340,6 +1438,9 @@ class KPICenterFilters:
                 'only_with_kpi': only_with_kpi,
                 'kpi_check_years': kpi_check_years,
                 'include_children': include_children,  # NEW v5.0.0
+                # NEW v4.1.0: Custom start date for dynamic loading
+                # Used by UnifiedDataLoader to determine if extended data range is needed
+                'custom_start_date': start_date if period_type == 'Custom' else None,
             }
             
             return filter_values, submitted

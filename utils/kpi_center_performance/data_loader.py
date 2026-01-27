@@ -2,9 +2,14 @@
 """
 Unified Data Loader for KPI Center Performance
 
-VERSION: 4.0.1
+VERSION: 4.1.0
 
 CHANGELOG:
+- v4.1.0: Dynamic Loading for Custom periods
+  - Added custom_start_date parameter to get_unified_data()
+  - Extended _needs_reload() to check if custom date requires reload
+  - Added get_kpi_centers_with_assignments_cached() using cached targets_raw_df
+  - Added get_cached_data_range() and is_date_in_cached_range() helpers
 - v4.0.1: RESTORED progress bar from v3.9.0 in _load_all_raw_data()
 - v4.0.0: Initial unified data loading architecture
 
@@ -12,9 +17,9 @@ Single source of truth for all raw data loading.
 Load ONCE, filter MANY times.
 
 Principles:
-1. Load all raw data in one go (4 SQL queries)
+1. Load all raw data in one go (5 SQL queries)
 2. Cache in session_state for duration of session
-3. Only reload when cache expired or data unavailable
+3. Only reload when cache expired, data unavailable, or custom period extends range
 4. All filtering done via DataProcessor (Pandas-based)
 """
 
@@ -76,21 +81,31 @@ class UnifiedDataLoader:
     # MAIN ENTRY POINT
     # =========================================================================
     
-    def get_unified_data(self, force_reload: bool = False) -> Dict:
+    def get_unified_data(
+        self, 
+        force_reload: bool = False,
+        custom_start_date: date = None
+    ) -> Dict:
         """
         Get unified raw data (cached or fresh).
         
         This is the main entry point. It returns cached data if available
         and valid, otherwise loads fresh data from database.
         
+        UPDATED v4.1.0: Dynamic Loading support
+        - If custom_start_date is provided and is before cached lookback_start,
+          data will be reloaded with extended range
+        
         Args:
             force_reload: If True, bypass cache and reload from DB
+            custom_start_date: Optional custom start date for extended lookback
+                               Used when user selects Custom period before default range
             
         Returns:
             Dict containing:
-            - sales_raw_df: 5 years of sales data
+            - sales_raw_df: N years of sales data (depends on lookback or custom_start)
             - backlog_raw_df: All pending orders
-            - targets_raw_df: 5 years of KPI targets
+            - targets_raw_df: N years of KPI targets
             - hierarchy_df: KPI Center hierarchy
             - _metadata: Loading info (timestamps, ranges)
         """
@@ -98,36 +113,50 @@ class UnifiedDataLoader:
             return self._empty_cache()
         
         # Check if we can use cached data
-        if not force_reload and not self._needs_reload():
+        needs_reload, reload_reason = self._needs_reload(custom_start_date)
+        
+        if not force_reload and not needs_reload:
             if DEBUG_TIMING:
                 print(f"♻️ Using cached unified data")
             return st.session_state[CACHE_KEY_UNIFIED]
         
-        # Load fresh data
-        return self._load_all_raw_data()
+        if DEBUG_TIMING and reload_reason:
+            print(f"🔄 Reload reason: {reload_reason}")
+        
+        # Load fresh data (with custom_start_date if provided)
+        return self._load_all_raw_data(custom_start_date=custom_start_date)
     
-    def _needs_reload(self) -> bool:
+    def _needs_reload(self, custom_start_date: date = None) -> tuple:
         """
         Check if data needs to be reloaded.
+        
+        UPDATED v4.1.0: Returns tuple (needs_reload: bool, reason: str)
         
         Reload conditions:
         1. No cache exists
         2. Cache expired (TTL)
+        3. Custom start date is before cached lookback_start (Dynamic Loading)
         
         Note: Unlike previous version, we do NOT reload when:
         - Filter values change (handled by DataProcessor)
         - Date range changes within lookback period
+        
+        Args:
+            custom_start_date: Optional custom start date from filters
+            
+        Returns:
+            Tuple of (needs_reload: bool, reason: str or None)
         """
         cache = st.session_state.get(CACHE_KEY_UNIFIED)
         
         if cache is None:
             logger.info("Cache miss: no cached data")
-            return True
+            return True, "No cached data"
         
         # Check if cache has required data
         if cache.get('sales_raw_df') is None:
             logger.info("Cache miss: missing sales_raw_df")
-            return True
+            return True, "Missing sales_raw_df"
         
         # Check TTL
         loaded_at = cache.get('_loaded_at')
@@ -135,9 +164,19 @@ class UnifiedDataLoader:
             elapsed = (datetime.now() - loaded_at).total_seconds()
             if elapsed > CACHE_TTL_SECONDS:
                 logger.info(f"Cache expired: {elapsed:.0f}s > {CACHE_TTL_SECONDS}s TTL")
-                return True
+                return True, f"TTL expired ({elapsed:.0f}s)"
         
-        return False
+        # NEW v4.1.0: Check if custom_start_date requires extended data range
+        if custom_start_date:
+            cached_start = cache.get('_lookback_start')
+            if cached_start and custom_start_date < cached_start:
+                logger.info(
+                    f"Dynamic reload: custom_start_date={custom_start_date} "
+                    f"< cached_start={cached_start}"
+                )
+                return True, f"Custom period before cached range ({custom_start_date} < {cached_start})"
+        
+        return False, None
     
     def _empty_cache(self) -> Dict:
         """Return empty cache structure."""
@@ -156,18 +195,37 @@ class UnifiedDataLoader:
     # DATA LOADING
     # =========================================================================
     
-    def _load_all_raw_data(self) -> Dict:
+    def _load_all_raw_data(self, custom_start_date: date = None) -> Dict:
         """
         Load all raw data from database.
         
-        Executes 4 SQL queries:
-        1. Sales data (5 years lookback)
+        UPDATED v4.1.0: Dynamic Loading support
+        - If custom_start_date is provided, use it as lookback_start
+        - Otherwise, use default LOOKBACK_YEARS
+        
+        Executes 5 SQL queries:
+        1. Sales data (from lookback_start or custom_start_date)
         2. Backlog data (all pending)
-        3. Targets data (5 years)
+        3. Targets data (years in range)
         4. Hierarchy data (static)
+        5. KPI Types data (static)
+        
+        Args:
+            custom_start_date: Optional custom start date for extended lookback
         """
         today = date.today()
-        lookback_start = date(max(today.year - LOOKBACK_YEARS, MIN_DATA_YEAR), 1, 1)
+        
+        # Determine lookback_start: use custom_start_date if provided and earlier
+        default_lookback_start = date(max(today.year - LOOKBACK_YEARS, MIN_DATA_YEAR), 1, 1)
+        
+        if custom_start_date and custom_start_date < default_lookback_start:
+            # Use custom start date (extended range)
+            lookback_start = date(max(custom_start_date.year, MIN_DATA_YEAR), 1, 1)
+            if DEBUG_TIMING:
+                print(f"📅 Using EXTENDED lookback: {lookback_start} (custom) vs {default_lookback_start} (default)")
+        else:
+            lookback_start = default_lookback_start
+        
         lookback_end = date(today.year + MAX_FUTURE_YEARS, 12, 31)
         
         # Years for targets (lookback + future)
@@ -699,6 +757,73 @@ class UnifiedDataLoader:
         
         return list(all_ids)
     
+    def get_kpi_centers_with_assignments_cached(
+        self,
+        years: List[int],
+        kpi_type: str = None
+    ) -> List[int]:
+        """
+        Get KPI Center IDs with assignments for multiple years (from cache).
+        
+        NEW v4.1.0: Replaces SQL-based _get_kpi_centers_with_assignments() in filters.py.
+        Uses cached targets_raw_df instead of executing SQL query every time.
+        
+        Business logic: 
+        - Parent KPI = sum of children KPIs
+        - If any child has assignment, parent should also be considered as having assignment
+        
+        Args:
+            years: List of years to check
+            kpi_type: Optional KPI Type to filter (e.g., 'TERRITORY', 'VERTICAL')
+            
+        Returns:
+            List of kpi_center_ids with KPI assignments (direct or inherited from children)
+        """
+        if not years:
+            return []
+        
+        cache = st.session_state.get(CACHE_KEY_UNIFIED)
+        if not cache:
+            logger.warning("get_kpi_centers_with_assignments_cached: No cache available")
+            return []
+        
+        targets_df = cache.get('targets_raw_df', pd.DataFrame())
+        hierarchy_df = cache.get('hierarchy_df', pd.DataFrame())
+        
+        if targets_df.empty:
+            logger.debug(f"No targets data in cache for years={years}, kpi_type={kpi_type}")
+            return []
+        
+        # Step 1: Filter targets by years
+        mask = targets_df['year'].isin(years)
+        
+        # Step 2: Filter by KPI Type if specified
+        if kpi_type and 'kpi_center_type' in targets_df.columns:
+            mask = mask & (targets_df['kpi_center_type'] == kpi_type)
+        
+        direct_ids = set(targets_df[mask]['kpi_center_id'].unique().tolist())
+        
+        if not direct_ids:
+            logger.debug(f"No direct assignments found for years={years}, kpi_type={kpi_type}")
+            return []
+        
+        if hierarchy_df.empty:
+            return list(direct_ids)
+        
+        # Step 3: Add ancestors (parents) of assigned centers
+        all_ids = direct_ids.copy()
+        for kpc_id in direct_ids:
+            ancestors = self._get_ancestors_from_hierarchy(kpc_id, hierarchy_df)
+            all_ids.update(ancestors)
+        
+        logger.debug(
+            f"KPI Centers with assignments (cached): {len(all_ids)} total "
+            f"({len(direct_ids)} direct + {len(all_ids) - len(direct_ids)} ancestors) "
+            f"for years={years}, kpi_type={kpi_type}"
+        )
+        
+        return list(all_ids)
+    
     def _get_ancestors_from_hierarchy(
         self,
         kpi_center_id: int,
@@ -828,3 +953,48 @@ class UnifiedDataLoader:
         if CACHE_KEY_UNIFIED in st.session_state:
             del st.session_state[CACHE_KEY_UNIFIED]
         logger.info("Unified data cache cleared")
+    
+    def get_cached_data_range(self) -> Optional[Dict]:
+        """
+        Get the date range of currently cached data.
+        
+        NEW v4.1.0: Helper method for UI to show data availability info.
+        
+        Returns:
+            Dict with lookback_start, lookback_end, loaded_at or None if no cache
+        """
+        cache = st.session_state.get(CACHE_KEY_UNIFIED)
+        if not cache:
+            return None
+        
+        return {
+            'lookback_start': cache.get('_lookback_start'),
+            'lookback_end': cache.get('_lookback_end'),
+            'loaded_at': cache.get('_loaded_at'),
+            'lookback_years': cache.get('_lookback_years'),
+            'target_years': cache.get('_target_years', []),
+        }
+    
+    def is_date_in_cached_range(self, check_date: date) -> bool:
+        """
+        Check if a date is within the cached data range.
+        
+        NEW v4.1.0: Used to determine if dynamic reload is needed.
+        
+        Args:
+            check_date: Date to check
+            
+        Returns:
+            True if date is within cached range, False otherwise
+        """
+        cache_range = self.get_cached_data_range()
+        if not cache_range:
+            return False
+        
+        start = cache_range.get('lookback_start')
+        end = cache_range.get('lookback_end')
+        
+        if not start or not end:
+            return False
+        
+        return start <= check_date <= end

@@ -26,7 +26,8 @@ ALLOWED_ROLES = ['admin', 'GM', 'MD', 'sales_manager']
 LOOKBACK_YEARS = 5
 
 # Minimum year for data loading (safety floor)
-MIN_DATA_YEAR = 2020
+# NOTE: Actual data in DB starts from 2015
+MIN_DATA_YEAR = 2015
 
 # Maximum future years to include (for targets/forecasts)
 MAX_FUTURE_YEARS = 1
@@ -35,8 +36,8 @@ MAX_FUTURE_YEARS = 1
 # CACHE SETTINGS
 # =============================================================================
 
-# Cache TTL in seconds (30 minutes)
-CACHE_TTL_SECONDS = 1800
+# Cache TTL in seconds (2 hours)
+CACHE_TTL_SECONDS = 7200
 
 # =============================================================================
 # SESSION STATE KEYS - NEW v4.0.0
