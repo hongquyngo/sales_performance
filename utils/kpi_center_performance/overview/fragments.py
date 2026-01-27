@@ -2,33 +2,6 @@
 """
 Streamlit Fragments for KPI Center Performance - Overview Tab.
 
-VERSION: 4.6.1
-CHANGELOG:
-- v4.6.1: BUGFIX & UI IMPROVEMENT - YoY Comparison clarity
-  - Issue: KPI Cards YoY (-59.1%) vs YoY Section (-95.5%) showed different values
-  - Reason: KPI Cards compare SAME PERIOD, YoY Section shows FULL YEAR (by design)
-  - Solution: Improved labeling to clarify the difference:
-    - Added Help popover explaining the two comparisons
-    - Current year label: "2026 Revenue (YTD)"
-    - Previous year label: "2025 Revenue (Full Year)"
-    - Changed "% YoY" to "% vs Full Year" for clarity
-  - Technical fixes (filter consistency):
-    - Fixed: Use 'sales_raw_df' instead of 'sales_raw' (wrong cache key)
-    - Fixed: Use 'exclude_internal_revenue' instead of 'exclude_internal'
-    - Fixed: Use 'legal_entity_id' instead of 'entity_id' (wrong column)
-    - Fixed: Add missing 'kpi_type' filter
-    - Fixed: Exclude internal logic - set revenue=0 instead of removing rows
-- v4.6.0: Refactored Overview tab
-  - Added overview_tab_fragment() as main entry point
-  - Moved _render_backlog_forecast_section() from main page
-  - Centralized all Overview tab rendering logic
-
-Contains:
-- overview_tab_fragment: Main Overview tab entry point (NEW)
-- monthly_trend_fragment: Monthly trend charts with filters
-- yoy_comparison_fragment: Year-over-Year / Multi-Year comparison
-- export_report_fragment: Excel report generation
-- _render_backlog_forecast_section: Backlog & Forecast metrics/charts (INTERNAL)
 """
 
 import logging
@@ -899,34 +872,7 @@ def overview_tab_fragment(
     st.divider()
     
     # =========================================================================
-    # SECTION 2: MONTHLY TREND
-    # =========================================================================
-    monthly_trend_fragment(
-        sales_df=sales_df,
-        filter_values=active_filters,
-        targets_df=targets_df,
-        fragment_key="kpc_trend"
-    )
-    
-    st.divider()
-    
-    # =========================================================================
-    # SECTION 3: YEAR-OVER-YEAR COMPARISON
-    # =========================================================================
-    if active_filters.get('show_yoy', True):
-        yoy_comparison_fragment(
-            queries=queries,
-            filter_values=active_filters,
-            current_year=active_filters['year'],
-            sales_df=sales_df,
-            raw_cached_data=unified_cache,
-            fragment_key="kpc_yoy"
-        )
-        
-        st.divider()
-    
-    # =========================================================================
-    # SECTION 4: BACKLOG & FORECAST
+    # SECTION 2: BACKLOG & FORECAST (MOVED UP v4.6.2)
     # =========================================================================
     period_info = analyze_period(active_filters)
     
@@ -987,11 +933,39 @@ def overview_tab_fragment(
                 chart_backlog_metrics=chart_backlog_metrics,
                 gp1_gp_ratio=gp1_gp_ratio
             )
+        
+        st.divider()
+    
+    # =========================================================================
+    # SECTION 3: MONTHLY TREND (WAS SECTION 2)
+    # =========================================================================
+    monthly_trend_fragment(
+        sales_df=sales_df,
+        filter_values=active_filters,
+        targets_df=targets_df,
+        fragment_key="kpc_trend"
+    )
+    
+    st.divider()
+    
+    # =========================================================================
+    # SECTION 4: YEAR-OVER-YEAR COMPARISON (WAS SECTION 3)
+    # =========================================================================
+    if active_filters.get('show_yoy', True):
+        yoy_comparison_fragment(
+            queries=queries,
+            filter_values=active_filters,
+            current_year=active_filters['year'],
+            sales_df=sales_df,
+            raw_cached_data=unified_cache,
+            fragment_key="kpc_yoy"
+        )
+        
+        st.divider()
     
     # =========================================================================
     # SECTION 5: EXPORT REPORT
     # =========================================================================
-    st.divider()
     export_report_fragment(
         metrics=overview_metrics,
         complex_kpis=complex_kpis,
