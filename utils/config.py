@@ -2,12 +2,19 @@
 """
 Centralized Configuration Management
 
-Version: 2.0.0
+Version: 3.0.0 (Combined)
 Features:
 - Support both local (.env) and Streamlit Cloud (secrets.toml)
 - Singleton pattern for efficiency
 - Type-safe getters with defaults
 - Environment detection
+- Detailed logging for debugging
+- Backward compatible with all previous versions
+
+Compatibility:
+- V1: dataclass approach, property decorators
+- V2: detailed logging, dict-based config
+- V3: simple logging
 """
 
 import os
@@ -15,8 +22,8 @@ import json
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional, Union
-from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+from dataclasses import dataclass
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -26,7 +33,11 @@ def is_running_on_streamlit_cloud() -> bool:
     """Detect if running on Streamlit Cloud"""
     try:
         import streamlit as st
-        return hasattr(st, 'secrets') and len(st.secrets) > 0
+        # Support both detection methods for compatibility
+        if not hasattr(st, 'secrets'):
+            return False
+        # Check if secrets has content (V1 style) or has DB_CONFIG (V2/V3 style)
+        return len(st.secrets) > 0 or "DB_CONFIG" in st.secrets
     except Exception:
         return False
 
@@ -185,17 +196,23 @@ class Config:
     
     def _load_local_config(self):
         """Load configuration from local .env file"""
-        # Find and load .env file
+        # Find and load .env file from multiple possible locations
         env_paths = [
             Path.cwd() / ".env",
             Path(__file__).parent.parent / ".env",
+            Path(__file__).parent / ".env",
         ]
         
+        env_loaded = False
         for env_path in env_paths:
             if env_path.exists():
                 load_dotenv(env_path)
                 logger.info(f"Loaded .env from: {env_path}")
+                env_loaded = True
                 break
+        
+        if not env_loaded:
+            load_dotenv()  # Try default location
         
         # Database
         self._db_config = DatabaseConfig(
@@ -225,7 +242,7 @@ class Config:
             "exchange_rate": os.getenv("EXCHANGE_RATE_API_KEY")
         }
         
-        # Email
+        # Email - Support multiple accounts
         self._email_config = {
             "inbound": EmailConfig(
                 sender=os.getenv("INBOUND_EMAIL_SENDER"),
@@ -282,11 +299,123 @@ class Config:
         }
     
     def _log_config_status(self):
-        """Log configuration status"""
-        logger.info(f"✅ Database: {self._db_config.host}/{self._db_config.database}")
-        logger.info(f"✅ AWS S3: {'Configured' if self._aws_config.is_configured() else 'Not configured'}")
-        logger.info(f"✅ Exchange API: {'Configured' if self._api_keys.get('exchange_rate') else 'Missing'}")
-        logger.info(f"✅ Google: {'Loaded' if self._google_service_account else 'Not configured'}")
+        """Log configuration status with detailed validation (V2 style)"""
+        issues = []
+        
+        # ═══════════════════════════════════════════════════════════════
+        # DATABASE
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        logger.info("📊 DATABASE CONFIGURATION")
+        
+        db = self._db_config
+        if all([db.host, db.user, db.password, db.database]):
+            logger.info(f"   ✅ Host: {db.host}:{db.port}")
+            logger.info(f"   ✅ Database: {db.database}")
+            logger.info(f"   ✅ User: {db.user}")
+            logger.info(f"   ✅ Password: {'*' * 8} (configured)")
+        else:
+            missing = []
+            if not db.host: missing.append('host')
+            if not db.user: missing.append('user')
+            if not db.password: missing.append('password')
+            if not db.database: missing.append('database')
+            logger.error(f"   ❌ Missing: {', '.join(missing)}")
+            issues.append(f"Database: missing {', '.join(missing)}")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # EMAIL
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        logger.info("📧 EMAIL CONFIGURATION")
+        
+        # Outbound
+        out_email = self._email_config.get('outbound')
+        if out_email and out_email.sender and out_email.password:
+            logger.info(f"   ✅ Outbound Sender: {out_email.sender}")
+            logger.info(f"   ✅ Outbound Password: {'*' * 8} (configured)")
+        elif out_email and out_email.sender:
+            logger.warning(f"   ⚠️  Outbound Sender: {out_email.sender}")
+            logger.error(f"   ❌ Outbound Password: MISSING")
+            issues.append("Outbound email: password missing")
+        else:
+            logger.info(f"   ℹ️  Outbound Email: Not configured")
+        
+        # Inbound
+        in_email = self._email_config.get('inbound')
+        if in_email and in_email.sender and in_email.password:
+            logger.info(f"   ✅ Inbound Sender: {in_email.sender}")
+        else:
+            logger.info(f"   ℹ️  Inbound Email: Not configured (optional)")
+        
+        # SMTP
+        smtp_host = out_email.smtp_host if out_email else "smtp.gmail.com"
+        smtp_port = out_email.smtp_port if out_email else 587
+        logger.info(f"   ✅ SMTP Server: {smtp_host}:{smtp_port}")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # AWS S3
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        logger.info("☁️  AWS S3 CONFIGURATION")
+        
+        aws = self._aws_config
+        if aws.is_configured():
+            logger.info(f"   ✅ Bucket: {aws.bucket_name}")
+            logger.info(f"   ✅ Region: {aws.region}")
+            key_preview = f"{aws.access_key_id[:8]}...{aws.access_key_id[-4:]}" if len(str(aws.access_key_id or '')) > 12 else "configured"
+            logger.info(f"   ✅ Access Key: {key_preview}")
+            logger.info(f"   ✅ Secret Key: {'*' * 8} (configured)")
+        elif aws.bucket_name:
+            logger.warning(f"   ⚠️  Bucket: {aws.bucket_name}")
+            if not aws.access_key_id:
+                logger.error(f"   ❌ Access Key: MISSING")
+                issues.append("AWS S3: access key missing")
+            if not aws.secret_access_key:
+                logger.error(f"   ❌ Secret Key: MISSING")
+                issues.append("AWS S3: secret key missing")
+        else:
+            logger.info(f"   ℹ️  AWS S3: Not configured (optional)")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # API KEYS
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        logger.info("🔑 API KEYS")
+        
+        exchange_key = self._api_keys.get('exchange_rate')
+        if exchange_key:
+            key_preview = f"{exchange_key[:6]}...{exchange_key[-4:]}" if len(str(exchange_key)) > 10 else "configured"
+            logger.info(f"   ✅ Exchange Rate API: {key_preview}")
+        else:
+            logger.info(f"   ℹ️  Exchange Rate API: Not configured (optional)")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # GOOGLE CLOUD
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        logger.info("🔐 GOOGLE CLOUD")
+        
+        if self._google_service_account:
+            gcp_project = self._google_service_account.get('project_id', 'Unknown')
+            gcp_email = self._google_service_account.get('client_email', 'Unknown')
+            logger.info(f"   ✅ Project: {gcp_project}")
+            logger.info(f"   ✅ Service Account: {gcp_email}")
+        else:
+            logger.info(f"   ℹ️  Google Service Account: Not configured (optional)")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # SUMMARY
+        # ═══════════════════════════════════════════════════════════════
+        logger.info("─" * 55)
+        if issues:
+            logger.warning(f"⚠️  CONFIGURATION ISSUES FOUND ({len(issues)}):")
+            for issue in issues:
+                logger.warning(f"   • {issue}")
+            logger.info("─" * 55)
+        else:
+            logger.info("✅ ALL REQUIRED CONFIGURATIONS LOADED SUCCESSFULLY")
+            logger.info("─" * 55)
     
     # ==================== PUBLIC GETTERS ====================
     
@@ -325,7 +454,7 @@ class Config:
         key = f"ENABLE_{feature.upper()}"
         return self._app_config.get(key, True)
     
-    # ==================== PROPERTIES ====================
+    # ==================== PROPERTIES (V1 backward compatibility) ====================
     
     @property
     def db_config(self) -> Dict[str, Any]:
@@ -341,6 +470,34 @@ class Config:
     def app_config(self) -> Dict[str, Any]:
         """Backward compatible property"""
         return self._app_config.copy()
+    
+    @property
+    def api_keys(self) -> Dict[str, Any]:
+        """Backward compatible property (V2/V3 style)"""
+        return self._api_keys.copy()
+    
+    @property
+    def email_config(self) -> Dict[str, Any]:
+        """Backward compatible property (V2/V3 style) - returns dict format"""
+        return {
+            "inbound": {
+                "sender": self._email_config["inbound"].sender,
+                "password": self._email_config["inbound"].password
+            },
+            "outbound": {
+                "sender": self._email_config["outbound"].sender,
+                "password": self._email_config["outbound"].password
+            },
+            "smtp": {
+                "host": self._email_config["outbound"].smtp_host,
+                "port": self._email_config["outbound"].smtp_port
+            }
+        }
+    
+    @property
+    def google_service_account(self) -> Dict[str, Any]:
+        """Backward compatible property"""
+        return self._google_service_account.copy()
 
 
 # ==================== SINGLETON INSTANCE ====================

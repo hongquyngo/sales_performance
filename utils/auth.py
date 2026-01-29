@@ -2,12 +2,20 @@
 """
 Authentication Manager for Streamlit Apps
 
-Version: 2.0.0
+Version: 3.0.0 (Combined)
 Features:
 - SHA256 password hashing (compatible with existing database)
 - Role-based access control
 - Session management with timeout
-- Backward compatible with existing apps
+- Keycloak ID support (V1)
+- Backward compatible session state keys (V2)
+- User validation (V2)
+- Decorators for easy page protection (V1)
+
+Compatibility:
+- V1: keycloak_id, decorators, require_role, has_role, is_admin
+- V2: authenticated_user_id, user dict, validate_user_exists, get_current_user_id
+- V3: basic auth functionality
 """
 
 import streamlit as st
@@ -82,6 +90,7 @@ class AuthManager:
         try:
             engine = get_db_engine()
             
+            # Query includes keycloak_id for V1 compatibility
             query = text("""
                 SELECT 
                     u.id,
@@ -132,7 +141,7 @@ class AuthManager:
                 'email': user['email'],
                 'role': user['role'],
                 'employee_id': user['employee_id'],
-                'keycloak_id': user.get('keycloak_id'),
+                'keycloak_id': user.get('keycloak_id'),  # V1 compatibility
                 'full_name': user['full_name'] or user['username'],
                 'login_time': datetime.now()
             }
@@ -163,6 +172,11 @@ class AuthManager:
         if not st.session_state.authenticated:
             return False
         
+        # V2: Check if user_id exists and is valid
+        if not st.session_state.get('user_id'):
+            logger.warning("No user_id in session state")
+            return False
+        
         # Check session timeout
         login_time = st.session_state.get('login_time')
         if login_time:
@@ -176,30 +190,56 @@ class AuthManager:
     
     def login(self, user_info: Dict):
         """Initialize user session after successful authentication"""
+        # Main authentication flags
         st.session_state.authenticated = True
+        st.session_state.login_time = user_info['login_time']
+        
+        # User information - standard keys (all versions)
         st.session_state.user_id = user_info['id']
         st.session_state.username = user_info['username']
         st.session_state.user_email = user_info['email']
-        st.session_state.user_keycloak_id = user_info.get('keycloak_id')
         st.session_state.user_role = user_info['role']
         st.session_state.user_fullname = user_info['full_name']
         st.session_state.employee_id = user_info['employee_id']
-        st.session_state.login_time = user_info['login_time']
+        
+        # V1: keycloak_id support
+        st.session_state.user_keycloak_id = user_info.get('keycloak_id')
+        
+        # V2: Backward compatibility keys
+        st.session_state.authenticated_user_id = user_info['id']
+        
+        # V2: User dict for modules that use it
+        st.session_state.user = {
+            'id': user_info['id'],
+            'username': user_info['username'],
+            'email': user_info['email'],
+            'role': user_info['role'],
+            'full_name': user_info['full_name'],
+            'employee_id': user_info['employee_id'],
+            'keycloak_id': user_info.get('keycloak_id')
+        }
         
         # Initialize app-specific session vars
         st.session_state.debug_mode = False
         
-        logger.info(f"User {user_info['username']} (keycloak_id: {user_info.get('keycloak_id')}) logged in successfully")
+        logger.info(f"User {user_info['username']} (ID: {user_info['id']}, keycloak_id: {user_info.get('keycloak_id')}) logged in successfully")
     
     def logout(self):
         """Clear user session and cache"""
+        # Get info before clearing
         username = st.session_state.get('username', 'Unknown')
+        user_id = st.session_state.get('user_id', 'Unknown')
         
-        # Keys to clear
+        # Keys to clear - combined from all versions
         auth_keys = [
+            # All versions
             'authenticated', 'user_id', 'username', 'user_email',
-            'user_keycloak_id', 'user_role', 'user_fullname',
-            'employee_id', 'login_time', 'debug_mode'
+            'user_role', 'user_fullname', 'employee_id', 'login_time',
+            'debug_mode',
+            # V1 specific
+            'user_keycloak_id',
+            # V2 specific
+            'authenticated_user_id', 'user', 'last_activity'
         ]
         
         for key in auth_keys:
@@ -209,7 +249,7 @@ class AuthManager:
         # Clear cache
         st.cache_data.clear()
         
-        logger.info(f"User {username} logged out")
+        logger.info(f"User {username} (ID: {user_id}) logged out")
     
     # ==================== ACCESS CONTROL ====================
     
@@ -226,7 +266,7 @@ class AuthManager:
     
     def require_role(self, allowed_roles: List[str]) -> bool:
         """
-        Require specific role(s) to access a page
+        Require specific role(s) to access a page (V1)
         
         Args:
             allowed_roles: List of role names that can access
@@ -247,11 +287,11 @@ class AuthManager:
         return True
     
     def has_role(self, role: str) -> bool:
-        """Check if current user has specific role"""
+        """Check if current user has specific role (V1)"""
         return st.session_state.get('user_role', '') == role
     
     def is_admin(self) -> bool:
-        """Check if current user is admin"""
+        """Check if current user is admin (V1)"""
         return self.has_role('admin')
     
     # ==================== USER INFO HELPERS ====================
@@ -263,15 +303,30 @@ class AuthManager:
         return st.session_state.get('username', 'User')
     
     def get_user_keycloak_id(self) -> Optional[str]:
-        """Get user's keycloak_id for database operations"""
+        """Get user's keycloak_id for database operations (V1)"""
         return st.session_state.get('user_keycloak_id')
     
     def get_user_id(self) -> Optional[int]:
         """Get current user's ID"""
         return st.session_state.get('user_id')
     
+    def get_current_user_id(self) -> Optional[int]:
+        """Get current authenticated user ID with validation (V2)"""
+        user_id = st.session_state.get('user_id')
+        
+        if not user_id:
+            logger.error("No user_id found in session state")
+            return None
+        
+        try:
+            # Ensure it's an integer
+            return int(user_id)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid user_id format: {user_id}, error: {e}")
+            return None
+    
     def get_current_user(self) -> Dict:
-        """Get all current user info as dictionary"""
+        """Get all current user info as dictionary (V1)"""
         return {
             'id': st.session_state.get('user_id'),
             'username': st.session_state.get('username'),
@@ -282,12 +337,33 @@ class AuthManager:
             'keycloak_id': st.session_state.get('user_keycloak_id'),
         }
     
+    def validate_user_exists(self, user_id: int) -> bool:
+        """Validate that a user exists in the database (V2)"""
+        try:
+            engine = get_db_engine()
+            query = text("""
+                SELECT id 
+                FROM users 
+                WHERE id = :user_id 
+                AND delete_flag = 0 
+                AND is_active = 1
+            """)
+            
+            with engine.connect() as conn:
+                result = conn.execute(query, {'user_id': user_id}).fetchone()
+                return result is not None
+                
+        except Exception as e:
+            logger.error(f"Error validating user {user_id}: {e}")
+            return False
+    
     def update_session_activity(self):
-        """Update session activity to prevent timeout (placeholder for future use)"""
-        pass
+        """Update session activity to prevent timeout (V2)"""
+        if 'login_time' in st.session_state:
+            st.session_state.last_activity = datetime.now()
 
 
-# ==================== DECORATORS ====================
+# ==================== DECORATORS (V1) ====================
 
 def require_login(func):
     """Decorator to require login for a function"""

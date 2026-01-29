@@ -2,12 +2,18 @@
 """
 Database Connection Management
 
-Version: 2.0.0
+Version: 3.0.0 (Combined)
 Features:
 - Singleton pattern with thread-safe double-checked locking
 - Connection pooling with auto-reconnect
 - Health check utilities
-- Query execution helpers
+- Query execution helpers (V1)
+- Context managers for transactions (V1)
+- Pool status with invalidatedcount (V2)
+
+Compatibility:
+- V1: context managers, query helpers (execute_query, execute_update, etc.)
+- V2/V3: direct DB_CONFIG/APP_CONFIG imports, invalidatedcount in pool status
 """
 
 import pandas as pd
@@ -20,7 +26,7 @@ import threading
 from typing import Tuple, Optional, Dict, Any, List
 from contextlib import contextmanager
 
-from .config import config
+from .config import config, DB_CONFIG, APP_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +59,9 @@ def get_db_engine():
 
 def _create_engine():
     """Create new database engine with configured settings"""
-    db_config = config.get_db_config()
-    app_config = config.app_config
+    # Support both config object (V1) and direct imports (V2/V3)
+    db_config = config.get_db_config() if hasattr(config, 'get_db_config') else DB_CONFIG
+    app_config = config.app_config if hasattr(config, 'app_config') else APP_CONFIG
     
     # Build connection URL
     user = db_config["user"]
@@ -144,18 +151,22 @@ def get_connection_pool_status() -> Dict[str, Any]:
     
     try:
         pool = _engine.pool
-        return {
+        status = {
             "status": "active",
             "pool_size": pool.size(),
             "checked_in": pool.checkedin(),
             "checked_out": pool.checkedout(),
             "overflow": pool.overflow(),
         }
+        # V2: Add invalidatedcount if available
+        if hasattr(pool, 'invalidatedcount'):
+            status["invalid"] = pool.invalidatedcount()
+        return status
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-# ==================== CONTEXT MANAGERS ====================
+# ==================== CONTEXT MANAGERS (V1) ====================
 
 @contextmanager
 def get_connection():
@@ -202,7 +213,7 @@ def get_transaction():
         conn.close()
 
 
-# ==================== QUERY HELPERS ====================
+# ==================== QUERY HELPERS (V1) ====================
 
 def execute_query(query: str, params: Dict = None) -> List[Dict]:
     """
