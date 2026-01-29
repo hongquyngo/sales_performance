@@ -10,6 +10,18 @@ Handles all metric calculations:
 - Data aggregations by salesperson/period
 
 CHANGELOG:
+- v2.9.4: FIXED KPI name mismatch bug causing Individual Overall Achievement to be wrong
+          - Bug 1: Database stores "Gross Profit 1" but code expects "gross_profit_1"
+            * Root cause: .lower() produces "gross profit 1" (space) but kpi_column_map 
+              uses "gross_profit_1" (underscore) → KPIs not matched → skipped
+            * Fix: Normalize kpi_name with .lower().replace(' ', '_')
+          - Bug 2: Complex KPIs with actual=0 were excluded from Overall calculation
+            * Root cause: Code checked "kpi_name in sp_complex_kpis" but sp_complex_kpis
+              only contains keys for salespeople who HAVE data (actual > 0)
+            * Result: When Wilson has New Business=$0, key doesn't exist → skip → excluded
+            * Fix: Check "kpi_name in {'num_new_customers', ...}" instead, then use .get(kpi_name, 0)
+          - Before fix: (141.8×50 + 149.8×50) / 100 = 145.8% (only 2 KPIs counted)
+          - After fix: (141.8×20 + 149.8×20 + 0×30 + 0×30) / 100 = 58.3% (all 4 KPIs)
 - v2.9.3: FIXED calculate_overall_kpi_achievement() for single person mode
           - Bug: Single person showed Total Weight = 260 (default_weight sum)
                  but should show 100 (assignment weight_numeric sum)
@@ -887,7 +899,8 @@ class SalespersonMetrics:
         
         for _, row in self.targets_df.iterrows():
             employee_id = row['employee_id']
-            kpi_name = row['kpi_name'].lower()
+            # FIXED: Normalize KPI name - replace spaces with underscores to match kpi_column_map keys
+            kpi_name = row['kpi_name'].lower().replace(' ', '_')
             annual_target = row['annual_target_value_numeric']
             
             if annual_target <= 0:
@@ -1913,9 +1926,12 @@ class SalespersonMetrics:
         
         # Add targets if available
         if not self.targets_df.empty:
+            # FIXED: Normalize KPI names for comparison (replace spaces with underscores)
+            normalized_kpi_names = self.targets_df['kpi_name'].str.lower().str.replace(' ', '_')
+            
             # Get revenue targets with proration
             revenue_targets = self.targets_df[
-                self.targets_df['kpi_name'].str.lower() == 'revenue'
+                normalized_kpi_names == 'revenue'
             ][['employee_id', 'annual_target_value_numeric']].copy()
             revenue_targets.columns = ['sales_id', 'revenue_target_annual']
             
@@ -1927,7 +1943,7 @@ class SalespersonMetrics:
             
             # GP targets with proration
             gp_targets = self.targets_df[
-                self.targets_df['kpi_name'].str.lower() == 'gross_profit'
+                normalized_kpi_names == 'gross_profit'
             ][['employee_id', 'annual_target_value_numeric']].copy()
             gp_targets.columns = ['sales_id', 'gp_target_annual']
             
@@ -1939,7 +1955,7 @@ class SalespersonMetrics:
             
             # GP1 targets with proration
             gp1_targets = self.targets_df[
-                self.targets_df['kpi_name'].str.lower() == 'gross_profit_1'
+                normalized_kpi_names == 'gross_profit_1'
             ][['employee_id', 'annual_target_value_numeric']].copy()
             gp1_targets.columns = ['sales_id', 'gp1_target_annual']
             
@@ -1986,7 +2002,8 @@ class SalespersonMetrics:
                 processed_kpi_types = set()
                 
                 for _, kpi_row in employee_kpis.iterrows():
-                    kpi_name = kpi_row['kpi_name'].lower()
+                    # FIXED: Normalize KPI name - replace spaces with underscores to match kpi_column_map keys
+                    kpi_name = kpi_row['kpi_name'].lower().replace(' ', '_')
                     annual_target = kpi_row['annual_target_value_numeric']
                     
                     # Skip if already processed this KPI type
@@ -2007,8 +2024,10 @@ class SalespersonMetrics:
                         # Sales-based KPIs
                         actual_col = kpi_column_map[kpi_name]
                         actual = row[actual_col] if actual_col in row.index else 0
-                    elif kpi_name in sp_complex_kpis:
-                        # Complex KPIs - use THIS salesperson's actual value
+                    elif kpi_name in {'num_new_customers', 'num_new_products', 'new_business_revenue'}:
+                        # Complex KPIs - get from per_salesperson_complex_kpis, default to 0 if not found
+                        # FIXED: Previously checked "kpi_name in sp_complex_kpis" which skipped KPIs 
+                        # when salesperson had no data (actual=0), causing them to be excluded from Overall
                         actual = sp_complex_kpis.get(kpi_name, 0)
                     else:
                         # Unknown KPI type, skip

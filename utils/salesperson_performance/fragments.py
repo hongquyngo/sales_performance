@@ -6,9 +6,13 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.7.0 - Use overall_achievement for consistent KPI display
+VERSION: 2.7.1 - Fixed KPI name normalization in Individual Performance
 
 CHANGELOG:
+- v2.7.1: FIXED KPI name mismatch bug in kpi_progress_fragment Individual Performance
+          - Bug: Database stores "Gross Profit 1" but kpi_column_map expects "gross_profit_1"
+          - Result: GP1, New Business Revenue, New Customers not matched → actual = 0
+          - Fix: Normalize kpi_name with .lower().replace(' ', '_') at line 2312
 - v2.7.0: UPDATED team_ranking_fragment to use overall_achievement
           - Now uses overall_achievement directly if available
           - Falls back to average of revenue + GP achievement if not
@@ -2308,7 +2312,8 @@ def kpi_progress_fragment(
                     st.markdown("##### 📋 KPI Progress")
                     
                     for _, kpi_row in person_targets.iterrows():
-                        kpi_name = kpi_row['kpi_name'].lower()
+                        # FIXED: Normalize KPI name - replace spaces with underscores to match kpi_column_map keys
+                        kpi_name = kpi_row['kpi_name'].lower().replace(' ', '_')
                         annual_target = kpi_row['annual_target_value_numeric']
                         weight = kpi_row['weight_numeric']
                         
