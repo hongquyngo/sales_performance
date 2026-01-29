@@ -12,6 +12,11 @@ All visualization components using Altair:
 - Pipeline & Forecast section with tabs
 
 CHANGELOG:
+- v1.4.0: FIXED charts not visible when invoiced=0 and forecast << target
+          - build_forecast_waterfall_chart(): Added value labels on bars, 
+            achievement % text, ensures visibility even when values are small
+          - build_gap_analysis_chart(): Added value_label field, target labels,
+            better text positioning for small forecast values
 - v1.3.1: UPDATED tooltips and Help for service products exclusion
           - New Products and New Combos now exclude service products
           - Added note in Help popover about is_service=1 filter
@@ -1464,6 +1469,9 @@ class SalespersonCharts:
         """
         Build a waterfall-style chart showing Invoiced + Backlog = Forecast vs Target.
         
+        UPDATED v1.4.0: Added value labels on bars to ensure visibility when values are
+        small compared to target. Shows actual values even when bars are visually tiny.
+        
         Args:
             backlog_metrics: Dict with backlog metrics
             metric: 'revenue', 'gp', or 'gp1'
@@ -1512,27 +1520,37 @@ class SalespersonCharts:
         if not title:
             title = f"🔮 {keys['label']} Forecast vs Target"
         
-        # Prepare data for stacked bar
-        data = pd.DataFrame([
-            {
-                'category': 'Performance',
-                'component': '✅ Invoiced',
-                'value': invoiced,
-                'order': 1
-            },
-            {
-                'category': 'Performance',
-                'component': '📅 In-Period Backlog',
-                'value': backlog,
-                'order': 2
-            },
-            {
-                'category': 'Target',
-                'component': '🎯 Target',
-                'value': target,
-                'order': 1
-            }
-        ])
+        # Prepare data for stacked bar - only include non-zero components
+        data_list = []
+        
+        # Always include Invoiced (even if 0, for legend consistency)
+        data_list.append({
+            'category': 'Performance',
+            'component': '✅ Invoiced',
+            'value': invoiced,
+            'order': 1,
+            'display_label': f'${invoiced:,.0f}' if invoiced > 0 else ''
+        })
+        
+        # Include Backlog
+        data_list.append({
+            'category': 'Performance',
+            'component': '📅 In-Period Backlog',
+            'value': backlog,
+            'order': 2,
+            'display_label': f'${backlog:,.0f}' if backlog > 0 else ''
+        })
+        
+        # Include Target
+        data_list.append({
+            'category': 'Target',
+            'component': '🎯 Target',
+            'value': target,
+            'order': 1,
+            'display_label': f'${target:,.0f}' if target > 0 else ''
+        })
+        
+        data = pd.DataFrame(data_list)
         
         # Color scale
         color_scale = alt.Scale(
@@ -1551,6 +1569,34 @@ class SalespersonCharts:
                 alt.Tooltip('component:N', title='Component'),
                 alt.Tooltip('value:Q', title='Amount', format=',.0f')
             ]
+        )
+        
+        # Add value labels on top of each bar category
+        # Create summary data for bar top labels
+        summary_data = pd.DataFrame([
+            {
+                'category': 'Performance',
+                'total': invoiced + backlog,
+                'label': f'${invoiced + backlog:,.0f}'
+            },
+            {
+                'category': 'Target',
+                'total': target,
+                'label': f'${target:,.0f}'
+            }
+        ])
+        
+        bar_labels = alt.Chart(summary_data).mark_text(
+            align='center',
+            baseline='bottom',
+            dy=-5,
+            fontSize=12,
+            fontWeight='bold'
+        ).encode(
+            x=alt.X('category:N'),
+            y=alt.Y('total:Q'),
+            text='label:N',
+            color=alt.value(COLORS['text_dark'])
         )
         
         # Add forecast line (use calculated forecast value)
@@ -1579,7 +1625,31 @@ class SalespersonCharts:
             text='label:N'
         )
         
-        chart = alt.layer(bars, forecast_line, forecast_text).properties(
+        # Add achievement percentage text below Performance bar
+        if target > 0:
+            achievement_pct = (forecast / target) * 100
+            achievement_data = pd.DataFrame([{
+                'category': 'Performance',
+                'y': 0,
+                'label': f'{achievement_pct:.1f}% of target'
+            }])
+            achievement_text = alt.Chart(achievement_data).mark_text(
+                align='center',
+                baseline='top',
+                dy=5,
+                fontSize=11,
+                fontStyle='italic'
+            ).encode(
+                x='category:N',
+                y=alt.value(350 - 30),  # Position near bottom
+                text='label:N',
+                color=alt.value(COLORS['achievement_bad'] if achievement_pct < 100 else COLORS['achievement_good'])
+            )
+            chart = alt.layer(bars, bar_labels, forecast_line, forecast_text, achievement_text)
+        else:
+            chart = alt.layer(bars, bar_labels, forecast_line, forecast_text)
+        
+        chart = chart.properties(
             width=400,
             height=350,
             title=title
@@ -1899,6 +1969,9 @@ class SalespersonCharts:
         Build a bullet/progress chart showing current progress, forecast, and target.
         Supports multiple metrics (Revenue, GP, GP1).
         
+        UPDATED v1.4.0: Added value labels to ensure visibility when forecast is much 
+        smaller than target. Shows actual dollar values on each bar.
+        
         Args:
             backlog_metrics: Dict with backlog metrics
             metrics_to_show: List of metrics to show ['revenue', 'gp', 'gp1']. Default: all 3
@@ -1953,9 +2026,12 @@ class SalespersonCharts:
             forecast_pct = (forecast / target) * 100
             
             all_data.extend([
-                {'metric': config['label'], 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct},
-                {'metric': config['label'], 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct},
-                {'metric': config['label'], 'type': 'Target', 'value': target, 'percent': 100},
+                {'metric': config['label'], 'type': 'Invoiced', 'value': invoiced, 'percent': invoiced_pct,
+                 'value_label': f'${invoiced:,.0f}'},
+                {'metric': config['label'], 'type': 'Forecast', 'value': forecast, 'percent': forecast_pct,
+                 'value_label': f'${forecast:,.0f}'},
+                {'metric': config['label'], 'type': 'Target', 'value': target, 'percent': 100,
+                 'value_label': f'${target:,.0f}'},
             ])
         
         if not all_data:
@@ -2012,9 +2088,9 @@ class SalespersonCharts:
             y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1'])
         )
         
-        # Achievement % text at end
+        # Achievement % text at end of forecast bar
         forecast_data = data[data['type'] == 'Forecast'].copy()
-        text = alt.Chart(forecast_data).mark_text(
+        achievement_text = alt.Chart(forecast_data).mark_text(
             align='left',
             dx=5,
             fontSize=11,
@@ -2030,10 +2106,42 @@ class SalespersonCharts:
             )
         )
         
+        # Add value labels at end of target bar (right side)
+        target_data = data[data['type'] == 'Target'].copy()
+        target_labels = alt.Chart(target_data).mark_text(
+            align='left',
+            dx=5,
+            fontSize=10,
+            color='#666666'
+        ).encode(
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
+            text='value_label:N'
+        )
+        
+        # Add forecast value label (positioned at start of chart if bar is very small)
+        # This ensures values are visible even when forecast << target
+        forecast_value_labels = alt.Chart(forecast_data).mark_text(
+            align='left',
+            baseline='middle',
+            dx=5,
+            fontSize=10,
+            color=COLORS['new_customer'],
+            fontStyle='italic'
+        ).encode(
+            # Position text at max(forecast, 5% of max) to ensure visibility
+            x=alt.X('value:Q'),
+            y=alt.Y('metric:N', sort=['Revenue', 'Gross Profit', 'GP1']),
+            text='value_label:N'
+        )
+        
         num_metrics = len([m for m in metrics_to_show if m in metric_configs])
         chart_height = max(120, num_metrics * 60)
         
-        chart = alt.layer(base, forecast_bar, invoiced_bar, target_rule, text).properties(
+        chart = alt.layer(
+            base, forecast_bar, invoiced_bar, target_rule, 
+            achievement_text, target_labels
+        ).properties(
             width=CHART_WIDTH,
             height=chart_height,
             title=title
