@@ -6,10 +6,17 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.8.0 - Fixed Backlog summary cards not filtering by selected salesperson
+VERSION: 2.10.0 - Separate GP%/GP1% columns, increased display limits, improved summary cards
 
 CHANGELOG:
-- v2.8.0: FIXED Backlog summary cards showing totals for ALL salespeople instead of selected
+- v2.10.0: UPDATED GP/GP1 display to separate columns (instead of inline)
+          - Sales Detail: GP, GP%, GP1, GP1% as 4 separate columns
+          - Backlog List: GP, GP% as 2 separate columns
+          - Summary cards: Added GP%/GP1% in delta display
+          - Increased display limit from 500/200 to 5000 rows
+          - Increased dataframe height to 600px
+- v2.9.0: ADDED inline margin % display for GP and GP1 columns (superseded by v2.10.0)
+- v2.8.0: FIXED Backlog summary cards not filtering by selected salesperson
           - Bug: total_backlog_df (pre-aggregated) was not filtered by selected salesperson
           - Result: Summary cards showed $355K (19 orders) while table showed only 5 orders
           - Fix: Always calculate totals from backlog_df (detail) which is correctly filtered
@@ -616,8 +623,8 @@ def sales_detail_fragment(
         return
     
     # =================================================================
-    # SUMMARY METRICS CARDS (NEW v2.3.0)
-    # Consistent with Backlog List pattern
+    # SUMMARY METRICS CARDS (UPDATED v2.10.0)
+    # Added GP%/GP1% in delta display
     # =================================================================
     col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
@@ -625,6 +632,7 @@ def sales_detail_fragment(
     total_gp = sales_df['gross_profit_by_split_usd'].sum()
     total_gp1 = sales_df['gp1_by_split_usd'].sum()
     gp_percent = (total_gp / total_revenue * 100) if total_revenue > 0 else 0
+    gp1_percent = (total_gp1 / total_revenue * 100) if total_revenue > 0 else 0
     total_invoices = sales_df['inv_number'].nunique()
     total_orders = sales_df['oc_number'].nunique()
     total_customers = sales_df['customer_id'].nunique()
@@ -641,16 +649,17 @@ def sales_detail_fragment(
         st.metric(
             "📈 Gross Profit",
             f"${total_gp:,.0f}",
-            delta=f"{gp_percent:.1f}% margin",
+            delta=f"↑ {gp_percent:.1f}% margin",
             delta_color="off",
-            help="Total gross profit (split-adjusted)"
+            help="Total gross profit (split-adjusted). Margin% = GP ÷ Revenue × 100"
         )
     with col_s3:
         st.metric(
             "📊 GP1",
             f"${total_gp1:,.0f}",
+            delta=f"↑ {gp1_percent:.1f}% margin",
             delta_color="off",
-            help="GP1 = GP - (Broker Commission × 1.2)"
+            help="GP1 = GP - (Broker Commission × 1.2). Margin% = GP1 ÷ Revenue × 100"
         )
     with col_s4:
         st.metric(
@@ -828,18 +837,41 @@ def sales_detail_fragment(
     
     filtered_df['oc_po_display'] = filtered_df.apply(format_oc_po, axis=1)
     
-    # Display columns - reordered with new formatted columns
+    # =================================================================
+    # UPDATED v2.10.0: Calculate GP% and GP1% as separate columns
+    # =================================================================
+    def calc_gp_percent(row):
+        """Calculate GP margin percentage."""
+        gp = row.get('gross_profit_by_split_usd', 0) or 0
+        revenue = row.get('sales_by_split_usd', 0) or 0
+        if revenue > 0:
+            return (gp / revenue) * 100
+        return 0.0
+    
+    def calc_gp1_percent(row):
+        """Calculate GP1 margin percentage."""
+        gp1 = row.get('gp1_by_split_usd', 0) or 0
+        revenue = row.get('sales_by_split_usd', 0) or 0
+        if revenue > 0:
+            return (gp1 / revenue) * 100
+        return 0.0
+    
+    filtered_df['gp_percent'] = filtered_df.apply(calc_gp_percent, axis=1)
+    filtered_df['gp1_percent'] = filtered_df.apply(calc_gp1_percent, axis=1)
+    
+    # Display columns - reordered with separate % columns
+    # UPDATED v2.10.0: Separate GP%, GP1% columns instead of inline
     display_columns = [
         'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
         'total_revenue_usd', 'total_gp_usd',  # Original values (Revenue, GP only)
         'split_rate_percent',
-        'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd',  # Split values
+        'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp_percent', 'gp1_by_split_usd', 'gp1_percent',
         'sales_name'
     ]
     available_cols = [c for c in display_columns if c in filtered_df.columns]
     
-    # Prepare display dataframe (limit 500 rows for UI performance)
-    DISPLAY_LIMIT = 500
+    # Prepare display dataframe (UPDATED v2.10.0: increased limit to 5000)
+    DISPLAY_LIMIT = 5000
     total_filtered = len(filtered_df)
     display_detail = filtered_df[available_cols].head(DISPLAY_LIMIT).copy()
     
@@ -898,21 +930,31 @@ def sales_detail_fragment(
             help="👥 Sales credit split percentage\n\nThis salesperson receives this % of the total revenue/GP/GP1.\n\n100% = Full credit\n50% = Shared equally with another salesperson",
             format="%.0f%%"
         ),
-        # Split values (after split)
+        # Split values (after split) - UPDATED v2.10.0: Separate columns
         'sales_by_split_usd': st.column_config.NumberColumn(
             "Revenue",
-            help="💰 CREDITED revenue for this salesperson\n\n📐 Formula: Total Revenue × Split %\n\nThis is the revenue credited to this salesperson after applying their split percentage.",
+            help="💰 CREDITED revenue for this salesperson\n\n📐 Formula: Total Revenue × Split %",
             format="$%.0f"
         ),
         'gross_profit_by_split_usd': st.column_config.NumberColumn(
             "GP",
-            help="📈 CREDITED gross profit for this salesperson\n\n📐 Formula: Total GP × Split %\n\nThis is the GP credited to this salesperson after applying their split percentage.",
+            help="📈 CREDITED gross profit for this salesperson\n\n📐 Formula: Total GP × Split %",
             format="$%.0f"
+        ),
+        'gp_percent': st.column_config.NumberColumn(
+            "GP%",
+            help="📈 Gross Profit Margin %\n\n📐 Formula: GP ÷ Revenue × 100\n\nHigher % = better margin",
+            format="%.1f%%"
         ),
         'gp1_by_split_usd': st.column_config.NumberColumn(
             "GP1",
-            help="📊 CREDITED GP1 for this salesperson\n\n📐 Formula: (GP - Broker Commission × 1.2) × Split %\n\nGP1 is calculated from GP after deducting commission, then split.",
+            help="📊 CREDITED GP1 for this salesperson\n\n📐 Formula: (GP - Broker Commission × 1.2) × Split %",
             format="$%.0f"
+        ),
+        'gp1_percent': st.column_config.NumberColumn(
+            "GP1%",
+            help="📊 GP1 Margin %\n\n📐 Formula: GP1 ÷ Revenue × 100\n\nGP1 = GP after broker commission deduction",
+            format="%.1f%%"
         ),
         'sales_name': st.column_config.TextColumn(
             "Salesperson",
@@ -926,7 +968,7 @@ def sales_detail_fragment(
         column_config=column_config,
         use_container_width=True,
         hide_index=True,
-        height=500
+        height=600  # Increased height for more rows
     )
     
     # Legend for quick reference
@@ -941,9 +983,11 @@ def sales_detail_fragment(
         | **Split %** | Credit allocation to salesperson | Assigned by sales split rules |
         | **Revenue** | Credited revenue | Total Revenue × Split % |
         | **GP** | Credited gross profit | Total GP × Split % |
+        | **GP%** | Gross profit margin | GP ÷ Revenue × 100 |
         | **GP1** | Credited GP1 | (GP - Broker Commission × 1.2) × Split % |
+        | **GP1%** | GP1 margin | GP1 ÷ Revenue × 100 |
         
-        > 💡 **Note:** GP1 is a calculated field (GP minus commission), so there's no "original" GP1 value.
+        > 💡 **Note:** Higher margin % = better profitability. GP1% accounts for broker commissions.
         
         > 💡 **Tip:** Hover over column headers to see detailed tooltips.
         """)
@@ -1064,17 +1108,13 @@ def backlog_list_fragment(
         return
     
     # Summary cards - Combined Total + In-Period + Overdue info
+    # UPDATED v2.10.0: Added GP% in delta display
     col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
     # FIXED v2.8.0: Always calculate from backlog_df (backlog_detail) instead of total_backlog_df
-    # Reason: total_backlog_df is pre-aggregated by salesperson and may not be filtered correctly
-    # when user selects specific salesperson in sidebar. backlog_df (detail) is always filtered
-    # correctly by filter_data_client_side() based on selected employee_ids.
-    # 
-    # Previous bug: Summary cards showed totals for ALL accessible salespeople instead of
-    # only the selected salesperson, causing mismatch between cards and table.
     total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
     total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
+    total_backlog_gp_percent = (total_backlog_gp / total_backlog_value * 100) if total_backlog_value > 0 else 0
     total_orders = backlog_df['oc_number'].nunique()
     total_customers = backlog_df['customer_id'].nunique()
     
@@ -1090,9 +1130,9 @@ def backlog_list_fragment(
         st.metric(
             "📈 Total GP", 
             f"${total_backlog_gp:,.0f}",
-            f"{total_customers:,} customers",
+            f"↑ {total_backlog_gp_percent:.1f}% margin",
             delta_color="off",
-            help="Total gross profit from all pending orders"
+            help="Total gross profit from all pending orders. Margin% = GP ÷ Backlog × 100"
         )
     with col_s3:
         in_period_value = in_period_backlog_analysis.get('total_value', 0)
@@ -1106,11 +1146,13 @@ def backlog_list_fragment(
         )
     with col_s4:
         in_period_gp = in_period_backlog_analysis.get('total_gp', 0)
+        in_period_gp_percent = (in_period_gp / in_period_value * 100) if in_period_value > 0 else 0
         st.metric(
             "📊 In-Period GP",
             f"${in_period_gp:,.0f}",
+            f"↑ {in_period_gp_percent:.1f}% margin",
             delta_color="off",
-            help="Gross profit from in-period backlog"
+            help="Gross profit from in-period backlog. Margin% = GP ÷ In-Period × 100"
         )
     with col_s5:
         on_track_value = in_period_backlog_analysis.get('on_track_value', 0)
@@ -1287,12 +1329,26 @@ def backlog_list_fragment(
     
     filtered_backlog['oc_po_display'] = filtered_backlog.apply(format_oc_po, axis=1)
     
-    # Display with column configuration (limit 200 rows for UI performance)
-    BACKLOG_DISPLAY_LIMIT = 200
+    # =================================================================
+    # UPDATED v2.10.0: Calculate GP% as separate column
+    # =================================================================
+    def calc_backlog_gp_percent(row):
+        """Calculate backlog GP margin percentage."""
+        gp = row.get('backlog_gp_by_split_usd', 0) or 0
+        amount = row.get('backlog_sales_by_split_usd', 0) or 0
+        if amount > 0:
+            return (gp / amount) * 100
+        return 0.0
+    
+    filtered_backlog['gp_percent'] = filtered_backlog.apply(calc_backlog_gp_percent, axis=1)
+    
+    # Display with column configuration (UPDATED v2.10.0: increased limit to 5000)
+    BACKLOG_DISPLAY_LIMIT = 5000
     total_backlog_filtered = len(filtered_backlog)
     
+    # UPDATED v2.10.0: Separate GP and GP% columns
     backlog_display_cols = ['oc_po_display', 'oc_date', 'etd', 'customer', 'product_display', 'brand',
-                           'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
+                           'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 'gp_percent',
                            'days_until_etd', 'pending_type', 'sales_name']
     available_bl_cols = [c for c in backlog_display_cols if c in filtered_backlog.columns]
     
@@ -1339,10 +1395,16 @@ def backlog_list_fragment(
             help="Backlog amount (split-adjusted)",
             format="$%.0f"
         ),
+        # UPDATED v2.10.0: Separate GP and GP% columns
         'backlog_gp_by_split_usd': st.column_config.NumberColumn(
             "GP",
-            help="Backlog gross profit (split-adjusted)",
+            help="📈 Backlog gross profit (split-adjusted)",
             format="$%.0f"
+        ),
+        'gp_percent': st.column_config.NumberColumn(
+            "GP%",
+            help="📈 Gross Profit Margin %\n\n📐 Formula: GP ÷ Amount × 100\n\nHigher % = better margin",
+            format="%.1f%%"
         ),
         'days_until_etd': st.column_config.NumberColumn(
             "Days to ETD",
@@ -1363,7 +1425,7 @@ def backlog_list_fragment(
         column_config=column_config,
         use_container_width=True,
         hide_index=True,
-        height=400
+        height=600  # Increased height for more rows
     )
 
 # =============================================================================
