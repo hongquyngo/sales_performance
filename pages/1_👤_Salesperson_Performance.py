@@ -660,6 +660,11 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
                 filtered[key] = df
         return filtered
     
+    # FIXED v2.11.0: Backlog data should NOT be filtered by date range
+    # Backlog represents ALL pending orders - date range only applies to Sales data
+    # In-Period backlog is calculated separately using ETD field in metrics.py
+    backlog_keys = {'total_backlog', 'in_period_backlog', 'backlog_by_month', 'backlog_detail'}
+    
     for key, df in raw_data.items():
         # Skip metadata
         if key.startswith('_'):
@@ -671,25 +676,24 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         
         df_filtered = df.copy()
         
-        # Filter by date range
-        # FIXED v1.3.0: Added date columns for complex KPIs
-        # UPDATED v2.6.1: Added first_combo_date for new_business_detail
-        date_cols = [
-            'inv_date',              # sales data
-            'oc_date',               # order confirmation
-            'invoiced_date',         # backlog
-            'first_invoice_date',    # new_customers
-            'first_sale_date',       # new_products
-            'first_combo_date',      # new_business_detail
-        ]
-        for date_col in date_cols:
-            if date_col in df_filtered.columns:
-                df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
-                df_filtered = df_filtered[
-                    (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
-                    (df_filtered[date_col] <= pd.Timestamp(end_date))
-                ]
-                break
+        # FIXED v2.11.0: Skip date filtering for backlog data
+        # Backlog is future orders - should not be filtered by invoice/OC date range
+        if key not in backlog_keys:
+            # Filter by date range - only for sales and complex KPI data
+            date_cols = [
+                'inv_date',              # sales data
+                'first_invoice_date',    # new_customers
+                'first_sale_date',       # new_products
+                'first_combo_date',      # new_business_detail
+            ]
+            for date_col in date_cols:
+                if date_col in df_filtered.columns:
+                    df_filtered[date_col] = pd.to_datetime(df_filtered[date_col], errors='coerce')
+                    df_filtered = df_filtered[
+                        (df_filtered[date_col] >= pd.Timestamp(start_date)) & 
+                        (df_filtered[date_col] <= pd.Timestamp(end_date))
+                    ]
+                    break
         
         # Filter by employee_ids (salesperson)
         if employee_ids:
@@ -1173,11 +1177,14 @@ with timer("Metrics: calculate_pipeline_forecast_metrics"):
     )
 
 # Analyze in-period backlog for overdue detection
+# FIXED v2.11.0: Pass period_type and year for correct full period end date calculation
 with timer("Metrics: analyze_in_period_backlog"):
     in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
         backlog_detail_df=data['backlog_detail'],
         start_date=active_filters['start_date'],
-        end_date=active_filters['end_date']
+        end_date=active_filters['end_date'],
+        period_type=active_filters['period_type'],
+        year=active_filters['year']
     )
 
 # Get period context for display logic

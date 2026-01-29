@@ -93,6 +93,60 @@ logger = logging.getLogger(__name__)
 DEBUG_METRICS_TIMING = True
 
 
+def get_full_period_end_date(period_type: str, year: int) -> date:
+    """
+    Get the full end date for a period type.
+    
+    ADDED v2.10.0: Fix for In-Period backlog calculation.
+    
+    Backlog is FUTURE orders, so we need the FULL period end date,
+    not today's date. This ensures In-Period includes all backlog
+    with ETD within the full period.
+    
+    Args:
+        period_type: 'YTD', 'QTD', 'MTD', 'LY', or 'Custom'
+        year: Year for the period
+        
+    Returns:
+        Full end date of the period:
+        - YTD: Dec 31 of year
+        - QTD: End of current quarter
+        - MTD: End of current month
+        - LY: Dec 31 of previous year
+        - Custom: Returns None (caller should use custom end_date)
+    """
+    today = date.today()
+    
+    if period_type == 'YTD':
+        return date(year, 12, 31)
+    
+    elif period_type == 'QTD':
+        # Get current quarter end
+        current_quarter = (today.month - 1) // 3 + 1
+        quarter_end_month = current_quarter * 3
+        if quarter_end_month == 12:
+            return date(year, 12, 31)
+        else:
+            # Last day of quarter end month
+            import calendar
+            last_day = calendar.monthrange(year, quarter_end_month)[1]
+            return date(year, quarter_end_month, last_day)
+    
+    elif period_type == 'MTD':
+        # End of current month
+        import calendar
+        last_day = calendar.monthrange(year, today.month)[1]
+        return date(year, today.month, last_day)
+    
+    elif period_type == 'LY':
+        # Last year full year
+        return date(year - 1, 12, 31)
+    
+    else:
+        # Custom - return None, caller uses custom end_date
+        return None
+
+
 class SalespersonMetrics:
     """
     KPI calculations for salesperson performance.
@@ -185,17 +239,26 @@ class SalespersonMetrics:
     def analyze_in_period_backlog(
         backlog_detail_df: pd.DataFrame,
         start_date: date,
-        end_date: date
+        end_date: date,
+        period_type: str = None,
+        year: int = None
     ) -> Dict:
         """
         Analyze backlog with ETD within the selected period.
         
         Provides detailed breakdown of overdue vs on-track orders.
         
+        FIXED v2.10.0: Added period_type and year parameters
+        - For YTD/QTD/MTD: Uses full period end date (e.g., Dec 31 for YTD)
+        - For Custom: Uses provided end_date
+        - Backlog is FUTURE orders, so need full period for correct In-Period calculation
+        
         Args:
             backlog_detail_df: Detailed backlog data with ETD
             start_date: Period start date
-            end_date: Period end date
+            end_date: Period end date (used for Custom, display only for others)
+            period_type: Optional - 'YTD', 'QTD', 'MTD', 'LY', 'Custom'
+            year: Optional - Year for period calculation
             
         Returns:
             Dict with detailed backlog analysis:
@@ -239,10 +302,19 @@ class SalespersonMetrics:
         else:
             return result
         
-        # Filter to in-period (ETD within date range)
+        # FIXED v2.10.0: Get full period end date for backlog
+        # Backlog is FUTURE orders, so need full period (not today)
+        if period_type and year:
+            backlog_period_end = get_full_period_end_date(period_type, year)
+            if backlog_period_end is None:
+                backlog_period_end = end_date
+        else:
+            backlog_period_end = end_date
+        
+        # Filter to in-period (ETD within date range using full period end)
         in_period = df[
             (df['etd'].dt.date >= start_date) & 
-            (df['etd'].dt.date <= end_date)
+            (df['etd'].dt.date <= backlog_period_end)
         ]
         
         if in_period.empty:
@@ -278,7 +350,7 @@ class SalespersonMetrics:
             result['on_track_gp'] = on_track[gp_col].sum()
         
         # Determine status
-        is_historical_period = end_date < today
+        is_historical_period = backlog_period_end < today
         
         if is_historical_period:
             result['status'] = 'historical'
@@ -667,6 +739,73 @@ class SalespersonMetrics:
         elif period_type == 'MTD':
             return annual_target / 12
         else:
+            return annual_target
+    
+    def _get_full_period_target(
+        self,
+        kpi_name: str,
+        period_type: str,
+        year: int
+    ) -> Optional[float]:
+        """
+        Get target for FULL period (used in Pipeline & Forecast).
+        
+        ADDED v2.11.0: For Pipeline Forecast comparison with In-Period Backlog.
+        
+        Since In-Period Backlog uses full period end date (e.g., Dec 31 for YTD),
+        Target should also use full period proration for fair comparison.
+        
+        Proration logic for full period:
+        - YTD: Full annual target (12/12)
+        - QTD: 1/4 of annual target
+        - MTD: 1/12 of annual target
+        - LY: Full annual target
+        - Custom: Full annual target
+        
+        Args:
+            kpi_name: KPI name (e.g., 'revenue', 'gross_profit')
+            period_type: Period type
+            year: Year for target lookup
+            
+        Returns:
+            Target value for full period
+        """
+        if self.targets_df.empty:
+            return None
+        
+        # Filter for this KPI
+        kpi_rows = self.targets_df[
+            self.targets_df['kpi_name'].str.lower() == kpi_name.lower()
+        ]
+        
+        if kpi_rows.empty:
+            return None
+        
+        # Sum annual targets across all filtered salespeople
+        annual_target = kpi_rows['annual_target_value_numeric'].sum()
+        
+        if annual_target <= 0:
+            return None
+        
+        # Prorate based on FULL period (not elapsed time)
+        if period_type == 'YTD':
+            # Full year target
+            return annual_target
+        
+        elif period_type == 'QTD':
+            # Quarter target
+            return annual_target / 4
+        
+        elif period_type == 'MTD':
+            # Month target
+            return annual_target / 12
+        
+        elif period_type == 'LY':
+            # Last Year = full annual target
+            return annual_target
+        
+        else:
+            # For custom, return full annual
             return annual_target
     
     # =========================================================================
@@ -1062,19 +1201,21 @@ class SalespersonMetrics:
         NEW v2.4.0: For each KPI type, ONLY includes invoiced + backlog from 
         employees who have that specific KPI target assigned.
         
-        This aligns with KPI Progress logic where:
-        - Revenue achievement only counts revenue from employees with Revenue KPI
-        - GP achievement only counts GP from employees with GP KPI
-        - GP1 achievement only counts GP1 from employees with GP1 KPI
+        FIXED v2.10.0: 
+        - In-Period backlog now uses FULL period end date (not today)
+          * YTD: Jan 1 to Dec 31 (not Jan 1 to today)
+          * Backlog is FUTURE orders, so need full period
+        - Summary totals now calculated from backlog_detail_df (filtered by salesperson)
+          instead of total_backlog_df (pre-aggregated, not filtered)
         
         Args:
-            total_backlog_df: Total backlog data (aggregated)
-            in_period_backlog_df: Backlog with ETD in period (aggregated)
+            total_backlog_df: Total backlog data (aggregated) - DEPRECATED for summary
+            in_period_backlog_df: Backlog with ETD in period (aggregated) - DEPRECATED
             backlog_detail_df: Detailed backlog with sales_id for filtering
             period_type: Period type for target proration
             year: Year for target lookup
             start_date: Period start date
-            end_date: Period end date
+            end_date: Period end date (for display only, in-period uses full period)
             
         Returns:
             Dict with:
@@ -1098,6 +1239,19 @@ class SalespersonMetrics:
         if end_date is None:
             end_date = today
         
+        # FIXED v2.10.0: Get FULL period end date for in-period backlog calculation
+        # Backlog is FUTURE orders, so we need full period end (e.g., Dec 31 for YTD)
+        # not today's date
+        backlog_period_end = get_full_period_end_date(period_type, year)
+        if backlog_period_end is None:
+            # Custom period - use provided end_date
+            backlog_period_end = end_date
+        
+        if DEBUG_METRICS_TIMING:
+            print(f"   📊 [pipeline_forecast] Period: {period_type}, "
+                  f"Sales: {start_date} to {end_date}, "
+                  f"Backlog In-Period: {start_date} to {backlog_period_end}")
+        
         period_context = self.analyze_period_context(start_date, end_date)
         show_forecast = period_context['show_forecast']
         
@@ -1110,6 +1264,7 @@ class SalespersonMetrics:
                 gp1_gp_ratio = total_gp1 / total_gp
         
         # Helper to calculate in-period backlog from detail df for specific employees
+        # FIXED v2.10.0: Uses backlog_period_end instead of end_date
         def get_in_period_backlog_for_employees(
             employee_ids: List[int],
             detail_df: pd.DataFrame,
@@ -1156,16 +1311,20 @@ class SalespersonMetrics:
         
         # =====================================================================
         # REVENUE METRICS - Only from employees with Revenue KPI target
+        # FIXED v2.10.0: Use backlog_period_end for in-period calculation
+        # FIXED v2.11.0: Use _get_full_period_target for fair comparison with In-Period Backlog
         # =====================================================================
         revenue_employees = self._get_employees_with_kpi('revenue')
-        revenue_target = self._get_prorated_target('revenue', period_type, year)
+        # Use full period target (not prorated by elapsed time)
+        revenue_target = self._get_full_period_target('revenue', period_type, year)
         
         # Invoiced revenue from employees with Revenue KPI
         revenue_invoiced = self._get_actual_for_kpi('revenue', 'sales_by_split_usd')
         
         # In-period backlog from employees with Revenue KPI
+        # FIXED v2.10.0: Use backlog_period_end (full period) instead of end_date
         revenue_backlog_data = get_in_period_backlog_for_employees(
-            revenue_employees, backlog_detail_df, start_date, end_date
+            revenue_employees, backlog_detail_df, start_date, backlog_period_end
         )
         revenue_in_period_backlog = revenue_backlog_data['revenue']
         
@@ -1195,16 +1354,20 @@ class SalespersonMetrics:
         
         # =====================================================================
         # GROSS PROFIT METRICS - Only from employees with GP KPI target
+        # FIXED v2.10.0: Use backlog_period_end for in-period calculation
+        # FIXED v2.11.0: Use _get_full_period_target for fair comparison
         # =====================================================================
         gp_employees = self._get_employees_with_kpi('gross_profit')
-        gp_target = self._get_prorated_target('gross_profit', period_type, year)
+        # Use full period target (not prorated by elapsed time)
+        gp_target = self._get_full_period_target('gross_profit', period_type, year)
         
         # Invoiced GP from employees with GP KPI
         gp_invoiced = self._get_actual_for_kpi('gross_profit', 'gross_profit_by_split_usd')
         
         # In-period backlog GP from employees with GP KPI
+        # FIXED v2.10.0: Use backlog_period_end (full period) instead of end_date
         gp_backlog_data = get_in_period_backlog_for_employees(
-            gp_employees, backlog_detail_df, start_date, end_date
+            gp_employees, backlog_detail_df, start_date, backlog_period_end
         )
         gp_in_period_backlog = gp_backlog_data['gp']
         
@@ -1234,16 +1397,20 @@ class SalespersonMetrics:
         
         # =====================================================================
         # GP1 METRICS - Only from employees with GP1 KPI target
+        # FIXED v2.10.0: Use backlog_period_end for in-period calculation
+        # FIXED v2.11.0: Use _get_full_period_target for fair comparison
         # =====================================================================
         gp1_employees = self._get_employees_with_kpi('gross_profit_1')
-        gp1_target = self._get_prorated_target('gross_profit_1', period_type, year)
+        # Use full period target (not prorated by elapsed time)
+        gp1_target = self._get_full_period_target('gross_profit_1', period_type, year)
         
         # Invoiced GP1 from employees with GP1 KPI
         gp1_invoiced = self._get_actual_for_kpi('gross_profit_1', 'gp1_by_split_usd')
         
         # In-period backlog GP1 from employees with GP1 KPI
+        # FIXED v2.10.0: Use backlog_period_end (full period) instead of end_date
         gp1_backlog_data = get_in_period_backlog_for_employees(
-            gp1_employees, backlog_detail_df, start_date, end_date
+            gp1_employees, backlog_detail_df, start_date, backlog_period_end
         )
         gp1_in_period_backlog = gp1_backlog_data['gp1']
         
@@ -1272,16 +1439,23 @@ class SalespersonMetrics:
         }
         
         # =====================================================================
-        # SUMMARY - Total backlog (all employees, for reference)
+        # SUMMARY - Total backlog (all selected employees)
+        # FIXED v2.10.0: Calculate from backlog_detail_df instead of total_backlog_df
+        # total_backlog_df is pre-aggregated and doesn't filter by selected salesperson
+        # backlog_detail_df is already filtered by salesperson in filter_data_client_side
         # =====================================================================
         total_backlog_revenue = 0
         total_backlog_gp = 0
         backlog_orders = 0
         
-        if not total_backlog_df.empty:
-            total_backlog_revenue = total_backlog_df['total_backlog_revenue'].sum()
-            total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
-            backlog_orders = total_backlog_df['backlog_orders'].sum() if 'backlog_orders' in total_backlog_df.columns else 0
+        if not backlog_detail_df.empty:
+            # Calculate from detail df - this respects salesperson filter
+            if 'backlog_sales_by_split_usd' in backlog_detail_df.columns:
+                total_backlog_revenue = backlog_detail_df['backlog_sales_by_split_usd'].sum()
+            if 'backlog_gp_by_split_usd' in backlog_detail_df.columns:
+                total_backlog_gp = backlog_detail_df['backlog_gp_by_split_usd'].sum()
+            if 'oc_number' in backlog_detail_df.columns:
+                backlog_orders = backlog_detail_df['oc_number'].nunique()
         
         summary = {
             'total_backlog_revenue': total_backlog_revenue,
@@ -1289,6 +1463,7 @@ class SalespersonMetrics:
             'total_backlog_gp1': total_backlog_gp * gp1_gp_ratio,
             'backlog_orders': backlog_orders,
             'gp1_gp_ratio': round(gp1_gp_ratio, 4),
+            'backlog_period_end': backlog_period_end,  # For display in UI
         }
         
         if DEBUG_METRICS_TIMING:
