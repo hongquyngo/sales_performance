@@ -6,9 +6,19 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.7.1 - Fixed KPI name normalization in Individual Performance
+VERSION: 2.8.0 - Fixed Backlog summary cards not filtering by selected salesperson
 
 CHANGELOG:
+- v2.8.0: FIXED Backlog summary cards showing totals for ALL salespeople instead of selected
+          - Bug: total_backlog_df (pre-aggregated) was not filtered by selected salesperson
+          - Result: Summary cards showed $355K (19 orders) while table showed only 5 orders
+          - Fix: Always calculate totals from backlog_df (detail) which is correctly filtered
+          - Removed dependency on total_backlog_df parameter for summary calculation
+          FIXED Status card showing "HAS OVERDUE" when there are no in-period orders
+          - Bug: Any status != 'healthy' displayed "HAS OVERDUE" (including 'empty')
+          - Result: When no orders have ETD in selected period, showed "HAS OVERDUE" incorrectly
+          - Fix: Proper status logic - distinguish healthy/has_overdue/empty states
+          - New status "NO IN-PERIOD" when no orders fall within date range
 - v2.7.1: FIXED KPI name mismatch bug in kpi_progress_fragment Individual Performance
           - Bug: Database stores "Gross Profit 1" but kpi_column_map expects "gross_profit_1"
           - Result: GP1, New Business Revenue, New Customers not matched → actual = 0
@@ -1056,19 +1066,17 @@ def backlog_list_fragment(
     # Summary cards - Combined Total + In-Period + Overdue info
     col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
     
-    # UPDATED v2.1.0: Use aggregated totals if available, else calculate from detail
-    if total_backlog_df is not None and not total_backlog_df.empty:
-        # Use aggregated data for accurate totals
-        total_backlog_value = total_backlog_df['total_backlog_revenue'].sum()
-        total_backlog_gp = total_backlog_df['total_backlog_gp'].sum()
-        total_orders = int(total_backlog_df['backlog_orders'].sum()) if 'backlog_orders' in total_backlog_df.columns else backlog_df['oc_number'].nunique()
-        total_customers = int(total_backlog_df['backlog_customers'].sum()) if 'backlog_customers' in total_backlog_df.columns else backlog_df['customer_id'].nunique()
-    else:
-        # Fallback: calculate from detail (may be truncated if LIMIT was used)
-        total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
-        total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
-        total_orders = backlog_df['oc_number'].nunique()
-        total_customers = backlog_df['customer_id'].nunique()
+    # FIXED v2.8.0: Always calculate from backlog_df (backlog_detail) instead of total_backlog_df
+    # Reason: total_backlog_df is pre-aggregated by salesperson and may not be filtered correctly
+    # when user selects specific salesperson in sidebar. backlog_df (detail) is always filtered
+    # correctly by filter_data_client_side() based on selected employee_ids.
+    # 
+    # Previous bug: Summary cards showed totals for ALL accessible salespeople instead of
+    # only the selected salesperson, causing mismatch between cards and table.
+    total_backlog_value = backlog_df['backlog_sales_by_split_usd'].sum()
+    total_backlog_gp = backlog_df['backlog_gp_by_split_usd'].sum()
+    total_orders = backlog_df['oc_number'].nunique()
+    total_customers = backlog_df['customer_id'].nunique()
     
     with col_s1:
         st.metric(
@@ -1125,12 +1133,30 @@ def backlog_list_fragment(
             help="In-period orders with ETD < today (past due, needs attention)"
         )
     with col_s7:
+        # FIXED v2.8.0: Proper status display based on actual status value
+        # Previously: any status != 'healthy' showed "HAS OVERDUE" (including 'empty')
+        # Now: properly distinguish between healthy, has_overdue, empty, and other states
         status = in_period_backlog_analysis.get('status', 'unknown')
-        status_display = "HEALTHY ✅" if status == 'healthy' else "HAS OVERDUE ⚠️"
+        overdue_count = in_period_backlog_analysis.get('overdue_count', 0)
+        in_period_count = in_period_backlog_analysis.get('total_count', 0)
+        
+        if status == 'has_overdue' or overdue_count > 0:
+            status_display = "HAS OVERDUE ⚠️"
+            help_text = "Some in-period orders have ETD < today (past due, needs attention)"
+        elif status == 'healthy' or (in_period_count > 0 and overdue_count == 0):
+            status_display = "HEALTHY ✅"
+            help_text = "All in-period orders are on track (ETD ≥ today)"
+        elif status == 'empty' or in_period_count == 0:
+            status_display = "NO IN-PERIOD"
+            help_text = "No orders with ETD within selected date range"
+        else:
+            status_display = "N/A"
+            help_text = "Status could not be determined"
+        
         st.metric(
             "📊 Status",
             status_display,
-            help="HEALTHY = no overdue orders, HAS OVERDUE = some orders past ETD"
+            help=help_text
         )
     
     st.divider()

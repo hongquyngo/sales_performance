@@ -23,6 +23,10 @@ CHANGELOG:
           - validate_filters() now sets 'is_empty_selection' flag instead
           - Added get_empty_selection_reason() helper for informative messages
           - Page renders with $0 values, all tabs accessible including Setup
+- v2.6.0: FIXED Excl checkbox layout wrapping on narrow columns
+          - Changed column ratio from [4, 1] to [3, 1] with gap="small"
+          - Gives Excl checkbox more horizontal space to prevent label wrapping
+          - Applied to: render_multiselect_filter, render_text_search_filter, render_number_filter
 - v2.5.0: NEW - Dynamic sidebar for Setup tab (Phase 3 & 4)
           - Added render_setup_sidebar() for Setup-specific sidebar content
           - Added get_most_recent_kpi_year() for smart year default
@@ -58,7 +62,7 @@ CHANGELOG:
           - FilterResult dataclass for clean return values
 - v1.1.0: Added exclude_internal_revenue checkbox to filter out internal company revenue
 
-VERSION: 2.5.0
+VERSION: 2.6.0
 """
 
 import logging
@@ -183,8 +187,10 @@ def render_multiselect_filter(
     """
     ctx = container if container else st
     
-    # Header row with label and Excl checkbox
-    col_label, col_excl = ctx.columns([4, 1])
+    # FIXED v2.6.0: Give more space to Excl checkbox to prevent wrapping
+    # Previous layout [4, 1] caused "Excl" to wrap on narrow screens
+    # New layout [3, 1]: Label takes 3 parts, Excl takes 1 part = more space for checkbox
+    col_label, col_excl = ctx.columns([3, 1], gap="small")
     
     with col_label:
         ctx.markdown(f"**{label}**")
@@ -194,7 +200,8 @@ def render_multiselect_filter(
             "Excl",
             value=default_excluded,
             key=f"{key}_excl",
-            help="Tick to EXCLUDE selected items instead of filtering to them"
+            help="Tick to EXCLUDE selected items instead of filtering to them",
+            label_visibility="visible"
         )
     
     # Multiselect
@@ -332,8 +339,8 @@ def render_text_search_filter(
     """
     ctx = container if container else st
     
-    # Header row
-    col_label, col_excl = ctx.columns([4, 1])
+    # FIXED v2.6.0: Match layout with render_multiselect_filter [3, 1] for more Excl space
+    col_label, col_excl = ctx.columns([3, 1], gap="small")
     
     with col_label:
         ctx.markdown(f"**{label}**")
@@ -343,7 +350,8 @@ def render_text_search_filter(
             "Excl",
             value=False,
             key=f"{key}_excl",
-            help="Tick to EXCLUDE items matching search"
+            help="Tick to EXCLUDE items matching search",
+            label_visibility="visible"
         )
     
     # Text input
@@ -442,8 +450,8 @@ def render_number_filter(
     """
     ctx = container if container else st
     
-    # Header row
-    col_label, col_excl = ctx.columns([4, 1])
+    # FIXED v2.6.0: Match layout with other filter functions [3, 1] for more Excl space
+    col_label, col_excl = ctx.columns([3, 1], gap="small")
     
     with col_label:
         ctx.markdown(f"**{label}**")
@@ -453,7 +461,8 @@ def render_number_filter(
             "Excl",
             value=False,
             key=f"{key}_excl",
-            help="Tick to EXCLUDE items matching this condition"
+            help="Tick to EXCLUDE items matching this condition",
+            label_visibility="visible"
         )
     
     # Number input
