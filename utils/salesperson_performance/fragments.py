@@ -6,9 +6,14 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 2.10.0 - Separate GP%/GP1% columns, increased display limits, improved summary cards
+VERSION: 3.4.0 - Combined fragments with filters above sub-tabs
 
 CHANGELOG:
+- v3.4.0: NEW Combined fragments with filters ABOVE sub-tabs (like KPI Center)
+          - sales_detail_tab_fragment: Filters + Sales List + Pivot sub-tabs
+          - backlog_tab_fragment: Filters + Backlog List + By ETD + Risk sub-tabs
+          - When filter changes, ALL sub-tabs update (shared filter state)
+          - Still uses @st.fragment to prevent full page rerun
 - v2.10.0: UPDATED GP/GP1 display to separate columns (instead of inline)
           - Sales Detail: GP, GP%, GP1, GP1% as 4 separate columns
           - Backlog List: GP, GP% as 2 separate columns
@@ -2473,6 +2478,836 @@ def kpi_progress_fragment(
 
 
 # =============================================================================
+# COMBINED FRAGMENT: SALES DETAIL TAB (Tab 2)
+# NEW v3.4.0: Filters above sub-tabs - all sub-tabs share same filtered data
+# =============================================================================
+
+@st.fragment
+def sales_detail_tab_fragment(
+    sales_df: pd.DataFrame,
+    overview_metrics: Dict,
+    filter_values: Dict,
+    fragment_key: str = "sales_detail_tab"
+):
+    """
+    Combined fragment for entire Sales Detail tab.
+    
+    Structure:
+    1. Filters (Customer, Brand, Product, OC#, Min Amount) - ABOVE sub-tabs
+    2. Sub-tabs (Transaction List, Pivot Analysis)
+    
+    When filters change, both sub-tabs update.
+    Fragment prevents full page rerun.
+    """
+    st.subheader("📋 Sales Transaction Detail")
+    
+    if sales_df.empty:
+        st.info("No sales data for selected period")
+        return
+    
+    # =================================================================
+    # FILTERS - Above sub-tabs (shared by all sub-tabs)
+    # =================================================================
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+    
+    with col_f1:
+        customer_options = sorted(sales_df['customer'].dropna().unique().tolist())
+        customer_filter = render_multiselect_filter(
+            label="Customer",
+            options=customer_options,
+            key=f"{fragment_key}_customer",
+            placeholder="Choose an option"
+        )
+    
+    with col_f2:
+        brand_options = sorted(sales_df['brand'].dropna().unique().tolist())
+        brand_filter = render_multiselect_filter(
+            label="Brand",
+            options=brand_options,
+            key=f"{fragment_key}_brand",
+            placeholder="Choose an option"
+        )
+    
+    with col_f3:
+        product_options = sorted(sales_df['product_pn'].dropna().unique().tolist())[:100]
+        product_filter = render_multiselect_filter(
+            label="Product",
+            options=product_options,
+            key=f"{fragment_key}_product",
+            placeholder="Choose an option"
+        )
+    
+    with col_f4:
+        oc_po_filter = render_text_search_filter(
+            label="OC# / Customer PO",
+            key=f"{fragment_key}_oc_po",
+            placeholder="Search..."
+        )
+    
+    with col_f5:
+        amount_filter = render_number_filter(
+            label="Min Amount ($)",
+            key=f"{fragment_key}_min_amount",
+            default_min=0,
+            step=1000
+        )
+    
+    # =================================================================
+    # APPLY FILTERS (shared by all sub-tabs)
+    # =================================================================
+    filtered_df = sales_df.copy()
+    
+    filtered_df = apply_multiselect_filter(filtered_df, 'customer', customer_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'brand', brand_filter)
+    filtered_df = apply_multiselect_filter(filtered_df, 'product_pn', product_filter)
+    filtered_df = apply_text_search_filter(
+        filtered_df, 
+        columns=['oc_number', 'customer_po_number'],
+        search_result=oc_po_filter
+    )
+    filtered_df = apply_number_filter(filtered_df, 'sales_by_split_usd', amount_filter)
+    
+    # Show filter summary
+    active_filters = []
+    if customer_filter.is_active:
+        mode = "excl" if customer_filter.excluded else "incl"
+        active_filters.append(f"Customer: {len(customer_filter.selected)} ({mode})")
+    if brand_filter.is_active:
+        mode = "excl" if brand_filter.excluded else "incl"
+        active_filters.append(f"Brand: {len(brand_filter.selected)} ({mode})")
+    if product_filter.is_active:
+        mode = "excl" if product_filter.excluded else "incl"
+        active_filters.append(f"Product: {len(product_filter.selected)} ({mode})")
+    if oc_po_filter.is_active:
+        mode = "excl" if oc_po_filter.excluded else "incl"
+        active_filters.append(f"OC/PO: '{oc_po_filter.query}' ({mode})")
+    if amount_filter.is_active:
+        mode = "excl" if amount_filter.excluded else "incl"
+        active_filters.append(f"Amount: ≥${amount_filter.min_value:,.0f} ({mode})")
+    
+    if active_filters:
+        st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
+    
+    # =================================================================
+    # SUB-TABS - Both use filtered_df
+    # =================================================================
+    detail_tab1, detail_tab2 = st.tabs(["📄 Sales List", "📊 Pivot Analysis"])
+    
+    with detail_tab1:
+        _render_sales_list_content(filtered_df, sales_df, filter_values, f"{fragment_key}_list")
+    
+    with detail_tab2:
+        _render_pivot_content(filtered_df, f"{fragment_key}_pivot")
+
+
+def _render_sales_list_content(
+    filtered_df: pd.DataFrame,
+    original_df: pd.DataFrame,
+    filter_values: Dict,
+    key_prefix: str
+):
+    """Render Sales List content (without filters - filters are above)."""
+    if filtered_df.empty:
+        st.info("No transactions match the current filters")
+        return
+    
+    # Summary metrics cards
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
+    
+    total_revenue = filtered_df['sales_by_split_usd'].sum()
+    total_gp = filtered_df['gross_profit_by_split_usd'].sum()
+    total_gp1 = filtered_df['gp1_by_split_usd'].sum()
+    gp_percent = (total_gp / total_revenue * 100) if total_revenue > 0 else 0
+    gp1_percent = (total_gp1 / total_revenue * 100) if total_revenue > 0 else 0
+    total_invoices = filtered_df['inv_number'].nunique()
+    total_orders = filtered_df['oc_number'].nunique()
+    total_customers = filtered_df['customer_id'].nunique()
+    
+    with col_s1:
+        st.metric("💰 Revenue", f"${total_revenue:,.0f}", 
+                  delta=f"{total_invoices:,} invoices", delta_color="off",
+                  help="Total revenue (split-adjusted)")
+    with col_s2:
+        st.metric("📈 Gross Profit", f"${total_gp:,.0f}", 
+                  delta=f"↑ {gp_percent:.1f}% margin", delta_color="off",
+                  help="Total GP (split-adjusted)")
+    with col_s3:
+        st.metric("📊 GP1", f"${total_gp1:,.0f}", 
+                  delta=f"↑ {gp1_percent:.1f}% margin", delta_color="off",
+                  help="GP1 = GP - Broker Commission")
+    with col_s4:
+        st.metric("📋 Orders", f"{total_orders:,}", delta_color="off",
+                  help="Unique order confirmations")
+    with col_s5:
+        st.metric("👥 Customers", f"{total_customers:,}", delta_color="off",
+                  help="Unique customers")
+    with col_s6:
+        avg_order = total_revenue / total_orders if total_orders > 0 else 0
+        st.metric("📦 Avg Order", f"${avg_order:,.0f}", delta_color="off",
+                  help="Average revenue per order")
+    with col_s7:
+        avg_gp_customer = total_gp / total_customers if total_customers > 0 else 0
+        st.metric("💵 Avg GP", f"${avg_gp_customer:,.0f}", delta_color="off",
+                  help="Average GP per customer")
+    
+    # Prepare display dataframe
+    display_df = filtered_df.copy()
+    
+    # Calculate original values (before split)
+    split_pct = display_df['split_rate_percent'].replace(0, 100) / 100
+    display_df['total_revenue_usd'] = display_df['sales_by_split_usd'] / split_pct
+    display_df['total_gp_usd'] = display_df['gross_profit_by_split_usd'] / split_pct
+    
+    # Format Product display
+    def format_product_display(row):
+        parts = []
+        if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+            parts.append(str(row['pt_code']))
+        if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+            parts.append(str(row['product_pn']))
+        if pd.notna(row.get('package_size')) and row.get('package_size'):
+            parts.append(str(row['package_size']))
+        return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+    
+    display_df['product_display'] = display_df.apply(format_product_display, axis=1)
+    
+    # Format OC/PO display
+    def format_oc_po(row):
+        oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+        po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+        if oc and po:
+            return f"{oc} (PO: {po})"
+        return oc or (f"(PO: {po})" if po else '')
+    
+    display_df['oc_po_display'] = display_df.apply(format_oc_po, axis=1)
+    
+    # Calculate GP% and GP1%
+    display_df['gp_percent'] = display_df.apply(
+        lambda r: (r.get('gross_profit_by_split_usd', 0) / r.get('sales_by_split_usd', 1) * 100) 
+        if r.get('sales_by_split_usd', 0) > 0 else 0, axis=1
+    )
+    display_df['gp1_percent'] = display_df.apply(
+        lambda r: (r.get('gp1_by_split_usd', 0) / r.get('sales_by_split_usd', 1) * 100) 
+        if r.get('sales_by_split_usd', 0) > 0 else 0, axis=1
+    )
+    
+    # Display columns
+    display_columns = [
+        'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
+        'total_revenue_usd', 'total_gp_usd', 'split_rate_percent',
+        'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp_percent', 
+        'gp1_by_split_usd', 'gp1_percent', 'sales_name'
+    ]
+    available_cols = [c for c in display_columns if c in display_df.columns]
+    
+    DISPLAY_LIMIT = 5000
+    total_filtered = len(display_df)
+    display_detail = display_df[available_cols].head(DISPLAY_LIMIT).copy()
+    
+    if total_filtered > DISPLAY_LIMIT:
+        st.markdown(f"**Showing {DISPLAY_LIMIT:,} of {total_filtered:,} transactions** (from {len(original_df):,} total)")
+        st.warning(f"⚠️ Display limited to {DISPLAY_LIMIT:,} rows. Export for full data.")
+    else:
+        st.markdown(f"**Showing {total_filtered:,} transactions** (of {len(original_df):,} total)")
+    
+    # Column config
+    column_config = {
+        'inv_date': st.column_config.DateColumn("Date"),
+        'inv_number': st.column_config.TextColumn("Invoice#"),
+        'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
+        'customer': st.column_config.TextColumn("Customer", width="medium"),
+        'product_display': st.column_config.TextColumn("Product", width="large",
+            help="PT Code | Name | Package Size"),
+        'brand': st.column_config.TextColumn("Brand"),
+        'total_revenue_usd': st.column_config.NumberColumn("Total Rev", format="$%.0f",
+            help="Before split"),
+        'total_gp_usd': st.column_config.NumberColumn("Total GP", format="$%.0f",
+            help="Before split"),
+        'split_rate_percent': st.column_config.NumberColumn("Split %", format="%.0f%%"),
+        'sales_by_split_usd': st.column_config.NumberColumn("Revenue", format="$%.0f"),
+        'gross_profit_by_split_usd': st.column_config.NumberColumn("GP", format="$%.0f"),
+        'gp_percent': st.column_config.NumberColumn("GP%", format="%.1f%%"),
+        'gp1_by_split_usd': st.column_config.NumberColumn("GP1", format="$%.0f"),
+        'gp1_percent': st.column_config.NumberColumn("GP1%", format="%.1f%%"),
+        'sales_name': st.column_config.TextColumn("Salesperson"),
+    }
+    
+    st.dataframe(
+        display_detail,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=600
+    )
+    
+    # Export button
+    from datetime import datetime as dt
+    if st.button("📥 Export Filtered View", key=f"{key_prefix}_export"):
+        csv = display_df[available_cols].to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv,
+            file_name=f"sales_detail_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key=f"{key_prefix}_download"
+        )
+
+
+def _render_pivot_content(filtered_df: pd.DataFrame, key_prefix: str):
+    """Render Pivot Analysis content (without filters - filters are above)."""
+    if filtered_df.empty:
+        st.info("No data for pivot analysis")
+        return
+    
+    col_p1, col_p2, col_p3 = st.columns(3)
+    
+    with col_p1:
+        row_options = ['customer', 'brand', 'sales_name', 'product_pn']
+        pivot_rows = st.selectbox("Rows", row_options, key=f"{key_prefix}_rows",
+                                  format_func=lambda x: x.replace('_', ' ').title())
+    
+    with col_p2:
+        col_options = ['invoice_month', 'invoice_quarter', 'brand', 'customer']
+        pivot_cols = st.selectbox("Columns", col_options, key=f"{key_prefix}_cols",
+                                  format_func=lambda x: x.replace('_', ' ').title())
+    
+    with col_p3:
+        value_options = ['sales_by_split_usd', 'gross_profit_by_split_usd', 'gp1_by_split_usd']
+        pivot_values = st.selectbox("Values", value_options, index=1, key=f"{key_prefix}_values",
+                                   format_func=lambda x: x.replace('_by_split_usd', '').replace('_', ' ').title())
+    
+    if pivot_rows in filtered_df.columns and pivot_cols in filtered_df.columns:
+        pivot_df = filtered_df.pivot_table(
+            values=pivot_values,
+            index=pivot_rows,
+            columns=pivot_cols,
+            aggfunc='sum',
+            fill_value=0
+        )
+        
+        pivot_df['Total'] = pivot_df.sum(axis=1)
+        pivot_df = pivot_df.sort_values('Total', ascending=False)
+        
+        if pivot_cols == 'invoice_month':
+            month_cols = [m for m in MONTH_ORDER if m in pivot_df.columns]
+            other_cols = [c for c in pivot_df.columns if c not in MONTH_ORDER and c != 'Total']
+            pivot_df = pivot_df[month_cols + other_cols + ['Total']]
+        
+        st.dataframe(
+            pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
+            use_container_width=True,
+            height=500
+        )
+    else:
+        st.warning("Selected columns not available")
+
+
+# =============================================================================
+# COMBINED FRAGMENT: BACKLOG TAB (Tab 3)
+# NEW v3.4.0: Filters above sub-tabs - all sub-tabs share same filtered data
+# =============================================================================
+
+@st.fragment
+def backlog_tab_fragment(
+    backlog_df: pd.DataFrame,
+    in_period_backlog_analysis: Dict,
+    total_backlog_df: pd.DataFrame,
+    backlog_by_month_df: pd.DataFrame,
+    metrics_calc: Any,
+    current_year: int,
+    filter_values: Dict,
+    fragment_key: str = "backlog_tab"
+):
+    """
+    Combined fragment for entire Backlog tab.
+    
+    Structure:
+    1. Overdue warning (if applicable)
+    2. Filters (Customer, Brand, Product, OC#, Status) - ABOVE sub-tabs
+    3. Sub-tabs (Backlog List, By ETD, Risk Analysis)
+    
+    When filters change, all sub-tabs update.
+    Fragment prevents full page rerun.
+    """
+    if backlog_df.empty:
+        st.info("📦 No backlog data available")
+        return
+    
+    # Show overdue warning at top
+    if in_period_backlog_analysis.get('overdue_warning'):
+        st.warning(in_period_backlog_analysis['overdue_warning'])
+    
+    # =================================================================
+    # FILTERS - Above sub-tabs (shared by all sub-tabs)
+    # =================================================================
+    col_bf1, col_bf2, col_bf3, col_bf4, col_bf5 = st.columns(5)
+    
+    with col_bf1:
+        bl_customer_options = sorted(backlog_df['customer'].dropna().unique().tolist())
+        bl_customer_filter = render_multiselect_filter(
+            label="Customer",
+            options=bl_customer_options,
+            key=f"{fragment_key}_customer",
+            placeholder="Choose an option"
+        )
+    
+    with col_bf2:
+        bl_brand_options = sorted(backlog_df['brand'].dropna().unique().tolist())
+        bl_brand_filter = render_multiselect_filter(
+            label="Brand",
+            options=bl_brand_options,
+            key=f"{fragment_key}_brand",
+            placeholder="Choose an option"
+        )
+    
+    with col_bf3:
+        bl_product_options = sorted(backlog_df['product_pn'].dropna().unique().tolist())[:100]
+        bl_product_filter = render_multiselect_filter(
+            label="Product",
+            options=bl_product_options,
+            key=f"{fragment_key}_product",
+            placeholder="Choose an option"
+        )
+    
+    with col_bf4:
+        bl_oc_po_filter = render_text_search_filter(
+            label="OC# / Customer PO",
+            key=f"{fragment_key}_oc_po",
+            placeholder="Search..."
+        )
+    
+    with col_bf5:
+        bl_status_options = backlog_df['pending_type'].dropna().unique().tolist()
+        bl_status_filter = render_multiselect_filter(
+            label="Status",
+            options=bl_status_options,
+            key=f"{fragment_key}_status",
+            placeholder="Choose an option"
+        )
+    
+    # =================================================================
+    # APPLY FILTERS (shared by all sub-tabs)
+    # =================================================================
+    filtered_backlog = backlog_df.copy()
+    
+    filtered_backlog = apply_multiselect_filter(filtered_backlog, 'customer', bl_customer_filter)
+    filtered_backlog = apply_multiselect_filter(filtered_backlog, 'brand', bl_brand_filter)
+    filtered_backlog = apply_multiselect_filter(filtered_backlog, 'product_pn', bl_product_filter)
+    filtered_backlog = apply_multiselect_filter(filtered_backlog, 'pending_type', bl_status_filter)
+    filtered_backlog = apply_text_search_filter(
+        filtered_backlog, 
+        columns=['oc_number', 'customer_po_number'] if 'customer_po_number' in backlog_df.columns else ['oc_number'],
+        search_result=bl_oc_po_filter
+    )
+    
+    # Show filter summary
+    active_bl_filters = []
+    if bl_customer_filter.is_active:
+        mode = "excl" if bl_customer_filter.excluded else "incl"
+        active_bl_filters.append(f"Customer: {len(bl_customer_filter.selected)} ({mode})")
+    if bl_brand_filter.is_active:
+        mode = "excl" if bl_brand_filter.excluded else "incl"
+        active_bl_filters.append(f"Brand: {len(bl_brand_filter.selected)} ({mode})")
+    if bl_product_filter.is_active:
+        mode = "excl" if bl_product_filter.excluded else "incl"
+        active_bl_filters.append(f"Product: {len(bl_product_filter.selected)} ({mode})")
+    if bl_oc_po_filter.is_active:
+        mode = "excl" if bl_oc_po_filter.excluded else "incl"
+        active_bl_filters.append(f"OC/PO: '{bl_oc_po_filter.query}' ({mode})")
+    if bl_status_filter.is_active:
+        mode = "excl" if bl_status_filter.excluded else "incl"
+        active_bl_filters.append(f"Status: {len(bl_status_filter.selected)} ({mode})")
+    
+    if active_bl_filters:
+        st.caption(f"🔍 Active filters: {' | '.join(active_bl_filters)}")
+    
+    # =================================================================
+    # SUB-TABS - All use filtered_backlog
+    # =================================================================
+    backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs(["📋 Backlog List", "📅 By ETD", "⚠️ Risk Analysis"])
+    
+    with backlog_tab1:
+        _render_backlog_list_content(
+            filtered_backlog, backlog_df, in_period_backlog_analysis, 
+            f"{fragment_key}_list"
+        )
+    
+    with backlog_tab2:
+        _render_backlog_by_etd_content(
+            filtered_backlog, backlog_by_month_df, metrics_calc, current_year, 
+            f"{fragment_key}_etd"
+        )
+    
+    with backlog_tab3:
+        _render_risk_analysis_content(filtered_backlog, f"{fragment_key}_risk")
+
+
+def _render_backlog_list_content(
+    filtered_backlog: pd.DataFrame,
+    original_backlog: pd.DataFrame,
+    in_period_backlog_analysis: Dict,
+    key_prefix: str
+):
+    """Render Backlog List content (without filters - filters are above)."""
+    if filtered_backlog.empty:
+        st.info("No backlog items match the current filters")
+        return
+    
+    # Summary cards - recalculate based on filtered data
+    col_s1, col_s2, col_s3, col_s4, col_s5, col_s6, col_s7 = st.columns(7)
+    
+    total_backlog_value = filtered_backlog['backlog_sales_by_split_usd'].sum()
+    total_backlog_gp = filtered_backlog['backlog_gp_by_split_usd'].sum()
+    total_backlog_gp_percent = (total_backlog_gp / total_backlog_value * 100) if total_backlog_value > 0 else 0
+    total_orders = filtered_backlog['oc_number'].nunique()
+    total_customers = filtered_backlog['customer_id'].nunique()
+    
+    with col_s1:
+        st.metric("💰 Total Backlog", f"${total_backlog_value:,.0f}", 
+                  f"{total_orders:,} orders", delta_color="off",
+                  help="All pending orders from filtered selection")
+    with col_s2:
+        st.metric("📈 Total GP", f"${total_backlog_gp:,.0f}",
+                  f"↑ {total_backlog_gp_percent:.1f}% margin", delta_color="off",
+                  help="Total GP from filtered backlog")
+    with col_s3:
+        in_period_value = in_period_backlog_analysis.get('total_value', 0)
+        in_period_count = in_period_backlog_analysis.get('total_count', 0)
+        st.metric("📅 In-Period", f"${in_period_value:,.0f}",
+                  f"{in_period_count:,} orders", delta_color="off",
+                  help="ETD within date range")
+    with col_s4:
+        in_period_gp = in_period_backlog_analysis.get('total_gp', 0)
+        in_period_gp_percent = (in_period_gp / in_period_value * 100) if in_period_value > 0 else 0
+        st.metric("📊 In-Period GP", f"${in_period_gp:,.0f}",
+                  f"↑ {in_period_gp_percent:.1f}% margin", delta_color="off",
+                  help="GP from in-period backlog")
+    with col_s5:
+        on_track_value = in_period_backlog_analysis.get('on_track_value', 0)
+        on_track_count = in_period_backlog_analysis.get('on_track_count', 0)
+        st.metric("✅ On Track", f"${on_track_value:,.0f}",
+                  f"{on_track_count:,} orders", delta_color="off",
+                  help="ETD ≥ today")
+    with col_s6:
+        overdue_value = in_period_backlog_analysis.get('overdue_value', 0)
+        overdue_count = in_period_backlog_analysis.get('overdue_count', 0)
+        st.metric("⚠️ Overdue", f"${overdue_value:,.0f}",
+                  f"{overdue_count:,} orders",
+                  delta_color="inverse" if overdue_count > 0 else "off",
+                  help="ETD < today (past due)")
+    with col_s7:
+        status = in_period_backlog_analysis.get('status', 'unknown')
+        overdue_cnt = in_period_backlog_analysis.get('overdue_count', 0)
+        in_period_cnt = in_period_backlog_analysis.get('total_count', 0)
+        
+        if status == 'has_overdue' or overdue_cnt > 0:
+            status_display = "HAS OVERDUE ⚠️"
+        elif status == 'healthy' or (in_period_cnt > 0 and overdue_cnt == 0):
+            status_display = "HEALTHY ✅"
+        elif status == 'empty' or in_period_cnt == 0:
+            status_display = "NO IN-PERIOD"
+        else:
+            status_display = "N/A"
+        
+        st.metric("📊 Status", status_display)
+    
+    # Prepare display dataframe
+    display_backlog = filtered_backlog.copy()
+    
+    # Format Product display
+    def format_product_display(row):
+        parts = []
+        if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+            parts.append(str(row['pt_code']))
+        if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+            parts.append(str(row['product_pn']))
+        if pd.notna(row.get('package_size')) and row.get('package_size'):
+            parts.append(str(row['package_size']))
+        return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+    
+    display_backlog['product_display'] = display_backlog.apply(format_product_display, axis=1)
+    
+    # Format OC/PO display
+    def format_oc_po(row):
+        oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+        po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+        if oc and po:
+            return f"{oc} (PO: {po})"
+        return oc or (f"(PO: {po})" if po else '')
+    
+    display_backlog['oc_po_display'] = display_backlog.apply(format_oc_po, axis=1)
+    
+    # Calculate GP%
+    display_backlog['gp_percent'] = display_backlog.apply(
+        lambda r: (r.get('backlog_gp_by_split_usd', 0) / r.get('backlog_sales_by_split_usd', 1) * 100)
+        if r.get('backlog_sales_by_split_usd', 0) > 0 else 0, axis=1
+    )
+    
+    # Display columns
+    display_columns = [
+        'oc_po_display', 'oc_date', 'etd', 'customer', 'product_display', 'brand',
+        'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 'gp_percent',
+        'days_until_etd', 'pending_type', 'sales_name'
+    ]
+    available_cols = [c for c in display_columns if c in display_backlog.columns]
+    
+    DISPLAY_LIMIT = 5000
+    total_filtered = len(display_backlog)
+    display_detail = display_backlog[available_cols].head(DISPLAY_LIMIT).copy()
+    
+    if total_filtered > DISPLAY_LIMIT:
+        st.markdown(f"**Showing {DISPLAY_LIMIT:,} of {total_filtered:,} items** (from {len(original_backlog):,} total)")
+    else:
+        st.markdown(f"**Showing {total_filtered:,} backlog items** (of {len(original_backlog):,} total)")
+    
+    # Column config
+    column_config = {
+        'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
+        'oc_date': st.column_config.DateColumn("OC Date"),
+        'etd': st.column_config.DateColumn("ETD"),
+        'customer': st.column_config.TextColumn("Customer", width="medium"),
+        'product_display': st.column_config.TextColumn("Product", width="large",
+            help="PT Code | Name | Package Size"),
+        'brand': st.column_config.TextColumn("Brand"),
+        'backlog_sales_by_split_usd': st.column_config.NumberColumn("Amount", format="$%.0f"),
+        'backlog_gp_by_split_usd': st.column_config.NumberColumn("GP", format="$%.0f"),
+        'gp_percent': st.column_config.NumberColumn("GP%", format="%.1f%%"),
+        'days_until_etd': st.column_config.NumberColumn("Days to ETD", format="%.0f"),
+        'pending_type': st.column_config.TextColumn("Status"),
+        'sales_name': st.column_config.TextColumn("Salesperson"),
+    }
+    
+    st.dataframe(
+        display_detail,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+        height=600
+    )
+
+
+def _render_backlog_by_etd_content(
+    filtered_backlog: pd.DataFrame,
+    backlog_by_month_df: pd.DataFrame,
+    metrics_calc: Any,
+    current_year: int,
+    key_prefix: str
+):
+    """Render Backlog By ETD content using filtered data."""
+    if filtered_backlog.empty:
+        st.info("No backlog data for ETD analysis")
+        return
+    
+    # Re-aggregate filtered backlog by ETD month
+    df = filtered_backlog.copy()
+    df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+    df = df[df['etd'].notna()]
+    
+    if df.empty:
+        st.info("No ETD data available")
+        return
+    
+    df['etd_year'] = df['etd'].dt.year.astype(int)
+    df['etd_month'] = df['etd'].dt.strftime('%b')
+    
+    filtered_by_month = df.groupby(['etd_year', 'etd_month']).agg({
+        'backlog_sales_by_split_usd': 'sum',
+        'backlog_gp_by_split_usd': 'sum',
+        'oc_number': 'nunique'
+    }).reset_index()
+    filtered_by_month.columns = ['etd_year', 'etd_month', 'backlog_revenue', 'backlog_gp', 'order_count']
+    
+    # View mode selection
+    view_mode = st.radio(
+        "View Mode",
+        options=["📅 Timeline", "📊 Stacked", "📈 Single Year"],
+        horizontal=True,
+        key=f"{key_prefix}_view_mode"
+    )
+    
+    month_order_list = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    
+    if view_mode == "📅 Timeline":
+        st.markdown("##### 📅 Backlog Timeline by ETD Month")
+        
+        if not filtered_by_month.empty:
+            timeline_df = filtered_by_month.pivot_table(
+                values='backlog_revenue',
+                index='etd_month',
+                columns='etd_year',
+                aggfunc='sum',
+                fill_value=0
+            )
+            timeline_df = timeline_df.reindex([m for m in month_order_list if m in timeline_df.index])
+            
+            st.dataframe(
+                timeline_df.style.format("${:,.0f}").background_gradient(cmap='Blues'),
+                use_container_width=True
+            )
+    
+    elif view_mode == "📊 Stacked":
+        st.markdown("##### 📊 Backlog by Year (Stacked)")
+        
+        yearly = filtered_by_month.groupby('etd_year').agg({
+            'backlog_revenue': 'sum',
+            'backlog_gp': 'sum',
+            'order_count': 'sum'
+        }).reset_index()
+        
+        for _, row in yearly.iterrows():
+            year = int(row['etd_year'])
+            revenue = row['backlog_revenue']
+            gp = row['backlog_gp']
+            orders = int(row['order_count'])
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(f"{year} Revenue", f"${revenue:,.0f}")
+            with col2:
+                st.metric(f"{year} GP", f"${gp:,.0f}")
+            with col3:
+                st.metric(f"{year} Orders", f"{orders:,}")
+    
+    else:  # Single Year
+        available_years = sorted(filtered_by_month['etd_year'].unique(), reverse=True)
+        if not available_years:
+            st.info("No year data available")
+            return
+            
+        default_idx = 0
+        if current_year in available_years:
+            default_idx = available_years.index(current_year)
+            
+        selected_year = st.selectbox(
+            "Select Year",
+            options=available_years,
+            index=default_idx,
+            key=f"{key_prefix}_year"
+        )
+        
+        year_data = filtered_by_month[filtered_by_month['etd_year'] == selected_year].copy()
+        
+        if not year_data.empty:
+            st.markdown(f"##### 📈 {selected_year} Backlog by Month")
+            
+            month_order_map = {m: i for i, m in enumerate(month_order_list)}
+            year_data['_month_num'] = year_data['etd_month'].map(month_order_map)
+            year_data = year_data.sort_values('_month_num')
+            
+            st.dataframe(
+                year_data[['etd_month', 'backlog_revenue', 'backlog_gp', 'order_count']].rename(columns={
+                    'etd_month': 'Month',
+                    'backlog_revenue': 'Revenue',
+                    'backlog_gp': 'GP',
+                    'order_count': 'Orders'
+                }).style.format({'Revenue': '${:,.0f}', 'GP': '${:,.0f}'}),
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+def _render_risk_analysis_content(filtered_backlog: pd.DataFrame, key_prefix: str):
+    """Render Risk Analysis content."""
+    if filtered_backlog.empty:
+        st.info("No backlog data for risk analysis")
+        return
+    
+    st.markdown("#### ⚠️ Backlog Risk Analysis")
+    
+    backlog_risk = filtered_backlog.copy()
+    backlog_risk['days_until_etd'] = pd.to_numeric(backlog_risk['days_until_etd'], errors='coerce')
+    
+    # Categorize
+    overdue = backlog_risk[backlog_risk['days_until_etd'] < 0]
+    this_week = backlog_risk[(backlog_risk['days_until_etd'] >= 0) & (backlog_risk['days_until_etd'] <= 7)]
+    this_month = backlog_risk[(backlog_risk['days_until_etd'] > 7) & (backlog_risk['days_until_etd'] <= 30)]
+    on_track = backlog_risk[backlog_risk['days_until_etd'] > 30]
+    
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    
+    with col_r1:
+        overdue_value = overdue['backlog_sales_by_split_usd'].sum()
+        st.metric("🔴 Overdue", f"${overdue_value:,.0f}",
+                  delta=f"{len(overdue)} orders", delta_color="inverse")
+    
+    with col_r2:
+        week_value = this_week['backlog_sales_by_split_usd'].sum()
+        st.metric("🟠 This Week", f"${week_value:,.0f}",
+                  delta=f"{len(this_week)} orders", delta_color="off")
+    
+    with col_r3:
+        month_value = this_month['backlog_sales_by_split_usd'].sum()
+        st.metric("🟡 This Month", f"${month_value:,.0f}",
+                  delta=f"{len(this_month)} orders", delta_color="off")
+    
+    with col_r4:
+        track_value = on_track['backlog_sales_by_split_usd'].sum()
+        st.metric("🟢 On Track", f"${track_value:,.0f}",
+                  delta=f"{len(on_track)} orders", delta_color="normal")
+    
+    st.divider()
+    
+    # Show overdue details
+    if not overdue.empty:
+        st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
+        
+        overdue_display = overdue.copy()
+        
+        def format_product_display(row):
+            parts = []
+            if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                parts.append(str(row['pt_code']))
+            if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                parts.append(str(row['product_pn']))
+            if pd.notna(row.get('package_size')) and row.get('package_size'):
+                parts.append(str(row['package_size']))
+            return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
+        
+        overdue_display['product_display'] = overdue_display.apply(format_product_display, axis=1)
+        
+        def format_oc_po(row):
+            oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
+            po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
+            if oc and po:
+                return f"{oc} (PO: {po})"
+            return oc or (f"(PO: {po})" if po else '')
+        
+        overdue_display['oc_po_display'] = overdue_display.apply(format_oc_po, axis=1)
+        overdue_display['days_overdue'] = overdue_display['days_until_etd'].abs()
+        
+        display_cols = ['oc_po_display', 'etd', 'customer', 'product_display', 'brand',
+                       'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
+                       'days_overdue', 'pending_type', 'sales_name']
+        available_cols = [c for c in display_cols if c in overdue_display.columns]
+        
+        display_df = overdue_display[available_cols].sort_values(
+            'backlog_sales_by_split_usd', ascending=False
+        ).head(50).copy()
+        
+        column_config = {
+            'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
+            'etd': st.column_config.DateColumn("ETD"),
+            'customer': st.column_config.TextColumn("Customer", width="medium"),
+            'product_display': st.column_config.TextColumn("Product", width="large"),
+            'brand': st.column_config.TextColumn("Brand"),
+            'backlog_sales_by_split_usd': st.column_config.NumberColumn("Amount", format="$%.0f"),
+            'backlog_gp_by_split_usd': st.column_config.NumberColumn("GP", format="$%.0f"),
+            'days_overdue': st.column_config.NumberColumn("Days Overdue"),
+            'pending_type': st.column_config.TextColumn("Status"),
+            'sales_name': st.column_config.TextColumn("Salesperson"),
+        }
+        
+        st.dataframe(
+            display_df,
+            column_config=column_config,
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+
+
+# =============================================================================
 # EXPORT ALL FRAGMENTS
 # =============================================================================
 
@@ -2486,4 +3321,7 @@ __all__ = [
     'backlog_by_etd_fragment',
     'team_ranking_fragment',
     'kpi_progress_fragment',
+    # NEW v3.4.0: Combined fragments with filters above sub-tabs
+    'sales_detail_tab_fragment',
+    'backlog_tab_fragment',
 ]

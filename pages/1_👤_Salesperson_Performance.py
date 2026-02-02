@@ -112,6 +112,9 @@ from utils.salesperson_performance.fragments import (
     backlog_by_etd_fragment,
     team_ranking_fragment,
     kpi_progress_fragment,
+    # NEW v3.4.0: Combined fragments with filters above sub-tabs
+    sales_detail_tab_fragment,
+    backlog_tab_fragment,
 )
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -1904,44 +1907,22 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
 
 # =============================================================================
 # TAB 2: SALES DETAIL
+# UPDATED v3.4.0: Combined fragment with filters ABOVE sub-tabs
 # =============================================================================
 
 with tab2:
-    st.subheader("📋 Sales Transaction Detail")
-    
-    sales_df = data['sales']
-    
-    if sales_df.empty:
-        st.info("No sales data for selected period")
-    else:
-        # Sub-tabs for detail views - EACH IS A FRAGMENT
-        # Only reruns when filters in that sub-tab change
-        detail_tab1, detail_tab2 = st.tabs(["📄 Transaction List", "📊 Pivot Analysis"])
-        
-        with detail_tab1:
-            # =================================================================
-            # TRANSACTION LIST - FRAGMENT
-            # Only reruns when filters in this section change
-            # =================================================================
-            sales_detail_fragment(
-                sales_df=sales_df,
-                overview_metrics=overview_metrics,
-                filter_values=active_filters,
-                fragment_key="detail"
-            )
-        
-        with detail_tab2:
-            # =================================================================
-            # PIVOT ANALYSIS - FRAGMENT  
-            # Only reruns when pivot config changes
-            # =================================================================
-            pivot_analysis_fragment(
-                sales_df=sales_df,
-                fragment_key="pivot"
-            )
+    # Combined fragment: filters above + sub-tabs below
+    # When filter changes, all sub-tabs update (no full page rerun)
+    sales_detail_tab_fragment(
+        sales_df=data['sales'],
+        overview_metrics=overview_metrics,
+        filter_values=active_filters,
+        fragment_key="sales_detail_tab"
+    )
 
 # =============================================================================
 # TAB 3: BACKLOG
+# UPDATED v3.4.0: Combined fragment with filters ABOVE sub-tabs
 # =============================================================================
 
 with tab3:
@@ -1982,205 +1963,21 @@ Backlog is a snapshot of ALL pending orders **at current time**.
 | **Backlog Tab** → In-Period | All selected employees |
             """)
     
-    backlog_df = data['backlog_detail']
+    # Combined fragment: filters above + sub-tabs below
+    # When filter changes, all sub-tabs update (no full page rerun)
+    # FIXED v2.5.1: Use backlog_detail (which respects salesperson filter)
+    prepared_backlog_by_month = _prepare_backlog_by_month_from_detail(data['backlog_detail'])
     
-    if backlog_df.empty:
-        st.info("📦 No backlog data available")
-    else:
-        # Show overdue warning at top if applicable
-        if in_period_backlog_analysis.get('overdue_warning'):
-            st.warning(in_period_backlog_analysis['overdue_warning'])
-        
-        # Sub-tabs
-        backlog_tab1, backlog_tab2, backlog_tab3 = st.tabs(["📋 Backlog List", "📅 By ETD", "⚠️ Risk Analysis"])
-        
-        with backlog_tab1:
-            # =================================================================
-            # BACKLOG LIST - FRAGMENT
-            # Only reruns when filters in this section change
-            # UPDATED v2.2.0: Pass total_backlog_df for accurate summary totals
-            # =================================================================
-            backlog_list_fragment(
-                backlog_df=backlog_df,
-                in_period_backlog_analysis=in_period_backlog_analysis,
-                total_backlog_df=data['total_backlog'],  # NEW: for accurate totals
-                fragment_key="backlog"
-            )
-
-        with backlog_tab2:
-            # =================================================================
-            # BACKLOG BY ETD - FRAGMENT (NEW v2.5.0)
-            # Multi-year view with Timeline/Stacked/Single Year modes
-            # Only reruns when view mode changes, not entire page
-            # =================================================================
-            # FIXED v2.5.1: Use backlog_detail (which respects salesperson filter)
-            # instead of backlog_by_month (which is aggregated without sales_id)
-            prepared_backlog_by_month = _prepare_backlog_by_month_from_detail(data['backlog_detail'])
-            
-            backlog_by_etd_fragment(
-                backlog_by_month_df=prepared_backlog_by_month,
-                metrics_calc=metrics_calc,
-                current_year=active_filters['year'],
-                fragment_key="backlog_etd"
-            )
-
-        with backlog_tab3:
-            st.markdown("#### ⚠️ Backlog Risk Analysis")
-            
-            # Calculate risk categories
-            today = date.today()
-            
-            backlog_risk = backlog_df.copy()
-            backlog_risk['days_until_etd'] = pd.to_numeric(backlog_risk['days_until_etd'], errors='coerce')
-            
-            # Categorize
-            overdue = backlog_risk[backlog_risk['days_until_etd'] < 0]
-            this_week = backlog_risk[(backlog_risk['days_until_etd'] >= 0) & (backlog_risk['days_until_etd'] <= 7)]
-            this_month = backlog_risk[(backlog_risk['days_until_etd'] > 7) & (backlog_risk['days_until_etd'] <= 30)]
-            on_track = backlog_risk[backlog_risk['days_until_etd'] > 30]
-            
-            # Display risk summary
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-            
-            with col_r1:
-                overdue_value = overdue['backlog_sales_by_split_usd'].sum()
-                st.metric(
-                    "🔴 Overdue",
-                    f"${overdue_value:,.0f}",
-                    delta=f"{len(overdue)} orders",
-                    delta_color="inverse"
-                )
-            
-            with col_r2:
-                week_value = this_week['backlog_sales_by_split_usd'].sum()
-                st.metric(
-                    "🟠 This Week",
-                    f"${week_value:,.0f}",
-                    delta=f"{len(this_week)} orders",
-                    delta_color="off"
-                )
-            
-            with col_r3:
-                month_value = this_month['backlog_sales_by_split_usd'].sum()
-                st.metric(
-                    "🟡 This Month",
-                    f"${month_value:,.0f}",
-                    delta=f"{len(this_month)} orders",
-                    delta_color="off"
-                )
-            
-            with col_r4:
-                track_value = on_track['backlog_sales_by_split_usd'].sum()
-                st.metric(
-                    "🟢 On Track",
-                    f"${track_value:,.0f}",
-                    delta=f"{len(on_track)} orders",
-                    delta_color="normal"
-                )
-            
-            st.divider()
-            
-            # Show overdue details - UPDATED: Synchronized format with Sales/Backlog list
-            if not overdue.empty:
-                st.markdown("##### 🔴 Overdue Orders (ETD Passed)")
-                
-                # Create formatted columns
-                overdue_display = overdue.copy()
-                
-                # Format Product as "pt_code | Name | Package size"
-                def format_product_display(row):
-                    parts = []
-                    if pd.notna(row.get('pt_code')) and row.get('pt_code'):
-                        parts.append(str(row['pt_code']))
-                    if pd.notna(row.get('product_pn')) and row.get('product_pn'):
-                        parts.append(str(row['product_pn']))
-                    if pd.notna(row.get('package_size')) and row.get('package_size'):
-                        parts.append(str(row['package_size']))
-                    return ' | '.join(parts) if parts else str(row.get('product_pn', 'N/A'))
-                
-                overdue_display['product_display'] = overdue_display.apply(format_product_display, axis=1)
-                
-                # Format OC with Customer PO
-                def format_oc_po(row):
-                    oc = str(row.get('oc_number', '')) if pd.notna(row.get('oc_number')) else ''
-                    po = str(row.get('customer_po_number', '')) if pd.notna(row.get('customer_po_number')) else ''
-                    if oc and po:
-                        return f"{oc}\n(PO: {po})"
-                    elif oc:
-                        return oc
-                    elif po:
-                        return f"(PO: {po})"
-                    return ''
-                
-                overdue_display['oc_po_display'] = overdue_display.apply(format_oc_po, axis=1)
-                overdue_display['days_overdue'] = overdue_display['days_until_etd'].abs()
-                
-                # Select columns for display
-                display_cols = ['oc_po_display', 'etd', 'customer', 'product_display', 'brand',
-                               'backlog_sales_by_split_usd', 'backlog_gp_by_split_usd', 
-                               'days_overdue', 'pending_type', 'sales_name']
-                available_cols = [c for c in display_cols if c in overdue_display.columns]
-                
-                display_df = overdue_display[available_cols].sort_values(
-                    'backlog_sales_by_split_usd', ascending=False
-                ).head(50).copy()
-                
-                # Column configuration
-                column_config = {
-                    'oc_po_display': st.column_config.TextColumn(
-                        "OC / PO",
-                        help="Order Confirmation and Customer PO",
-                        width="medium"
-                    ),
-                    'etd': st.column_config.DateColumn(
-                        "ETD",
-                        help="Estimated time of departure (PASSED)"
-                    ),
-                    'customer': st.column_config.TextColumn(
-                        "Customer",
-                        help="Customer name",
-                        width="medium"
-                    ),
-                    'product_display': st.column_config.TextColumn(
-                        "Product",
-                        help="Product: PT Code | Name | Package Size",
-                        width="large"
-                    ),
-                    'brand': st.column_config.TextColumn(
-                        "Brand",
-                        help="Product brand/manufacturer"
-                    ),
-                    'backlog_sales_by_split_usd': st.column_config.NumberColumn(
-                        "Amount",
-                        help="Backlog amount (split-adjusted)",
-                        format="$%.0f"
-                    ),
-                    'backlog_gp_by_split_usd': st.column_config.NumberColumn(
-                        "GP",
-                        help="Backlog gross profit (split-adjusted)",
-                        format="$%.0f"
-                    ),
-                    'days_overdue': st.column_config.NumberColumn(
-                        "Days Overdue",
-                        help="Number of days past ETD"
-                    ),
-                    'pending_type': st.column_config.TextColumn(
-                        "Status",
-                        help="Both Pending / Delivery Pending / Invoice Pending"
-                    ),
-                    'sales_name': st.column_config.TextColumn(
-                        "Salesperson",
-                        help="Salesperson receiving credit"
-                    ),
-                }
-                
-                st.dataframe(
-                    display_df,
-                    column_config=column_config,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=400
-                )
+    backlog_tab_fragment(
+        backlog_df=data['backlog_detail'],
+        in_period_backlog_analysis=in_period_backlog_analysis,
+        total_backlog_df=data['total_backlog'],
+        backlog_by_month_df=prepared_backlog_by_month,
+        metrics_calc=metrics_calc,
+        current_year=active_filters['year'],
+        filter_values=active_filters,
+        fragment_key="backlog_tab"
+    )
 
 # =============================================================================
 # TAB 4: KPI & TARGETS
