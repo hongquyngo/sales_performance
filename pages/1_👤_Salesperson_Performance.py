@@ -1324,37 +1324,6 @@ with tab1:
     
     st.divider()
     
-    # ==========================================================================
-    # MONTHLY TREND + CUMULATIVE - FRAGMENT
-    # Only reruns when filters in this section change (not entire page)
-    # ==========================================================================
-    monthly_trend_fragment(
-        sales_df=data['sales'],
-        targets_df=data['targets'],
-        fragment_key="trend"
-    )
-    
-    # ==========================================================================
-    # YEAR COMPARISON SECTION
-    # Single-year: YoY Comparison (current vs previous year)
-    # Multi-year: Multi-Year Comparison (all years in period)
-    # ==========================================================================
-    
-    st.divider()
-    
-    # ==========================================================================
-    # YEAR-OVER-YEAR COMPARISON - FRAGMENT
-    # Only reruns when filters in this section change (not entire page)
-    # ==========================================================================
-    yoy_comparison_fragment(
-        sales_df=data['sales'],
-        queries=queries,
-        filter_values=active_filters,
-        fragment_key="yoy"
-    )
-    
-    st.divider()
-    
     # Forecast section - only show for current/future periods
     if period_context.get('show_forecast', True):
         col_bf_header, col_bf_help = st.columns([6, 1])
@@ -1718,6 +1687,37 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         💡 **Tip:** To view Forecast, adjust End Date to today or a future date.
         """)
         st.divider()
+
+    # ==========================================================================
+    # MONTHLY TREND + CUMULATIVE - FRAGMENT
+    # Only reruns when filters in this section change (not entire page)
+    # ==========================================================================
+    monthly_trend_fragment(
+        sales_df=data['sales'],
+        targets_df=data['targets'],
+        fragment_key="trend"
+    )
+    
+    # ==========================================================================
+    # YEAR COMPARISON SECTION
+    # Single-year: YoY Comparison (current vs previous year)
+    # Multi-year: Multi-Year Comparison (all years in period)
+    # ==========================================================================
+    
+    st.divider()
+    
+    # ==========================================================================
+    # YEAR-OVER-YEAR COMPARISON - FRAGMENT
+    # Only reruns when filters in this section change (not entire page)
+    # ==========================================================================
+    yoy_comparison_fragment(
+        sales_df=data['sales'],
+        queries=queries,
+        filter_values=active_filters,
+        fragment_key="yoy"
+    )
+    
+    st.divider()
     
     # Top customers/brands with metric tabs and help
     col_tc_header, col_tc_help = st.columns([6, 1])
