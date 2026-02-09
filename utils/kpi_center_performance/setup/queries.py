@@ -3201,11 +3201,7 @@ class SetupQueries:
     # LOOKUP QUERIES
     # =========================================================================
     
-    def get_customers_for_dropdown(
-        self,
-        search: str = None,
-        limit: int = 100
-    ) -> pd.DataFrame:
+    def get_customers_for_dropdown(self) -> pd.DataFrame:
         """
         Get customers for dropdown selection.
         Customers are companies with company_type = 'Customer' via companies_company_types junction.
@@ -3222,28 +3218,14 @@ class SetupQueries:
               AND ct.name = 'Customer'
               AND c.english_name IS NOT NULL
               AND c.english_name != ''
+            ORDER BY c.english_name
         """
         
-        params = {}
-        
-        if search:
-            query += """
-                AND (
-                    c.english_name LIKE :search
-                    OR c.company_code LIKE :search
-                )
-            """
-            params['search'] = f"%{search}%"
-        
-        query += f" ORDER BY c.english_name LIMIT {limit}"
-        
-        return self._execute_query(query, params, "customers_dropdown")
+        return self._execute_query(query, {}, "customers_dropdown")
     
     def get_products_for_dropdown(
         self,
-        search: str = None,
-        brand_id: int = None,
-        limit: int = 100
+        brand_id: int = None
     ) -> pd.DataFrame:
         """
         Get products for dropdown selection.
@@ -3262,20 +3244,11 @@ class SetupQueries:
         
         params = {}
         
-        if search:
-            query += """
-                AND (
-                    p.name LIKE :search
-                    OR p.pt_code LIKE :search
-                )
-            """
-            params['search'] = f"%{search}%"
-        
         if brand_id:
             query += " AND p.brand_id = :brand_id"
             params['brand_id'] = brand_id
         
-        query += f" ORDER BY p.name LIMIT {limit}"
+        query += " ORDER BY p.name"
         
         return self._execute_query(query, params, "products_dropdown")
     

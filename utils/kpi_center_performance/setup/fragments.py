@@ -562,7 +562,7 @@ def split_rules_section(
         
         with e_col4:
             # v2.8.0: Customer multiselect
-            customers_df = setup_queries.get_customers_for_dropdown(limit=500)
+            customers_df = setup_queries.get_customers_for_dropdown()
             customer_options = customers_df['customer_id'].tolist() if not customers_df.empty else []
             
             customer_filter = st.multiselect(
@@ -575,7 +575,7 @@ def split_rules_section(
             )
         
         # Row 2b: Product filter (full width for better UX with long product names)
-        products_df = setup_queries.get_products_for_dropdown(limit=500)
+        products_df = setup_queries.get_products_for_dropdown()
         product_options = products_df['product_id'].tolist() if not products_df.empty else []
         
         product_filter = st.multiselect(
@@ -1529,12 +1529,8 @@ def _add_split_rule_dialog():
     col1, col2 = st.columns(2)
     
     with col1:
-        # Customer search
-        customer_search = st.text_input("🔍 Search Customer", key="dialog_cust_search")
-        customers_df = setup_queries.get_customers_for_dropdown(
-            search=customer_search if customer_search else None, 
-            limit=50
-        )
+        # Customer selection
+        customers_df = setup_queries.get_customers_for_dropdown()
         
         if not customers_df.empty:
             customer_id = st.selectbox(
@@ -1560,12 +1556,8 @@ def _add_split_rule_dialog():
             kpi_center_id = None
     
     with col2:
-        # Product search
-        product_search = st.text_input("🔍 Search Product", key="dialog_prod_search")
-        products_df = setup_queries.get_products_for_dropdown(
-            search=product_search if product_search else None,
-            limit=50
-        )
+        # Product selection
+        products_df = setup_queries.get_products_for_dropdown()
         
         if not products_df.empty:
             def format_product_option(row):
@@ -2326,12 +2318,8 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
             
             with col1:
                 if mode == 'add':
-                    # Customer search
-                    customer_search = st.text_input("🔍 Search Customer", key=f"{mode}_cust_search")
-                    customers_df = setup_queries.get_customers_for_dropdown(
-                        search=customer_search if customer_search else None, 
-                        limit=50
-                    )
+                    # Customer selection
+                    customers_df = setup_queries.get_customers_for_dropdown()
                     
                     if not customers_df.empty:
                         customer_id = st.selectbox(
@@ -2367,12 +2355,8 @@ def _render_split_form(setup_queries: SetupQueries, can_approve: bool,
             
             with col2:
                 if mode == 'add':
-                    # Product search
-                    product_search = st.text_input("🔍 Search Product", key=f"{mode}_prod_search")
-                    products_df = setup_queries.get_products_for_dropdown(
-                        search=product_search if product_search else None,
-                        limit=50
-                    )
+                    # Product selection
+                    products_df = setup_queries.get_products_for_dropdown()
                     
                     if not products_df.empty:
                         # Format: "name (code | package_size)" - consistent with customer dropdown
