@@ -7,6 +7,11 @@ UI Fragments for Setup Tab - Salesperson Performance
 2. KPI Assignments - CRUD for sales_employee_kpi_assignments
 3. Salespeople - List/manage salespeople
 
+v2.2.1: FIX - Edit Split Rule dialog shows wrong salesperson:
+        - Streamlit persists selectbox values by key in session_state
+        - Opening Edit for rule A then rule B would show rule A's salesperson
+        - Fix: detect rule_id change and clear stale form widget keys
+        - Affects: sale_person_id, split_pct, valid_from, valid_to, is_approved
 v2.0.3: FIX - Add KPI Assignment dialog batch queue:
         - "Add to Queue" now uses callback pattern (on_click)
         - Callback runs BEFORE re-render → batch queue updates immediately
@@ -2398,6 +2403,23 @@ def _render_split_form_content(
             if st.button("Close", use_container_width=True):
                 st.rerun(scope="fragment")
             return
+    
+    # =========================================================================
+    # v2.2.1 FIX: Clear stale widget values when editing a different rule.
+    # Streamlit persists selectbox/input values in session_state by key.
+    # When user opens Edit dialog for rule A, then later for rule B,
+    # the old values from rule A remain → wrong salesperson shown.
+    # Solution: detect rule_id change and delete stale keys so widgets
+    # re-initialize with correct defaults from `existing`.
+    # =========================================================================
+    if mode == 'edit' and existing is not None:
+        last_edit_id = st.session_state.get('_split_form_last_edit_rule_id')
+        if last_edit_id != rule_id:
+            for suffix in ['sale_person_id', 'split_pct', 'valid_from', 'valid_to', 'is_approved']:
+                form_key = f"sp_{mode}_{suffix}"
+                if form_key in st.session_state:
+                    del st.session_state[form_key]
+            st.session_state['_split_form_last_edit_rule_id'] = rule_id
     
     if mode == 'edit' and existing is not None:
         st.caption(f"Rule ID: **#{rule_id}**")
