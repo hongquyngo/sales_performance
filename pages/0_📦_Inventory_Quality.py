@@ -68,6 +68,7 @@ def _init_session_state():
         'iq_detail_data': None,
         'iq_entity_filter': [],
         'iq_expiry_filter': 'All',
+        'iq_brand_filter': [],
         # Period summary tab
         'iq_period_preset': 'this_month',
         'iq_period_from': today.replace(day=1),
@@ -323,20 +324,33 @@ def render_filters():
             st.session_state['iq_warehouse_select'] = {'id': None, 'name': 'All Warehouses'}
             st.session_state['iq_entity_filter'] = []
             st.session_state['iq_expiry_filter'] = 'All'
+            st.session_state['iq_brand_filter'] = []
             st.session_state['iq_product_search'] = ''
             st.session_state['iq_selected_idx'] = None
             st.rerun()
     
-    # Row 2: Search
-    search_col, _ = st.columns([4, 5])
-    with search_col:
+    # Row 2: Brand filter + Search
+    col_brand, col_search, col_spacer = st.columns([2.5, 4, 2.5])
+    
+    with col_brand:
+        brands = data_loader.get_brands()
+        brand_options = {b['name']: b['name'] for b in brands}
+        
+        selected_brands = st.multiselect(
+            "Brand",
+            options=list(brand_options.keys()),
+            placeholder="All Brands",
+            key="iq_brand_filter"
+        )
+    
+    with col_search:
         product_search = st.text_input(
             "Search Product",
             placeholder="Name, PT code, Legacy code, Pkg size...",
             key="iq_product_search"
         )
     
-    return selected_category, warehouse_id, product_search, entity_ids, selected_expiry
+    return selected_category, warehouse_id, product_search, entity_ids, selected_expiry, selected_brands
 
 
 # ==================== Category Indicator ====================
@@ -1421,7 +1435,7 @@ def main():
         
         # ---- Tab 1: Dashboard (existing functionality) ----
         with tab_dashboard:
-            category, warehouse_id, product_search, entity_ids, expiry_filter = render_filters()
+            category, warehouse_id, product_search, entity_ids, expiry_filter, brand_filter = render_filters()
             st.markdown("---")
             
             with st.spinner("Loading inventory data..."):
@@ -1431,6 +1445,10 @@ def main():
                     product_search=product_search if product_search else None,
                     entity_ids=entity_ids
                 )
+            
+            # Apply brand filter client-side
+            if brand_filter and not df.empty and 'brand' in df.columns:
+                df = df[df['brand'].isin(brand_filter)].reset_index(drop=True)
             
             # Apply expiry status filter client-side
             if expiry_filter != 'All' and not df.empty and 'expiry_date' in df.columns:
