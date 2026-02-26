@@ -69,6 +69,7 @@ def _init_session_state():
         'iq_entity_filter': [],
         'iq_expiry_filter': 'All',
         'iq_brand_filter': [],
+        'iq_age_filter': 'All',
         # Period summary tab
         'iq_period_preset': 'this_month',
         'iq_period_from': today.replace(day=1),
@@ -325,12 +326,13 @@ def render_filters():
             st.session_state['iq_entity_filter'] = []
             st.session_state['iq_expiry_filter'] = 'All'
             st.session_state['iq_brand_filter'] = []
+            st.session_state['iq_age_filter'] = 'All'
             st.session_state['iq_product_search'] = ''
             st.session_state['iq_selected_idx'] = None
             st.rerun()
     
-    # Row 2: Brand filter + Search
-    col_brand, col_search, col_spacer = st.columns([2.5, 4, 2.5])
+    # Row 2: Brand, Age, Search
+    col_brand, col_age, col_search = st.columns([2.5, 2, 4.5])
     
     with col_brand:
         brands = data_loader.get_brands()
@@ -343,6 +345,24 @@ def render_filters():
             key="iq_brand_filter"
         )
     
+    with col_age:
+        age_options = ['All', '≥30 days', '≥60 days', '≥90 days', '≥180 days', '≥365 days']
+        age_display = {
+            'All': '⏳ All Ages',
+            '≥30 days': '🟡 ≥ 30 days',
+            '≥60 days': '🟠 ≥ 60 days',
+            '≥90 days': '🔶 ≥ 90 days',
+            '≥180 days': '🔴 ≥ 180 days',
+            '≥365 days': '⛔ ≥ 1 year',
+        }
+        
+        selected_age = st.selectbox(
+            "Warehouse Age",
+            options=age_options,
+            format_func=lambda x: age_display.get(x, x),
+            key="iq_age_filter"
+        )
+    
     with col_search:
         product_search = st.text_input(
             "Search Product",
@@ -350,7 +370,7 @@ def render_filters():
             key="iq_product_search"
         )
     
-    return selected_category, warehouse_id, product_search, entity_ids, selected_expiry, selected_brands
+    return selected_category, warehouse_id, product_search, entity_ids, selected_expiry, selected_brands, selected_age
 
 
 # ==================== Category Indicator ====================
@@ -392,10 +412,10 @@ def render_data_table(df: pd.DataFrame):
     display_df['qty_display'] = display_df.apply(
         lambda x: f"{format_quantity(x['quantity'])} {x.get('uom', '')}", axis=1
     )
-    display_df['value_display'] = display_df['inventory_value_usd'].apply(
-        lambda x: format_currency(x) if pd.notna(x) else '-'
-    )
-    display_df['days_display'] = display_df['days_in_warehouse'].apply(format_days)
+    
+    # Keep numeric columns for proper sorting
+    display_df['value_numeric'] = pd.to_numeric(display_df['inventory_value_usd'], errors='coerce').fillna(0)
+    display_df['days_numeric'] = pd.to_numeric(display_df['days_in_warehouse'], errors='coerce').fillna(0).astype(int)
     
     # Handle package_size - fill empty with '-'
     display_df['package_size_display'] = display_df['package_size'].fillna('-').replace('', '-')
@@ -418,7 +438,7 @@ def render_data_table(df: pd.DataFrame):
     edited_df = st.data_editor(
         display_df[[
             'Select', 'category_display', 'product_name', 'package_size_display', 'pt_code', 'batch_number',
-            'expiry_display', 'qty_display', 'warehouse_name', 'entity_display', 'source_type', 'days_display', 'value_display'
+            'expiry_display', 'qty_display', 'warehouse_name', 'entity_display', 'source_type', 'days_numeric', 'value_numeric'
         ]].rename(columns={
             'category_display': 'Category',
             'product_name': 'Product',
@@ -430,8 +450,8 @@ def render_data_table(df: pd.DataFrame):
             'warehouse_name': 'Warehouse',
             'entity_display': 'Entity',
             'source_type': 'Source',
-            'days_display': 'Age',
-            'value_display': 'Value'
+            'days_numeric': 'Age',
+            'value_numeric': 'Value'
         }),
         width='stretch',
         hide_index=True,
@@ -454,8 +474,8 @@ def render_data_table(df: pd.DataFrame):
             'Warehouse': st.column_config.TextColumn('Warehouse', width='medium'),
             'Entity': st.column_config.TextColumn('Entity', width='medium'),
             'Source': st.column_config.TextColumn('Source', width='medium'),
-            'Age': st.column_config.TextColumn('Age', width='small'),
-            'Value': st.column_config.TextColumn('Value', width='small')
+            'Age': st.column_config.NumberColumn('Age', format='%d days', width='small'),
+            'Value': st.column_config.NumberColumn('Value', format='$ %.2f', width='small')
         },
         key="iq_table_editor"
     )
@@ -1435,7 +1455,7 @@ def main():
         
         # ---- Tab 1: Dashboard (existing functionality) ----
         with tab_dashboard:
-            category, warehouse_id, product_search, entity_ids, expiry_filter, brand_filter = render_filters()
+            category, warehouse_id, product_search, entity_ids, expiry_filter, brand_filter, age_filter = render_filters()
             st.markdown("---")
             
             with st.spinner("Loading inventory data..."):
@@ -1449,6 +1469,17 @@ def main():
             # Apply brand filter client-side
             if brand_filter and not df.empty and 'brand' in df.columns:
                 df = df[df['brand'].isin(brand_filter)].reset_index(drop=True)
+            
+            # Apply age filter client-side (cumulative threshold)
+            if age_filter != 'All' and not df.empty and 'days_in_warehouse' in df.columns:
+                days = pd.to_numeric(df['days_in_warehouse'], errors='coerce')
+                threshold_map = {
+                    '≥30 days': 30, '≥60 days': 60, '≥90 days': 90,
+                    '≥180 days': 180, '≥365 days': 365,
+                }
+                threshold = threshold_map.get(age_filter)
+                if threshold is not None:
+                    df = df[days >= threshold].reset_index(drop=True)
             
             # Apply expiry status filter client-side
             if expiry_filter != 'All' and not df.empty and 'expiry_date' in df.columns:
