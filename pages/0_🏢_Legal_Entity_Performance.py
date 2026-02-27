@@ -7,7 +7,12 @@ Data Sources:
   - Sales: unified_sales_by_legal_entity_view (V2)
   - Backlog: backlog_by_legal_entity_view (V2)
 
-VERSION: 2.0.0 - Aligned with KPI Center Performance patterns
+VERSION: 2.2.0
+CHANGELOG:
+- v2.2.0: Replaced backlog_metrics with pipeline_metrics (KPC-style Backlog & Forecast).
+           Removed duplicate backlog cards from KPI section.
+- v2.1.0: Added Complex KPIs (New Business section) + enhanced Backlog metrics
+- v2.0.0: Aligned with KPI Center Performance patterns
 """
 
 import logging
@@ -211,7 +216,7 @@ def main():
                 unified_cache = loader.get_unified_data(custom_start_date=custom_start_date)
     
     # =========================================================================
-    # STEP 5: PROCESS DATA (Pandas filtering)
+    # STEP 5: PROCESS DATA (Pandas filtering + Complex KPIs)
     # =========================================================================
     with timer("Process data"):
         processor = DataProcessor(unified_cache)
@@ -221,6 +226,13 @@ def main():
     prev_sales_df = data.get('prev_sales_df', pd.DataFrame())
     backlog_df = data.get('backlog_detail_df', pd.DataFrame())
     backlog_in_period_df = data.get('backlog_in_period_df', pd.DataFrame())
+    
+    # Complex KPIs (calculated inside processor.process() v2.1.0)
+    complex_kpis = data.get('complex_kpis', {})
+    new_customers_df = data.get('new_customers_df', pd.DataFrame())
+    new_products_df = data.get('new_products_df', pd.DataFrame())
+    new_combos_detail_df = data.get('new_combos_detail_df', pd.DataFrame())
+    new_business_detail_df = data.get('new_business_detail_df', pd.DataFrame())
     
     # =========================================================================
     # STEP 6: CHECK DATA
@@ -233,18 +245,26 @@ def main():
     # =========================================================================
     # STEP 7: CALCULATE METRICS
     # =========================================================================
-    with timer("Calculate metrics"):
+    with timer("Calculate overview metrics"):
         metrics_calc = LegalEntityMetrics(sales_df)
         overview_metrics = metrics_calc.calculate_overview_metrics()
     
+    # YoY metrics
     yoy_metrics = None
     if active_filters.get('show_yoy', True) and not prev_sales_df.empty:
         with timer("Calculate YoY metrics"):
             yoy_metrics = metrics_calc.calculate_yoy_metrics(sales_df, prev_sales_df)
     
-    with timer("Calculate backlog metrics"):
-        backlog_metrics = metrics_calc.calculate_backlog_metrics(backlog_df, backlog_in_period_df)
+    # Pipeline & Forecast metrics (Synced with KPC pattern)
+    pipeline_metrics = {}
+    with timer("Calculate pipeline metrics"):
+        pipeline_metrics = LegalEntityMetrics.calculate_pipeline_metrics(
+            sales_df=sales_df,
+            backlog_df=backlog_df,
+            backlog_in_period_df=backlog_in_period_df,
+        )
     
+    # Summaries
     with timer("Prepare summaries"):
         monthly_df = processor.prepare_monthly_summary(sales_df)
         entity_summary_df = processor.aggregate_by_entity(sales_df)
@@ -253,6 +273,9 @@ def main():
     filter_summary = filters_mgr.get_filter_summary(active_filters)
     st.caption(f"📊 {filter_summary}")
     
+    if DEBUG_TIMING:
+        print(f"\n🖼️ RENDERING UI...")
+    
     # =========================================================================
     # TABS
     # =========================================================================
@@ -260,19 +283,33 @@ def main():
         "📊 Overview", "📋 Sales Detail", "📈 Analysis", "📦 Backlog",
     ])
     
+    # =========================================================================
+    # TAB 1: OVERVIEW
+    # =========================================================================
     with tab1:
         overview_tab_fragment(
+            # Data
             sales_df=sales_df,
             overview_metrics=overview_metrics,
             yoy_metrics=yoy_metrics,
             monthly_df=monthly_df,
             entity_summary_df=entity_summary_df,
-            backlog_metrics=backlog_metrics,
             active_filters=active_filters,
             prev_sales_df=prev_sales_df,
             unified_cache=unified_cache,
+            # Complex KPIs
+            complex_kpis=complex_kpis,
+            new_customers_df=new_customers_df,
+            new_products_df=new_products_df,
+            new_combos_detail_df=new_combos_detail_df,
+            new_business_detail_df=new_business_detail_df,
+            # Pipeline (Backlog & Forecast)
+            pipeline_metrics=pipeline_metrics,
         )
     
+    # =========================================================================
+    # TAB 2: SALES DETAIL
+    # =========================================================================
     with tab2:
         sales_detail_tab_fragment(
             sales_df=sales_df,
@@ -280,6 +317,9 @@ def main():
             key_prefix="le_sales"
         )
     
+    # =========================================================================
+    # TAB 3: ANALYSIS
+    # =========================================================================
     with tab3:
         analysis_tab_fragment(
             sales_df=sales_df,
@@ -288,6 +328,9 @@ def main():
             processor=processor,
         )
     
+    # =========================================================================
+    # TAB 4: BACKLOG
+    # =========================================================================
     with tab4:
         backlog_tab_fragment(
             backlog_df=backlog_df,
@@ -295,7 +338,11 @@ def main():
             key_prefix="le_backlog"
         )
     
-    # Timing
+    # =========================================================================
+    # TIMING SUMMARY
+    # =========================================================================
+    if DEBUG_TIMING:
+        print(f"✅ PAGE RENDER COMPLETE")
     _print_timing_summary()
 
 

@@ -14,6 +14,7 @@ from .data_processor import DataProcessor
 from .access_control import AccessControl
 from .queries import LegalEntityQueries
 from .metrics import LegalEntityMetrics
+from .complex_kpi_calculator import ComplexKPICalculator
 from .filters import LegalEntityFilters, analyze_period
 from .export_utils import LegalEntityExport
 
@@ -22,10 +23,16 @@ from .overview import overview_tab_fragment
 from .overview.fragments import monthly_trend_fragment, yoy_comparison_fragment
 from .overview.charts import (
     render_kpi_cards,
+    render_new_business_cards,
+    build_forecast_waterfall_chart,
+    build_gap_analysis_chart,
+    convert_pipeline_to_backlog_metrics,
     build_monthly_trend_dual_chart,
     build_cumulative_dual_chart,
     build_yoy_comparison_chart,
     build_yoy_cumulative_chart,
+    build_multi_year_monthly_chart,
+    build_multi_year_cumulative_chart,
 )
 from .sales_detail import sales_detail_tab_fragment
 from .analysis import analysis_tab_fragment
@@ -61,6 +68,7 @@ __all__ = [
     'AccessControl',
     'LegalEntityQueries',
     'LegalEntityMetrics',
+    'ComplexKPICalculator',
     'LegalEntityFilters',
     'LegalEntityExport',
     'analyze_period',
@@ -80,4 +88,4 @@ __all__ = [
     'DEBUG_TIMING', 'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '2.0.0'
+__version__ = '2.2.0'

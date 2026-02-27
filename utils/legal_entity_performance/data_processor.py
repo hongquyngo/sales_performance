@@ -175,6 +175,40 @@ class DataProcessor:
         if DEBUG_TIMING:
             print(f"   📊 [filter_backlog] {len(backlog_df):,} total, {len(backlog_in_period_df):,} in-period in {time.perf_counter()-with_timer:.3f}s")
         
+        # =====================================================================
+        # 4. COMPLEX KPIs (New Customers/Products/Combos/Business Revenue)
+        # =====================================================================
+        with_timer = time.perf_counter()
+        try:
+            from .complex_kpi_calculator import ComplexKPICalculator
+            
+            calculator = ComplexKPICalculator(
+                lookback_df=self.sales_raw,
+                exclude_internal=(customer_type == 'External')
+            )
+            complex_kpis = calculator.calculate_all(
+                start_date=start_date,
+                end_date=end_date,
+                entity_ids=entity_ids if entity_ids else None
+            )
+            result['complex_kpis'] = complex_kpis
+            result['new_customers_df'] = complex_kpis.get('new_customers_df', pd.DataFrame())
+            result['new_products_df'] = complex_kpis.get('new_products_df', pd.DataFrame())
+            result['new_combos_detail_df'] = complex_kpis.get('new_combos_detail_df', pd.DataFrame())
+            result['new_business_detail_df'] = complex_kpis.get('new_business_detail_df', pd.DataFrame())
+        except Exception as e:
+            logger.error(f"Complex KPI calculation failed: {e}")
+            result['complex_kpis'] = {
+                'num_new_customers': 0, 'num_new_products': 0,
+                'num_new_combos': 0, 'new_business_revenue': 0,
+            }
+            result['new_customers_df'] = pd.DataFrame()
+            result['new_products_df'] = pd.DataFrame()
+            result['new_combos_detail_df'] = pd.DataFrame()
+            result['new_business_detail_df'] = pd.DataFrame()
+        if DEBUG_TIMING:
+            print(f"   📊 [complex_kpis] in {time.perf_counter()-with_timer:.3f}s")
+        
         total_elapsed = time.perf_counter() - start_time
         if DEBUG_TIMING:
             print(f"{'='*60}")

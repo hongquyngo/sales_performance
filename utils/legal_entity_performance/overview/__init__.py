@@ -11,10 +11,17 @@ from .fragments import (
 
 from .charts import (
     render_kpi_cards,
+    render_new_business_cards,
+    build_forecast_waterfall_chart,
+    build_gap_analysis_chart,
+    convert_pipeline_to_backlog_metrics,
+    _render_backlog_forecast_section,
     build_monthly_trend_dual_chart,
     build_cumulative_dual_chart,
     build_yoy_comparison_chart,
     build_yoy_cumulative_chart,
+    build_multi_year_monthly_chart,
+    build_multi_year_cumulative_chart,
 )
 
 __all__ = [
@@ -22,8 +29,15 @@ __all__ = [
     'monthly_trend_fragment',
     'yoy_comparison_fragment',
     'render_kpi_cards',
+    'render_new_business_cards',
+    'build_forecast_waterfall_chart',
+    'build_gap_analysis_chart',
+    'convert_pipeline_to_backlog_metrics',
+    '_render_backlog_forecast_section',
     'build_monthly_trend_dual_chart',
     'build_cumulative_dual_chart',
     'build_yoy_comparison_chart',
     'build_yoy_cumulative_chart',
+    'build_multi_year_monthly_chart',
+    'build_multi_year_cumulative_chart',
 ]
