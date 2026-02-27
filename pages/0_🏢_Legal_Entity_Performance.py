@@ -1,4 +1,4 @@
-# pages/0_🏢_Legal_Entity_Performance.py
+# pages/3_🏢_Legal_Entity_Performance.py
 """
 Legal Entity Performance Dashboard
 
@@ -180,31 +180,28 @@ def main():
         filter_options = loader.extract_filter_options(unified_cache)
     
     # =========================================================================
-    # STEP 3: RENDER SIDEBAR FILTERS
+    # STEP 3: RENDER SIDEBAR FILTERS (fragment - no full rerun on widget change)
     # =========================================================================
     filters_mgr = LegalEntityFilters(access)
     
     with timer("Render sidebar filters"):
-        filter_values = filters_mgr.render_sidebar_filters(
+        filters_mgr.render_sidebar_filters(
             entity_df=filter_options['entities'],
             available_years=filter_options['years'],
         )
     
-    is_valid, error_msg = filters_mgr.validate_filters(filter_values)
+    # =========================================================================
+    # STEP 4: GET APPLIED FILTERS (from session state, managed by fragment)
+    # =========================================================================
+    active_filters = _get_applied_filters()
+    if active_filters is None:
+        st.info("⏳ Loading filters...")
+        st.stop()
+    
+    is_valid, error_msg = filters_mgr.validate_filters(active_filters)
     if not is_valid:
         st.error(f"⚠️ Filter error: {error_msg}")
         st.stop()
-    
-    # =========================================================================
-    # STEP 4: MANAGE FILTER STATE
-    # =========================================================================
-    if _get_applied_filters() is None:
-        _set_applied_filters(filter_values)
-    
-    if filter_values.get('submitted', False):
-        _set_applied_filters(filter_values)
-    
-    active_filters = _get_applied_filters()
     
     # =========================================================================
     # STEP 4.1: DYNAMIC RELOAD IF CUSTOM PERIOD REQUIRES EXTENDED DATA
