@@ -69,56 +69,95 @@ def sales_detail_tab_fragment(
     total_count = len(sales_df)
     
     # =========================================================================
-    # FILTERS ROW
+    # FILTERS ROW (with Excl checkboxes - synced with KPI Center)
     # =========================================================================
     col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
     
     with col_f1:
+        _lbl1, _excl1 = st.columns([3, 1])
+        with _lbl1:
+            st.markdown("**Customer**")
+        with _excl1:
+            excl_customer = st.checkbox("Excl", key=f"{key_prefix}_excl_customer")
         customer_options = sorted(sales_df['customer'].dropna().unique().tolist())
         selected_customers = st.multiselect(
             "Customer", customer_options,
-            key=f"{key_prefix}_customer", placeholder="All..."
+            key=f"{key_prefix}_customer", placeholder="Choose options",
+            label_visibility="collapsed"
         )
     
     with col_f2:
+        _lbl2, _excl2 = st.columns([3, 1])
+        with _lbl2:
+            st.markdown("**Brand**")
+        with _excl2:
+            excl_brand = st.checkbox("Excl", key=f"{key_prefix}_excl_brand")
         brand_options = sorted(sales_df['brand'].dropna().unique().tolist())
         selected_brands = st.multiselect(
             "Brand", brand_options,
-            key=f"{key_prefix}_brand", placeholder="All..."
+            key=f"{key_prefix}_brand", placeholder="Choose options",
+            label_visibility="collapsed"
         )
     
     with col_f3:
+        _lbl3, _excl3 = st.columns([3, 1])
+        with _lbl3:
+            st.markdown("**Product**")
+        with _excl3:
+            excl_product = st.checkbox("Excl", key=f"{key_prefix}_excl_product")
         product_options = sorted(sales_df['product_pn'].dropna().unique().tolist()[:200])
         selected_products = st.multiselect(
             "Product", product_options,
-            key=f"{key_prefix}_product", placeholder="All..."
+            key=f"{key_prefix}_product", placeholder="Choose options",
+            label_visibility="collapsed"
         )
     
     with col_f4:
+        _lbl4, _excl4 = st.columns([3, 1])
+        with _lbl4:
+            st.markdown("**OC# / Customer PO**")
+        with _excl4:
+            excl_oc = st.checkbox("Excl", key=f"{key_prefix}_excl_oc")
         oc_search = st.text_input(
             "OC# / PO Search",
             key=f"{key_prefix}_oc_search",
-            placeholder="Search..."
+            placeholder="Search...",
+            label_visibility="collapsed"
         )
     
     with col_f5:
+        _lbl5, _excl5 = st.columns([3, 1])
+        with _lbl5:
+            st.markdown("**Min Amount ($)**")
+        with _excl5:
+            excl_amount = st.checkbox("Excl", key=f"{key_prefix}_excl_amount")
         min_amount = st.number_input(
             "Min Amount ($)",
             min_value=0, value=0, step=1000,
-            key=f"{key_prefix}_min_amount"
+            key=f"{key_prefix}_min_amount",
+            label_visibility="collapsed"
         )
     
     # =========================================================================
-    # APPLY FILTERS
+    # APPLY FILTERS (with Excl logic)
     # =========================================================================
     filtered_df = sales_df.copy()
     
     if selected_customers:
-        filtered_df = filtered_df[filtered_df['customer'].isin(selected_customers)]
+        if excl_customer:
+            filtered_df = filtered_df[~filtered_df['customer'].isin(selected_customers)]
+        else:
+            filtered_df = filtered_df[filtered_df['customer'].isin(selected_customers)]
     if selected_brands:
-        filtered_df = filtered_df[filtered_df['brand'].isin(selected_brands)]
+        if excl_brand:
+            filtered_df = filtered_df[~filtered_df['brand'].isin(selected_brands)]
+        else:
+            filtered_df = filtered_df[filtered_df['brand'].isin(selected_brands)]
     if selected_products:
-        filtered_df = filtered_df[filtered_df['product_pn'].isin(selected_products)]
+        if excl_product:
+            filtered_df = filtered_df[~filtered_df['product_pn'].isin(selected_products)]
+        else:
+            filtered_df = filtered_df[filtered_df['product_pn'].isin(selected_products)]
     
     if oc_search:
         search_lower = oc_search.lower()
@@ -127,23 +166,31 @@ def sales_detail_tab_fragment(
             mask |= filtered_df['oc_number'].astype(str).str.lower().str.contains(search_lower, na=False)
         if 'customer_po_number' in filtered_df.columns:
             mask |= filtered_df['customer_po_number'].astype(str).str.lower().str.contains(search_lower, na=False)
-        filtered_df = filtered_df[mask]
+        filtered_df = filtered_df[~mask] if excl_oc else filtered_df[mask]
     
     if min_amount > 0 and 'calculated_invoiced_amount_usd' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['calculated_invoiced_amount_usd'] >= min_amount]
+        if excl_amount:
+            filtered_df = filtered_df[filtered_df['calculated_invoiced_amount_usd'] < min_amount]
+        else:
+            filtered_df = filtered_df[filtered_df['calculated_invoiced_amount_usd'] >= min_amount]
     
     # Filter summary
     active_filters = []
     if selected_customers:
-        active_filters.append(f"Customer: {len(selected_customers)}")
+        mode = "excl" if excl_customer else "incl"
+        active_filters.append(f"Customer: {len(selected_customers)} ({mode})")
     if selected_brands:
-        active_filters.append(f"Brand: {len(selected_brands)}")
+        mode = "excl" if excl_brand else "incl"
+        active_filters.append(f"Brand: {len(selected_brands)} ({mode})")
     if selected_products:
-        active_filters.append(f"Product: {len(selected_products)}")
+        mode = "excl" if excl_product else "incl"
+        active_filters.append(f"Product: {len(selected_products)} ({mode})")
     if oc_search:
-        active_filters.append(f"OC/PO: '{oc_search}'")
+        mode = "excl" if excl_oc else "incl"
+        active_filters.append(f"OC/PO: '{oc_search}' ({mode})")
     if min_amount > 0:
-        active_filters.append(f"Amount: ≥${min_amount:,.0f}")
+        mode = "excl" if excl_amount else "incl"
+        active_filters.append(f"Amount: ≥${min_amount:,.0f} ({mode})")
     
     if active_filters:
         st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
