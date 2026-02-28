@@ -65,17 +65,19 @@ def generate_executive_summary(
     prev_sales_df: pd.DataFrame = None,
     active_filters: Dict = None,
     complex_kpis: Dict = None,
+    payment_data: Dict = None,
 ) -> Dict:
     """
     Generate complete executive summary from existing processed data.
 
     Returns dict with:
-        period_label, headline, alerts[], highlights[], has_alerts
+        period_label, headline, alerts[], highlights[], has_alerts,
+        customer_type_breakdown, payment_data
     """
     filters = active_filters or {}
 
     period_label = _build_period_label(filters)
-    headline = _build_headline(overview_metrics, yoy_metrics, pipeline_metrics)
+    headline = _build_headline(overview_metrics, yoy_metrics, pipeline_metrics, payment_data)
 
     # Collect alerts (ordered by severity)
     alerts = []
@@ -85,6 +87,11 @@ def generate_executive_summary(
     alerts.extend(_check_customer_decline_alerts(sales_df, prev_sales_df))
     alerts.extend(_check_inactive_customer_alerts(sales_df))
     alerts.extend(_check_concentration_alerts(sales_df))
+
+    # Payment/collection alerts
+    if payment_data:
+        from .payment_analysis import check_payment_alerts
+        alerts.extend(check_payment_alerts(payment_data))
 
     highlights = _build_highlights(overview_metrics, yoy_metrics, complex_kpis, sales_df, prev_sales_df)
 
@@ -98,6 +105,7 @@ def generate_executive_summary(
         'highlights': highlights,
         'has_alerts': len(alerts) > 0,
         'customer_type_breakdown': customer_type_breakdown,
+        'payment_data': payment_data,
     }
 
 
@@ -127,8 +135,9 @@ def _build_headline(
     metrics: Dict,
     yoy: Optional[Dict],
     pipeline: Optional[Dict],
+    payment_data: Optional[Dict] = None,
 ) -> str:
-    """One-line: Revenue (+YoY%) | GP (margin%) | Backlog (N orders)"""
+    """One-line: Revenue (+YoY%) | GP (margin%) | Backlog (N orders) | AR outstanding"""
     parts = []
 
     # Revenue
@@ -150,6 +159,13 @@ def _build_headline(
         bl_orders = summary.get('backlog_orders', 0)
         if bl_orders > 0:
             parts.append(f"Backlog: {_fmt_currency(bl_rev)} ({bl_orders} orders)")
+
+    # AR (accounts receivable)
+    if payment_data:
+        from .payment_analysis import get_payment_headline
+        ar_text = get_payment_headline(payment_data)
+        if ar_text:
+            parts.append(ar_text)
 
     return " | ".join(parts)
 

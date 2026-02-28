@@ -35,6 +35,7 @@ from .charts import (
 from ..constants import MONTH_ORDER
 from ..export_utils import LegalEntityExport
 from ..executive_summary import generate_executive_summary, render_executive_summary
+from ..payment_analysis import analyze_payments, render_payment_section
 
 logger = logging.getLogger(__name__)
 
@@ -473,24 +474,34 @@ def overview_tab_fragment(
     new_business_detail_df: pd.DataFrame = None,
     # Pipeline metrics
     pipeline_metrics: Dict = None,
+    # Payment analysis (pre-computed or None to auto-compute)
+    payment_data: Dict = None,
 ):
     """
     Render the complete Overview tab.
     
-    VERSION: 3.0.0 — Redesigned for CEO "5-second test":
+    VERSION: 3.1.0 — Added Payment & Collection section
     
     ABOVE THE FOLD (no scroll):
-      1. Executive Summary (auto-generated text + alerts)
+      1. Executive Summary (auto-generated text + alerts + AR)
       2. KPI Cards (Revenue, GP, GP1, Commission, Customers, GP%, GP1%, Invoices)
     
     BELOW THE FOLD (expandable sections):
       3. New Business (New Customers/Products/Combos)
       4. Backlog & Forecast (waterfall + bullet chart)
-      5. Monthly Trend (with fragment filters)
-      6. YoY Comparison (multi-year or traditional)
-      7. Entity Breakdown Table
-      8. Export
+      5. Payment & Collection (aging, trend, top unpaid)
+      6. Monthly Trend (with fragment filters)
+      7. YoY Comparison (multi-year or traditional)
+      8. Entity Breakdown Table
+      9. Export
     """
+    # Auto-compute payment analysis if not provided
+    if payment_data is None and not sales_df.empty:
+        if 'payment_status' in sales_df.columns:
+            try:
+                payment_data = analyze_payments(sales_df)
+            except Exception as e:
+                logger.error(f"Payment analysis failed: {e}", exc_info=True)
     # =========================================================================
     # SECTION 1: EXECUTIVE SUMMARY — CEO reads this first
     # =========================================================================
@@ -503,6 +514,7 @@ def overview_tab_fragment(
             prev_sales_df=prev_sales_df,
             active_filters=active_filters,
             complex_kpis=complex_kpis,
+            payment_data=payment_data,
         )
         render_executive_summary(summary)
     except Exception as e:
@@ -548,7 +560,14 @@ def overview_tab_fragment(
         st.divider()
     
     # =========================================================================
-    # SECTION 5: MONTHLY TREND (expandable — drill-down for sales/finance)
+    # SECTION 5: PAYMENT & COLLECTION
+    # =========================================================================
+    if payment_data:
+        with st.expander("💰 **Payment & Collection**", expanded=False):
+            render_payment_section(payment_data)
+    
+    # =========================================================================
+    # SECTION 6: MONTHLY TREND (expandable — drill-down for sales/finance)
     # =========================================================================
     with st.expander("📊 **Monthly Trend & Cumulative**", expanded=False):
         monthly_trend_fragment(
@@ -558,7 +577,7 @@ def overview_tab_fragment(
         )
     
     # =========================================================================
-    # SECTION 6: YOY COMPARISON (expandable)
+    # SECTION 7: YOY COMPARISON (expandable)
     # =========================================================================
     if active_filters.get('show_yoy', True):
         with st.expander("📊 **Year-over-Year Comparison**", expanded=False):
@@ -571,7 +590,7 @@ def overview_tab_fragment(
             )
     
     # =========================================================================
-    # SECTION 7: ENTITY BREAKDOWN TABLE (expandable)
+    # SECTION 8: ENTITY BREAKDOWN TABLE (expandable)
     # =========================================================================
     if not entity_summary_df.empty:
         with st.expander("🏢 **Entity Performance**", expanded=False):
@@ -598,7 +617,7 @@ def overview_tab_fragment(
             )
     
     # =========================================================================
-    # SECTION 8: EXPORT (always in expander)
+    # SECTION 9: EXPORT (always in expander)
     # =========================================================================
     with st.expander("📥 Export Report"):
         LegalEntityExport.render_download_button(

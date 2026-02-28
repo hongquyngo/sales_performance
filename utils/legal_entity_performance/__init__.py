@@ -21,6 +21,9 @@ from .export_utils import LegalEntityExport
 # Executive Summary
 from .executive_summary import generate_executive_summary, render_executive_summary
 
+# Payment Analysis
+from .payment_analysis import analyze_payments, render_payment_section, check_payment_alerts
+
 # Tab fragments
 from .overview import overview_tab_fragment
 from .overview.fragments import monthly_trend_fragment, yoy_comparison_fragment
@@ -78,6 +81,9 @@ __all__ = [
     'analyze_period',
     'generate_executive_summary',
     'render_executive_summary',
+    'analyze_payments',
+    'render_payment_section',
+    'check_payment_alerts',
     
     # Tab fragments
     'overview_tab_fragment',
@@ -94,4 +100,4 @@ __all__ = [
     'DEBUG_TIMING', 'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '3.0.0'
+__version__ = '3.1.0'
