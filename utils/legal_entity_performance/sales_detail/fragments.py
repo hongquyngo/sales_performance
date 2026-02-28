@@ -299,6 +299,18 @@ def sales_detail_fragment(
     # =========================================================================
     # COLUMN CONFIG WITH TOOLTIPS
     # =========================================================================
+    # Pre-format currency columns for reliable display
+    for col in ['calculated_invoiced_amount_usd', 'invoiced_gross_profit_usd',
+                'invoiced_gp1_usd', 'broker_commission_usd']:
+        if col in display_detail.columns:
+            display_detail[col] = display_detail[col].apply(
+                lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+            )
+    if 'gross_profit_percent' in display_detail.columns:
+        display_detail['gross_profit_percent'] = display_detail['gross_profit_percent'].apply(
+            lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%"
+        )
+    
     column_config = {
         'inv_date': st.column_config.DateColumn("Date", help="Invoice date"),
         'inv_number': st.column_config.TextColumn("Invoice#", help="Invoice number"),
@@ -312,20 +324,20 @@ def sales_detail_fragment(
             "Product", help="PT Code | Name | Package", width="large"
         ),
         'brand': st.column_config.TextColumn("Brand"),
-        'calculated_invoiced_amount_usd': st.column_config.NumberColumn(
-            "Revenue", help="Invoiced amount (USD)", format="$%.0f"
+        'calculated_invoiced_amount_usd': st.column_config.TextColumn(
+            "Revenue", help="Invoiced amount (USD)"
         ),
-        'invoiced_gross_profit_usd': st.column_config.NumberColumn(
-            "GP", help="Gross Profit (USD) = Revenue - COGS", format="$%.0f"
+        'invoiced_gross_profit_usd': st.column_config.TextColumn(
+            "GP", help="Gross Profit (USD) = Revenue - COGS"
         ),
-        'gross_profit_percent': st.column_config.NumberColumn(
-            "GP%", help="Gross Profit Margin %", format="%.1f%%"
+        'gross_profit_percent': st.column_config.TextColumn(
+            "GP%", help="Gross Profit Margin %"
         ),
-        'invoiced_gp1_usd': st.column_config.NumberColumn(
-            "GP1", help="GP after broker commission deduction", format="$%.0f"
+        'invoiced_gp1_usd': st.column_config.TextColumn(
+            "GP1", help="GP after broker commission deduction"
         ),
-        'broker_commission_usd': st.column_config.NumberColumn(
-            "Commission", help="Broker commission (USD)", format="$%.0f"
+        'broker_commission_usd': st.column_config.TextColumn(
+            "Commission", help="Broker commission (USD)"
         ),
         'payment_status': st.column_config.TextColumn("Payment", help="Payment status"),
         'cost_source': st.column_config.TextColumn("Cost Source", help="Source of cost data"),
@@ -334,7 +346,7 @@ def sales_detail_fragment(
     st.dataframe(
         display_detail,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=500
     )
@@ -469,7 +481,7 @@ def pivot_analysis_fragment(
         
         st.dataframe(
             pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
-            use_container_width=True,
+            width="stretch",
             height=500
         )
     else:
