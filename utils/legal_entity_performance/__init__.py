@@ -24,6 +24,9 @@ from .executive_summary import generate_executive_summary, render_executive_summ
 # Payment Analysis
 from .payment_analysis import analyze_payments, render_payment_section, check_payment_alerts
 
+# Payment Tab
+from .payment import payment_tab_fragment
+
 # Tab fragments
 from .overview import overview_tab_fragment
 from .overview.fragments import monthly_trend_fragment, yoy_comparison_fragment
@@ -84,6 +87,7 @@ __all__ = [
     'analyze_payments',
     'render_payment_section',
     'check_payment_alerts',
+    'payment_tab_fragment',
     
     # Tab fragments
     'overview_tab_fragment',

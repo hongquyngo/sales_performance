@@ -1,8 +1,8 @@
-# pages/3_🏢_Legal_Entity_Performance.py
+# pages/0_🏢_Legal_Entity_Performance.py
 """
 Legal Entity Performance Dashboard
 
-4 Tabs: Overview | Sales Detail | Analysis | Backlog
+4 Tabs: Overview | Sales Detail | Analysis | Backlog | Payment
 Data Sources:
   - Sales: unified_sales_by_legal_entity_view (V2)
   - Backlog: backlog_by_legal_entity_view (V2)
@@ -50,6 +50,7 @@ from utils.legal_entity_performance import (
     sales_detail_tab_fragment,
     analysis_tab_fragment,
     backlog_tab_fragment,
+    payment_tab_fragment,
     
     # Constants
     DEBUG_TIMING,
@@ -276,8 +277,8 @@ def main():
     # =========================================================================
     # TABS
     # =========================================================================
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Overview", "📋 Sales Detail", "📈 Analysis", "📦 Backlog",
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Overview", "📋 Sales Detail", "📈 Analysis", "📦 Backlog", "💰 Payment",
     ])
     
     # =========================================================================
@@ -333,6 +334,16 @@ def main():
             backlog_df=backlog_df,
             filter_values=active_filters,
             key_prefix="le_backlog"
+        )
+    
+    # =========================================================================
+    # TAB 5: PAYMENT & COLLECTION
+    # =========================================================================
+    with tab5:
+        payment_tab_fragment(
+            sales_df=sales_df,
+            filter_values=active_filters,
+            key_prefix="le_payment"
         )
     
     # =========================================================================
