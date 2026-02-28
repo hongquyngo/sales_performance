@@ -430,6 +430,12 @@ def backlog_list_fragment(
     available_cols = [c for c in display_columns if c in display_df.columns]
     display_bl = display_df[available_cols].head(500).copy()
     
+    # Pre-format currency columns
+    if value_col and value_col in display_bl.columns:
+        display_bl[value_col] = display_bl[value_col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+    if gp_col and gp_col in display_bl.columns:
+        display_bl[gp_col] = display_bl[gp_col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+    
     column_config = {
         'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
         'oc_date': st.column_config.DateColumn("OC Date"),
@@ -443,14 +449,14 @@ def backlog_list_fragment(
         'status': "Status",
     }
     if value_col:
-        column_config[value_col] = st.column_config.NumberColumn("Amount", format="$%.0f")
+        column_config[value_col] = st.column_config.TextColumn("Amount")
     if gp_col:
-        column_config[gp_col] = st.column_config.NumberColumn("GP", format="$%.0f")
+        column_config[gp_col] = st.column_config.TextColumn("GP")
     
     st.dataframe(
         display_bl,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=400
     )
@@ -537,7 +543,7 @@ def backlog_by_etd_fragment(
         
         if df_timeline[revenue_col].sum() > 0:
             chart = build_backlog_by_month_chart_multiyear(df_timeline, revenue_col, title="")
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             display_cols = [c for c in ['year_month', 'etd_year', revenue_col, gp_agg_col, 'order_count']
                             if c and c in df_timeline.columns]
@@ -545,12 +551,12 @@ def backlog_by_etd_fragment(
             if gp_agg_col:
                 fmt[gp_agg_col] = '${:,.0f}'
             st.dataframe(df_timeline[display_cols].style.format(fmt),
-                          use_container_width=True, hide_index=True, height=400)
+                          width="stretch", hide_index=True, height=400)
     
     elif view_mode == "Stacked by Month":
         if df_years[revenue_col].sum() > 0:
             chart = build_backlog_by_month_stacked(df_years, revenue_col, title="")
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             pivot_df = df_years.pivot_table(
                 index='etd_month', columns='etd_year',
@@ -558,7 +564,7 @@ def backlog_by_etd_fragment(
             )
             pivot_df = pivot_df.reindex(MONTH_ORDER).dropna(how='all')
             pivot_df['Total'] = pivot_df.sum(axis=1)
-            st.dataframe(pivot_df.style.format('${:,.0f}'), use_container_width=True)
+            st.dataframe(pivot_df.style.format('${:,.0f}'), width="stretch")
     
     else:  # Single Year
         col_year, _ = st.columns([2, 4])
@@ -579,7 +585,7 @@ def backlog_by_etd_fragment(
                 year_data, revenue_col, gp_agg_col, 'etd_month',
                 title=f"Backlog by ETD Month - {selected_year}"
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             display_cols = [c for c in ['etd_month', revenue_col, gp_agg_col, 'order_count']
                             if c and c in year_data.columns]
@@ -587,7 +593,7 @@ def backlog_by_etd_fragment(
             if gp_agg_col:
                 fmt[gp_agg_col] = '${:,.0f}'
             st.dataframe(year_data[display_cols].style.format(fmt),
-                          use_container_width=True, hide_index=True)
+                          width="stretch", hide_index=True)
         else:
             st.info(f"No backlog data for {selected_year}")
 
@@ -659,6 +665,13 @@ def backlog_risk_analysis_fragment(
         
         available_cols = [c for c in display_cols if c in overdue_sorted.columns]
         
+        # Pre-format currency columns
+        display_overdue = overdue_sorted[available_cols].head(100).copy()
+        if value_col and value_col in display_overdue.columns:
+            display_overdue[value_col] = display_overdue[value_col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+        if gp_col and gp_col in display_overdue.columns:
+            display_overdue[gp_col] = display_overdue[gp_col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+        
         column_config = {
             'oc_number': "OC#",
             'etd': st.column_config.DateColumn("ETD"),
@@ -670,14 +683,14 @@ def backlog_risk_analysis_fragment(
             'pending_type': "Status", 'status': "Status",
         }
         if value_col:
-            column_config[value_col] = st.column_config.NumberColumn("Amount", format="$%.0f")
+            column_config[value_col] = st.column_config.TextColumn("Amount")
         if gp_col:
-            column_config[gp_col] = st.column_config.NumberColumn("GP", format="$%.0f")
+            column_config[gp_col] = st.column_config.TextColumn("GP")
         
         st.dataframe(
-            overdue_sorted[available_cols].head(100),
+            display_overdue,
             column_config=column_config,
-            use_container_width=True, hide_index=True, height=400
+            width="stretch", hide_index=True, height=400
         )
     else:
         st.success("✅ No overdue orders - all backlog is on track!")
