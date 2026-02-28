@@ -18,6 +18,9 @@ from .complex_kpi_calculator import ComplexKPICalculator
 from .filters import LegalEntityFilters, analyze_period
 from .export_utils import LegalEntityExport
 
+# Executive Summary
+from .executive_summary import generate_executive_summary, render_executive_summary
+
 # Tab fragments
 from .overview import overview_tab_fragment
 from .overview.fragments import monthly_trend_fragment, yoy_comparison_fragment
@@ -73,6 +76,8 @@ __all__ = [
     'LegalEntityFilters',
     'LegalEntityExport',
     'analyze_period',
+    'generate_executive_summary',
+    'render_executive_summary',
     
     # Tab fragments
     'overview_tab_fragment',
@@ -89,4 +94,4 @@ __all__ = [
     'DEBUG_TIMING', 'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '2.2.0'
+__version__ = '3.0.0'

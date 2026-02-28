@@ -3,10 +3,13 @@
 Streamlit Fragments for Legal Entity Performance - Overview Tab.
 Adapted from kpi_center_performance/overview/fragments.py
 
-VERSION: 2.0.0
-- monthly_trend_fragment with Customer/Brand/Product Excl filters
-- yoy_comparison_fragment with Revenue/GP/GP1 tabs
-- overview_tab_fragment as main entry point
+VERSION: 3.0.0
+CHANGELOG:
+- v3.0.0: Executive Summary at top (CEO "5-second test")
+           Sections 4-7 wrapped in expanders to reduce scroll
+           Layout: Summary → KPIs → New Business → Backlog → [expandable details]
+- v2.0.0: monthly_trend_fragment with Customer/Brand/Product Excl filters
+           yoy_comparison_fragment with Revenue/GP/GP1 tabs
 """
 
 import logging
@@ -31,6 +34,7 @@ from .charts import (
 )
 from ..constants import MONTH_ORDER
 from ..export_utils import LegalEntityExport
+from ..executive_summary import generate_executive_summary, render_executive_summary
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +77,6 @@ def _prepare_monthly_summary(
     if 'revenue' in monthly.columns and 'gross_profit' in monthly.columns:
         monthly['gp_percent'] = (monthly['gross_profit'] / monthly['revenue'] * 100).fillna(0).round(1)
     
-    # Sort by month order
     monthly['month_order'] = monthly['month'].map({m: i for i, m in enumerate(MONTH_ORDER)})
     monthly = monthly.sort_values('month_order').drop(columns=['month_order'])
     
@@ -462,25 +465,54 @@ def overview_tab_fragment(
     active_filters: Dict,
     prev_sales_df: pd.DataFrame = None,
     unified_cache: Dict = None,
-    # NEW v2.2.0: Complex KPIs
+    # Complex KPIs
     complex_kpis: Dict = None,
     new_customers_df: pd.DataFrame = None,
     new_products_df: pd.DataFrame = None,
     new_combos_detail_df: pd.DataFrame = None,
     new_business_detail_df: pd.DataFrame = None,
-    # NEW v2.2.0: Pipeline metrics (replaces backlog_metrics + in_period_analysis)
+    # Pipeline metrics
     pipeline_metrics: Dict = None,
 ):
     """
     Render the complete Overview tab.
     
-    VERSION: 2.2.0
-    - Removed backlog from KPI cards (avoid duplication)
-    - Added KPC-style Backlog & Forecast section (5 metrics + waterfall + bullet, 3 tabs)
-    - New Business section with detail popovers
+    VERSION: 3.0.0 — Redesigned for CEO "5-second test":
+    
+    ABOVE THE FOLD (no scroll):
+      1. Executive Summary (auto-generated text + alerts)
+      2. KPI Cards (Revenue, GP, GP1, Commission, Customers, GP%, GP1%, Invoices)
+    
+    BELOW THE FOLD (expandable sections):
+      3. New Business (New Customers/Products/Combos)
+      4. Backlog & Forecast (waterfall + bullet chart)
+      5. Monthly Trend (with fragment filters)
+      6. YoY Comparison (multi-year or traditional)
+      7. Entity Breakdown Table
+      8. Export
     """
     # =========================================================================
-    # SECTION 1: KPI CARDS (Performance only, no backlog)
+    # SECTION 1: EXECUTIVE SUMMARY — CEO reads this first
+    # =========================================================================
+    try:
+        summary = generate_executive_summary(
+            overview_metrics=overview_metrics,
+            yoy_metrics=yoy_metrics,
+            pipeline_metrics=pipeline_metrics,
+            sales_df=sales_df,
+            prev_sales_df=prev_sales_df,
+            active_filters=active_filters,
+            complex_kpis=complex_kpis,
+        )
+        render_executive_summary(summary)
+    except Exception as e:
+        logger.error(f"Executive summary generation failed: {e}", exc_info=True)
+        # Graceful fallback — don't break the page
+    
+    st.markdown("")
+    
+    # =========================================================================
+    # SECTION 2: KPI CARDS (Performance only, no backlog)
     # =========================================================================
     render_kpi_cards(
         metrics=overview_metrics,
@@ -490,7 +522,7 @@ def overview_tab_fragment(
     st.divider()
     
     # =========================================================================
-    # SECTION 2: NEW BUSINESS
+    # SECTION 3: NEW BUSINESS
     # =========================================================================
     if complex_kpis:
         render_new_business_cards(
@@ -503,15 +535,90 @@ def overview_tab_fragment(
         st.divider()
     
     # =========================================================================
-    # SECTION 3: BACKLOG & FORECAST (Synced with KPC)
+    # SECTION 4: BACKLOG & FORECAST (Synced with KPC)
     # =========================================================================
-    if pipeline_metrics and pipeline_metrics.get('summary', {}).get('backlog_orders', 0) > 0:
-        col_bf_header, col_bf_help = st.columns([6, 1])
-        with col_bf_header:
-            st.subheader("📦 Backlog & Forecast")
-        with col_bf_help:
-            with st.popover("ℹ️ Help"):
-                st.markdown("""
+    _has_backlog = (
+        pipeline_metrics
+        and pipeline_metrics.get('summary', {}).get('backlog_orders', 0) > 0
+    )
+    
+    if _has_backlog:
+        with st.expander("📦 **Backlog & Forecast**", expanded=True):
+            _render_backlog_forecast_full(pipeline_metrics)
+        st.divider()
+    
+    # =========================================================================
+    # SECTION 5: MONTHLY TREND (expandable — drill-down for sales/finance)
+    # =========================================================================
+    with st.expander("📊 **Monthly Trend & Cumulative**", expanded=False):
+        monthly_trend_fragment(
+            sales_df=sales_df,
+            filter_values=active_filters,
+            fragment_key="le_trend"
+        )
+    
+    # =========================================================================
+    # SECTION 6: YOY COMPARISON (expandable)
+    # =========================================================================
+    if active_filters.get('show_yoy', True):
+        with st.expander("📊 **Year-over-Year Comparison**", expanded=False):
+            yoy_comparison_fragment(
+                sales_df=sales_df,
+                filter_values=active_filters,
+                prev_sales_df=prev_sales_df,
+                unified_cache=unified_cache,
+                fragment_key="le_yoy"
+            )
+    
+    # =========================================================================
+    # SECTION 7: ENTITY BREAKDOWN TABLE (expandable)
+    # =========================================================================
+    if not entity_summary_df.empty:
+        with st.expander("🏢 **Entity Performance**", expanded=False):
+            display_df = entity_summary_df.copy()
+            for col in ['revenue', 'gross_profit', 'gp1', 'commission']:
+                if col in display_df.columns:
+                    display_df[col] = display_df[col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+            if 'gp_percent' in display_df.columns:
+                display_df['gp_percent'] = display_df['gp_percent'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%")
+            
+            st.dataframe(
+                display_df,
+                column_config={
+                    'legal_entity': 'Legal Entity',
+                    'revenue': 'Revenue (USD)',
+                    'gross_profit': 'GP (USD)',
+                    'gp1': 'GP1 (USD)',
+                    'commission': 'Commission',
+                    'gp_percent': 'GP%',
+                    'orders': 'Invoices', 'customers': 'Customers',
+                    'legal_entity_id': None,
+                },
+                width="stretch", hide_index=True,
+            )
+    
+    # =========================================================================
+    # SECTION 8: EXPORT (always in expander)
+    # =========================================================================
+    with st.expander("📥 Export Report"):
+        LegalEntityExport.render_download_button(
+            df=entity_summary_df if not entity_summary_df.empty else sales_df,
+            filename=f"legal_entity_performance_{active_filters.get('year', '')}",
+            label="📥 Download",
+            key="le_overview_export"
+        )
+
+
+# =============================================================================
+# BACKLOG & FORECAST SECTION (extracted for cleaner overview_tab_fragment)
+# =============================================================================
+
+def _render_backlog_forecast_full(pipeline_metrics: Dict):
+    """Render the full Backlog & Forecast section content."""
+    col_bf_header, col_bf_help = st.columns([6, 1])
+    with col_bf_help:
+        with st.popover("ℹ️ Help"):
+            st.markdown("""
 **📦 Backlog & Forecast**
 
 | Metric | Formula | Description |
@@ -521,110 +628,44 @@ def overview_tab_fragment(
 | **Target** | N/A | Legal Entity has no target system |
 | **Forecast** | `Invoiced + In-Period` | Projected total |
 | **GAP/Surplus** | `Forecast - Target` | Requires target assignment |
-                """)
-        
-        # Overdue warning
-        summary = pipeline_metrics.get('summary', {})
-        overdue_orders = summary.get('overdue_orders', 0)
-        overdue_revenue = summary.get('overdue_revenue', 0)
-        if overdue_orders > 0:
-            st.warning(f"⚠️ {overdue_orders} orders are past ETD. Value: ${overdue_revenue:,.0f}")
-        
-        # GP1/GP ratio info
-        gp1_gp_ratio = summary.get('gp1_gp_ratio', 1.0)
-        if gp1_gp_ratio != 1.0:
-            st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
-        
-        # Convert to flat format for charts
-        chart_backlog_metrics = convert_pipeline_to_backlog_metrics(pipeline_metrics)
-        
-        revenue_metrics = pipeline_metrics.get('revenue', {})
-        gp_metrics = pipeline_metrics.get('gross_profit', {})
-        gp1_metrics = pipeline_metrics.get('gp1', {})
-        
-        bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
-        
-        with bf_tab1:
-            _render_backlog_forecast_section(
-                summary, revenue_metrics, 'revenue',
-                chart_backlog_metrics=chart_backlog_metrics
-            )
-        
-        with bf_tab2:
-            _render_backlog_forecast_section(
-                summary, gp_metrics, 'gp',
-                chart_backlog_metrics=chart_backlog_metrics
-            )
-        
-        with bf_tab3:
-            _render_backlog_forecast_section(
-                summary, gp1_metrics, 'gp1',
-                chart_backlog_metrics=chart_backlog_metrics,
-                gp1_gp_ratio=gp1_gp_ratio
-            )
-        
-        st.divider()
+            """)
     
-    # =========================================================================
-    # SECTION 4: MONTHLY TREND (with fragment filters)
-    # =========================================================================
-    monthly_trend_fragment(
-        sales_df=sales_df,
-        filter_values=active_filters,
-        fragment_key="le_trend"
-    )
+    # Overdue warning
+    summary = pipeline_metrics.get('summary', {})
+    overdue_orders = summary.get('overdue_orders', 0)
+    overdue_revenue = summary.get('overdue_revenue', 0)
+    if overdue_orders > 0:
+        st.warning(f"⚠️ {overdue_orders} orders are past ETD. Value: ${overdue_revenue:,.0f}")
     
-    st.divider()
+    # GP1/GP ratio info
+    gp1_gp_ratio = summary.get('gp1_gp_ratio', 1.0)
+    if gp1_gp_ratio != 1.0:
+        st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
     
-    # =========================================================================
-    # SECTION 5: YOY COMPARISON
-    # =========================================================================
-    if active_filters.get('show_yoy', True):
-        yoy_comparison_fragment(
-            sales_df=sales_df,
-            filter_values=active_filters,
-            prev_sales_df=prev_sales_df,
-            unified_cache=unified_cache,
-            fragment_key="le_yoy"
-        )
-        st.divider()
+    # Convert to flat format for charts
+    chart_backlog_metrics = convert_pipeline_to_backlog_metrics(pipeline_metrics)
     
-    # =========================================================================
-    # SECTION 6: ENTITY BREAKDOWN TABLE
-    # =========================================================================
-    if not entity_summary_df.empty:
-        st.subheader("🏢 Entity Performance")
-        
-        # Pre-format for reliable display (Streamlit NumberColumn format is unreliable with currency)
-        display_df = entity_summary_df.copy()
-        for col in ['revenue', 'gross_profit', 'gp1', 'commission']:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
-        if 'gp_percent' in display_df.columns:
-            display_df['gp_percent'] = display_df['gp_percent'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%")
-        
-        st.dataframe(
-            display_df,
-            column_config={
-                'legal_entity': 'Legal Entity',
-                'revenue': 'Revenue (USD)',
-                'gross_profit': 'GP (USD)',
-                'gp1': 'GP1 (USD)',
-                'commission': 'Commission',
-                'gp_percent': 'GP%',
-                'orders': 'Invoices', 'customers': 'Customers',
-                'legal_entity_id': None,
-            },
-            width="stretch", hide_index=True,
+    revenue_metrics = pipeline_metrics.get('revenue', {})
+    gp_metrics = pipeline_metrics.get('gross_profit', {})
+    gp1_metrics = pipeline_metrics.get('gp1', {})
+    
+    bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+    
+    with bf_tab1:
+        _render_backlog_forecast_section(
+            summary, revenue_metrics, 'revenue',
+            chart_backlog_metrics=chart_backlog_metrics
         )
     
-    # =========================================================================
-    # SECTION 7: EXPORT
-    # =========================================================================
-    with st.expander("📥 Export Report"):
-        LegalEntityExport.render_download_button(
-            df=entity_summary_df if not entity_summary_df.empty else sales_df,
-            filename=f"legal_entity_performance_{active_filters.get('year', '')}",
-            label="📥 Download",
-            key="le_overview_export"
+    with bf_tab2:
+        _render_backlog_forecast_section(
+            summary, gp_metrics, 'gp',
+            chart_backlog_metrics=chart_backlog_metrics
+        )
+    
+    with bf_tab3:
+        _render_backlog_forecast_section(
+            summary, gp1_metrics, 'gp1',
+            chart_backlog_metrics=chart_backlog_metrics,
+            gp1_gp_ratio=gp1_gp_ratio
         )
