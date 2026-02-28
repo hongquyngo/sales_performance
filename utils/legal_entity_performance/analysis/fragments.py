@@ -177,7 +177,7 @@ def _render_metric_view(agg_df, dimension, dimension_label, metric, metric_label
             data_df=top_df, value_col=metric, label_col=dimension,
             title=f"Top {dimension_label}s by {metric_label}", metric_type=metric
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     with col_table:
         _render_detail_table(top_df, dimension, dimension_label, metric, metric_label)
     
@@ -251,7 +251,7 @@ def _render_detail_table(top_df, dimension, dimension_label, metric, metric_labe
     if 'orders' in top_df.columns:
         display_df['Orders'] = top_df['orders'].apply(lambda x: f"{x:,}").values
     
-    st.dataframe(display_df, hide_index=True, use_container_width=True,
+    st.dataframe(display_df, hide_index=True, width="stretch",
                   height=min(400, 35 * len(display_df) + 38))
 
 
@@ -389,9 +389,9 @@ def _render_top_movers(compare_df, dim_col, dimension, metric):
     col_chart, col_status = st.columns([3, 1])
     with col_chart:
         chart = build_movers_bar_chart(gainers, losers, dim_col, f"Top {dimension} Movers by {metric}")
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     with col_status:
-        st.altair_chart(build_status_distribution_chart(compare_df, "Status"), use_container_width=True)
+        st.altair_chart(build_status_distribution_chart(compare_df, "Status"), width="stretch")
     
     col_gain, col_lose = st.columns(2)
     with col_gain:
@@ -404,7 +404,7 @@ def _render_top_movers(compare_df, dim_col, dimension, metric):
                 'Current': gainers['current'].apply(lambda x: f"${x:,.0f}").values,
                 'Change': gainers['change'].apply(lambda x: f"${x:+,.0f}").values,
                 'Growth %': gainers['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
-            }), hide_index=True, use_container_width=True, height=min(350, 35 * len(gainers) + 38))
+            }), hide_index=True, width="stretch", height=min(350, 35 * len(gainers) + 38))
         else:
             st.info("No gainers")
     with col_lose:
@@ -417,7 +417,7 @@ def _render_top_movers(compare_df, dim_col, dimension, metric):
                 'Current': losers['current'].apply(lambda x: f"${x:,.0f}").values,
                 'Change': losers['change'].apply(lambda x: f"${x:+,.0f}").values,
                 'Growth %': losers['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
-            }), hide_index=True, use_container_width=True, height=min(350, 35 * len(losers) + 38))
+            }), hide_index=True, width="stretch", height=min(350, 35 * len(losers) + 38))
         else:
             st.info("No decliners")
     
@@ -431,9 +431,9 @@ def _render_new_and_lost(compare_df, dim_col, dimension, metric):
     
     col_chart, col_waterfall = st.columns([1, 2])
     with col_chart:
-        st.altair_chart(build_new_lost_chart(new_items, lost_items, dim_col, f"New vs Lost {metric}"), use_container_width=True)
+        st.altair_chart(build_new_lost_chart(new_items, lost_items, dim_col, f"New vs Lost {metric}"), width="stretch")
     with col_waterfall:
-        st.altair_chart(build_waterfall_chart(compare_df, dim_col, f"Top Contributors to {metric} Change", 8), use_container_width=True)
+        st.altair_chart(build_waterfall_chart(compare_df, dim_col, f"Top Contributors to {metric} Change", 8), width="stretch")
     
     col_new, col_lost = st.columns(2)
     with col_new:
@@ -443,7 +443,7 @@ def _render_new_and_lost(compare_df, dim_col, dimension, metric):
                 '#': range(1, len(new_items) + 1),
                 dimension: new_items[dim_col].values,
                 f'Current {metric}': new_items['current'].apply(lambda x: f"${x:,.0f}").values,
-            }), hide_index=True, use_container_width=True, height=min(350, 35 * len(new_items) + 38))
+            }), hide_index=True, width="stretch", height=min(350, 35 * len(new_items) + 38))
         else:
             st.info(f"No new {dimension}s")
     with col_lost:
@@ -453,7 +453,7 @@ def _render_new_and_lost(compare_df, dim_col, dimension, metric):
                 '#': range(1, len(lost_items) + 1),
                 dimension: lost_items[dim_col].values,
                 f'Previous {metric}': lost_items['previous'].apply(lambda x: f"${x:,.0f}").values,
-            }), hide_index=True, use_container_width=True, height=min(350, 35 * len(lost_items) + 38))
+            }), hide_index=True, width="stretch", height=min(350, 35 * len(lost_items) + 38))
         else:
             st.info(f"No lost {dimension}s")
 
@@ -466,7 +466,7 @@ def _render_full_comparison(compare_df, dim_col, dimension, metric):
             st.altair_chart(build_growth_comparison_chart(
                 top_15, 'current', 'previous', dim_col,
                 f"Top {dimension}s: Current vs Previous {metric}", 15
-            ), use_container_width=True)
+            ), width="stretch")
     with col_summary:
         tc = compare_df['current'].sum()
         tp = compare_df['previous'].sum()
@@ -488,7 +488,7 @@ def _render_full_comparison(compare_df, dim_col, dimension, metric):
         'Change': src['change'].apply(lambda x: f"${x:+,.0f}").values,
         'Growth %': src['growth_pct'].apply(lambda x: f"{x:+.1f}%").values,
         'Status': src['status'].values,
-    }), hide_index=True, use_container_width=True, height=400)
+    }), hide_index=True, width="stretch", height=400)
 
 
 def _render_growth_insights(compare_df, gainers, losers, dim_col, dimension, metric):
