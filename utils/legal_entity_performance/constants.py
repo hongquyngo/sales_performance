@@ -88,9 +88,11 @@ EXCEL_STYLES = {
 
 # =============================================================================
 # DEBUG SETTINGS (synced with KPI center)
+# Use environment variables to enable: LE_DEBUG_TIMING=true / LE_DEBUG_QUERY=true
 # =============================================================================
-DEBUG_TIMING = True
-DEBUG_QUERY_TIMING = True
+import os as _os
+DEBUG_TIMING = _os.getenv('LE_DEBUG_TIMING', 'false').lower() == 'true'
+DEBUG_QUERY_TIMING = _os.getenv('LE_DEBUG_QUERY', 'false').lower() == 'true'
 
 # =============================================================================
 # METRIC DISPLAY

@@ -312,12 +312,13 @@ def _growth_analysis_tab(
     with c1:
         dimension = st.selectbox("Compare by", ["Customer", "Brand", "Product"], key=f"{key_prefix}_dim")
     with c2:
-        metric = st.selectbox("Metric", ["Revenue", "Gross Profit"], key=f"{key_prefix}_metric")
+        metric = st.selectbox("Metric", ["Revenue", "Gross Profit", "GP1"], key=f"{key_prefix}_metric")
     
     dim_col = {"Customer": "customer", "Brand": "brand", "Product": "product_pn"}.get(dimension)
     value_col = {
         "Revenue": "calculated_invoiced_amount_usd",
-        "Gross Profit": "invoiced_gross_profit_usd"
+        "Gross Profit": "invoiced_gross_profit_usd",
+        "GP1": "invoiced_gp1_usd",
     }.get(metric)
     
     compare_df = _build_comparison_data(sales_df, prev_sales_df, dim_col, value_col)

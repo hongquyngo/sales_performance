@@ -220,7 +220,6 @@ def sales_detail_tab_fragment(
 # SALES DETAIL FRAGMENT
 # =============================================================================
 
-@st.fragment
 def sales_detail_fragment(
     sales_df: pd.DataFrame,
     fragment_key: str = "le_sales",
@@ -409,7 +408,6 @@ def sales_detail_fragment(
 # PIVOT ANALYSIS FRAGMENT
 # =============================================================================
 
-@st.fragment
 def pivot_analysis_fragment(
     sales_df: pd.DataFrame,
     fragment_key: str = "le_pivot"

@@ -342,7 +342,6 @@ def backlog_tab_fragment(
 # BACKLOG LIST FRAGMENT
 # =============================================================================
 
-@st.fragment
 def backlog_list_fragment(
     backlog_df: pd.DataFrame,
     filter_values: Dict = None,
@@ -466,7 +465,6 @@ def backlog_list_fragment(
 # BACKLOG BY ETD FRAGMENT (Timeline / Stacked / Single Year)
 # =============================================================================
 
-@st.fragment
 def backlog_by_etd_fragment(
     backlog_detail_df: pd.DataFrame,
     current_year: int = None,
@@ -602,7 +600,6 @@ def backlog_by_etd_fragment(
 # BACKLOG RISK ANALYSIS FRAGMENT
 # =============================================================================
 
-@st.fragment
 def backlog_risk_analysis_fragment(
     backlog_df: pd.DataFrame,
     fragment_key: str = "le_backlog_risk"

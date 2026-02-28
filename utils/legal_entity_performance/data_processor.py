@@ -17,6 +17,7 @@ from datetime import date
 from typing import Dict, Optional
 import pandas as pd
 import numpy as np
+import streamlit as st
 
 from .constants import DEBUG_TIMING, LOOKBACK_YEARS
 
@@ -182,10 +183,25 @@ class DataProcessor:
         try:
             from .complex_kpi_calculator import ComplexKPICalculator
             
-            calculator = ComplexKPICalculator(
-                lookback_df=self.sales_raw,
-                exclude_internal=(customer_type == 'External')
-            )
+            # Cache calculator instance — only re-init when data or customer_type changes
+            calc_cache_key = '_le_complex_kpi_calc'
+            calc_hash_key = '_le_complex_kpi_calc_hash'
+            calc_hash = f"{len(self.sales_raw)}_{customer_type}"
+            
+            if (calc_cache_key not in st.session_state or
+                    st.session_state.get(calc_hash_key) != calc_hash):
+                st.session_state[calc_cache_key] = ComplexKPICalculator(
+                    lookback_df=self.sales_raw,
+                    exclude_internal=(customer_type == 'External')
+                )
+                st.session_state[calc_hash_key] = calc_hash
+                if DEBUG_TIMING:
+                    print(f"   📊 [complex_kpi] Created new calculator (hash={calc_hash})")
+            else:
+                if DEBUG_TIMING:
+                    print(f"   ♻️ [complex_kpi] Reusing cached calculator")
+            
+            calculator = st.session_state[calc_cache_key]
             complex_kpis = calculator.calculate_all(
                 start_date=start_date,
                 end_date=end_date,
@@ -274,16 +290,17 @@ class DataProcessor:
         if not start_date or not end_date:
             return None
         
-        try:
-            prev_start = start_date.replace(year=start_date.year - 1)
-            prev_end = end_date.replace(year=end_date.year - 1)
-        except ValueError:
-            prev_start = start_date.replace(year=start_date.year - 1, day=28)
-            prev_end = end_date.replace(year=end_date.year - 1, day=28)
+        def _safe_prev_year(d: date) -> date:
+            """Shift date back one year, handling Feb 29 → Feb 28."""
+            try:
+                return d.replace(year=d.year - 1)
+            except ValueError:
+                # Only Feb 29 in a leap year triggers this
+                return d.replace(year=d.year - 1, month=2, day=28)
         
         prev_filters = filters.copy()
-        prev_filters['start_date'] = prev_start
-        prev_filters['end_date'] = prev_end
+        prev_filters['start_date'] = _safe_prev_year(start_date)
+        prev_filters['end_date'] = _safe_prev_year(end_date)
         return prev_filters
     
     # =========================================================================
