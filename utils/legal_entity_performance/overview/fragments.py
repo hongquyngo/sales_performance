@@ -190,17 +190,15 @@ def monthly_trend_fragment(
     chart_col1, chart_col2 = st.columns(2)
     
     with chart_col1:
-        st.markdown("**📊 Monthly Trend**")
         trend_chart = build_monthly_trend_dual_chart(
             monthly_df=monthly_df,
             show_gp_percent_line=True
         )
-        st.altair_chart(trend_chart, use_container_width=True)
+        st.altair_chart(trend_chart, width="stretch")
     
     with chart_col2:
-        st.markdown("**📈 Cumulative Performance**")
         cumulative_chart = build_cumulative_dual_chart(monthly_df=monthly_df)
-        st.altair_chart(cumulative_chart, use_container_width=True)
+        st.altair_chart(cumulative_chart, width="stretch")
 
 
 # =============================================================================
@@ -359,39 +357,28 @@ This section shows **full year** trends for context:
             (tab_gp1, "GP1", "gp1")
         ]:
             with tab:
-                # Year-by-year summary cards with YoY %
+                # Yearly total bar chart with YoY % labels (replaces card list)
+                from .charts import build_yearly_total_chart
                 yearly_totals = monthly_by_year.groupby('year')[metric_col].sum().sort_index()
+                yearly_chart = build_yearly_total_chart(
+                    yearly_totals=yearly_totals,
+                    metric_name=metric_name,
+                )
+                st.altair_chart(yearly_chart, width="stretch")
                 
-                cols = st.columns(min(len(yearly_totals), 8))
-                prev_value = None
-                for i, (year, value) in enumerate(yearly_totals.items()):
-                    with cols[i % len(cols)]:
-                        st.markdown(f"**{int(year)} {metric_name}**")
-                        st.markdown(f"### ${value:,.0f}")
-                        if prev_value is not None and prev_value > 0:
-                            yoy_change = (value - prev_value) / prev_value * 100
-                            color = "green" if yoy_change > 0 else "red"
-                            arrow = "↑" if yoy_change > 0 else "↓"
-                            st.markdown(f":{color}[{arrow} {yoy_change:+.1f}% YoY]")
-                    prev_value = value
-                
-                st.markdown("")
-                
-                # Charts
+                # Monthly + Cumulative charts (no st.markdown header — chart has built-in title)
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
-                    st.markdown(f"**📊 Monthly {metric_name} by Year**")
                     chart = build_multi_year_monthly_chart(
                         monthly_df=monthly_by_year, metric_col=metric_col, years=unique_years
                     )
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width="stretch")
                 
                 with chart_col2:
-                    st.markdown(f"**📈 Cumulative {metric_name}**")
                     chart = build_multi_year_cumulative_chart(
                         monthly_df=monthly_by_year, metric_col=metric_col, years=unique_years
                     )
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width="stretch")
     
     else:
         # =================================================================
@@ -452,16 +439,14 @@ This section shows **full year** trends for context:
                 chart_col1, chart_col2 = st.columns(2)
                 
                 with chart_col1:
-                    st.markdown(f"**📊 Monthly {metric_name} Comparison**")
                     st.altair_chart(build_yoy_comparison_chart(
                         current_monthly, prev_monthly, metric_name, current_year, prev_year
-                    ), use_container_width=True)
+                    ), width="stretch")
                 
                 with chart_col2:
-                    st.markdown(f"**📈 Cumulative {metric_name}**")
                     st.altair_chart(build_yoy_cumulative_chart(
                         current_monthly, prev_monthly, metric_name, current_year, prev_year
-                    ), use_container_width=True)
+                    ), width="stretch")
 
 
 # =============================================================================
@@ -609,19 +594,28 @@ def overview_tab_fragment(
     # =========================================================================
     if not entity_summary_df.empty:
         st.subheader("🏢 Entity Performance")
+        
+        # Pre-format for reliable display (Streamlit NumberColumn format is unreliable with currency)
+        display_df = entity_summary_df.copy()
+        for col in ['revenue', 'gross_profit', 'gp1', 'commission']:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "$0")
+        if 'gp_percent' in display_df.columns:
+            display_df['gp_percent'] = display_df['gp_percent'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%")
+        
         st.dataframe(
-            entity_summary_df,
+            display_df,
             column_config={
                 'legal_entity': 'Legal Entity',
-                'revenue': st.column_config.NumberColumn('Revenue (USD)', format="$%,.0f"),
-                'gross_profit': st.column_config.NumberColumn('GP (USD)', format="$%,.0f"),
-                'gp1': st.column_config.NumberColumn('GP1 (USD)', format="$%,.0f"),
-                'commission': st.column_config.NumberColumn('Commission', format="$%,.0f"),
-                'gp_percent': st.column_config.NumberColumn('GP%', format="%.1f%%"),
+                'revenue': 'Revenue (USD)',
+                'gross_profit': 'GP (USD)',
+                'gp1': 'GP1 (USD)',
+                'commission': 'Commission',
+                'gp_percent': 'GP%',
                 'orders': 'Invoices', 'customers': 'Customers',
                 'legal_entity_id': None,
             },
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
     
     # =========================================================================

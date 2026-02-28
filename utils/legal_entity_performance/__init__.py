@@ -27,6 +27,7 @@ from .overview.charts import (
     build_forecast_waterfall_chart,
     build_gap_analysis_chart,
     convert_pipeline_to_backlog_metrics,
+    build_yearly_total_chart,
     build_monthly_trend_dual_chart,
     build_cumulative_dual_chart,
     build_yoy_comparison_chart,

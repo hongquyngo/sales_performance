@@ -233,7 +233,7 @@ def build_monthly_trend_dual_chart(
         
         chart = alt.layer(bars + bar_labels, line + line_labels).resolve_scale(y='independent')
     
-    return chart.properties(width=CHART_WIDTH, height=CHART_HEIGHT)
+    return chart.properties(width=CHART_WIDTH, height=CHART_HEIGHT, title="Monthly Trend")
 
 
 # =============================================================================
@@ -293,7 +293,7 @@ def build_cumulative_dual_chart(monthly_df: pd.DataFrame) -> alt.Chart:
         color=alt.Color('metric:N', scale=color_scale, legend=None)
     )
     
-    return (lines + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT)
+    return (lines + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT, title="Cumulative Performance")
 
 
 # =============================================================================
@@ -364,7 +364,8 @@ def build_yoy_comparison_chart(
         color=alt.value(COLORS['text_dark'])
     )
     
-    return (chart + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT)
+    title_text = f"Monthly {metric}: {current_year or 'Current'} vs {previous_year or 'Previous'}"
+    return (chart + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT, title=title_text)
 
 
 def build_yoy_cumulative_chart(
@@ -442,7 +443,8 @@ def build_yoy_cumulative_chart(
         color=alt.Color('year:N', scale=color_scale, legend=None)
     )
     
-    return (chart + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT)
+    cum_title = f"Cumulative {metric}: {current_year or 'Current'} vs {previous_year or 'Previous'}"
+    return (chart + labels).properties(width=CHART_WIDTH, height=CHART_HEIGHT, title=cum_title)
 
 
 # =============================================================================
@@ -569,6 +571,93 @@ def build_multi_year_cumulative_chart(
 
 
 # =============================================================================
+# YEARLY TOTAL CHART - Replaces card list for multi-year comparison
+# =============================================================================
+
+def build_yearly_total_chart(
+    yearly_totals: pd.Series,
+    metric_name: str = "Revenue",
+) -> alt.Chart:
+    """
+    Bar chart showing total metric per year with YoY % change labels.
+    Replaces the card-list layout when data spans many years.
+    
+    Args:
+        yearly_totals: pd.Series indexed by year with summed metric values
+        metric_name: Display name (Revenue, Gross Profit, GP1)
+    """
+    if yearly_totals.empty:
+        return empty_chart("No yearly data")
+    
+    chart_data = []
+    prev_value = None
+    for year, value in yearly_totals.items():
+        yoy_pct = None
+        if prev_value is not None and prev_value > 0:
+            yoy_pct = (value - prev_value) / prev_value * 100
+        chart_data.append({
+            'year': str(int(year)),
+            'value': value,
+            'yoy_pct': yoy_pct,
+            'yoy_label': f"{yoy_pct:+.1f}%" if yoy_pct is not None else "",
+        })
+        prev_value = value
+    
+    df = pd.DataFrame(chart_data)
+    
+    # Color: positive YoY = green, negative = red, first year = primary blue
+    df['bar_color'] = df['yoy_pct'].apply(
+        lambda x: COLORS.get('yoy_positive', '#28a745') if x is not None and x >= 0
+        else (COLORS.get('yoy_negative', '#dc3545') if x is not None
+              else COLORS.get('primary', '#1f77b4'))
+    )
+    
+    bars = alt.Chart(df).mark_bar(
+        cornerRadiusTopLeft=3, cornerRadiusTopRight=3
+    ).encode(
+        x=alt.X('year:N', title='Year', axis=alt.Axis(labelAngle=0),
+                 sort=df['year'].tolist()),
+        y=alt.Y('value:Q', title=f'{metric_name} (USD)', axis=alt.Axis(format='~s')),
+        color=alt.Color('bar_color:N', scale=None),
+        tooltip=[
+            alt.Tooltip('year:N', title='Year'),
+            alt.Tooltip('value:Q', title=metric_name, format='$,.0f'),
+            alt.Tooltip('yoy_label:N', title='YoY Change'),
+        ]
+    )
+    
+    # Value labels on bars
+    value_labels = alt.Chart(df).mark_text(
+        align='center', baseline='bottom', dy=-18, fontSize=11, fontWeight='bold'
+    ).encode(
+        x=alt.X('year:N', sort=df['year'].tolist()),
+        y=alt.Y('value:Q'),
+        text=alt.Text('value:Q', format='$,.0f'),
+        color=alt.value(COLORS.get('text_dark', '#333333'))
+    )
+    
+    # YoY % labels above value labels
+    yoy_df = df[df['yoy_label'] != ''].copy()
+    yoy_labels = alt.Chart(yoy_df).mark_text(
+        align='center', baseline='bottom', dy=-32, fontSize=10
+    ).encode(
+        x=alt.X('year:N', sort=df['year'].tolist()),
+        y=alt.Y('value:Q'),
+        text='yoy_label:N',
+        color=alt.condition(
+            alt.datum.yoy_pct >= 0,
+            alt.value(COLORS.get('yoy_positive', '#28a745')),
+            alt.value(COLORS.get('yoy_negative', '#dc3545'))
+        )
+    )
+    
+    return alt.layer(bars, value_labels, yoy_labels).properties(
+        width='container', height=280,
+        title=f"Yearly {metric_name} Trend"
+    )
+
+
+# =============================================================================
 # NEW BUSINESS CARDS - Synced with KPI Center v4.7.0 (simplified for LE)
 # =============================================================================
 
@@ -627,7 +716,7 @@ def render_new_business_cards(
                             display['first_sale_date'] = pd.to_datetime(display['first_sale_date']).dt.strftime('%Y-%m-%d')
                             show_cols.append('first_sale_date')
                         if show_cols:
-                            st.dataframe(display[show_cols], use_container_width=True, hide_index=True,
+                            st.dataframe(display[show_cols], width="stretch", hide_index=True,
                                          height=min(400, len(display) * 35 + 40))
                         else:
                             st.caption(f"{len(display)} new customers")
@@ -655,7 +744,7 @@ def render_new_business_cards(
                             display['first_sale_date'] = pd.to_datetime(display['first_sale_date']).dt.strftime('%Y-%m-%d')
                             show_cols.append('first_sale_date')
                         if show_cols:
-                            st.dataframe(display[show_cols], use_container_width=True, hide_index=True,
+                            st.dataframe(display[show_cols], width="stretch", hide_index=True,
                                          height=min(400, len(display) * 35 + 40))
                         else:
                             st.caption(f"{len(display)} new products")
@@ -686,7 +775,7 @@ def render_new_business_cards(
                             display['first_combo_date'] = pd.to_datetime(display['first_combo_date']).dt.strftime('%Y-%m-%d')
                             show_cols.append('first_combo_date')
                         if show_cols:
-                            st.dataframe(display[show_cols], use_container_width=True, hide_index=True,
+                            st.dataframe(display[show_cols], width="stretch", hide_index=True,
                                          height=min(400, len(display) * 35 + 40))
         
         # ----- NEW BUSINESS REVENUE -----
@@ -715,7 +804,7 @@ def render_new_business_cards(
                                 revenue=(rev_col, 'sum')
                             ).reset_index().sort_values('revenue', ascending=False)
                             agg_df['revenue'] = agg_df['revenue'].apply(lambda x: f"${x:,.0f}")
-                            st.dataframe(agg_df, use_container_width=True, hide_index=True,
+                            st.dataframe(agg_df, width="stretch", hide_index=True,
                                          height=min(400, len(agg_df) * 35 + 40))
 
 
@@ -991,13 +1080,13 @@ def _render_backlog_forecast_section(
         with col_ch1:
             st.markdown(f"**{kpi_name} Forecast vs Target**")
             chart = build_forecast_waterfall_chart(chart_backlog_metrics, metric=metric_type)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         with col_ch2:
             # Bullet chart only if target exists
             has_target = (chart_backlog_metrics.get(f'target_{metric_type}', 0) or 0) > 0
             if has_target:
                 st.markdown(f"**{kpi_name}: Target vs Forecast**")
                 gap_chart = build_gap_analysis_chart(chart_backlog_metrics, metrics_to_show=[metric_type])
-                st.altair_chart(gap_chart, use_container_width=True)
+                st.altair_chart(gap_chart, width="stretch")
             else:
                 st.info("📊 Bullet chart requires target assignment. Legal Entity currently has no target system.")
