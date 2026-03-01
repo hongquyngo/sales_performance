@@ -21,10 +21,6 @@ import streamlit as st
 from .charts import (
     render_kpi_cards,
     render_new_business_cards,
-    build_forecast_waterfall_chart,
-    build_gap_analysis_chart,
-    convert_pipeline_to_backlog_metrics,
-    _render_backlog_forecast_section,
     build_monthly_trend_dual_chart,
     build_cumulative_dual_chart,
     build_yoy_comparison_chart,
@@ -554,8 +550,6 @@ def overview_tab_fragment(
         yoy_metrics=yoy_metrics,
     )
     
-    st.divider()
-    
     # =========================================================================
     # SECTION 3: NEW BUSINESS
     # =========================================================================
@@ -567,10 +561,9 @@ def overview_tab_fragment(
             new_combos_detail_df=new_combos_detail_df,
             new_business_detail_df=new_business_detail_df,
         )
-        st.divider()
     
     # =========================================================================
-    # SECTION 4: BACKLOG & FORECAST (Synced with KPC)
+    # SECTION 4: BACKLOG & FORECAST (metric cards only — no waterfall chart)
     # =========================================================================
     _has_backlog = (
         pipeline_metrics
@@ -579,8 +572,7 @@ def overview_tab_fragment(
     
     if _has_backlog:
         with st.expander("📦 **Backlog & Forecast**", expanded=True):
-            _render_backlog_forecast_full(pipeline_metrics)
-        st.divider()
+            _render_backlog_metrics_cards(pipeline_metrics)
     
     # =========================================================================
     # SECTION 5: PAYMENT & COLLECTION
@@ -652,62 +644,84 @@ def overview_tab_fragment(
 
 
 # =============================================================================
-# BACKLOG & FORECAST SECTION (extracted for cleaner overview_tab_fragment)
+# BACKLOG & FORECAST SECTION (metric cards only — no waterfall/bullet chart)
 # =============================================================================
 
-def _render_backlog_forecast_full(pipeline_metrics: Dict):
-    """Render the full Backlog & Forecast section content."""
-    col_bf_header, col_bf_help = st.columns([6, 1])
-    with col_bf_help:
-        with st.popover("ℹ️ Help"):
-            st.markdown("""
-**📦 Backlog & Forecast**
-
-| Metric | Formula | Description |
-|--------|---------|-------------|
-| **Total Backlog** | `Σ outstanding_amount_usd` | All outstanding orders |
-| **In-Period** | `Σ backlog WHERE ETD in period` | Backlog expected to ship in period |
-| **Target** | N/A | Legal Entity has no target system |
-| **Forecast** | `Invoiced + In-Period` | Projected total |
-| **GAP/Surplus** | `Forecast - Target` | Requires target assignment |
-            """)
+def _render_backlog_metrics_cards(pipeline_metrics: Dict):
+    """
+    Render Backlog & Forecast as compact metric cards.
+    No waterfall chart (Legal Entity has no target system).
+    
+    Layout:
+      Row 1: Total Backlog | In-Period | Forecast | Overdue
+      Row 2 (if data): Revenue / GP / GP1 tabs with same card layout
+    """
+    summary = pipeline_metrics.get('summary', {})
+    revenue_metrics = pipeline_metrics.get('revenue', {})
+    gp_metrics = pipeline_metrics.get('gross_profit', {})
+    gp1_metrics = pipeline_metrics.get('gp1', {})
     
     # Overdue warning
-    summary = pipeline_metrics.get('summary', {})
     overdue_orders = summary.get('overdue_orders', 0)
     overdue_revenue = summary.get('overdue_revenue', 0)
     if overdue_orders > 0:
-        st.warning(f"⚠️ {overdue_orders} orders are past ETD. Value: ${overdue_revenue:,.0f}")
+        st.warning(f"⚠️ {overdue_orders} orders past ETD — value: ${overdue_revenue:,.0f}")
     
     # GP1/GP ratio info
     gp1_gp_ratio = summary.get('gp1_gp_ratio', 1.0)
     if gp1_gp_ratio != 1.0:
         st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
     
-    # Convert to flat format for charts
-    chart_backlog_metrics = convert_pipeline_to_backlog_metrics(pipeline_metrics)
-    
-    revenue_metrics = pipeline_metrics.get('revenue', {})
-    gp_metrics = pipeline_metrics.get('gross_profit', {})
-    gp1_metrics = pipeline_metrics.get('gp1', {})
-    
+    # Tabs: Revenue / GP / GP1
     bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
     
-    with bf_tab1:
-        _render_backlog_forecast_section(
-            summary, revenue_metrics, 'revenue',
-            chart_backlog_metrics=chart_backlog_metrics
-        )
-    
-    with bf_tab2:
-        _render_backlog_forecast_section(
-            summary, gp_metrics, 'gp',
-            chart_backlog_metrics=chart_backlog_metrics
-        )
-    
-    with bf_tab3:
-        _render_backlog_forecast_section(
-            summary, gp1_metrics, 'gp1',
-            chart_backlog_metrics=chart_backlog_metrics,
-            gp1_gp_ratio=gp1_gp_ratio
-        )
+    for tab, metrics_data, label, total_key in [
+        (bf_tab1, revenue_metrics, "Revenue", "total_backlog_revenue"),
+        (bf_tab2, gp_metrics, "Gross Profit", "total_backlog_gp"),
+        (bf_tab3, gp1_metrics, "GP1", "total_backlog_gp1"),
+    ]:
+        with tab:
+            total_backlog = summary.get(total_key, 0)
+            in_period = metrics_data.get('in_period_backlog', 0)
+            invoiced = metrics_data.get('invoiced', 0)
+            forecast = metrics_data.get('forecast', invoiced + in_period)
+            backlog_orders = summary.get('backlog_orders', 0)
+            
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric(
+                    "Total Backlog",
+                    f"${total_backlog:,.0f}",
+                    f"{backlog_orders:,} orders",
+                    delta_color="off",
+                )
+            with c2:
+                in_period_pct = (in_period / total_backlog * 100) if total_backlog > 0 else 0
+                st.metric(
+                    "In-Period",
+                    f"${in_period:,.0f}",
+                    f"{in_period_pct:.0f}% of backlog" if total_backlog > 0 else None,
+                    delta_color="off",
+                )
+            with c3:
+                st.metric(
+                    "Forecast",
+                    f"${forecast:,.0f}",
+                    "Invoiced + In-Period",
+                    delta_color="off",
+                )
+            with c4:
+                if overdue_orders > 0:
+                    st.metric(
+                        "⚠️ Overdue",
+                        f"${overdue_revenue:,.0f}",
+                        f"{overdue_orders} orders past ETD",
+                        delta_color="inverse",
+                    )
+                else:
+                    st.metric(
+                        "✅ Overdue",
+                        "$0",
+                        "All on schedule",
+                        delta_color="off",
+                    )
