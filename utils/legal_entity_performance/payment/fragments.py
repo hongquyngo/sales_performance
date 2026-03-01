@@ -292,21 +292,21 @@ def payment_tab_fragment(
     # =========================================================================
     # SUB-TABS
     # =========================================================================
-    tab_list, tab_summary, tab_customer = st.tabs([
-        "📋 Payment List", "📊 Summary & Aging", "👥 Customer Analysis"
+    tab_summary, tab_list, tab_customer = st.tabs([
+        "📊 Summary & Aging", "📋 Payment List", "👥 Customer Analysis"
     ])
+
+    with tab_summary:
+        payment_summary_fragment(
+            pay_df=filtered_df,
+            fragment_key=f"{key_prefix}_summary",
+        )
 
     with tab_list:
         payment_list_fragment(
             pay_df=filtered_df,
             fragment_key=f"{key_prefix}_list",
             total_count=total_count
-        )
-
-    with tab_summary:
-        payment_summary_fragment(
-            pay_df=filtered_df,
-            fragment_key=f"{key_prefix}_summary",
         )
 
     with tab_customer:
@@ -334,35 +334,52 @@ def payment_list_fragment(
     rev_col = 'calculated_invoiced_amount_usd'
 
     # =========================================================================
-    # SUMMARY METRICS
+    # SUMMARY METRICS (focused on outstanding breakdown, not misleading totals)
     # =========================================================================
-    total_invoiced = pay_df[rev_col].sum()
-    total_collected = pay_df['collected_usd'].sum()
     total_outstanding = pay_df['outstanding_usd'].sum()
-    rate = (total_collected / total_invoiced) if total_invoiced > 0 else 0
     inv_count = pay_df['inv_number'].nunique() if 'inv_number' in pay_df.columns else len(pay_df)
-    cust_count = pay_df['customer_id'].nunique() if 'customer_id' in pay_df.columns else pay_df['customer'].nunique()
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # Count by status
+    status_counts = pay_df['payment_status'].value_counts()
+    unpaid_lines = status_counts.get('Unpaid', 0)
+    partial_lines = status_counts.get('Partially Paid', 0)
+    paid_lines = status_counts.get('Fully Paid', 0)
+
+    # Overdue vs Not Yet Due
+    today_ts = pd.Timestamp(date.today())
+    overdue_amount = 0
+    nyd_amount = 0
+    overdue_lines = 0
+    if 'due_date' in pay_df.columns:
+        overdue_mask = (
+            (pay_df['due_date'].notna()) &
+            (pay_df['due_date'] < today_ts) &
+            (pay_df['outstanding_usd'] > 0.01)
+        )
+        overdue_amount = pay_df.loc[overdue_mask, 'outstanding_usd'].sum()
+        overdue_lines = int(overdue_mask.sum())
+        nyd_amount = total_outstanding - overdue_amount
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.metric("💰 Invoiced", f"${total_invoiced:,.0f}",
+        st.metric("💰 Outstanding", f"${total_outstanding:,.0f}",
                   delta=f"{inv_count:,} invoices", delta_color="off")
     with c2:
-        st.metric("✅ Collected", f"${total_collected:,.0f}",
-                  delta=f"{rate:.0%} rate", delta_color="off")
+        if overdue_amount > 0:
+            overdue_pct = (overdue_amount / total_outstanding * 100) if total_outstanding > 0 else 0
+            st.metric("🔴 Overdue", f"${overdue_amount:,.0f}",
+                      delta=f"{overdue_lines:,} lines · {overdue_pct:.0f}%",
+                      delta_color="inverse")
+        else:
+            st.metric("🟢 Overdue", "$0", delta="None", delta_color="off")
     with c3:
-        st.metric("⏳ Outstanding", f"${total_outstanding:,.0f}", delta_color="off")
+        nyd_pct = (nyd_amount / total_outstanding * 100) if total_outstanding > 0 else 0
+        st.metric("🟢 Not Yet Due", f"${nyd_amount:,.0f}",
+                  delta=f"{nyd_pct:.0f}% of total", delta_color="off")
     with c4:
-        # Count by status
-        status_counts = pay_df['payment_status'].value_counts()
-        paid = status_counts.get('Fully Paid', 0)
-        st.metric("🟢 Fully Paid", f"{paid:,} lines", delta_color="off")
+        st.metric("🟡 Partial", f"{partial_lines:,} lines", delta_color="off")
     with c5:
-        partial = status_counts.get('Partially Paid', 0)
-        st.metric("🟡 Partial", f"{partial:,} lines", delta_color="off")
-    with c6:
-        unpaid = status_counts.get('Unpaid', 0)
-        st.metric("🔴 Unpaid", f"{unpaid:,} lines", delta_color="off")
+        st.metric("🔴 Unpaid", f"{unpaid_lines:,} lines", delta_color="off")
 
     st.divider()
 

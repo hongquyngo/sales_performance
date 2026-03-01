@@ -506,37 +506,75 @@ def render_payment_section(payment_data: Optional[Dict]):
         st.caption(f"Payment statuses in data: {', '.join(raw_statuses)}")
 
     # -----------------------------------------------------------------
-    # ROW 1: Summary Metrics
+    # ROW 1: Summary Metrics (focused on outstanding, not invoiced totals)
     # -----------------------------------------------------------------
+    total_outstanding = summary['total_outstanding']
+    unpaid_count = summary['unpaid_invoices'] + summary['partial_invoices']
+    
+    # Parse aging for overdue / not-yet-due split
+    not_yet_due_amount = 0
+    total_overdue_amount = 0
+    overdue_line_count = 0
+    nyd_line_count = 0
+    weighted_days_sum = 0
+    total_outstanding_for_avg = 0
+    
+    if not aging.empty and 'min_days' in aging.columns:
+        nyd_mask = aging['min_days'] < 0
+        not_yet_due_amount = aging.loc[nyd_mask, 'amount'].sum()
+        nyd_line_count = int(aging.loc[nyd_mask, 'count'].sum())
+        
+        overdue_mask = aging['min_days'] >= 0
+        total_overdue_amount = aging.loc[overdue_mask, 'amount'].sum()
+        overdue_line_count = int(aging.loc[overdue_mask, 'count'].sum())
+        
+        # Weighted avg days outstanding (midpoint of each bucket × amount)
+        for _, row in aging.iterrows():
+            mid = (row['min_days'] + min(row['max_days'], 365)) / 2
+            if mid > 0:  # Only overdue contributes
+                weighted_days_sum += mid * row['amount']
+                total_outstanding_for_avg += row['amount']
+    
+    avg_days = int(weighted_days_sum / total_outstanding_for_avg) if total_outstanding_for_avg > 0 else 0
+    
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric(
-            "Total Invoiced",
-            _fmt_currency(summary['total_invoiced']),
-            f"{summary['total_invoices']} invoices",
+            "💰 Outstanding",
+            _fmt_currency(total_outstanding),
+            f"{unpaid_count:,} invoices ({summary['unpaid_invoices']} unpaid · {summary['partial_invoices']} partial)",
+            delta_color="off",
         )
     with c2:
-        st.metric(
-            "Collected",
-            _fmt_currency(summary['total_collected']),
-            f"{summary['collection_rate']:.0%} rate",
-            delta_color="normal",
-        )
+        if total_overdue_amount > 0:
+            overdue_pct = (total_overdue_amount / total_outstanding * 100) if total_outstanding > 0 else 0
+            st.metric(
+                "🔴 Overdue",
+                _fmt_currency(total_overdue_amount),
+                f"{overdue_line_count:,} lines · {overdue_pct:.0f}% of total",
+                delta_color="inverse",
+            )
+        else:
+            st.metric("🟢 Overdue", "$0", "No overdue", delta_color="off")
     with c3:
-        outstanding = summary['total_outstanding']
-        unpaid_count = summary['unpaid_invoices'] + summary['partial_invoices']
+        nyd_pct = (not_yet_due_amount / total_outstanding * 100) if total_outstanding > 0 else 0
         st.metric(
-            "Outstanding",
-            _fmt_currency(outstanding),
-            f"{unpaid_count} invoices" if unpaid_count > 0 else "All paid",
-            delta_color="inverse" if outstanding > 0 else "normal",
+            "🟢 Not Yet Due",
+            _fmt_currency(not_yet_due_amount),
+            f"{nyd_line_count:,} lines · {nyd_pct:.0f}% of total",
+            delta_color="off",
         )
     with c4:
-        st.metric(
-            "Paid Invoices",
-            f"{summary['invoice_paid_rate']:.0%}",
-            f"{summary['fully_paid_invoices']} / {summary['total_invoices']}",
-        )
+        if avg_days > 0:
+            severity = "🔴" if avg_days > 90 else "🟠" if avg_days > 45 else "🟢"
+            st.metric(
+                f"{severity} Avg Days Overdue",
+                f"{avg_days} days",
+                f"weighted by amount",
+                delta_color="off",
+            )
+        else:
+            st.metric("🟢 Avg Days Overdue", "0 days", "All within terms", delta_color="off")
 
     # If nothing outstanding, show clean status and skip details
     if not has_outstanding:
