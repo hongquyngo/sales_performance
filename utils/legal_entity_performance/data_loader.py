@@ -11,7 +11,7 @@ VERSION: 2.0.0
 - sqlalchemy engine (lazy loaded)
 
 Principles:
-1. Load all raw data in one go (2 SQL queries: sales + backlog)
+1. Load all raw data in one go (3 SQL queries: sales + backlog + AR outstanding)
 2. Cache in session_state for duration of session
 3. Only reload when cache expired or custom period extends range
 4. All filtering done via DataProcessor (Pandas-based)
@@ -42,7 +42,7 @@ class UnifiedDataLoader:
     Load and cache all raw data needed for Legal Entity Performance.
     
     Implements "Load Once, Filter Many" pattern:
-    - 2 SQL queries load ALL data (sales + backlog)
+    - 3 SQL queries load ALL data (sales + backlog + AR outstanding)
     - Data cached in session_state with TTL
     - Subsequent filter changes use cached data (instant)
     
@@ -76,6 +76,7 @@ class UnifiedDataLoader:
             Dict containing:
             - sales_raw_df: N years of sales data
             - backlog_raw_df: All pending orders
+            - ar_outstanding_df: All unpaid/partial invoices (no date filter)
             - _metadata: Loading info
         """
         if not self.access.can_access_page():
@@ -107,6 +108,9 @@ class UnifiedDataLoader:
         if cache.get('sales_raw_df') is None:
             return True, "Missing sales_raw_df"
         
+        if cache.get('ar_outstanding_df') is None:
+            return True, "Missing ar_outstanding_df"
+        
         # Check TTL
         loaded_at = cache.get('_loaded_at')
         if loaded_at:
@@ -126,6 +130,7 @@ class UnifiedDataLoader:
         return {
             'sales_raw_df': pd.DataFrame(),
             'backlog_raw_df': pd.DataFrame(),
+            'ar_outstanding_df': pd.DataFrame(),
             '_loaded_at': None,
             '_lookback_start': None,
             '_lookback_end': None,
@@ -138,7 +143,7 @@ class UnifiedDataLoader:
     def _load_all_raw_data(self, custom_start_date: date = None) -> Dict:
         """
         Load all raw data from database.
-        Executes 2 SQL queries: sales + backlog.
+        Executes 3 SQL queries: sales + backlog + AR outstanding.
         """
         today = date.today()
         
@@ -173,8 +178,12 @@ class UnifiedDataLoader:
             data['sales_raw_df'] = self.queries.load_sales_raw(lookback_start)
             
             # 2. BACKLOG RAW DATA
-            progress_bar.progress(60, text="📦 Loading backlog data...")
+            progress_bar.progress(45, text="📦 Loading backlog data...")
             data['backlog_raw_df'] = self.queries.load_backlog_raw()
+            
+            # 3. AR OUTSTANDING (all unpaid/partial, no date filter)
+            progress_bar.progress(75, text="💰 Loading AR outstanding...")
+            data['ar_outstanding_df'] = self.queries.load_ar_outstanding()
             
             progress_bar.progress(100, text="✅ Data loaded successfully!")
             
@@ -195,6 +204,7 @@ class UnifiedDataLoader:
             print(f"✅ UNIFIED DATA LOADED (Legal Entity): {total_elapsed:.3f}s total")
             print(f"   Sales: {len(data['sales_raw_df']):,} rows")
             print(f"   Backlog: {len(data['backlog_raw_df']):,} rows")
+            print(f"   AR Outstanding: {len(data['ar_outstanding_df']):,} rows")
             print(f"{'='*60}\n")
         
         # Store in session state
@@ -202,7 +212,8 @@ class UnifiedDataLoader:
         
         logger.info(
             f"Unified data loaded (LE): sales={len(data['sales_raw_df'])}, "
-            f"backlog={len(data['backlog_raw_df'])}"
+            f"backlog={len(data['backlog_raw_df'])}, "
+            f"ar_outstanding={len(data['ar_outstanding_df'])}"
         )
         
         return data

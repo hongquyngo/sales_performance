@@ -80,6 +80,47 @@ class LegalEntityQueries:
             return pd.DataFrame()
     
     # =========================================================================
+    # AR OUTSTANDING (all unpaid/partial invoices, NO date filter)
+    # =========================================================================
+    
+    def load_ar_outstanding(self) -> pd.DataFrame:
+        """
+        Load ALL invoices with outstanding balance — not filtered by date.
+        
+        This gives a complete picture of Accounts Receivable regardless of 
+        which period the user selects in sidebar filters.
+        
+        Includes:
+        - Unpaid invoices (payment_status = 'Unpaid')
+        - Partially paid invoices (payment_ratio < 1)
+        
+        Excludes:
+        - Fully paid invoices
+        - HISTORY rows (payment_status IS NULL)
+        """
+        start_time = time.perf_counter()
+        
+        query = """
+            SELECT *
+            FROM unified_sales_by_legal_entity_view
+            WHERE payment_status IS NOT NULL
+              AND payment_status != 'Fully Paid'
+        """
+        
+        try:
+            df = pd.read_sql(text(query), self.engine)
+            # Normalize column names
+            if 'entity_id' in df.columns and 'legal_entity_id' not in df.columns:
+                df = df.rename(columns={'entity_id': 'legal_entity_id'})
+            elapsed = time.perf_counter() - start_time
+            if DEBUG_QUERY_TIMING:
+                print(f"   📊 SQL [ar_outstanding]: {elapsed:.3f}s → {len(df):,} rows")
+            return df
+        except Exception as e:
+            logger.error(f"Error loading ar_outstanding: {e}")
+            return pd.DataFrame()
+    
+    # =========================================================================
     # BACKLOG RAW DATA
     # =========================================================================
     

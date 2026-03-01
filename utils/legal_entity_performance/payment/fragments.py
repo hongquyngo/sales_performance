@@ -56,20 +56,84 @@ def _format_oc_po(row) -> str:
 def payment_tab_fragment(
     sales_df: pd.DataFrame,
     filter_values: Dict = None,
-    key_prefix: str = "le_payment_tab"
+    key_prefix: str = "le_payment_tab",
+    ar_outstanding_df: pd.DataFrame = None,
 ):
     """
     Fragment wrapper for Payment & Collection tab.
+    
+    Dual-mode:
+      - All Outstanding AR: shows ALL unpaid/partial invoices regardless of date
+      - Period Invoices: shows only invoices within the selected period (original behavior)
+    
     Includes filters + sub-tabs (Payment List + Summary & Aging + Customer).
     """
-    # Only rows with payment data
-    if sales_df.empty or 'payment_status' not in sales_df.columns:
+    # Check if we have any payment data at all
+    has_period_data = (
+        not sales_df.empty
+        and 'payment_status' in sales_df.columns
+        and sales_df['payment_status'].notna().any()
+    )
+    has_ar_data = ar_outstanding_df is not None and not ar_outstanding_df.empty
+    
+    if not has_period_data and not has_ar_data:
         st.info("Payment data not available. Payment tracking is available for 2025+ invoices only.")
         return
-
-    pay_df = sales_df[sales_df['payment_status'].notna()].copy()
+    
+    # =========================================================================
+    # VIEW MODE TOGGLE
+    # =========================================================================
+    ar_mode = st.radio(
+        "View mode",
+        options=["📋 All Outstanding AR", "📅 Period Invoices"],
+        horizontal=True,
+        key=f"{key_prefix}_mode",
+        help=(
+            "**All Outstanding AR**: All unpaid/partially paid invoices regardless of period — "
+            "gives complete AR picture.  \n"
+            "**Period Invoices**: Only invoices within the selected date range — "
+            "shows collection performance for the period."
+        ),
+    )
+    is_ar_mode = (ar_mode == "📋 All Outstanding AR")
+    
+    # =========================================================================
+    # SELECT SOURCE DATA BASED ON MODE
+    # =========================================================================
+    if is_ar_mode:
+        if not has_ar_data:
+            st.warning("AR outstanding data not available. Showing period invoices instead.")
+            is_ar_mode = False
+            source_df = sales_df
+        else:
+            source_df = ar_outstanding_df
+    else:
+        if not has_period_data:
+            st.info("No payment data in the selected period. "
+                    "Switch to 'All Outstanding AR' to see full AR picture.")
+            return
+        source_df = sales_df
+    
+    # Filter rows with payment data
+    if 'payment_status' not in source_df.columns:
+        st.info("Payment data not available for this dataset.")
+        return
+    
+    pay_df = source_df[source_df['payment_status'].notna()].copy()
+    
+    # Apply sidebar filters (entity, customer_type) to AR mode
+    # so the AR view respects the global sidebar selections
+    if is_ar_mode and filter_values:
+        entity_ids = filter_values.get('entity_ids', [])
+        if entity_ids and 'legal_entity_id' in pay_df.columns:
+            pay_df = pay_df[pay_df['legal_entity_id'].isin(entity_ids)]
+        
+        customer_type = filter_values.get('customer_type', 'All')
+        if customer_type != 'All' and 'customer_type' in pay_df.columns:
+            pay_df = pay_df[pay_df['customer_type'] == customer_type]
+    
     if pay_df.empty:
-        st.info("No rows with payment data in the selected period. "
+        st.info("No rows with payment data. "
                 "HISTORY data (2014-2024) does not include payment tracking.")
         return
 
@@ -84,6 +148,48 @@ def payment_tab_fragment(
     pay_df['inv_date'] = pd.to_datetime(pay_df['inv_date'], errors='coerce')
 
     total_count = len(pay_df)
+
+    # =========================================================================
+    # AR CONTEXT BANNER (dual-mode awareness)
+    # =========================================================================
+    if is_ar_mode and filter_values:
+        start_date = filter_values.get('start_date')
+        end_date = filter_values.get('end_date')
+        total_ar_outstanding = pay_df['outstanding_usd'].sum()
+        
+        if start_date and end_date and total_ar_outstanding > 0:
+            period_mask = (
+                (pay_df['inv_date'] >= pd.Timestamp(start_date)) &
+                (pay_df['inv_date'] <= pd.Timestamp(end_date))
+            )
+            in_period_outstanding = pay_df.loc[period_mask, 'outstanding_usd'].sum()
+            carried_over = total_ar_outstanding - in_period_outstanding
+            
+            bc1, bc2, bc3 = st.columns(3)
+            with bc1:
+                st.metric(
+                    "📋 Total AR Outstanding",
+                    f"${total_ar_outstanding:,.0f}",
+                    delta=f"{len(pay_df):,} lines",
+                    delta_color="off",
+                )
+            with bc2:
+                pct_current = (in_period_outstanding / total_ar_outstanding * 100) if total_ar_outstanding > 0 else 0
+                st.metric(
+                    "📅 Current Period",
+                    f"${in_period_outstanding:,.0f}",
+                    delta=f"{pct_current:.0f}% of total",
+                    delta_color="off",
+                )
+            with bc3:
+                pct_prior = (carried_over / total_ar_outstanding * 100) if total_ar_outstanding > 0 else 0
+                st.metric(
+                    "⏪ Carried Over (Prior Periods)",
+                    f"${carried_over:,.0f}",
+                    delta=f"{pct_prior:.0f}% of total",
+                    delta_color="inverse" if carried_over > 0 else "off",
+                )
+            st.divider()
 
     # =========================================================================
     # FILTERS ROW

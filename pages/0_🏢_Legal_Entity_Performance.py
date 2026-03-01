@@ -343,7 +343,8 @@ def main():
         payment_tab_fragment(
             sales_df=sales_df,
             filter_values=active_filters,
-            key_prefix="le_payment"
+            key_prefix="le_payment",
+            ar_outstanding_df=unified_cache.get('ar_outstanding_df', pd.DataFrame()),
         )
     
     # =========================================================================
