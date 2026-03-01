@@ -476,14 +476,16 @@ def overview_tab_fragment(
     pipeline_metrics: Dict = None,
     # Payment analysis (pre-computed or None to auto-compute)
     payment_data: Dict = None,
+    # AR Outstanding (all unpaid/partial, no date filter)
+    ar_outstanding_df: pd.DataFrame = None,
 ):
     """
     Render the complete Overview tab.
     
-    VERSION: 3.1.0 — Added Payment & Collection section
+    VERSION: 3.2.0 — AR Outstanding in Executive Summary (all AR, not period-filtered)
     
     ABOVE THE FOLD (no scroll):
-      1. Executive Summary (auto-generated text + alerts + AR)
+      1. Executive Summary (auto-generated text + alerts + AR outstanding)
       2. KPI Cards (Revenue, GP, GP1, Commission, Customers, GP%, GP1%, Invoices)
     
     BELOW THE FOLD (expandable sections):
@@ -502,6 +504,26 @@ def overview_tab_fragment(
                 payment_data = analyze_payments(sales_df)
             except Exception as e:
                 logger.error(f"Payment analysis failed: {e}", exc_info=True)
+    
+    # Compute AR analysis from ALL outstanding invoices (not period-filtered)
+    ar_payment_data = None
+    if ar_outstanding_df is not None and not ar_outstanding_df.empty:
+        try:
+            # Apply sidebar filters (entity, customer_type) to AR data
+            ar_df_filtered = ar_outstanding_df.copy()
+            if active_filters:
+                entity_ids = active_filters.get('entity_ids', [])
+                if entity_ids and 'legal_entity_id' in ar_df_filtered.columns:
+                    ar_df_filtered = ar_df_filtered[ar_df_filtered['legal_entity_id'].isin(entity_ids)]
+                customer_type = active_filters.get('customer_type', 'All')
+                if customer_type != 'All' and 'customer_type' in ar_df_filtered.columns:
+                    ar_df_filtered = ar_df_filtered[ar_df_filtered['customer_type'] == customer_type]
+            
+            if not ar_df_filtered.empty:
+                ar_payment_data = analyze_payments(ar_df_filtered)
+        except Exception as e:
+            logger.error(f"AR outstanding analysis failed: {e}", exc_info=True)
+    
     # =========================================================================
     # SECTION 1: EXECUTIVE SUMMARY — CEO reads this first
     # =========================================================================
@@ -515,6 +537,7 @@ def overview_tab_fragment(
             active_filters=active_filters,
             complex_kpis=complex_kpis,
             payment_data=payment_data,
+            ar_payment_data=ar_payment_data,
         )
         render_executive_summary(summary)
     except Exception as e:

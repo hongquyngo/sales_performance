@@ -404,19 +404,25 @@ def check_payment_alerts(payment_data: Optional[Dict]) -> List[Dict]:
     if total_outstanding < 100:
         return []
 
-    # 1. Low collection rate
-    rate = summary.get('collection_rate', 1.0)
-    if rate < COLLECTION_RATE_LOW:
-        alerts.append({
-            'severity': 'medium',
-            'icon': '💰',
-            'message': (
-                f"Collection rate {rate:.0%} — "
-                f"outstanding {_fmt_currency(total_outstanding)} "
-                f"({summary.get('unpaid_invoices', 0)} unpaid + "
-                f"{summary.get('partial_invoices', 0)} partial invoices)"
-            ),
-        })
+    # 1. High overdue share (replaces collection rate alert — rate is misleading
+    #    when AR dataset excludes fully paid invoices)
+    if not aging.empty:
+        overdue_mask = aging['min_days'] >= 0
+        total_overdue = aging.loc[overdue_mask, 'amount'].sum()
+        overdue_share = total_overdue / total_outstanding if total_outstanding > 0 else 0
+        
+        if overdue_share >= OVERDUE_SHARE_THRESHOLD and total_overdue > OVERDUE_90_THRESHOLD_USD:
+            unpaid_count = summary.get('unpaid_invoices', 0)
+            partial_count = summary.get('partial_invoices', 0)
+            alerts.append({
+                'severity': 'medium',
+                'icon': '💰',
+                'message': (
+                    f"Overdue chiếm {overdue_share:.0%} tổng công nợ — "
+                    f"{_fmt_currency(total_overdue)} / {_fmt_currency(total_outstanding)} "
+                    f"({unpaid_count} unpaid + {partial_count} partial)"
+                ),
+            })
 
     # 2. Heavy overdue 90+ days
     if not aging.empty:

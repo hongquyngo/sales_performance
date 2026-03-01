@@ -303,6 +303,8 @@ def main():
             new_business_detail_df=new_business_detail_df,
             # Pipeline (Backlog & Forecast)
             pipeline_metrics=pipeline_metrics,
+            # AR Outstanding (all unpaid/partial, no date filter)
+            ar_outstanding_df=unified_cache.get('ar_outstanding_df', pd.DataFrame()),
         )
     
     # =========================================================================

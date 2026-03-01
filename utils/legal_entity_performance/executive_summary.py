@@ -66,18 +66,23 @@ def generate_executive_summary(
     active_filters: Dict = None,
     complex_kpis: Dict = None,
     payment_data: Dict = None,
+    ar_payment_data: Dict = None,
 ) -> Dict:
     """
     Generate complete executive summary from existing processed data.
 
     Returns dict with:
         period_label, headline, alerts[], highlights[], has_alerts,
-        customer_type_breakdown, payment_data
+        customer_type_breakdown, payment_data, ar_payment_data
+    
+    Args:
+        payment_data: Payment analysis from period-filtered sales (collection performance)
+        ar_payment_data: Payment analysis from ALL outstanding AR (total AR picture)
     """
     filters = active_filters or {}
 
     period_label = _build_period_label(filters)
-    headline = _build_headline(overview_metrics, yoy_metrics, pipeline_metrics, payment_data)
+    headline = _build_headline(overview_metrics, yoy_metrics, pipeline_metrics, ar_payment_data or payment_data)
 
     # Collect alerts (ordered by severity)
     alerts = []
@@ -88,10 +93,11 @@ def generate_executive_summary(
     alerts.extend(_check_inactive_customer_alerts(sales_df))
     alerts.extend(_check_concentration_alerts(sales_df))
 
-    # Payment/collection alerts
-    if payment_data:
+    # Payment/collection alerts — use ALL AR data for more complete alerts
+    ar_data_for_alerts = ar_payment_data or payment_data
+    if ar_data_for_alerts:
         from .payment_analysis import check_payment_alerts
-        alerts.extend(check_payment_alerts(payment_data))
+        alerts.extend(check_payment_alerts(ar_data_for_alerts))
 
     highlights = _build_highlights(overview_metrics, yoy_metrics, complex_kpis, sales_df, prev_sales_df)
 
@@ -106,6 +112,7 @@ def generate_executive_summary(
         'has_alerts': len(alerts) > 0,
         'customer_type_breakdown': customer_type_breakdown,
         'payment_data': payment_data,
+        'ar_payment_data': ar_payment_data,
     }
 
 
@@ -160,12 +167,13 @@ def _build_headline(
         if bl_orders > 0:
             parts.append(f"Backlog: {_fmt_currency(bl_rev)} ({bl_orders} orders)")
 
-    # AR (accounts receivable)
+    # AR (accounts receivable) — show outstanding only, no collection rate
+    # because AR dataset excludes fully paid invoices, making rate misleading
     if payment_data:
-        from .payment_analysis import get_payment_headline
-        ar_text = get_payment_headline(payment_data)
-        if ar_text:
-            parts.append(ar_text)
+        ar_summary = payment_data.get('summary', {})
+        ar_outstanding = ar_summary.get('total_outstanding', 0)
+        if ar_outstanding > 100:
+            parts.append(f"AR: {_fmt_currency(ar_outstanding)} outstanding")
 
     return " | ".join(parts)
 
@@ -509,11 +517,23 @@ def _build_highlights(
 ) -> List[str]:
     highlights = []
 
-    # Revenue growth
+    # 1. Revenue growth (total)
     if yoy and yoy.get('revenue_delta_pct') is not None and yoy['revenue_delta_pct'] > 5:
         highlights.append(f"Revenue tăng {yoy['revenue_delta_pct']:.1f}% YoY")
 
-    # GP margin improvement
+    # 2. External revenue growth (follows revenue naturally)
+    if prev_sales_df is not None and not prev_sales_df.empty and not sales_df.empty:
+        rev_col = 'calculated_invoiced_amount_usd'
+        if 'customer_type' in sales_df.columns and rev_col in sales_df.columns:
+            ext_curr = sales_df[sales_df['customer_type'].str.lower() == 'external'][rev_col].sum()
+            ext_prev_df = prev_sales_df[prev_sales_df['customer_type'].str.lower() == 'external'] if 'customer_type' in prev_sales_df.columns else pd.DataFrame()
+            ext_prev = ext_prev_df[rev_col].sum() if not ext_prev_df.empty else 0
+            if ext_prev > 0:
+                ext_growth = (ext_curr - ext_prev) / ext_prev * 100
+                if ext_growth > 5:
+                    highlights.append(f"External revenue tăng {ext_growth:.1f}% YoY")
+
+    # 3. GP margin improvement
     if yoy:
         prev_rev = yoy.get('prev_revenue', 0)
         prev_gp = yoy.get('prev_gp', 0)
@@ -524,7 +544,7 @@ def _build_highlights(
             if margin_change > 1.0:
                 highlights.append(f"GP margin cải thiện {margin_change:+.1f}pp vs LY")
 
-    # New business
+    # 4. New business
     if complex_kpis:
         new_cust = complex_kpis.get('num_new_customers', 0)
         new_biz_rev = complex_kpis.get('new_business_revenue', 0)
@@ -533,7 +553,7 @@ def _build_highlights(
                 f"{new_cust} khách hàng mới, new business {_fmt_currency(new_biz_rev)}"
             )
 
-    # Top growing customer
+    # 5. Top growing customer
     if prev_sales_df is not None and not prev_sales_df.empty and not sales_df.empty:
         rev_col = 'calculated_invoiced_amount_usd'
         if rev_col in sales_df.columns and 'customer' in sales_df.columns:
@@ -546,18 +566,6 @@ def _build_highlights(
                 if best_val > 0:
                     highlights.append(f"Top gainer: {best} ({_fmt_currency(best_val)})")
 
-    # External revenue growth
-    if prev_sales_df is not None and not prev_sales_df.empty and not sales_df.empty:
-        rev_col = 'calculated_invoiced_amount_usd'
-        if 'customer_type' in sales_df.columns and rev_col in sales_df.columns:
-            ext_curr = sales_df[sales_df['customer_type'].str.lower() == 'external'][rev_col].sum()
-            ext_prev_df = prev_sales_df[prev_sales_df['customer_type'].str.lower() == 'external'] if 'customer_type' in prev_sales_df.columns else pd.DataFrame()
-            ext_prev = ext_prev_df[rev_col].sum() if not ext_prev_df.empty else 0
-            if ext_prev > 0:
-                ext_growth = (ext_curr - ext_prev) / ext_prev * 100
-                if ext_growth > 5:
-                    highlights.append(f"External revenue tăng {ext_growth:.1f}% YoY")
-
     return highlights[:4]
 
 
@@ -569,20 +577,26 @@ def render_executive_summary(summary: Dict):
     """
     Render executive summary box in Streamlit.
     CEO glances at this first — must convey status in 5 seconds.
+    
+    Layout:
+      Line 1: Headline (Revenue | GP | Backlog | AR)
+      Line 2: 4 metric cards (External Rev | Internal Rev | Total Outstanding | Overdue)
+      Line 3: Alerts (if any)
+      Line 4: Highlights (if any)
     """
     period = summary.get('period_label', '')
     headline = summary.get('headline', '')
     alerts = summary.get('alerts', [])
     highlights = summary.get('highlights', [])
     breakdown = summary.get('customer_type_breakdown')
+    ar_payment_data = summary.get('ar_payment_data')
 
     with st.container(border=True):
         st.markdown(f"#### 📊 Executive Summary — {period}")
         st.markdown(f"**{headline}**")
 
-        # Customer Type Breakdown — compact metric columns
-        if breakdown:
-            _render_customer_type_breakdown(breakdown)
+        # Single row: External | Internal | Total Outstanding | Overdue
+        _render_summary_metrics_row(breakdown, ar_payment_data)
 
         if alerts:
             severity_order = {'high': 0, 'medium': 1, 'low': 2}
@@ -607,48 +621,120 @@ def render_executive_summary(summary: Dict):
             st.success("✅ Hoạt động bình thường — không có vấn đề cần chú ý")
 
 
-def _render_customer_type_breakdown(breakdown: Dict):
+def _render_summary_metrics_row(
+    breakdown: Optional[Dict],
+    ar_payment_data: Optional[Dict],
+):
     """
-    Render External vs Internal metrics as compact st.metric columns.
-    External is always shown first and highlighted.
+    Single row: External Revenue | Internal Revenue | Total Outstanding | Overdue
+    Combines customer type breakdown + AR into one scannable row.
     """
-    # Sort: External first, then others alphabetically
-    types_ordered = sorted(
-        breakdown.keys(),
-        key=lambda t: (0 if t.lower() == 'external' else 1, t)
-    )
-
-    cols = st.columns(len(types_ordered))
-    for col, ctype in zip(cols, types_ordered):
-        data = breakdown[ctype]
-        rev = data['revenue']
-        share = data['share']
-        margin = data['margin']
-        yoy = data.get('yoy_pct')
-        customers = data.get('customers', 0)
-
-        # Label with icon
-        icon = "🌐" if ctype.lower() == 'external' else "🏠"
-        label = f"{icon} {ctype}"
-
-        # Delta string: YoY + margin
-        delta_parts = []
-        if yoy is not None:
-            delta_parts.append(f"{yoy:+.1f}% YoY")
-        delta_parts.append(f"GP {margin:.1f}%")
-        delta_str = " · ".join(delta_parts)
-
-        # Determine delta color based on YoY
-        delta_color = "normal"
-        if yoy is not None and yoy < 0:
-            delta_color = "inverse" if ctype.lower() == 'external' else "normal"
-
-        with col:
+    # --- Extract External / Internal ---
+    ext_data = None
+    int_data = None
+    if breakdown:
+        for ctype, data in breakdown.items():
+            if ctype.lower() == 'external':
+                ext_data = data
+            elif ctype.lower() == 'internal':
+                int_data = data
+    
+    # --- Extract AR ---
+    total_outstanding = 0
+    total_overdue = 0
+    overdue_90_amount = 0
+    overdue_line_count = 0
+    ar_inv_count = 0
+    
+    if ar_payment_data:
+        ar_summary = ar_payment_data.get('summary', {})
+        ar_aging = ar_payment_data.get('aging_buckets', pd.DataFrame())
+        
+        total_outstanding = ar_summary.get('total_outstanding', 0)
+        ar_inv_count = ar_summary.get('unpaid_invoices', 0) + ar_summary.get('partial_invoices', 0)
+        
+        if not ar_aging.empty and 'min_days' in ar_aging.columns:
+            overdue_mask = ar_aging['min_days'] >= 0
+            total_overdue = ar_aging.loc[overdue_mask, 'amount'].sum()
+            overdue_line_count = int(ar_aging.loc[overdue_mask, 'count'].sum())
+            
+            bucket_90 = ar_aging[ar_aging['min_days'] >= 91]
+            overdue_90_amount = bucket_90['amount'].sum() if not bucket_90.empty else 0
+    
+    # --- Render 4 columns ---
+    c1, c2, c3, c4 = st.columns(4)
+    
+    # Col 1: External Revenue
+    with c1:
+        if ext_data:
+            share = ext_data.get('share', 0)
+            yoy = ext_data.get('yoy_pct')
+            margin = ext_data.get('margin', 0)
+            customers = ext_data.get('customers', 0)
+            
+            delta_parts = []
+            if yoy is not None:
+                delta_parts.append(f"{yoy:+.1f}% YoY")
+            delta_parts.append(f"GP {margin:.1f}%")
+            
             st.metric(
-                label=f"{label} ({share:.0%})",
-                value=_fmt_currency(rev),
-                delta=delta_str,
-                delta_color=delta_color,
+                f"🌐 External ({share:.0%})",
+                _fmt_currency(ext_data['revenue']),
+                " · ".join(delta_parts),
+                delta_color="normal" if (yoy is None or yoy >= 0) else "inverse",
             )
             if customers > 0:
                 st.caption(f"{customers} customers")
+        else:
+            st.metric("🌐 External", "—", "No data", delta_color="off")
+    
+    # Col 2: Internal Revenue
+    with c2:
+        if int_data:
+            share = int_data.get('share', 0)
+            yoy = int_data.get('yoy_pct')
+            margin = int_data.get('margin', 0)
+            customers = int_data.get('customers', 0)
+            
+            delta_parts = []
+            if yoy is not None:
+                delta_parts.append(f"{yoy:+.1f}% YoY")
+            delta_parts.append(f"GP {margin:.1f}%")
+            
+            st.metric(
+                f"🏠 Internal ({share:.0%})",
+                _fmt_currency(int_data['revenue']),
+                " · ".join(delta_parts),
+                delta_color="normal",
+            )
+            if customers > 0:
+                st.caption(f"{customers} customers")
+        else:
+            st.metric("🏠 Internal", "—", "No data", delta_color="off")
+    
+    # Col 3: Total AR Outstanding
+    with c3:
+        if total_outstanding > 100:
+            st.metric(
+                "💰 Total Outstanding",
+                _fmt_currency(total_outstanding),
+                f"{ar_inv_count:,} invoices",
+                delta_color="off",
+            )
+        else:
+            st.metric("💰 Total Outstanding", "$0", "All collected", delta_color="off")
+    
+    # Col 4: Overdue
+    with c4:
+        if total_overdue > 0:
+            detail = f"{overdue_line_count:,} lines"
+            if overdue_90_amount > 0:
+                detail += f" · {_fmt_currency(overdue_90_amount)} is 90+d"
+            st.metric(
+                "🔴 Overdue",
+                _fmt_currency(total_overdue),
+                detail,
+                delta_color="inverse",
+            )
+        else:
+            st.metric("🟢 Overdue", "$0", "No overdue", delta_color="off")
