@@ -476,10 +476,11 @@ class InventoryQualityData:
     
     @st.cache_data(ttl=300, show_spinner=False)
     def get_inventory_period_summary(_self, 
-                                      from_date,
-                                      to_date,
+                                      from_date_utc,
+                                      to_date_utc,
                                       warehouse_id: Optional[int] = None,
-                                      product_search: Optional[str] = None) -> pd.DataFrame:
+                                      product_search: Optional[str] = None,
+                                      entity_ids: Optional[tuple] = None) -> pd.DataFrame:
         """
         Get inventory period summary (Tổng hợp tồn kho theo kỳ).
         
@@ -493,8 +494,8 @@ class InventoryQualityData:
         - Closing = Opening + Period Stock In - Period Stock Out
         
         Args:
-            from_date: Period start date
-            to_date: Period end date
+            from_date_utc: Period start datetime in UTC (inclusive, >=)
+            to_date_utc: Period end datetime in UTC (exclusive, <)
             warehouse_id: Filter by warehouse or None for all
             product_search: Search by product name/code
         
@@ -503,9 +504,6 @@ class InventoryQualityData:
             opening_qty, stock_in_qty, stock_out_qty, closing_qty
         """
         try:
-            from datetime import timedelta
-            to_date_next = to_date + timedelta(days=1)
-            
             query = """
                 SELECT 
                     ih.product_id,
@@ -519,24 +517,24 @@ class InventoryQualityData:
                     ROUND(
                         COALESCE(SUM(CASE 
                             WHEN ih.type LIKE :sin_pattern 
-                                 AND ih.created_date < :from_date 
+                                 AND ih.created_date < :from_utc 
                             THEN ih.quantity ELSE 0 END), 0)
                         - COALESCE(SUM(CASE 
                             WHEN ih.type NOT LIKE :sin_pattern 
-                                 AND ih.created_date < :from_date 
+                                 AND ih.created_date < :from_utc 
                             THEN ih.quantity ELSE 0 END), 0)
                     , 5) AS opening_qty,
                     
                     ROUND(COALESCE(SUM(CASE 
                         WHEN ih.type LIKE :sin_pattern
-                             AND ih.created_date >= :from_date 
-                             AND ih.created_date < :to_date_next
+                             AND ih.created_date >= :from_utc 
+                             AND ih.created_date < :to_utc
                         THEN ih.quantity ELSE 0 END), 0), 5) AS stock_in_qty,
                     
                     ROUND(COALESCE(SUM(CASE 
                         WHEN ih.type NOT LIKE :sin_pattern
-                             AND ih.created_date >= :from_date 
-                             AND ih.created_date < :to_date_next
+                             AND ih.created_date >= :from_utc 
+                             AND ih.created_date < :to_utc
                         THEN ih.quantity ELSE 0 END), 0), 5) AS stock_out_qty
                     
                 FROM inventory_histories ih
@@ -546,8 +544,8 @@ class InventoryQualityData:
             """
             params = {
                 'sin_pattern': 'stockIn%',
-                'from_date': from_date,
-                'to_date_next': to_date_next,
+                'from_utc': from_date_utc,
+                'to_utc': to_date_utc,
             }
             
             if warehouse_id:
@@ -557,6 +555,17 @@ class InventoryQualityData:
             if product_search:
                 query += " AND (p.name LIKE :search OR p.pt_code LIKE :search OR p.legacy_pt_code LIKE :search OR p.package_size LIKE :search)"
                 params['search'] = f"%{product_search}%"
+            
+            if entity_ids:
+                placeholders = ', '.join([f':eid_{i}' for i in range(len(entity_ids))])
+                query += f"""
+                    AND ih.product_id IN (
+                        SELECT DISTINCT product_id 
+                        FROM inventory_quality_unified_view 
+                        WHERE owning_company_id IN ({placeholders})
+                    )"""
+                for i, eid in enumerate(entity_ids):
+                    params[f'eid_{i}'] = eid
             
             query += """
                 GROUP BY ih.product_id, p.pt_code, p.legacy_pt_code, p.name, p.uom, 
@@ -589,9 +598,10 @@ class InventoryQualityData:
     @st.cache_data(ttl=300, show_spinner=False)
     def get_product_period_detail(_self,
                                    product_id: int,
-                                   from_date,
-                                   to_date,
-                                   warehouse_id: Optional[int] = None) -> pd.DataFrame:
+                                   from_date_utc,
+                                   to_date_utc,
+                                   warehouse_id: Optional[int] = None,
+                                   entity_ids: Optional[tuple] = None) -> pd.DataFrame:
         """
         Get detailed stock in/out transactions for a specific product within a period.
         
@@ -606,22 +616,24 @@ class InventoryQualityData:
         
         Args:
             product_id: Product ID
-            from_date: Period start date
-            to_date: Period end date
+            from_date_utc: Period start datetime in UTC (inclusive, >=)
+            to_date_utc: Period end datetime in UTC (exclusive, <)
             warehouse_id: Filter by warehouse or None for all
         
         Returns:
             DataFrame with individual transactions including reference_no, related_order
         """
         try:
-            from datetime import timedelta
-            to_date_next = to_date + timedelta(days=1)
-            
             query = """
                 SELECT 
                     ih.id,
                     ih.created_date AS transaction_date,
-                    ih.type AS transaction_type,
+                    -- Transaction type: distinguish WH transfer from purchase for stockIn
+                    CASE 
+                        WHEN ih.type = 'stockIn' AND sowt_in.id IS NOT NULL 
+                            THEN 'stockInWarehouseTransfer'
+                        ELSE ih.type 
+                    END AS transaction_type,
                     CASE WHEN ih.type LIKE :sin_pattern 
                          THEN 'Stock In' ELSE 'Stock Out' END AS direction,
                     ih.quantity,
@@ -633,11 +645,12 @@ class InventoryQualityData:
                     COALESCE(
                         pr.receipt_no,
                         mr.return_no,
+                        sowt.warehouse_transfer_number,
+                        sowt_in.warehouse_transfer_number,
                         po.po_number,
                         a.arrival_note_number,
                         sod.dn_number,
                         mi.issue_no,
-                        sowt.warehouse_transfer_number,
                         soiu.internal_use_number,
                         CASE WHEN ih.type = 'stockInOpeningBalance' 
                              THEN 'Opening Balance' ELSE NULL END
@@ -702,20 +715,26 @@ class InventoryQualityData:
                 LEFT JOIN stock_out_warehouse_transfer sowt 
                     ON ih.warehouse_transfer_stock_out_id = sowt.id
                 
+                -- === Stock In: Warehouse Transfer (type='stockIn' is shared with Purchase) ===
+                LEFT JOIN stock_out_warehouse_transfer sowt_in 
+                    ON sowt_in.stock_in_id = ih.stock_in_id
+                   AND ih.stock_in_id IS NOT NULL
+                   AND ih.warehouse_transfer_stock_out_id IS NULL
+                
                 -- === Stock Out: Internal Use ===
                 LEFT JOIN stock_out_internal_use soiu 
                     ON ih.internal_stock_out_id = soiu.id
                 
                 WHERE ih.product_id = :product_id
                   AND ih.delete_flag = 0
-                  AND ih.created_date >= :from_date
-                  AND ih.created_date < :to_date_next
+                  AND ih.created_date >= :from_utc
+                  AND ih.created_date < :to_utc
             """
             params = {
                 'sin_pattern': 'stockIn%',
                 'product_id': product_id,
-                'from_date': from_date,
-                'to_date_next': to_date_next,
+                'from_utc': from_date_utc,
+                'to_utc': to_date_utc,
             }
             
             if warehouse_id:
@@ -753,9 +772,10 @@ class InventoryQualityData:
                 'stockInProduction': self._ref_query_production_receipt,
                 'stockInProductionReturn': self._ref_query_material_return,
                 'stockInOpeningBalance': self._ref_query_opening_balance,
+                'stockInWarehouseTransfer': self._ref_query_warehouse_transfer_in,
                 'stockOutProduction': self._ref_query_material_issue,
                 'stockOutDelivery': self._ref_query_delivery,
-                'stockOutWarehouseTransfer': self._ref_query_warehouse_transfer,
+                'stockOutWarehouseTransfer': self._ref_query_warehouse_transfer_out,
                 'stockOutInternalUse': self._ref_query_internal_use,
             }
             
@@ -985,21 +1005,25 @@ class InventoryQualityData:
             return dict(zip(result.keys(), row))
         return None
     
-    def _ref_query_warehouse_transfer(self, ih_id: int) -> Optional[Dict[str, Any]]:
-        """Warehouse transfer detail"""
+    def _ref_query_warehouse_transfer_out(self, ih_id: int) -> Optional[Dict[str, Any]]:
+        """Warehouse transfer detail (stock OUT side)"""
         query = """
             SELECT 
                 'Warehouse Transfer' AS doc_type,
+                'Stock Out' AS transfer_direction,
                 sowt.warehouse_transfer_number,
                 sowt.created_date,
                 sowt.finish AS is_finished,
                 c.english_name AS company_name,
-                wh.name AS warehouse_name,
+                from_wh.name AS from_warehouse,
+                to_wh.name AS to_warehouse,
                 CONCAT(emp.first_name, ' ', emp.last_name) AS created_by_name
             FROM inventory_histories ih
             JOIN stock_out_warehouse_transfer sowt ON ih.warehouse_transfer_stock_out_id = sowt.id
             LEFT JOIN companies c ON sowt.company_id = c.id
-            LEFT JOIN warehouses wh ON ih.warehouse_id = wh.id
+            LEFT JOIN warehouses from_wh ON ih.warehouse_id = from_wh.id
+            LEFT JOIN stock_in sti ON sowt.stock_in_id = sti.id
+            LEFT JOIN warehouses to_wh ON sti.warehouse_id = to_wh.id
             LEFT JOIN employees emp ON ih.created_by = emp.keycloak_id
             WHERE ih.id = :ih_id
         """
@@ -1009,6 +1033,113 @@ class InventoryQualityData:
         if row:
             return dict(zip(result.keys(), row))
         return None
+    
+    def _ref_query_warehouse_transfer_in(self, ih_id: int) -> Optional[Dict[str, Any]]:
+        """Warehouse transfer detail (stock IN side)"""
+        query = """
+            SELECT 
+                'Warehouse Transfer' AS doc_type,
+                'Stock In' AS transfer_direction,
+                sowt.warehouse_transfer_number,
+                sowt.created_date,
+                sowt.finish AS is_finished,
+                c.english_name AS company_name,
+                to_wh.name AS to_warehouse,
+                CONCAT(emp.first_name, ' ', emp.last_name) AS created_by_name
+            FROM inventory_histories ih
+            JOIN stock_in si_wt ON ih.stock_in_id = si_wt.id
+            JOIN stock_out_warehouse_transfer sowt ON sowt.stock_in_id = si_wt.id
+            LEFT JOIN companies c ON sowt.company_id = c.id
+            LEFT JOIN warehouses to_wh ON ih.warehouse_id = to_wh.id
+            LEFT JOIN employees emp ON ih.created_by = emp.keycloak_id
+            WHERE ih.id = :ih_id
+        """
+        with self.engine.connect() as conn:
+            result = conn.execute(text(query), {'ih_id': ih_id})
+            row = result.fetchone()
+        if not row:
+            return None
+        d = dict(zip(result.keys(), row))
+        
+        # Get from_warehouse from transfer detail lines
+        from_wh_query = """
+            SELECT DISTINCT from_wh.name
+            FROM stock_out_warehouse_transfer_details sowtd
+            JOIN inventory_histories ih_src ON sowtd.stock_product_info_id = ih_src.id
+            JOIN warehouses from_wh ON ih_src.warehouse_id = from_wh.id
+            WHERE sowtd.warehouse_transfer_stock_out_id = (
+                SELECT sowt2.id FROM stock_in si2
+                JOIN stock_out_warehouse_transfer sowt2 ON sowt2.stock_in_id = si2.id
+                JOIN inventory_histories ih3 ON ih3.stock_in_id = si2.id
+                WHERE ih3.id = :ih_id
+                LIMIT 1
+            )
+            LIMIT 1
+        """
+        with self.engine.connect() as conn:
+            result2 = conn.execute(text(from_wh_query), {'ih_id': ih_id})
+            from_row = result2.fetchone()
+        d['from_warehouse'] = from_row[0] if from_row else '-'
+        
+        return d
+    
+    def _ref_lines_warehouse_transfer_out(self, ih_id: int) -> pd.DataFrame:
+        """All transfer detail lines for the same warehouse transfer (stock OUT)"""
+        query = """
+            SELECT 
+                p.pt_code AS 'PT Code',
+                p.name AS 'Product',
+                p.package_size AS 'Pkg Size',
+                sowtd.transfer_quantity AS 'Quantity',
+                p.uom AS 'UOM',
+                ih_src.batch_no AS 'Batch',
+                DATE_FORMAT(ih_src.expired_date, '%%d/%%m/%%Y') AS 'Expiry',
+                from_wh.name AS 'From WH',
+                to_wh.name AS 'To WH'
+            FROM stock_out_warehouse_transfer_details sowtd
+            JOIN products p ON sowtd.product_id = p.id
+            LEFT JOIN inventory_histories ih_src ON sowtd.stock_product_info_id = ih_src.id
+            LEFT JOIN warehouses from_wh ON ih_src.warehouse_id = from_wh.id
+            LEFT JOIN warehouses to_wh ON sowtd.to_warehouse_id = to_wh.id
+            WHERE sowtd.warehouse_transfer_stock_out_id = (
+                SELECT ih2.warehouse_transfer_stock_out_id
+                FROM inventory_histories ih2
+                WHERE ih2.id = :ih_id
+            )
+            ORDER BY p.name, ih_src.batch_no
+        """
+        with self.engine.connect() as conn:
+            return pd.read_sql(text(query), conn, params={'ih_id': ih_id})
+    
+    def _ref_lines_warehouse_transfer_in(self, ih_id: int) -> pd.DataFrame:
+        """All transfer detail lines for the same warehouse transfer (stock IN)"""
+        query = """
+            SELECT 
+                p.pt_code AS 'PT Code',
+                p.name AS 'Product',
+                p.package_size AS 'Pkg Size',
+                sowtd.transfer_quantity AS 'Quantity',
+                p.uom AS 'UOM',
+                ih_src.batch_no AS 'Batch',
+                DATE_FORMAT(ih_src.expired_date, '%%d/%%m/%%Y') AS 'Expiry',
+                from_wh.name AS 'From WH',
+                to_wh.name AS 'To WH'
+            FROM stock_out_warehouse_transfer_details sowtd
+            JOIN products p ON sowtd.product_id = p.id
+            LEFT JOIN inventory_histories ih_src ON sowtd.stock_product_info_id = ih_src.id
+            LEFT JOIN warehouses from_wh ON ih_src.warehouse_id = from_wh.id
+            LEFT JOIN warehouses to_wh ON sowtd.to_warehouse_id = to_wh.id
+            WHERE sowtd.warehouse_transfer_stock_out_id = (
+                SELECT sowt.id
+                FROM inventory_histories ih2
+                JOIN stock_in si_wt ON ih2.stock_in_id = si_wt.id
+                JOIN stock_out_warehouse_transfer sowt ON sowt.stock_in_id = si_wt.id
+                WHERE ih2.id = :ih_id
+            )
+            ORDER BY p.name, ih_src.batch_no
+        """
+        with self.engine.connect() as conn:
+            return pd.read_sql(text(query), conn, params={'ih_id': ih_id})
     
     def _ref_query_internal_use(self, ih_id: int) -> Optional[Dict[str, Any]]:
         """Internal use detail"""
@@ -1048,8 +1179,10 @@ class InventoryQualityData:
                 'stockIn': self._ref_lines_purchase,
                 'stockInProduction': self._ref_lines_production_receipt,
                 'stockInProductionReturn': self._ref_lines_material_return,
+                'stockInWarehouseTransfer': self._ref_lines_warehouse_transfer_in,
                 'stockOutProduction': self._ref_lines_material_issue,
                 'stockOutDelivery': self._ref_lines_delivery,
+                'stockOutWarehouseTransfer': self._ref_lines_warehouse_transfer_out,
             }
             query_func = query_map.get(transaction_type)
             if not query_func:
