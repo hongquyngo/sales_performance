@@ -227,8 +227,12 @@ def render_kpi_cards(df: pd.DataFrame):
             st.metric("⚠️ Products >10%", "-")
 
 
+@st.fragment
 def render_data_table(df: pd.DataFrame):
-    """Cost lookup table with single-row checkbox selection."""
+    """Cost lookup table with single-row checkbox selection.
+    Wrapped in @st.fragment so checkbox/button interactions
+    only rerun this section, not the entire page.
+    """
     if df.empty:
         st.info("📭 No data found for the selected filters.")
         return
@@ -291,7 +295,7 @@ def render_data_table(df: pd.DataFrame):
             new_sel = [i for i in selected_indices if i != st.session_state.lc_selected_idx]
             if new_sel:
                 st.session_state.lc_selected_idx = new_sel[0]
-                st.rerun()
+                st.rerun()  # fragment-scoped: only reruns table
         else:
             st.session_state.lc_selected_idx = selected_indices[0]
     else:
@@ -315,17 +319,21 @@ def render_data_table(df: pd.DataFrame):
                          key="btn_view_detail"):
                 st.session_state["lc_detail_data"] = sel.to_dict()
                 st.session_state["lc_show_detail"] = True
-                st.rerun()
+                st.rerun(scope="app")  # full page rerun to trigger dialog
         with bc2:
             if st.button("❌ Deselect", use_container_width=True, key="btn_deselect"):
                 st.session_state["lc_selected_idx"] = None
-                st.rerun()
+                st.rerun()  # fragment-scoped
     else:
         st.info("💡 Tick checkbox to select a row and perform actions")
 
 
+@st.fragment
 def render_export(df: pd.DataFrame):
-    """Export to Excel."""
+    """Export to Excel.
+    Wrapped in @st.fragment so download button click
+    doesn't trigger full page rerun.
+    """
     if df.empty:
         return
 
@@ -531,8 +539,12 @@ def _render_source_tabs(product_id: int, entity_id: int, cost_year: int):
             )
 
 
+@st.fragment
 def _render_arrival_detail_selector(arr_df: pd.DataFrame):
-    """Selectbox + expander to drill into a single arrival record."""
+    """Selectbox + expander to drill into a single arrival record.
+    Wrapped in @st.fragment so changing the selectbox only reruns
+    this section — avoids re-querying cost history + source tables.
+    """
     st.markdown("---")
     st.caption("Select an arrival record to view full PO traceability")
 
