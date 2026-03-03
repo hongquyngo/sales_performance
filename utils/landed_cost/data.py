@@ -96,6 +96,38 @@ class LandedCostData:
                     ORDER BY v.pt_code
                 """), conn)
 
+                # Vendor countries (from arrivals with PO linkage)
+                vendor_countries = pd.read_sql(text("""
+                    SELECT DISTINCT vc.id AS country_id, vc.name AS country_name
+                    FROM arrival_details ad
+                    INNER JOIN arrivals a ON ad.arrival_id = a.id
+                    INNER JOIN product_purchase_orders ppo ON ad.product_purchase_order_id = ppo.id
+                    INNER JOIN purchase_orders po ON ppo.purchase_order_id = po.id AND po.delete_flag = 0
+                    INNER JOIN companies vendor ON po.seller_company_id = vendor.id
+                    INNER JOIN countries vc ON vendor.country_id = vc.id
+                    WHERE a.delete_flag = 0
+                      AND COALESCE(ad.delete_flag, 0) = 0
+                      AND a.status <> 'REQUEST_STATUS'
+                    ORDER BY vc.name
+                """), conn)
+
+                # Vendors (from arrivals with PO linkage)
+                vendors = pd.read_sql(text("""
+                    SELECT DISTINCT
+                        vendor.id AS vendor_id,
+                        vendor.english_name AS vendor_name,
+                        vendor.company_code AS vendor_code
+                    FROM arrival_details ad
+                    INNER JOIN arrivals a ON ad.arrival_id = a.id
+                    INNER JOIN product_purchase_orders ppo ON ad.product_purchase_order_id = ppo.id
+                    INNER JOIN purchase_orders po ON ppo.purchase_order_id = po.id AND po.delete_flag = 0
+                    INNER JOIN companies vendor ON po.seller_company_id = vendor.id
+                    WHERE a.delete_flag = 0
+                      AND COALESCE(ad.delete_flag, 0) = 0
+                      AND a.status <> 'REQUEST_STATUS'
+                    ORDER BY vendor.english_name
+                """), conn)
+
             if not products.empty:
                 products["label"] = products.apply(
                     lambda r: (
@@ -106,16 +138,102 @@ class LandedCostData:
                     axis=1,
                 )
 
+            if not vendors.empty:
+                vendors["label"] = vendors.apply(
+                    lambda r: (
+                        f"{r['vendor_code']} | {r['vendor_name']}"
+                        if pd.notna(r.get("vendor_code")) and r["vendor_code"]
+                        else r["vendor_name"]
+                    ),
+                    axis=1,
+                )
+
             return {
                 "entities": entities,
                 "brands": brands["brand"].tolist() if not brands.empty else [],
                 "years": years["cost_year"].tolist() if not years.empty else [],
                 "products": products,
+                "vendor_countries": vendor_countries,
+                "vendors": vendors,
             }
         except Exception as e:
             logger.error(f"Error loading filter options: {e}")
             return {"entities": pd.DataFrame(), "brands": [], "years": [],
-                    "products": pd.DataFrame()}
+                    "products": pd.DataFrame(),
+                    "vendor_countries": pd.DataFrame(), "vendors": pd.DataFrame()}
+
+    # ================================================================
+    # Vendor-based Product ID Lookup (for pre-filtering)
+    # ================================================================
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def get_product_ids_by_vendor(
+        _self,
+        vendor_country_ids: tuple = None,
+        vendor_ids: tuple = None,
+        entity_ids: tuple = None,
+        year_list: tuple = None,
+    ) -> list:
+        """Get product_ids that have arrivals from specified vendors/countries.
+        Used to pre-filter main queries when vendor/country filters are active.
+        """
+        if not vendor_country_ids and not vendor_ids:
+            return []
+
+        try:
+            conditions = [
+                "a.delete_flag = 0",
+                "COALESCE(ad.delete_flag, 0) = 0",
+                "a.status <> 'REQUEST_STATUS'",
+                "ad.landed_cost > 0",
+                "ad.arrival_quantity > 0",
+            ]
+            params = {}
+
+            if vendor_country_ids:
+                cond, p = _self._build_in_clause(
+                    "vendor.country_id", list(vendor_country_ids), "vcid")
+                conditions.append(cond)
+                params.update(p)
+
+            if vendor_ids:
+                cond, p = _self._build_in_clause(
+                    "vendor.id", list(vendor_ids), "vid")
+                conditions.append(cond)
+                params.update(p)
+
+            if entity_ids:
+                cond, p = _self._build_in_clause(
+                    "a.receiver_id", list(entity_ids), "eid")
+                conditions.append(cond)
+                params.update(p)
+
+            if year_list:
+                cond, p = _self._build_in_clause(
+                    "YEAR(COALESCE(a.adjust_arrival_date, a.arrival_date))",
+                    list(year_list), "year")
+                conditions.append(cond)
+                params.update(p)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT DISTINCT ad.product_id
+                FROM arrival_details ad
+                INNER JOIN arrivals a ON ad.arrival_id = a.id
+                INNER JOIN product_purchase_orders ppo ON ad.product_purchase_order_id = ppo.id
+                INNER JOIN purchase_orders po ON ppo.purchase_order_id = po.id AND po.delete_flag = 0
+                INNER JOIN companies vendor ON po.seller_company_id = vendor.id
+                WHERE {where_clause}
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            return df["product_id"].tolist() if not df.empty else []
+        except Exception as e:
+            logger.error(f"Error loading product IDs by vendor: {e}")
+            return []
 
     # ================================================================
     # Main Data Query (avg_landed_cost_looker_view — arrivals + OB)

@@ -112,7 +112,7 @@ def render_filters():
     options = data_loader.get_filter_options()
     current_year = datetime.now().year
 
-    # Row 1
+    # Row 1: Entity | Year | Brand | Clear
     col1, col2, col3, col4 = st.columns([2.5, 2, 2.5, 1])
 
     with col1:
@@ -147,31 +147,83 @@ def render_filters():
         st.write("")
         st.write("")
         if st.button("🔄 Clear", use_container_width=True, key="lc_clear_filters"):
-            for k in ["lc_entity", "lc_year", "lc_brand", "lc_product"]:
+            for k in ["lc_entity", "lc_year", "lc_brand",
+                       "lc_vendor_country", "lc_vendor", "lc_product"]:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state["lc_selected_idx"] = None
             st.rerun()
 
-    # Row 2 — Product multiselect
-    product_df = options["products"]
-    if not product_df.empty:
-        product_label_map = dict(zip(product_df["product_id"], product_df["label"]))
-        selected_products = st.multiselect(
-            "📦 Product",
-            options=product_df["product_id"].tolist(),
-            format_func=lambda x: product_label_map.get(x, str(x)),
-            placeholder="All Products — search by PT Code or Product Name...",
-            key="lc_product",
+    # Row 2: Vendor Country | Vendor | Product
+    vc_col, v_col, p_col = st.columns([1.5, 2, 4.5])
+
+    with vc_col:
+        country_df = options["vendor_countries"]
+        selected_countries = st.multiselect(
+            "🌐 Vendor Country",
+            options=country_df["country_id"].tolist() if not country_df.empty else [],
+            format_func=lambda x: country_df[country_df["country_id"] == x]["country_name"].iloc[0],
+            placeholder="All Countries",
+            key="lc_vendor_country",
         )
-    else:
-        selected_products = []
+
+    with v_col:
+        vendor_df = options["vendors"]
+        selected_vendors = st.multiselect(
+            "🏢 Vendor",
+            options=vendor_df["vendor_id"].tolist() if not vendor_df.empty else [],
+            format_func=lambda x: vendor_df[vendor_df["vendor_id"] == x]["label"].iloc[0],
+            placeholder="All Vendors",
+            key="lc_vendor",
+        )
+
+    with p_col:
+        product_df = options["products"]
+        if not product_df.empty:
+            product_label_map = dict(zip(product_df["product_id"], product_df["label"]))
+            selected_products = st.multiselect(
+                "📦 Product",
+                options=product_df["product_id"].tolist(),
+                format_func=lambda x: product_label_map.get(x, str(x)),
+                placeholder="All Products — search by PT Code or Product Name...",
+                key="lc_product",
+            )
+        else:
+            selected_products = []
+
+    # --- Build filter dict ---
+    # Pre-filter product_ids when vendor/country is selected
+    final_product_ids = tuple(selected_products) if selected_products else None
+
+    if selected_countries or selected_vendors:
+        vendor_product_ids = data_loader.get_product_ids_by_vendor(
+            vendor_country_ids=tuple(selected_countries) if selected_countries else None,
+            vendor_ids=tuple(selected_vendors) if selected_vendors else None,
+            entity_ids=tuple(selected_entities) if selected_entities else None,
+            year_list=tuple(selected_years) if selected_years else None,
+        )
+        if vendor_product_ids:
+            if final_product_ids:
+                # Intersect: user product selection ∩ vendor-matched products
+                final_product_ids = tuple(
+                    pid for pid in final_product_ids if pid in vendor_product_ids
+                )
+            else:
+                final_product_ids = tuple(vendor_product_ids)
+        else:
+            # Vendor selected but no products matched → force empty result
+            final_product_ids = (-1,)
+
+        st.caption(
+            "ℹ️ Vendor/Country filter active — only products with arrival-based "
+            "PO linkage from the selected vendor(s) are shown."
+        )
 
     return {
         "entity_ids": tuple(selected_entities) if selected_entities else None,
         "brand_list": tuple(selected_brands) if selected_brands else None,
         "year_list": tuple(selected_years) if selected_years else None,
-        "product_ids": tuple(selected_products) if selected_products else None,
+        "product_ids": final_product_ids,
     }
 
 
