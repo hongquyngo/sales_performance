@@ -256,38 +256,43 @@ def build_source_breakdown_chart(df: pd.DataFrame) -> Optional[go.Figure]:
 
 
 def build_yoy_comparison_table(yoy_df: pd.DataFrame) -> pd.DataFrame:
-    """Build comparison table between 2 most recent years."""
+    """Build comparison table between 2 most recent years.
+    Uses INNER join on (product_id, entity_id) for consistent product matching.
+    """
     if yoy_df.empty or yoy_df["cost_year"].nunique() < 2:
         return pd.DataFrame()
 
     years = sorted(yoy_df["cost_year"].unique(), reverse=True)
     curr, prev = years[0], years[1]
 
+    join_keys = ["product_id", "entity_id"]
+
     curr_data = yoy_df[yoy_df["cost_year"] == curr][
-        ["pt_code", "product_pn", "brand", "legal_entity",
-         "average_landed_cost_usd", "total_quantity"]
+        join_keys + ["pt_code", "product_pn", "brand", "legal_entity",
+         "average_landed_cost_usd", "total_quantity", "total_landed_value_usd"]
     ].copy()
     prev_data = yoy_df[yoy_df["cost_year"] == prev][
-        ["pt_code", "legal_entity", "average_landed_cost_usd", "total_quantity"]
+        join_keys + ["average_landed_cost_usd", "total_quantity", "total_landed_value_usd"]
     ].copy()
 
     curr_data.rename(columns={
         "average_landed_cost_usd": f"cost_{curr}",
         "total_quantity": f"qty_{curr}",
+        "total_landed_value_usd": f"value_{curr}",
     }, inplace=True)
     prev_data.rename(columns={
         "average_landed_cost_usd": f"cost_{prev}",
         "total_quantity": f"qty_{prev}",
+        "total_landed_value_usd": f"value_{prev}",
     }, inplace=True)
 
-    merged = curr_data.merge(prev_data, on=["pt_code", "legal_entity"], how="outer")
+    merged = curr_data.merge(prev_data, on=join_keys, how="inner")
     merged["yoy_change_usd"] = merged[f"cost_{curr}"] - merged[f"cost_{prev}"]
     merged["yoy_change_pct"] = (
         merged["yoy_change_usd"] / merged[f"cost_{prev}"].replace(0, float("nan")) * 100
     )
 
     return merged.sort_values("yoy_change_pct", ascending=False, na_position="last")
-
 
 def build_yoy_breakdown_table(
     yoy_df: pd.DataFrame, breakdown_df: pd.DataFrame
@@ -307,7 +312,7 @@ def build_yoy_breakdown_table(
     # Merge breakdown data for both years
     for yr in [curr, prev]:
         yr_bd = breakdown_df[breakdown_df["cost_year"] == yr][
-            ["pt_code", "legal_entity",
+            ["product_id", "entity_id",
              "avg_purchase_cost_usd", "avg_landing_charge_usd", "landing_ratio_pct"]
         ].copy()
         yr_bd.rename(columns={
@@ -315,7 +320,7 @@ def build_yoy_breakdown_table(
             "avg_landing_charge_usd": f"landing_{yr}",
             "landing_ratio_pct": f"ratio_{yr}",
         }, inplace=True)
-        base = base.merge(yr_bd, on=["pt_code", "legal_entity"], how="left")
+        base = base.merge(yr_bd, on=["product_id", "entity_id"], how="left")
 
     # Compute YoY changes for purchase and landing
     base[f"purchase_yoy_pct"] = (

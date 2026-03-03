@@ -237,8 +237,12 @@ def render_kpi_cards(df: pd.DataFrame, bd_df: pd.DataFrame):
     with c7:
         if "cost_year" in df.columns and df["cost_year"].nunique() >= 2:
             years = sorted(df["cost_year"].unique(), reverse=True)
-            curr_avg = df[df["cost_year"] == years[0]]["average_landed_cost_usd"].mean()
-            prev_avg = df[df["cost_year"] == years[1]]["average_landed_cost_usd"].mean()
+            curr_df = df[df["cost_year"] == years[0]]
+            prev_df = df[df["cost_year"] == years[1]]
+            curr_qty = curr_df["total_quantity"].sum()
+            prev_qty = prev_df["total_quantity"].sum()
+            curr_avg = curr_df["total_landed_value_usd"].sum() / curr_qty if curr_qty > 0 else 0
+            prev_avg = prev_df["total_landed_value_usd"].sum() / prev_qty if prev_qty > 0 else 0
             if prev_avg and prev_avg > 0:
                 change = (curr_avg - prev_avg) / prev_avg * 100
                 st.metric(
@@ -904,15 +908,37 @@ def render_tab_yoy(filters: dict):
     # --- Row 1: Landed Cost Summary ---
     has_change = comparison["yoy_change_pct"].dropna()
     if not has_change.empty:
+        UNCHANGED_THRESHOLD = 0.5  # <0.5% considered unchanged
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("🔺 Cost Increased", f"{(has_change > 0).sum()} products")
+            st.metric(
+                "🔺 Cost Increased",
+                f"{(has_change > UNCHANGED_THRESHOLD).sum()} products",
+            )
         with c2:
-            st.metric("🔻 Cost Decreased", f"{(has_change < 0).sum()} products")
+            st.metric(
+                "🔻 Cost Decreased",
+                f"{(has_change < -UNCHANGED_THRESHOLD).sum()} products",
+            )
         with c3:
-            st.metric("➡️ Unchanged", f"{(has_change == 0).sum()} products")
+            st.metric(
+                "➡️ Unchanged",
+                f"{(has_change.abs() <= UNCHANGED_THRESHOLD).sum()} products",
+            )
         with c4:
-            st.metric("Avg Change", format_pct_change(has_change.mean()))
+            # Weighted avg change: consistent with Tab 1
+            val_c = comparison[f"value_{current_year}"].sum()
+            qty_c = comparison[f"qty_{current_year}"].sum()
+            val_p = comparison[f"value_{prev_year}"].sum()
+            qty_p = comparison[f"qty_{prev_year}"].sum()
+            wavg_c = val_c / qty_c if qty_c > 0 else 0
+            wavg_p = val_p / qty_p if qty_p > 0 else 0
+            wavg_chg = (wavg_c - wavg_p) / wavg_p * 100 if wavg_p > 0 else 0
+            st.metric(
+                "Avg Change", format_pct_change(wavg_chg),
+                help=f"Weighted avg cost change ({prev_year}→{current_year}).\n\n"
+                     f"Compared {len(has_change)} products in both years.",
+            )
 
     # --- Row 2: Landing Charges YoY Summary ---
     if not yoy_bd.empty and f"landing_{current_year}" in comparison_full.columns:
@@ -920,25 +946,52 @@ def render_tab_yoy(filters: dict):
         d1, d2, d3, d4 = st.columns(4)
 
         with d1:
-            purchase_yoy = comparison_full.get("purchase_yoy_pct")
-            if purchase_yoy is not None:
-                avg_p_yoy = purchase_yoy.dropna().mean()
-                st.metric("📦 Avg Purchase Change", format_pct_change(avg_p_yoy),
-                          help="Average YoY change in purchase cost (PO price)")
+            p_cc = f"purchase_{current_year}"
+            p_pp = f"purchase_{prev_year}"
+            if p_cc in comparison_full.columns and p_pp in comparison_full.columns:
+                bd_v = comparison_full.dropna(subset=[p_cc, p_pp])
+                if not bd_v.empty:
+                    wpc = (bd_v[p_cc] * bd_v[f"qty_{current_year}"]).sum()
+                    wpp = (bd_v[p_pp] * bd_v[f"qty_{prev_year}"]).sum()
+                    qc = bd_v[f"qty_{current_year}"].sum()
+                    qp = bd_v[f"qty_{prev_year}"].sum()
+                    apc = wpc / qc if qc > 0 else 0
+                    app = wpp / qp if qp > 0 else 0
+                    p_yoy = (apc - app) / app * 100 if app > 0 else 0
+                    st.metric("📦 Avg Purchase Change", format_pct_change(p_yoy),
+                              help="Weighted avg YoY change in purchase cost (PO price)")
 
         with d2:
-            landing_yoy = comparison_full.get("landing_yoy_pct")
-            if landing_yoy is not None:
-                avg_l_yoy = landing_yoy.dropna().mean()
-                st.metric("🚢 Avg Landing Change", format_pct_change(avg_l_yoy),
-                          help="Average YoY change in landing charges")
+            l_cc = f"landing_{current_year}"
+            l_pp = f"landing_{prev_year}"
+            if l_cc in comparison_full.columns and l_pp in comparison_full.columns:
+                bd_v = comparison_full.dropna(subset=[l_cc, l_pp])
+                if not bd_v.empty:
+                    wlc = (bd_v[l_cc] * bd_v[f"qty_{current_year}"]).sum()
+                    wlp = (bd_v[l_pp] * bd_v[f"qty_{prev_year}"]).sum()
+                    qc = bd_v[f"qty_{current_year}"].sum()
+                    qp = bd_v[f"qty_{prev_year}"].sum()
+                    alc = wlc / qc if qc > 0 else 0
+                    alp = wlp / qp if qp > 0 else 0
+                    l_yoy = (alc - alp) / alp * 100 if alp > 0 else 0
+                    st.metric("🚢 Avg Landing Change", format_pct_change(l_yoy),
+                              help="Weighted avg YoY change in landing charges")
 
         with d3:
-            ratio_curr_col = f"ratio_{current_year}"
-            ratio_prev_col = f"ratio_{prev_year}"
-            if ratio_curr_col in comparison_full.columns and ratio_prev_col in comparison_full.columns:
-                avg_ratio_curr = comparison_full[ratio_curr_col].dropna().mean()
-                avg_ratio_prev = comparison_full[ratio_prev_col].dropna().mean()
+            pc_col = f"purchase_{current_year}"
+            lc_col = f"landing_{current_year}"
+            pp_col = f"purchase_{prev_year}"
+            lp_col = f"landing_{prev_year}"
+            has_cols = all(c in comparison_full.columns for c in [pc_col, lc_col, pp_col, lp_col])
+            if has_cols:
+                bv = comparison_full.dropna(subset=[pc_col, lc_col])
+                tp_c = (bv[pc_col] * bv[f"qty_{current_year}"]).sum()
+                tl_c = (bv[lc_col] * bv[f"qty_{current_year}"]).sum()
+                avg_ratio_curr = tl_c / tp_c * 100 if tp_c > 0 else 0
+                bv2 = comparison_full.dropna(subset=[pp_col, lp_col])
+                tp_p = (bv2[pp_col] * bv2[f"qty_{prev_year}"]).sum()
+                tl_p = (bv2[lp_col] * bv2[f"qty_{prev_year}"]).sum()
+                avg_ratio_prev = tl_p / tp_p * 100 if tp_p > 0 else 0
                 st.metric("📊 Landing Ratio Shift",
                           f"{avg_ratio_curr:.1f}% ← {avg_ratio_prev:.1f}%",
                           help=f"Average landing ratio: {prev_year} → {current_year}")

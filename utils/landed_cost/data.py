@@ -61,7 +61,7 @@ class LandedCostData:
     # Filter Options
     # ================================================================
 
-    @st.cache_data(ttl=300, show_spinner=False)
+    @st.cache_data(ttl=600, show_spinner=False)
     def get_filter_options(_self) -> Dict[str, Any]:
         """Fetch distinct filter values for dropdowns."""
         try:
@@ -121,15 +121,14 @@ class LandedCostData:
     # Main Data Query (avg_landed_cost_looker_view — arrivals + OB)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
-    def get_landed_cost_data(
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _get_landed_cost_base(
         _self,
         entity_ids: tuple = None,
         brand_list: tuple = None,
         year_list: tuple = None,
-        product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Fetch landed cost data with optional filters."""
+        """Base query: landed cost data WITHOUT product filter (cached longer)."""
         try:
             conditions = ["1=1"]
             params = {}
@@ -146,11 +145,6 @@ class LandedCostData:
 
             if year_list:
                 cond, p = _self._build_in_clause("cost_year", list(year_list), "year")
-                conditions.append(cond)
-                params.update(p)
-
-            if product_ids:
-                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
                 conditions.append(cond)
                 params.update(p)
 
@@ -173,24 +167,34 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
             return df
         except Exception as e:
-            logger.error(f"Error loading landed cost data: {e}")
+            logger.error(f"Error loading landed cost base data: {e}")
             return pd.DataFrame()
 
-    # ================================================================
-    # Cost Breakdown Data (landed_cost_breakdown_view — arrivals only)
-    # ================================================================
-
-    @st.cache_data(ttl=120, show_spinner=False)
-    def get_cost_breakdown_data(
-        _self,
+    def get_landed_cost_data(
+        self,
         entity_ids: tuple = None,
         brand_list: tuple = None,
         year_list: tuple = None,
         product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Fetch cost breakdown: purchase cost vs landing charges.
-        Source: landed_cost_breakdown_view (arrival-based only).
-        """
+        """Fetch landed cost data - uses cached base, filters product in-memory."""
+        df = self._get_landed_cost_base(entity_ids, brand_list, year_list)
+        if product_ids and not df.empty:
+            df = df[df["product_id"].isin(product_ids)].reset_index(drop=True)
+        return df
+
+    # ================================================================
+    # Cost Breakdown Data (landed_cost_breakdown_view — arrivals only)
+    # ================================================================
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _get_cost_breakdown_base(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        year_list: tuple = None,
+    ) -> pd.DataFrame:
+        """Base query: cost breakdown WITHOUT product filter (cached longer)."""
         try:
             conditions = ["1=1"]
             params = {}
@@ -205,10 +209,6 @@ class LandedCostData:
                 params.update(p)
             if year_list:
                 cond, p = _self._build_in_clause("cost_year", list(year_list), "year")
-                conditions.append(cond)
-                params.update(p)
-            if product_ids:
-                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
                 conditions.append(cond)
                 params.update(p)
 
@@ -234,7 +234,6 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
-                # Force numeric (MySQL Decimal → float64)
                 df = _self._coerce_numeric(df, [
                     "total_quantity", "transaction_count",
                     "avg_purchase_cost_usd", "total_purchase_value_usd",
@@ -244,7 +243,6 @@ class LandedCostData:
                     "total_import_tax_usd",
                 ])
 
-                # Derive landing charges columns
                 df["total_landing_charges_usd"] = (
                     df["total_landed_value_usd"].fillna(0)
                     - df["total_purchase_value_usd"].fillna(0)
@@ -260,14 +258,27 @@ class LandedCostData:
 
             return df
         except Exception as e:
-            logger.error(f"Error loading cost breakdown data: {e}")
+            logger.error(f"Error loading cost breakdown base data: {e}")
             return pd.DataFrame()
+
+    def get_cost_breakdown_data(
+        self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        year_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Fetch cost breakdown - uses cached base, filters product in-memory."""
+        df = self._get_cost_breakdown_base(entity_ids, brand_list, year_list)
+        if product_ids and not df.empty:
+            df = df[df["product_id"].isin(product_ids)].reset_index(drop=True)
+        return df
 
     # ================================================================
     # Cost Breakdown for a single product (detail dialog)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_product_breakdown(
         _self,
         product_id: int,
@@ -317,7 +328,7 @@ class LandedCostData:
     # Landing Charges by Ship Method (Analytics)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_landing_by_ship_method(
         _self,
         entity_ids: tuple = None,
@@ -434,7 +445,7 @@ class LandedCostData:
     # Landing Charges by Vendor Country (Analytics)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_landing_by_country(
         _self,
         entity_ids: tuple = None,
@@ -526,14 +537,13 @@ class LandedCostData:
     # Year-over-Year Comparison (with breakdown)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
-    def get_yoy_comparison(
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _get_yoy_comparison_base(
         _self,
         entity_ids: tuple = None,
         brand_list: tuple = None,
-        product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Get YoY cost comparison with purchase/landing breakdown."""
+        """Base query: YoY comparison WITHOUT product filter (cached longer)."""
         try:
             conditions = ["v.cost_year >= YEAR(CURDATE()) - 2"]
             params = {}
@@ -546,16 +556,13 @@ class LandedCostData:
                 cond, p = _self._build_in_clause("v.brand", list(brand_list), "brand")
                 conditions.append(cond)
                 params.update(p)
-            if product_ids:
-                cond, p = _self._build_in_clause("v.product_id", list(product_ids), "pid")
-                conditions.append(cond)
-                params.update(p)
 
             where_clause = " AND ".join(conditions)
 
             query = f"""
                 SELECT
-                    v.cost_year, v.legal_entity, v.pt_code, v.product_pn,
+                    v.cost_year, v.entity_id, v.legal_entity,
+                    v.product_id, v.pt_code, v.product_pn,
                     v.brand, v.standard_uom, v.average_landed_cost_usd,
                     v.total_quantity, v.total_landed_value_usd
                 FROM avg_landed_cost_looker_view v
@@ -567,17 +574,28 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
             return df
         except Exception as e:
-            logger.error(f"Error loading YoY comparison: {e}")
+            logger.error(f"Error loading YoY comparison base: {e}")
             return pd.DataFrame()
 
-    @st.cache_data(ttl=120, show_spinner=False)
-    def get_yoy_breakdown(
-        _self,
+    def get_yoy_comparison(
+        self,
         entity_ids: tuple = None,
         brand_list: tuple = None,
         product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Get YoY breakdown data (purchase vs landing) from breakdown view."""
+        """Fetch YoY comparison - uses cached base, filters product in-memory."""
+        df = self._get_yoy_comparison_base(entity_ids, brand_list)
+        if product_ids and not df.empty:
+            df = df[df["product_id"].isin(product_ids)].reset_index(drop=True)
+        return df
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _get_yoy_breakdown_base(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+    ) -> pd.DataFrame:
+        """Base query: YoY breakdown WITHOUT product filter (cached longer)."""
         try:
             conditions = ["cost_year >= YEAR(CURDATE()) - 2"]
             params = {}
@@ -588,10 +606,6 @@ class LandedCostData:
                 params.update(p)
             if brand_list:
                 cond, p = _self._build_in_clause("brand", list(brand_list), "brand")
-                conditions.append(cond)
-                params.update(p)
-            if product_ids:
-                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
                 conditions.append(cond)
                 params.update(p)
 
@@ -628,14 +642,26 @@ class LandedCostData:
 
             return df
         except Exception as e:
-            logger.error(f"Error loading YoY breakdown: {e}")
+            logger.error(f"Error loading YoY breakdown base: {e}")
             return pd.DataFrame()
+
+    def get_yoy_breakdown(
+        self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Fetch YoY breakdown - uses cached base, filters product in-memory."""
+        df = self._get_yoy_breakdown_base(entity_ids, brand_list)
+        if product_ids and not df.empty:
+            df = df[df["product_id"].isin(product_ids)].reset_index(drop=True)
+        return df
 
     # ================================================================
     # Product Cost History (all years for one product)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_product_cost_history(
         _self,
         product_id: int,
@@ -670,7 +696,7 @@ class LandedCostData:
     # Product Breakdown History (all years — breakdown view)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_product_breakdown_history(
         _self,
         product_id: int,
@@ -735,7 +761,7 @@ class LandedCostData:
     # Deep-Dive: Arrival Sources (with PO cost)
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_arrival_sources(
         _self,
         product_id: int,
@@ -924,7 +950,7 @@ class LandedCostData:
     # Deep-Dive: Opening Balance Sources
     # ================================================================
 
-    @st.cache_data(ttl=120, show_spinner=False)
+    @st.cache_data(ttl=300, show_spinner=False)
     def get_ob_sources(
         _self,
         product_id: int,
