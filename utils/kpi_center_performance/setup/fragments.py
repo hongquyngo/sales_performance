@@ -553,7 +553,7 @@ def split_rules_section(
             # v2.12.1: Include sub-centers checkbox
             include_sub_centers = st.checkbox(
                 "Incl. Sub-Centers",
-                value=False,
+                value=True,
                 key="split_include_sub_centers",
                 help="Also include all descendant centers of selected KPI Center(s)",
                 disabled=(not kpi_center_filter or ALL_CENTERS in kpi_center_filter)
