@@ -170,22 +170,46 @@ def render_kpi_cards(df: pd.DataFrame):
     # Row 1
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("📦 Products", f"{df['product_id'].nunique():,}")
+        st.metric(
+            "📦 Products", f"{df['product_id'].nunique():,}",
+            help="Số lượng sản phẩm (product_id) duy nhất trong kết quả lọc.\n\n"
+                 "**Công thức:** `COUNT(DISTINCT product_id)`",
+        )
     with c2:
-        st.metric("🏷️ Brands", f"{df['brand'].nunique():,}")
+        st.metric(
+            "🏷️ Brands", f"{df['brand'].nunique():,}",
+            help="Số lượng thương hiệu duy nhất trong kết quả lọc.\n\n"
+                 "**Công thức:** `COUNT(DISTINCT brand)`",
+        )
     with c3:
         total_val = df["total_landed_value_usd"].sum()
-        st.metric("💰 Total Value", format_usd(total_val))
+        st.metric(
+            "💰 Total Value", format_usd(total_val),
+            help="Tổng giá trị landed cost (USD) của tất cả sản phẩm trong kết quả lọc.\n\n"
+                 "**Công thức:** `SUM(total_landed_value_usd)`\n\n"
+                 "Trong đó mỗi dòng: `total_landed_value_usd = average_landed_cost_usd × total_quantity`",
+        )
     with c4:
         txn_count = df["transaction_count"].sum() if "transaction_count" in df.columns else len(df)
-        st.metric("📝 Transactions", f"{int(txn_count):,}")
+        st.metric(
+            "📝 Transactions", f"{int(txn_count):,}",
+            help="Tổng số giao dịch (Arrival + Opening Balance) trong kết quả lọc.\n\n"
+                 "**Công thức:** `SUM(transaction_count)`\n\n"
+                 "transaction_count = số dòng arrival + số dòng opening balance cho mỗi product/entity/year.",
+        )
 
     # Row 2 — Cost Insight
     c5, c6, c7, c8 = st.columns(4)
     with c5:
         total_qty = df["total_quantity"].sum()
         w_avg = total_val / total_qty if total_qty > 0 else 0
-        st.metric("📊 Weighted Avg Cost", format_usd4(w_avg))
+        st.metric(
+            "📊 Weighted Avg Cost", format_usd4(w_avg),
+            help="Chi phí landed cost trung bình có trọng số theo số lượng.\n\n"
+                 "**Công thức:** `SUM(total_landed_value_usd) / SUM(total_quantity)`\n\n"
+                 "Phản ánh chi phí trung bình thực tế trên mỗi đơn vị, "
+                 "có tính đến khối lượng giao dịch của từng sản phẩm.",
+        )
     with c6:
         if not df.empty:
             top = df.nlargest(1, "average_landed_cost_usd").iloc[0]
@@ -194,6 +218,9 @@ def render_kpi_cards(df: pd.DataFrame):
                 format_usd4(top["average_landed_cost_usd"]),
                 delta=top.get("pt_code", ""),
                 delta_color="off",
+                help="Sản phẩm có chi phí landed cost trung bình cao nhất.\n\n"
+                     "**Công thức:** `MAX(average_landed_cost_usd)`\n\n"
+                     "Delta hiển thị PT Code của sản phẩm đó.",
             )
     with c7:
         if "cost_year" in df.columns and df["cost_year"].nunique() >= 2:
@@ -202,11 +229,20 @@ def render_kpi_cards(df: pd.DataFrame):
             prev_avg = df[df["cost_year"] == years[1]]["average_landed_cost_usd"].mean()
             if prev_avg and prev_avg > 0:
                 change = (curr_avg - prev_avg) / prev_avg * 100
-                st.metric("🔄 YoY Avg Change", format_pct_change(change))
+                st.metric(
+                    "🔄 YoY Avg Change", format_pct_change(change),
+                    help=f"Phần trăm thay đổi chi phí trung bình giữa năm {years[0]} và {years[1]}.\n\n"
+                         f"**Công thức:** `(AVG_cost_{years[0]} - AVG_cost_{years[1]}) / AVG_cost_{years[1]} × 100`\n\n"
+                         f"- AVG cost {years[0]}: {format_usd4(curr_avg)}\n"
+                         f"- AVG cost {years[1]}: {format_usd4(prev_avg)}\n\n"
+                         "Giá trị dương = chi phí tăng, âm = chi phí giảm.",
+                )
             else:
-                st.metric("🔄 YoY Avg Change", "-")
+                st.metric("🔄 YoY Avg Change", "-",
+                          help="Không đủ dữ liệu năm trước để tính YoY.")
         else:
-            st.metric("🔄 YoY Avg Change", "-")
+            st.metric("🔄 YoY Avg Change", "-",
+                      help="Cần ít nhất 2 năm trong bộ lọc để tính YoY.")
     with c8:
         if "cost_year" in df.columns and df["cost_year"].nunique() >= 2:
             years = sorted(df["cost_year"].unique(), reverse=True)
@@ -220,11 +256,20 @@ def render_kpi_cards(df: pd.DataFrame):
                     / merged["average_landed_cost_usd_p"].replace(0, pd.NA) * 100
                 )
                 alert_count = (merged["pct"].abs() > LandedCostConstants.SIGNIFICANT_CHANGE_PCT).sum()
-                st.metric("⚠️ Products >10%", f"{alert_count}")
+                st.metric(
+                    "⚠️ Products >10%", f"{alert_count}",
+                    help=f"Số sản phẩm có biến động chi phí vượt ±{LandedCostConstants.SIGNIFICANT_CHANGE_PCT:.0f}% "
+                         f"giữa năm {years[0]} và {years[1]}.\n\n"
+                         "**Công thức:** Đếm số product có `|YoY%| > 10%`\n\n"
+                         "Trong đó: `YoY% = (cost_curr - cost_prev) / cost_prev × 100`\n\n"
+                         "Chỉ so sánh các sản phẩm xuất hiện ở cả 2 năm (INNER JOIN on product_id + entity_id).",
+                )
             else:
-                st.metric("⚠️ Products >10%", "0")
+                st.metric("⚠️ Products >10%", "0",
+                          help="Không có sản phẩm nào xuất hiện ở cả 2 năm để so sánh.")
         else:
-            st.metric("⚠️ Products >10%", "-")
+            st.metric("⚠️ Products >10%", "-",
+                      help="Cần ít nhất 2 năm trong bộ lọc để tính.")
 
 
 @st.fragment
