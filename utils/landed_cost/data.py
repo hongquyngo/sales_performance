@@ -1,8 +1,10 @@
 """
-Landed Cost - Data Layer (Refactored)
-Class-based data access for cost lookup, analysis, and drill-down.
+Landed Cost - Data Layer (v3.0)
+Class-based data access for cost lookup, breakdown analysis, and drill-down.
 
-Source view: avg_landed_cost_looker_view
+Source views:
+  - avg_landed_cost_looker_view  → main cost data (arrivals + OB)
+  - landed_cost_breakdown_view   → purchase cost vs landing charges (arrivals only)
 Deep-dive: arrival_details, opening_balances, purchase_orders, etc.
 """
 
@@ -76,7 +78,6 @@ class LandedCostData:
                     ORDER BY v.pt_code
                 """), conn)
 
-            # Build display label: pt_code | product_name (package_size)
             if not products.empty:
                 products["label"] = products.apply(
                     lambda r: (
@@ -99,7 +100,7 @@ class LandedCostData:
                     "products": pd.DataFrame()}
 
     # ================================================================
-    # Main Data Query
+    # Main Data Query (avg_landed_cost_looker_view — arrivals + OB)
     # ================================================================
 
     @st.cache_data(ttl=120, show_spinner=False)
@@ -158,7 +159,332 @@ class LandedCostData:
             return pd.DataFrame()
 
     # ================================================================
-    # Year-over-Year Comparison
+    # Cost Breakdown Data (landed_cost_breakdown_view — arrivals only)
+    # ================================================================
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_cost_breakdown_data(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        year_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Fetch cost breakdown: purchase cost vs landing charges.
+        Source: landed_cost_breakdown_view (arrival-based only).
+        """
+        try:
+            conditions = ["1=1"]
+            params = {}
+
+            if entity_ids:
+                cond, p = _self._build_in_clause("entity_id", list(entity_ids), "eid")
+                conditions.append(cond)
+                params.update(p)
+            if brand_list:
+                cond, p = _self._build_in_clause("brand", list(brand_list), "brand")
+                conditions.append(cond)
+                params.update(p)
+            if year_list:
+                cond, p = _self._build_in_clause("cost_year", list(year_list), "year")
+                conditions.append(cond)
+                params.update(p)
+            if product_ids:
+                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
+                conditions.append(cond)
+                params.update(p)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT
+                    cost_year, entity_id, legal_entity,
+                    product_id, pt_code, product_pn, brand, standard_uom,
+                    total_quantity, transaction_count,
+                    avg_purchase_cost_usd, total_purchase_value_usd,
+                    avg_landed_cost_usd, total_landed_value_usd,
+                    total_international_charge_usd,
+                    total_local_charge_usd,
+                    total_import_tax_usd,
+                    ship_methods, vendors, vendor_countries
+                FROM landed_cost_breakdown_view
+                WHERE {where_clause}
+                ORDER BY cost_year DESC, legal_entity, pt_code
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            if not df.empty:
+                # Derive landing charges columns
+                df["total_landing_charges_usd"] = (
+                    df["total_landed_value_usd"].fillna(0)
+                    - df["total_purchase_value_usd"].fillna(0)
+                )
+                df["avg_landing_charge_usd"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_quantity"].replace(0, pd.NA)
+                ).round(4)
+                df["landing_ratio_pct"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                ).round(2)
+
+            return df
+        except Exception as e:
+            logger.error(f"Error loading cost breakdown data: {e}")
+            return pd.DataFrame()
+
+    # ================================================================
+    # Cost Breakdown for a single product (detail dialog)
+    # ================================================================
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_product_breakdown(
+        _self,
+        product_id: int,
+        entity_id: int,
+        cost_year: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Get cost breakdown for a single product/entity/year."""
+        try:
+            query = """
+                SELECT
+                    avg_purchase_cost_usd, total_purchase_value_usd,
+                    avg_landed_cost_usd, total_landed_value_usd,
+                    total_quantity,
+                    total_international_charge_usd,
+                    total_local_charge_usd,
+                    total_import_tax_usd,
+                    ship_methods, vendors, vendor_countries
+                FROM landed_cost_breakdown_view
+                WHERE product_id = :product_id
+                  AND entity_id = :entity_id
+                  AND cost_year = :cost_year
+            """
+            params = {
+                "product_id": product_id,
+                "entity_id": entity_id,
+                "cost_year": cost_year,
+            }
+            with _self.engine.connect() as conn:
+                result = conn.execute(text(query), params)
+                row = result.fetchone()
+
+            if row:
+                d = dict(zip(result.keys(), row))
+                purchase = d.get("total_purchase_value_usd") or 0
+                landed = d.get("total_landed_value_usd") or 0
+                qty = d.get("total_quantity") or 0
+                d["total_landing_charges_usd"] = landed - purchase
+                d["avg_landing_charge_usd"] = round((landed - purchase) / qty, 4) if qty else 0
+                d["landing_ratio_pct"] = round((landed - purchase) / purchase * 100, 2) if purchase else 0
+                return d
+            return None
+        except Exception as e:
+            logger.error(f"Error loading product breakdown: {e}")
+            return None
+
+    # ================================================================
+    # Landing Charges by Ship Method (Analytics)
+    # ================================================================
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_landing_by_ship_method(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        year_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Aggregate landing charges by ship method."""
+        try:
+            conditions = ["a.delete_flag = 0", "a.status <> 'REQUEST_STATUS'",
+                          "COALESCE(ad.delete_flag, 0) = 0",
+                          "ad.landed_cost > 0", "ad.arrival_quantity > 0"]
+            params = {}
+
+            if entity_ids:
+                cond, p = _self._build_in_clause("a.receiver_id", list(entity_ids), "eid")
+                conditions.append(cond)
+                params.update(p)
+            if brand_list:
+                cond, p = _self._build_in_clause("b.brand_name", list(brand_list), "brand")
+                conditions.append(cond)
+                params.update(p)
+            if year_list:
+                cond, p = _self._build_in_clause(
+                    "YEAR(COALESCE(a.adjust_arrival_date, a.arrival_date))",
+                    list(year_list), "year")
+                conditions.append(cond)
+                params.update(p)
+            if product_ids:
+                cond, p = _self._build_in_clause("ad.product_id", list(product_ids), "pid")
+                conditions.append(cond)
+                params.update(p)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT
+                    COALESCE(a.ship_method, 'Unknown') AS ship_method,
+                    SUM(ad.arrival_quantity) AS total_quantity,
+                    COUNT(ad.id) AS transaction_count,
+
+                    ROUND(SUM(
+                        ad.arrival_quantity * ppo.unit_cost
+                        / NULLIF(po.usd_exchange_rate, 0)
+                    ), 2) AS total_purchase_value_usd,
+
+                    ROUND(SUM(
+                        ad.arrival_quantity * ad.landed_cost
+                        / NULLIF(a.usd_landed_cost_currency_exchange_rate, 0)
+                    ), 2) AS total_landed_value_usd,
+
+                    ROUND(SUM(
+                        COALESCE(a.internal_charge, 0)
+                        / NULLIF(a.usd_international_cost_currency_exchange_rate, 0)
+                        * (ad.arrival_quantity / NULLIF(arr_t.total_arrival_qty, 0))
+                    ), 2) AS total_international_charge_usd,
+
+                    ROUND(SUM(
+                        COALESCE(a.local_charge, 0)
+                        / NULLIF(a.usd_local_cost_currency_exchange_rate, 0)
+                        * (ad.arrival_quantity / NULLIF(arr_t.total_arrival_qty, 0))
+                    ), 2) AS total_local_charge_usd,
+
+                    ROUND(SUM(
+                        COALESCE(ad.import_tax, 0)
+                        / NULLIF(a.usd_landed_cost_currency_exchange_rate, 0)
+                    ), 2) AS total_import_tax_usd
+
+                FROM arrival_details ad
+                INNER JOIN arrivals a ON ad.arrival_id = a.id
+                INNER JOIN products p ON ad.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN product_purchase_orders ppo ON ad.product_purchase_order_id = ppo.id
+                LEFT JOIN purchase_orders po ON ppo.purchase_order_id = po.id AND po.delete_flag = 0
+                LEFT JOIN (
+                    SELECT arrival_id, SUM(arrival_quantity) AS total_arrival_qty
+                    FROM arrival_details WHERE COALESCE(delete_flag, 0) = 0
+                    GROUP BY arrival_id
+                ) arr_t ON arr_t.arrival_id = a.id
+                WHERE {where_clause}
+                GROUP BY COALESCE(a.ship_method, 'Unknown')
+                ORDER BY total_landed_value_usd DESC
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            if not df.empty:
+                df["total_landing_charges_usd"] = (
+                    df["total_landed_value_usd"].fillna(0)
+                    - df["total_purchase_value_usd"].fillna(0)
+                )
+                df["avg_landing_per_unit"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_quantity"].replace(0, pd.NA)
+                ).round(4)
+                df["landing_ratio_pct"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                ).round(2)
+
+            return df
+        except Exception as e:
+            logger.error(f"Error loading landing by ship method: {e}")
+            return pd.DataFrame()
+
+    # ================================================================
+    # Landing Charges by Vendor Country (Analytics)
+    # ================================================================
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_landing_by_country(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        year_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Aggregate landing charges by vendor country."""
+        try:
+            conditions = ["a.delete_flag = 0", "a.status <> 'REQUEST_STATUS'",
+                          "COALESCE(ad.delete_flag, 0) = 0",
+                          "ad.landed_cost > 0", "ad.arrival_quantity > 0"]
+            params = {}
+
+            if entity_ids:
+                cond, p = _self._build_in_clause("a.receiver_id", list(entity_ids), "eid")
+                conditions.append(cond)
+                params.update(p)
+            if brand_list:
+                cond, p = _self._build_in_clause("b.brand_name", list(brand_list), "brand")
+                conditions.append(cond)
+                params.update(p)
+            if year_list:
+                cond, p = _self._build_in_clause(
+                    "YEAR(COALESCE(a.adjust_arrival_date, a.arrival_date))",
+                    list(year_list), "year")
+                conditions.append(cond)
+                params.update(p)
+            if product_ids:
+                cond, p = _self._build_in_clause("ad.product_id", list(product_ids), "pid")
+                conditions.append(cond)
+                params.update(p)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT
+                    COALESCE(vc.name, 'Unknown') AS vendor_country,
+                    SUM(ad.arrival_quantity) AS total_quantity,
+                    COUNT(ad.id) AS transaction_count,
+
+                    ROUND(SUM(
+                        ad.arrival_quantity * ppo.unit_cost
+                        / NULLIF(po.usd_exchange_rate, 0)
+                    ), 2) AS total_purchase_value_usd,
+
+                    ROUND(SUM(
+                        ad.arrival_quantity * ad.landed_cost
+                        / NULLIF(a.usd_landed_cost_currency_exchange_rate, 0)
+                    ), 2) AS total_landed_value_usd
+
+                FROM arrival_details ad
+                INNER JOIN arrivals a ON ad.arrival_id = a.id
+                INNER JOIN products p ON ad.product_id = p.id
+                LEFT JOIN brands b ON p.brand_id = b.id
+                LEFT JOIN product_purchase_orders ppo ON ad.product_purchase_order_id = ppo.id
+                LEFT JOIN purchase_orders po ON ppo.purchase_order_id = po.id AND po.delete_flag = 0
+                LEFT JOIN companies vendor ON po.seller_company_id = vendor.id
+                LEFT JOIN countries vc ON vendor.country_id = vc.id
+                WHERE {where_clause}
+                GROUP BY COALESCE(vc.name, 'Unknown')
+                ORDER BY total_landed_value_usd DESC
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            if not df.empty:
+                df["total_landing_charges_usd"] = (
+                    df["total_landed_value_usd"].fillna(0)
+                    - df["total_purchase_value_usd"].fillna(0)
+                )
+                df["landing_ratio_pct"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                ).round(2)
+
+            return df
+        except Exception as e:
+            logger.error(f"Error loading landing by country: {e}")
+            return pd.DataFrame()
+
+    # ================================================================
+    # Year-over-Year Comparison (with breakdown)
     # ================================================================
 
     @st.cache_data(ttl=120, show_spinner=False)
@@ -168,7 +494,7 @@ class LandedCostData:
         brand_list: tuple = None,
         product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Get YoY cost comparison for current year and 2 previous years."""
+        """Get YoY cost comparison with purchase/landing breakdown."""
         try:
             conditions = ["v.cost_year >= YEAR(CURDATE()) - 2"]
             params = {}
@@ -177,12 +503,10 @@ class LandedCostData:
                 cond, p = _self._build_in_clause("v.entity_id", list(entity_ids), "eid")
                 conditions.append(cond)
                 params.update(p)
-
             if brand_list:
                 cond, p = _self._build_in_clause("v.brand", list(brand_list), "brand")
                 conditions.append(cond)
                 params.update(p)
-
             if product_ids:
                 cond, p = _self._build_in_clause("v.product_id", list(product_ids), "pid")
                 conditions.append(cond)
@@ -205,6 +529,61 @@ class LandedCostData:
             return df
         except Exception as e:
             logger.error(f"Error loading YoY comparison: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_yoy_breakdown(
+        _self,
+        entity_ids: tuple = None,
+        brand_list: tuple = None,
+        product_ids: tuple = None,
+    ) -> pd.DataFrame:
+        """Get YoY breakdown data (purchase vs landing) from breakdown view."""
+        try:
+            conditions = ["cost_year >= YEAR(CURDATE()) - 2"]
+            params = {}
+
+            if entity_ids:
+                cond, p = _self._build_in_clause("entity_id", list(entity_ids), "eid")
+                conditions.append(cond)
+                params.update(p)
+            if brand_list:
+                cond, p = _self._build_in_clause("brand", list(brand_list), "brand")
+                conditions.append(cond)
+                params.update(p)
+            if product_ids:
+                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
+                conditions.append(cond)
+                params.update(p)
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT
+                    cost_year, legal_entity, pt_code, product_id, entity_id,
+                    total_quantity,
+                    avg_purchase_cost_usd, total_purchase_value_usd,
+                    avg_landed_cost_usd, total_landed_value_usd
+                FROM landed_cost_breakdown_view
+                WHERE {where_clause}
+                ORDER BY pt_code, cost_year DESC
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            if not df.empty:
+                df["avg_landing_charge_usd"] = (
+                    (df["avg_landed_cost_usd"].fillna(0) - df["avg_purchase_cost_usd"].fillna(0))
+                ).round(4)
+                df["landing_ratio_pct"] = (
+                    (df["total_landed_value_usd"].fillna(0) - df["total_purchase_value_usd"].fillna(0))
+                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                ).round(2)
+
+            return df
+        except Exception as e:
+            logger.error(f"Error loading YoY breakdown: {e}")
             return pd.DataFrame()
 
     # ================================================================
@@ -243,7 +622,63 @@ class LandedCostData:
             return pd.DataFrame()
 
     # ================================================================
-    # Deep-Dive: Arrival Sources
+    # Product Breakdown History (all years — breakdown view)
+    # ================================================================
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def get_product_breakdown_history(
+        _self,
+        product_id: int,
+        entity_id: int = None,
+    ) -> pd.DataFrame:
+        """Get cost breakdown history for a product across all years."""
+        try:
+            conditions = ["product_id = :product_id"]
+            params = {"product_id": product_id}
+
+            if entity_id:
+                conditions.append("entity_id = :entity_id")
+                params["entity_id"] = entity_id
+
+            where_clause = " AND ".join(conditions)
+
+            query = f"""
+                SELECT
+                    cost_year, total_quantity,
+                    avg_purchase_cost_usd, total_purchase_value_usd,
+                    avg_landed_cost_usd, total_landed_value_usd,
+                    total_international_charge_usd,
+                    total_local_charge_usd,
+                    total_import_tax_usd
+                FROM landed_cost_breakdown_view
+                WHERE {where_clause}
+                ORDER BY cost_year ASC
+            """
+
+            with _self.engine.connect() as conn:
+                df = pd.read_sql(text(query), conn, params=params)
+
+            if not df.empty:
+                df["total_landing_charges_usd"] = (
+                    df["total_landed_value_usd"].fillna(0)
+                    - df["total_purchase_value_usd"].fillna(0)
+                )
+                df["avg_landing_charge_usd"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_quantity"].replace(0, pd.NA)
+                ).round(4)
+                df["landing_ratio_pct"] = (
+                    df["total_landing_charges_usd"]
+                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                ).round(2)
+
+            return df
+        except Exception as e:
+            logger.error(f"Error loading product breakdown history: {e}")
+            return pd.DataFrame()
+
+    # ================================================================
+    # Deep-Dive: Arrival Sources (with PO cost)
     # ================================================================
 
     @st.cache_data(ttl=120, show_spinner=False)
@@ -253,8 +688,7 @@ class LandedCostData:
         entity_id: int,
         cost_year: int,
     ) -> pd.DataFrame:
-        """Get individual arrival records contributing to a product's
-        landed cost in a given year + entity."""
+        """Get individual arrival records with PO cost breakdown."""
         try:
             query = """
                 SELECT
@@ -282,6 +716,20 @@ class LandedCostData:
                     ROUND(ad.landed_cost * ad.arrival_quantity
                         / NULLIF(a.usd_landed_cost_currency_exchange_rate, 0), 2)
                         AS total_value_usd,
+
+                    -- PO cost in USD
+                    ROUND(ppo.unit_cost
+                        / NULLIF(po.usd_exchange_rate, 0), 4)
+                        AS po_unit_cost_usd,
+                    ROUND(ppo.unit_cost * ad.arrival_quantity
+                        / NULLIF(po.usd_exchange_rate, 0), 2)
+                        AS po_total_value_usd,
+
+                    -- Landing charge per unit
+                    ROUND(
+                        (ad.landed_cost / NULLIF(a.usd_landed_cost_currency_exchange_rate, 0))
+                        - (ppo.unit_cost / NULLIF(po.usd_exchange_rate, 0))
+                    , 4) AS landing_charge_per_unit_usd,
 
                     wh.name AS warehouse_name,
                     a.ship_method,
@@ -520,7 +968,7 @@ class LandedCostData:
         year_list: tuple = None,
         product_ids: tuple = None,
     ) -> pd.DataFrame:
-        """Get data formatted for Excel export."""
+        """Get data formatted for Excel export — includes breakdown."""
         df = self.get_landed_cost_data(
             entity_ids=entity_ids,
             brand_list=brand_list,
@@ -530,6 +978,23 @@ class LandedCostData:
         if df.empty:
             return df
 
+        # Merge breakdown data
+        bd = self.get_cost_breakdown_data(
+            entity_ids=entity_ids,
+            brand_list=brand_list,
+            year_list=year_list,
+            product_ids=product_ids,
+        )
+        if not bd.empty:
+            bd_cols = bd[["product_id", "entity_id", "cost_year",
+                          "avg_purchase_cost_usd", "total_purchase_value_usd",
+                          "total_landing_charges_usd", "avg_landing_charge_usd",
+                          "landing_ratio_pct",
+                          "total_international_charge_usd",
+                          "total_local_charge_usd",
+                          "total_import_tax_usd"]].copy()
+            df = df.merge(bd_cols, on=["product_id", "entity_id", "cost_year"], how="left")
+
         export_columns = {
             "cost_year": "Year",
             "legal_entity": "Entity",
@@ -537,9 +1002,17 @@ class LandedCostData:
             "product_pn": "Product",
             "brand": "Brand",
             "standard_uom": "UOM",
-            "average_landed_cost_usd": "Avg Cost (USD)",
+            "average_landed_cost_usd": "Avg Landed Cost (USD)",
+            "avg_purchase_cost_usd": "Avg Purchase Cost (USD)",
+            "avg_landing_charge_usd": "Avg Landing Charge (USD)",
+            "landing_ratio_pct": "Landing Ratio %",
             "total_quantity": "Total Qty",
-            "total_landed_value_usd": "Total Value (USD)",
+            "total_landed_value_usd": "Total Landed Value (USD)",
+            "total_purchase_value_usd": "Total Purchase Value (USD)",
+            "total_landing_charges_usd": "Total Landing Charges (USD)",
+            "total_international_charge_usd": "International Charges (USD)",
+            "total_local_charge_usd": "Local Charges (USD)",
+            "total_import_tax_usd": "Import Tax (USD)",
             "min_landed_cost_usd": "Min Cost (USD)",
             "max_landed_cost_usd": "Max Cost (USD)",
             "arrival_quantity": "Arrival Qty",
