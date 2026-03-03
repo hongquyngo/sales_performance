@@ -29,7 +29,7 @@ from utils.landed_cost.data import LandedCostData
 from utils.landed_cost.common import (
     LandedCostConstants,
     format_usd,
-    format_usd4,
+    format_usd_smart,
     format_quantity,
     format_pct_change,
     format_rate,
@@ -137,24 +137,31 @@ def render_filters():
         st.write("")  # spacer
         st.write("")
         if st.button("🔄 Clear", use_container_width=True, key="lc_clear_filters"):
-            for k in ["lc_entity", "lc_year", "lc_brand", "lc_product_search"]:
+            for k in ["lc_entity", "lc_year", "lc_brand", "lc_product"]:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state["lc_selected_idx"] = None
             st.rerun()
 
-    # Row 2
-    product_search = st.text_input(
-        "🔍 Search Product",
-        placeholder="PT Code or Product Name...",
-        key="lc_product_search",
-    )
+    # Row 2 — Product multiselect
+    product_df = options["products"]
+    if not product_df.empty:
+        product_label_map = dict(zip(product_df["product_id"], product_df["label"]))
+        selected_products = st.multiselect(
+            "📦 Product",
+            options=product_df["product_id"].tolist(),
+            format_func=lambda x: product_label_map.get(x, str(x)),
+            placeholder="All Products — search by PT Code or Product Name...",
+            key="lc_product",
+        )
+    else:
+        selected_products = []
 
     return {
         "entity_ids": tuple(selected_entities) if selected_entities else None,
         "brand_list": tuple(selected_brands) if selected_brands else None,
         "year_list": tuple(selected_years) if selected_years else None,
-        "product_search": product_search.strip() or None,
+        "product_ids": tuple(selected_products) if selected_products else None,
     }
 
 
@@ -204,7 +211,7 @@ def render_kpi_cards(df: pd.DataFrame):
         total_qty = df["total_quantity"].sum()
         w_avg = total_val / total_qty if total_qty > 0 else 0
         st.metric(
-            "📊 Weighted Avg Cost", format_usd4(w_avg),
+            "📊 Weighted Avg Cost", format_usd_smart(w_avg),
             help="Chi phí landed cost trung bình có trọng số theo số lượng.\n\n"
                  "**Công thức:** `SUM(total_landed_value_usd) / SUM(total_quantity)`\n\n"
                  "Phản ánh chi phí trung bình thực tế trên mỗi đơn vị, "
@@ -215,7 +222,7 @@ def render_kpi_cards(df: pd.DataFrame):
             top = df.nlargest(1, "average_landed_cost_usd").iloc[0]
             st.metric(
                 "📈 Highest Cost",
-                format_usd4(top["average_landed_cost_usd"]),
+                format_usd_smart(top["average_landed_cost_usd"]),
                 delta=top.get("pt_code", ""),
                 delta_color="off",
                 help="Sản phẩm có chi phí landed cost trung bình cao nhất.\n\n"
@@ -231,10 +238,13 @@ def render_kpi_cards(df: pd.DataFrame):
                 change = (curr_avg - prev_avg) / prev_avg * 100
                 st.metric(
                     "🔄 YoY Avg Change", format_pct_change(change),
-                    help=f"Phần trăm thay đổi chi phí trung bình giữa năm {years[0]} và {years[1]}.\n\n"
-                         f"**Công thức:** `(AVG_cost_{years[0]} - AVG_cost_{years[1]}) / AVG_cost_{years[1]} × 100`\n\n"
-                         f"- AVG cost {years[0]}: {format_usd4(curr_avg)}\n"
-                         f"- AVG cost {years[1]}: {format_usd4(prev_avg)}\n\n"
+                    help=f"Phần trăm thay đổi chi phí đơn vị trung bình (average landed cost) "
+                         f"giữa năm {years[0]} và {years[1]}.\n\n"
+                         f"**Công thức:** `(AVG_unit_cost_{years[0]} - AVG_unit_cost_{years[1]}) "
+                         f"/ AVG_unit_cost_{years[1]} × 100`\n\n"
+                         f"- Avg unit cost {years[0]}: {format_usd_smart(curr_avg)}\n"
+                         f"- Avg unit cost {years[1]}: {format_usd_smart(prev_avg)}\n\n"
+                         "`AVG_unit_cost` = `MEAN(average_landed_cost_usd)` trên tất cả products trong năm đó.\n\n"
                          "Giá trị dương = chi phí tăng, âm = chi phí giảm.",
                 )
             else:
@@ -258,11 +268,14 @@ def render_kpi_cards(df: pd.DataFrame):
                 alert_count = (merged["pct"].abs() > LandedCostConstants.SIGNIFICANT_CHANGE_PCT).sum()
                 st.metric(
                     "⚠️ Products >10%", f"{alert_count}",
-                    help=f"Số sản phẩm có biến động chi phí vượt ±{LandedCostConstants.SIGNIFICANT_CHANGE_PCT:.0f}% "
+                    help=f"Số sản phẩm có biến động chi phí đơn vị (average landed cost) vượt "
+                         f"±{LandedCostConstants.SIGNIFICANT_CHANGE_PCT:.0f}% "
                          f"giữa năm {years[0]} và {years[1]}.\n\n"
                          "**Công thức:** Đếm số product có `|YoY%| > 10%`\n\n"
-                         "Trong đó: `YoY% = (cost_curr - cost_prev) / cost_prev × 100`\n\n"
-                         "Chỉ so sánh các sản phẩm xuất hiện ở cả 2 năm (INNER JOIN on product_id + entity_id).",
+                         "Trong đó:\n"
+                         "`YoY% = (avg_unit_cost_curr - avg_unit_cost_prev) / avg_unit_cost_prev × 100`\n\n"
+                         "- `avg_unit_cost` = `average_landed_cost_usd` = `total_landed_value_usd / total_quantity`\n"
+                         "- Chỉ so sánh các sản phẩm xuất hiện ở cả 2 năm (INNER JOIN on product_id + entity_id).",
                 )
             else:
                 st.metric("⚠️ Products >10%", "0",
@@ -355,7 +368,7 @@ def render_data_table(df: pd.DataFrame):
         st.markdown(
             f"**Selected:** `{sel.get('pt_code', '')}` | {sel.get('product_pn', '')} | "
             f"{sel.get('legal_entity', '')} | {int(sel.get('cost_year', 0))} | "
-            f"Avg: {format_usd4(sel.get('average_landed_cost_usd'))}"
+            f"Avg: {format_usd_smart(sel.get('average_landed_cost_usd'))}"
         )
 
         bc1, bc2, bc3, bc4 = st.columns(4)
@@ -389,7 +402,7 @@ def render_export(df: pd.DataFrame):
                 entity_ids=st.session_state.get("lc_entity") or None,
                 brand_list=st.session_state.get("lc_brand") or None,
                 year_list=st.session_state.get("lc_year") or None,
-                product_search=st.session_state.get("lc_product_search") or None,
+                product_ids=tuple(st.session_state.get("lc_product", [])) or None,
             )
             if not export_df.empty:
                 excel_data = create_excel_download(export_df)
@@ -430,10 +443,10 @@ def show_detail_dialog(row_data: dict):
     st.markdown("#### 📊 Cost Summary")
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
-        st.metric("Avg Cost", format_usd4(safe_get(row_data, "average_landed_cost_usd")))
-        st.metric("Min Cost", format_usd4(safe_get(row_data, "min_landed_cost_usd")))
+        st.metric("Avg Cost", format_usd_smart(safe_get(row_data, "average_landed_cost_usd")))
+        st.metric("Min Cost", format_usd_smart(safe_get(row_data, "min_landed_cost_usd")))
     with sc2:
-        st.metric("Max Cost", format_usd4(safe_get(row_data, "max_landed_cost_usd")))
+        st.metric("Max Cost", format_usd_smart(safe_get(row_data, "max_landed_cost_usd")))
         st.metric("Total Value", format_usd(safe_get(row_data, "total_landed_value_usd")))
     with sc3:
         st.metric("Total Qty", format_quantity(safe_get(row_data, "total_quantity")))
@@ -653,7 +666,7 @@ def _render_arrival_detail_selector(arr_df: pd.DataFrame):
                     lc_cur = detail.get("landed_cost_currency", "")
                     st.markdown(f"Landed Cost: {format_rate(lc_val)} {lc_cur}")
                     st.markdown(f"USD Rate: {format_rate(detail.get('usd_landed_cost_currency_exchange_rate'))}")
-                    st.markdown(f"Unit USD: {format_usd4(detail.get('unit_cost_usd'))}")
+                    st.markdown(f"Unit USD: {format_usd_smart(detail.get('unit_cost_usd'))}")
                     st.markdown(f"Arr Qty: {format_quantity(detail.get('arrival_quantity'))}")
                     st.markdown(f"Stocked In: {format_quantity(detail.get('stocked_in_qty'))}")
 
@@ -689,6 +702,7 @@ def render_tab_yoy(filters: dict):
         yoy_df = data_loader.get_yoy_comparison(
             entity_ids=filters["entity_ids"],
             brand_list=filters["brand_list"],
+            product_ids=filters["product_ids"],
         )
 
     if yoy_df.empty:

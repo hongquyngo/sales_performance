@@ -65,14 +65,38 @@ class LandedCostData:
                     ORDER BY cost_year DESC
                 """), conn)
 
+                products = pd.read_sql(text("""
+                    SELECT DISTINCT
+                        v.product_id,
+                        v.pt_code,
+                        v.product_pn,
+                        p.package_size
+                    FROM avg_landed_cost_looker_view v
+                    LEFT JOIN products p ON v.product_id = p.id
+                    ORDER BY v.pt_code
+                """), conn)
+
+            # Build display label: pt_code | product_name (package_size)
+            if not products.empty:
+                products["label"] = products.apply(
+                    lambda r: (
+                        f"{r['pt_code']} | {r['product_pn']}"
+                        f" ({r['package_size']})" if pd.notna(r.get("package_size")) and r["package_size"]
+                        else f"{r['pt_code']} | {r['product_pn']}"
+                    ),
+                    axis=1,
+                )
+
             return {
                 "entities": entities,
                 "brands": brands["brand"].tolist() if not brands.empty else [],
                 "years": years["cost_year"].tolist() if not years.empty else [],
+                "products": products,
             }
         except Exception as e:
             logger.error(f"Error loading filter options: {e}")
-            return {"entities": pd.DataFrame(), "brands": [], "years": []}
+            return {"entities": pd.DataFrame(), "brands": [], "years": [],
+                    "products": pd.DataFrame()}
 
     # ================================================================
     # Main Data Query
@@ -84,7 +108,7 @@ class LandedCostData:
         entity_ids: tuple = None,
         brand_list: tuple = None,
         year_list: tuple = None,
-        product_search: str = None,
+        product_ids: tuple = None,
     ) -> pd.DataFrame:
         """Fetch landed cost data with optional filters."""
         try:
@@ -106,9 +130,10 @@ class LandedCostData:
                 conditions.append(cond)
                 params.update(p)
 
-            if product_search:
-                conditions.append("(pt_code LIKE :p_search OR product_pn LIKE :p_search)")
-                params["p_search"] = f"%{product_search}%"
+            if product_ids:
+                cond, p = _self._build_in_clause("product_id", list(product_ids), "pid")
+                conditions.append(cond)
+                params.update(p)
 
             where_clause = " AND ".join(conditions)
 
@@ -141,6 +166,7 @@ class LandedCostData:
         _self,
         entity_ids: tuple = None,
         brand_list: tuple = None,
+        product_ids: tuple = None,
     ) -> pd.DataFrame:
         """Get YoY cost comparison for current year and 2 previous years."""
         try:
@@ -154,6 +180,11 @@ class LandedCostData:
 
             if brand_list:
                 cond, p = _self._build_in_clause("v.brand", list(brand_list), "brand")
+                conditions.append(cond)
+                params.update(p)
+
+            if product_ids:
+                cond, p = _self._build_in_clause("v.product_id", list(product_ids), "pid")
                 conditions.append(cond)
                 params.update(p)
 
@@ -487,14 +518,14 @@ class LandedCostData:
         entity_ids: tuple = None,
         brand_list: tuple = None,
         year_list: tuple = None,
-        product_search: str = None,
+        product_ids: tuple = None,
     ) -> pd.DataFrame:
         """Get data formatted for Excel export."""
         df = self.get_landed_cost_data(
             entity_ids=entity_ids,
             brand_list=brand_list,
             year_list=year_list,
-            product_search=product_search,
+            product_ids=product_ids,
         )
         if df.empty:
             return df

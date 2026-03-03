@@ -53,6 +53,31 @@ def format_usd4(value: Any) -> str:
     return format_usd(value, decimals=4)
 
 
+def format_usd_smart(value: Any, max_decimals: int = 4, min_decimals: int = 2) -> str:
+    """Smart USD formatting — up to *max_decimals* significant digits,
+    trailing zeros stripped down to *min_decimals*.
+
+    Examples:
+        25000.0000 → $25,000.00
+        0.3413     → $0.3413
+        19.8115    → $19.8115
+        1.0000     → $1.00
+        41.8600    → $41.86
+        249.1333   → $249.1333
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "-"
+    try:
+        num = float(value)
+        formatted = f"{num:,.{max_decimals}f}"
+        int_part, dec_part = formatted.split(".")
+        dec_stripped = dec_part.rstrip("0")
+        dec_final = dec_stripped.ljust(min_decimals, "0")
+        return f"${int_part}.{dec_final}"
+    except (ValueError, TypeError):
+        return str(value)
+
+
 def format_quantity(value: Any, decimals: int = 2) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "-"
