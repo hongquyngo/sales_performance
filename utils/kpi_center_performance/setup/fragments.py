@@ -353,6 +353,9 @@ def split_rules_section(
         actual_centers = [c for c in kpi_center_filter if c != ALL_CENTERS]
         if actual_centers:
             params['kpi_center_ids'] = actual_centers
+            # v2.12.1: Include sub-centers
+            if st.session_state.get('split_include_sub_centers', False):
+                params['include_sub_centers'] = True
         # Note: If ALL is selected (or empty), no kpi_center_ids filter = all centers
         
         brand_filter = st.session_state.get('split_brand_filter', [])
@@ -545,6 +548,15 @@ def split_rules_section(
                 format_func=format_center,
                 key="split_kpi_center_filter",
                 help="Select ALL or specific centers"
+            )
+            
+            # v2.12.1: Include sub-centers checkbox
+            include_sub_centers = st.checkbox(
+                "Incl. Sub-Centers",
+                value=False,
+                key="split_include_sub_centers",
+                help="Also include all descendant centers of selected KPI Center(s)",
+                disabled=(not kpi_center_filter or ALL_CENTERS in kpi_center_filter)
             )
         
         with e_col3:
@@ -740,6 +752,7 @@ def split_rules_section(
                 keys_to_reset = [
                     'split_period_year', 'split_period_type', 'split_period_start', 'split_period_end',
                     'split_kpi_type_filter', 'split_kpi_center_filter', '_prev_kpi_center_filter',
+                    'split_include_sub_centers',
                     'split_brand_filter', 'split_customer_filter', 'split_product_filter',
                     'split_pct_min', 'split_pct_max', 'split_status_filter', 'split_approval_filter',
                     'split_created_by_filter', 'split_approved_by_filter', 
@@ -761,6 +774,7 @@ def split_rules_section(
                 period_type != 'all',
                 kpi_type_filter != 'TERRITORY',  # v2.8.1: Only count if not default
                 kpi_center_active,  # v2.8.1: Only count if specific centers selected
+                include_sub_centers and kpi_center_active,  # v2.12.1: Count if sub-centers enabled
                 len(brand_filter) > 0,
                 len(customer_filter) > 0,
                 len(product_filter) > 0,

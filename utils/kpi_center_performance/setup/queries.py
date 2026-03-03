@@ -72,6 +72,7 @@ class SetupQueries:
         self,
         # Entity filters
         kpi_center_ids: List[int] = None,
+        include_sub_centers: bool = False,    # v2.12.1: Include all descendant centers
         customer_ids: List[int] = None,
         product_ids: List[int] = None,
         brand_ids: List[int] = None,
@@ -118,6 +119,7 @@ class SetupQueries:
         
         Args:
             kpi_center_ids: Filter by KPI Center IDs
+            include_sub_centers: If True, expand kpi_center_ids to include all descendants
             customer_ids: Filter by Customer IDs
             product_ids: Filter by Product IDs
             brand_ids: Filter by Brand IDs
@@ -253,6 +255,18 @@ class SetupQueries:
         if expiring_days:
             query += " AND effective_to BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL :expiring_days DAY)"
             params['expiring_days'] = expiring_days
+        
+        # =====================================================================
+        # EXPAND SUB-CENTERS (v2.12.1)
+        # If include_sub_centers=True, expand kpi_center_ids with all descendants
+        # =====================================================================
+        if kpi_center_ids and include_sub_centers:
+            expanded_ids = set(kpi_center_ids)
+            for center_id in kpi_center_ids:
+                descendants = self.get_all_descendants(center_id)
+                expanded_ids.update(descendants)
+            kpi_center_ids = list(expanded_ids)
+            logger.debug(f"Expanded kpi_center_ids with sub-centers: {len(kpi_center_ids)} total")
         
         # =====================================================================
         # ENTITY FILTERS
