@@ -39,6 +39,24 @@ class LandedCostData:
         params = {f"{prefix}_{i}": v for i, v in enumerate(values)}
         return f"{field} IN ({placeholders})", params
 
+    @staticmethod
+    def _coerce_numeric(df: pd.DataFrame, cols: list) -> pd.DataFrame:
+        """Force columns to float64 — handles MySQL Decimal objects.
+        Strategy: convert to str first (eliminates Decimal issues), then pd.to_numeric.
+        """
+        for col in cols:
+            if col in df.columns and df[col].dtype == "object":
+                try:
+                    df[col] = pd.to_numeric(
+                        df[col].astype(str).replace(
+                            {"None": pd.NA, "nan": pd.NA, "": pd.NA}
+                        ),
+                        errors="coerce",
+                    )
+                except Exception as e:
+                    logger.warning(f"_coerce_numeric failed for column '{col}': {e}")
+        return df
+
     # ================================================================
     # Filter Options
     # ================================================================
@@ -216,6 +234,16 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
+                # Force numeric (MySQL Decimal → float64)
+                df = _self._coerce_numeric(df, [
+                    "total_quantity", "transaction_count",
+                    "avg_purchase_cost_usd", "total_purchase_value_usd",
+                    "avg_landed_cost_usd", "total_landed_value_usd",
+                    "total_international_charge_usd",
+                    "total_local_charge_usd",
+                    "total_import_tax_usd",
+                ])
+
                 # Derive landing charges columns
                 df["total_landing_charges_usd"] = (
                     df["total_landed_value_usd"].fillna(0)
@@ -223,11 +251,11 @@ class LandedCostData:
                 )
                 df["avg_landing_charge_usd"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_quantity"].replace(0, pd.NA)
+                    / df["total_quantity"].replace(0, float("nan"))
                 ).round(4)
                 df["landing_ratio_pct"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                    / df["total_purchase_value_usd"].replace(0, float("nan")) * 100
                 ).round(2)
 
             return df
@@ -378,17 +406,23 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
+                df = _self._coerce_numeric(df, [
+                    "total_quantity", "total_purchase_value_usd",
+                    "total_landed_value_usd", "total_international_charge_usd",
+                    "total_local_charge_usd", "total_import_tax_usd",
+                ])
+
                 df["total_landing_charges_usd"] = (
                     df["total_landed_value_usd"].fillna(0)
                     - df["total_purchase_value_usd"].fillna(0)
                 )
                 df["avg_landing_per_unit"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_quantity"].replace(0, pd.NA)
+                    / df["total_quantity"].replace(0, float("nan"))
                 ).round(4)
                 df["landing_ratio_pct"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                    / df["total_purchase_value_usd"].replace(0, float("nan")) * 100
                 ).round(2)
 
             return df
@@ -469,13 +503,18 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
+                df = _self._coerce_numeric(df, [
+                    "total_quantity", "total_purchase_value_usd",
+                    "total_landed_value_usd",
+                ])
+
                 df["total_landing_charges_usd"] = (
                     df["total_landed_value_usd"].fillna(0)
                     - df["total_purchase_value_usd"].fillna(0)
                 )
                 df["landing_ratio_pct"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                    / df["total_purchase_value_usd"].replace(0, float("nan")) * 100
                 ).round(2)
 
             return df
@@ -573,12 +612,18 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
+                df = _self._coerce_numeric(df, [
+                    "total_quantity", "avg_purchase_cost_usd",
+                    "total_purchase_value_usd", "avg_landed_cost_usd",
+                    "total_landed_value_usd",
+                ])
+
                 df["avg_landing_charge_usd"] = (
                     (df["avg_landed_cost_usd"].fillna(0) - df["avg_purchase_cost_usd"].fillna(0))
                 ).round(4)
                 df["landing_ratio_pct"] = (
                     (df["total_landed_value_usd"].fillna(0) - df["total_purchase_value_usd"].fillna(0))
-                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                    / df["total_purchase_value_usd"].replace(0, float("nan")) * 100
                 ).round(2)
 
             return df
@@ -659,17 +704,26 @@ class LandedCostData:
                 df = pd.read_sql(text(query), conn, params=params)
 
             if not df.empty:
+                df = _self._coerce_numeric(df, [
+                    "total_quantity", "avg_purchase_cost_usd",
+                    "total_purchase_value_usd", "avg_landed_cost_usd",
+                    "total_landed_value_usd",
+                    "total_international_charge_usd",
+                    "total_local_charge_usd",
+                    "total_import_tax_usd",
+                ])
+
                 df["total_landing_charges_usd"] = (
                     df["total_landed_value_usd"].fillna(0)
                     - df["total_purchase_value_usd"].fillna(0)
                 )
                 df["avg_landing_charge_usd"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_quantity"].replace(0, pd.NA)
+                    / df["total_quantity"].replace(0, float("nan"))
                 ).round(4)
                 df["landing_ratio_pct"] = (
                     df["total_landing_charges_usd"]
-                    / df["total_purchase_value_usd"].replace(0, pd.NA) * 100
+                    / df["total_purchase_value_usd"].replace(0, float("nan")) * 100
                 ).round(2)
 
             return df

@@ -78,7 +78,7 @@ def _init_session_state():
         "lc_selected_idx": None,
         "lc_show_detail": False,
         "lc_detail_data": None,
-        "lc_show_breakdown": False,
+        "lc_show_breakdown": True,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -261,7 +261,7 @@ def render_kpi_cards(df: pd.DataFrame, bd_df: pd.DataFrame):
             if not merged.empty:
                 merged["pct"] = (
                     (merged["average_landed_cost_usd_c"] - merged["average_landed_cost_usd_p"])
-                    / merged["average_landed_cost_usd_p"].replace(0, pd.NA) * 100
+                    / merged["average_landed_cost_usd_p"].replace(0, float("nan")) * 100
                 )
                 alert_count = (merged["pct"].abs() > LandedCostConstants.SIGNIFICANT_CHANGE_PCT).sum()
                 st.metric(
@@ -275,51 +275,73 @@ def render_kpi_cards(df: pd.DataFrame, bd_df: pd.DataFrame):
             st.metric("⚠️ Products >10%", "-")
 
     # Row 3 — Landing Charges Overview (from breakdown data)
-    if not bd_df.empty:
+    # Always show row 3, with N/A when breakdown data unavailable
+    has_breakdown = not bd_df.empty
+
+    c9, c10, c11, c12 = st.columns(4)
+    if has_breakdown:
         total_purchase = bd_df["total_purchase_value_usd"].sum()
         total_landing = bd_df["total_landing_charges_usd"].sum()
         avg_ratio = (total_landing / total_purchase * 100) if total_purchase > 0 else 0
+    else:
+        total_purchase = total_landing = avg_ratio = None
 
-        c9, c10, c11, c12 = st.columns(4)
-        with c9:
-            st.metric(
-                "📦 Purchase Cost", format_usd(total_purchase),
-                help="Total purchase cost from PO (arrival-based only, excl. OB).\n\n"
-                     "**Formula:** `SUM(total_purchase_value_usd)`\n\n"
-                     "Source: `landed_cost_breakdown_view`",
-            )
-        with c10:
-            st.metric(
-                "🚢 Landing Charges", format_usd(total_landing),
-                help="Total landing charges = Landed Cost − Purchase Cost.\n\n"
-                     "Includes: International charges, Local charges, Import tax.\n\n"
-                     "**Formula:** `SUM(total_landed_value_usd - total_purchase_value_usd)`",
-            )
-        with c11:
-            st.metric(
-                "📊 Landing Ratio", format_pct(avg_ratio),
-                help="Weighted average landing charge ratio.\n\n"
-                     "**Formula:** `Total Landing Charges / Total Purchase Cost × 100`\n\n"
-                     "Indicates how much extra cost is added on top of purchase price "
-                     "for logistics, customs, and taxes.",
-            )
-        with c12:
-            if not bd_df.empty and "landing_ratio_pct" in bd_df.columns:
-                top_ratio = bd_df.dropna(subset=["landing_ratio_pct"])
-                if not top_ratio.empty:
-                    highest = top_ratio.nlargest(1, "landing_ratio_pct").iloc[0]
-                    st.metric(
-                        "🔺 Highest Ratio",
-                        format_pct(highest["landing_ratio_pct"]),
-                        delta=highest.get("pt_code", ""),
-                        delta_color="off",
-                        help="Product with the highest landing charge ratio.\n\n"
-                             "May indicate inefficient shipping or high customs duty.",
-                    )
-                else:
-                    st.metric("🔺 Highest Ratio", "-")
+    no_bd_help = ("\n\n⚠️ *No arrival-based breakdown data for current filter. "
+                  "This data requires arrivals with PO linkage (excludes Opening Balances).*")
+
+    with c9:
+        st.metric(
+            "📦 Purchase Cost",
+            format_usd(total_purchase) if has_breakdown else "N/A",
+            help="Total purchase cost from PO (arrival-based only, excl. OB).\n\n"
+                 "**Formula:** `SUM(total_purchase_value_usd)`\n\n"
+                 "Source: `landed_cost_breakdown_view`"
+                 + ("" if has_breakdown else no_bd_help),
+        )
+    with c10:
+        st.metric(
+            "🚢 Landing Charges",
+            format_usd(total_landing) if has_breakdown else "N/A",
+            help="Total landing charges = Landed Cost − Purchase Cost.\n\n"
+                 "Includes: International charges, Local charges, Import tax.\n\n"
+                 "**Formula:** `SUM(total_landed_value_usd - total_purchase_value_usd)`"
+                 + ("" if has_breakdown else no_bd_help),
+        )
+    with c11:
+        st.metric(
+            "📊 Landing Ratio",
+            format_pct(avg_ratio) if has_breakdown else "N/A",
+            help="Weighted average landing charge ratio.\n\n"
+                 "**Formula:** `Total Landing Charges / Total Purchase Cost × 100`\n\n"
+                 "Indicates how much extra cost is added on top of purchase price "
+                 "for logistics, customs, and taxes."
+                 + ("" if has_breakdown else no_bd_help),
+        )
+    with c12:
+        if has_breakdown and "landing_ratio_pct" in bd_df.columns:
+            top_ratio = bd_df.dropna(subset=["landing_ratio_pct"])
+            if not top_ratio.empty:
+                highest = top_ratio.nlargest(1, "landing_ratio_pct").iloc[0]
+                st.metric(
+                    "🔺 Highest Ratio",
+                    format_pct(highest["landing_ratio_pct"]),
+                    delta=highest.get("pt_code", ""),
+                    delta_color="off",
+                    help="Product with the highest landing charge ratio.\n\n"
+                         "May indicate inefficient shipping or high customs duty.",
+                )
             else:
                 st.metric("🔺 Highest Ratio", "-")
+        else:
+            st.metric("🔺 Highest Ratio", "N/A",
+                      help="No breakdown data available for current filter." + no_bd_help)
+
+    if not has_breakdown and not df.empty:
+        st.caption(
+            "ℹ️ Cost breakdown (Purchase vs Landing) not available for the current filter. "
+            "Breakdown requires arrivals with PO linkage — "
+            "products with only Opening Balance data will not have breakdown."
+        )
 
 
 @st.fragment
@@ -336,6 +358,9 @@ def render_data_table(df: pd.DataFrame, bd_df: pd.DataFrame):
         key="lc_show_breakdown_toggle",
     )
     st.session_state["lc_show_breakdown"] = show_bd
+
+    if show_bd and bd_df.empty:
+        st.caption("ℹ️ Breakdown columns unavailable — no arrival-based PO data for current filter.")
 
     st.markdown(f"**{len(df):,} records** | 💡 Tick checkbox to select a row and view details")
 
@@ -407,7 +432,7 @@ def render_data_table(df: pd.DataFrame, bd_df: pd.DataFrame):
         display_df[show_cols],
         column_config=col_config,
         disabled=disabled_cols,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=min(len(display_df) * 35 + 40, 550),
         key="lc_table_editor",
@@ -536,7 +561,7 @@ def show_detail_dialog(row_data: dict):
             # Stacked bar
             decomp_bar = build_cost_decomposition_bar(breakdown)
             if decomp_bar:
-                st.plotly_chart(decomp_bar, use_container_width=True)
+                st.plotly_chart(decomp_bar, width="stretch")
 
             # Metrics
             dm1, dm2, dm3 = st.columns(3)
@@ -580,11 +605,16 @@ def show_detail_dialog(row_data: dict):
                 with dr:
                     donut = build_landing_donut_chart(breakdown)
                     if donut:
-                        st.plotly_chart(donut, use_container_width=True)
+                        st.plotly_chart(donut, width="stretch")
 
             st.markdown("---")
-
-    # --- Cost History ---
+        else:
+            st.markdown("#### 💰 Cost Decomposition")
+            st.caption(
+                "ℹ️ No cost decomposition available — "
+                "this product/entity/year has no arrivals with PO linkage in the breakdown view."
+            )
+            st.markdown("---")
     if product_id and entity_id:
         st.markdown("#### 📈 Cost History")
         with st.spinner("Loading history..."):
@@ -624,7 +654,7 @@ def show_detail_dialog(row_data: dict):
                     "arrival_quantity": st.column_config.NumberColumn("Arr Qty", format="%.2f"),
                     "opening_balance_quantity": st.column_config.NumberColumn("OB Qty", format="%.2f"),
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=min(len(history) * 35 + 38, 250),
             )
@@ -633,7 +663,7 @@ def show_detail_dialog(row_data: dict):
                 fig = build_cost_trend_chart(history)
                 if fig:
                     fig.update_layout(title=f"Cost Trend: {pt_code}", height=280)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
         else:
             st.info("No history data found.")
 
@@ -697,7 +727,7 @@ def _render_source_tabs(product_id: int, entity_id: int, cost_year: int):
                     "warehouse_name": st.column_config.TextColumn("Warehouse", width="medium"),
                     "ship_method": st.column_config.TextColumn("Ship", width="small"),
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=min(arr_count * 35 + 38, 300),
             )
@@ -737,7 +767,7 @@ def _render_source_tabs(product_id: int, entity_id: int, cost_year: int):
                     "warehouse_name": st.column_config.TextColumn("Warehouse", width="medium"),
                     "is_approved": st.column_config.TextColumn("Approved", width="small"),
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=min(ob_count * 35 + 38, 300),
             )
@@ -920,6 +950,11 @@ def render_tab_yoy(filters: dict):
                 st.metric(f"⚠️ Ratio Shift >{alert_threshold:.0f}pp", f"{ratio_alerts}",
                           help=f"Products where landing ratio shifted more than "
                                f"±{alert_threshold:.0f} percentage points.")
+    else:
+        st.caption(
+            "ℹ️ Purchase vs Landing decomposition unavailable — "
+            "no arrival-based PO data for the selected filter/years."
+        )
 
     st.markdown("---")
 
@@ -991,7 +1026,7 @@ def render_tab_yoy(filters: dict):
                                 f"Ratio {current_year}", format="%.1f%%"),
                             "ratio_shift": st.column_config.NumberColumn("Ratio Δ pp", format="%.1f"),
                         },
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
         else:
@@ -1006,7 +1041,7 @@ def render_tab_yoy(filters: dict):
                     "yoy_change_pct": st.column_config.NumberColumn("YoY %", format="%.1f%%"),
                     "yoy_change_usd": st.column_config.NumberColumn("YoY Δ", format="$%.4f"),
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
     else:
@@ -1014,7 +1049,7 @@ def render_tab_yoy(filters: dict):
 
     # Full table
     with st.expander(f"📋 Full Comparison ({len(comparison_full)} products)", expanded=False):
-        st.dataframe(comparison_full, use_container_width=True, hide_index=True)
+        st.dataframe(comparison_full, width="stretch", hide_index=True)
 
 
 # ============================================================
@@ -1031,7 +1066,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
     st.markdown("##### 📈 Cost Trend")
     trend_chart = build_cost_trend_chart(df)
     if trend_chart:
-        st.plotly_chart(trend_chart, use_container_width=True)
+        st.plotly_chart(trend_chart, width="stretch")
 
     st.markdown("---")
 
@@ -1043,7 +1078,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
             st.markdown("##### 📊 Cost Composition by Year")
             comp_chart = build_cost_composition_chart(bd_df)
             if comp_chart:
-                st.plotly_chart(comp_chart, use_container_width=True)
+                st.plotly_chart(comp_chart, width="stretch")
             else:
                 st.info("Not enough data for composition chart.")
 
@@ -1051,10 +1086,16 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
             st.markdown("##### 📉 Landing Ratio Trend")
             ratio_chart = build_landing_ratio_trend_chart(bd_df)
             if ratio_chart:
-                st.plotly_chart(ratio_chart, use_container_width=True)
+                st.plotly_chart(ratio_chart, width="stretch")
             else:
                 st.info("Need at least 2 years for ratio trend.")
 
+        st.markdown("---")
+    else:
+        st.caption(
+            "ℹ️ Cost Composition & Landing Ratio charts unavailable — "
+            "no arrival-based PO data for current filter."
+        )
         st.markdown("---")
 
     # --- Row 3: Distribution + Source Breakdown ---
@@ -1065,7 +1106,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
         year_for_dist = filters["year_list"][0] if filters["year_list"] else None
         dist_chart = build_cost_distribution_chart(df, year=year_for_dist)
         if dist_chart:
-            st.plotly_chart(dist_chart, use_container_width=True)
+            st.plotly_chart(dist_chart, width="stretch")
         else:
             st.info("Not enough data for distribution chart.")
 
@@ -1073,7 +1114,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
         st.markdown("##### 📦 Source Breakdown (Arrival vs OB)")
         source_chart = build_source_breakdown_chart(df)
         if source_chart:
-            st.plotly_chart(source_chart, use_container_width=True)
+            st.plotly_chart(source_chart, width="stretch")
         else:
             st.info("Not enough data for source chart.")
 
@@ -1094,7 +1135,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
             if not sm_df.empty:
                 sm_chart = build_landing_by_ship_method_chart(sm_df)
                 if sm_chart:
-                    st.plotly_chart(sm_chart, use_container_width=True)
+                    st.plotly_chart(sm_chart, width="stretch")
                 else:
                     st.info("Not enough data.")
             else:
@@ -1105,7 +1146,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
             if not country_df.empty:
                 vc_chart = build_landing_by_country_chart(country_df)
                 if vc_chart:
-                    st.plotly_chart(vc_chart, use_container_width=True)
+                    st.plotly_chart(vc_chart, width="stretch")
                 else:
                     st.info("Not enough data.")
             else:
@@ -1117,7 +1158,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
     st.markdown("##### 🔥 Brand × Year Heatmap (Weighted Avg Cost)")
     heatmap1 = build_brand_year_heatmap(df)
     if heatmap1:
-        st.plotly_chart(heatmap1, use_container_width=True)
+        st.plotly_chart(heatmap1, width="stretch")
     else:
         st.info("Need at least 2 brands and 2 years for heatmap.")
 
@@ -1126,7 +1167,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
     st.markdown("##### 🔥 Entity × Year Heatmap (Total Value)")
     heatmap2 = build_entity_year_heatmap(df)
     if heatmap2:
-        st.plotly_chart(heatmap2, use_container_width=True)
+        st.plotly_chart(heatmap2, width="stretch")
     else:
         st.info("Need at least 2 entities and 2 years for heatmap.")
 
@@ -1137,7 +1178,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
         st.markdown("##### 🔥 Brand × Year Landing Ratio (%)")
         lr_heatmap1 = build_landing_ratio_heatmap(bd_df, index_col="brand", title_label="Brand")
         if lr_heatmap1:
-            st.plotly_chart(lr_heatmap1, use_container_width=True)
+            st.plotly_chart(lr_heatmap1, width="stretch")
         else:
             st.info("Need at least 2 brands and 2 years for landing ratio heatmap.")
 
@@ -1146,7 +1187,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
         st.markdown("##### 🔥 Entity × Year Landing Ratio (%)")
         lr_heatmap2 = build_landing_ratio_heatmap(bd_df, index_col="legal_entity", title_label="Entity")
         if lr_heatmap2:
-            st.plotly_chart(lr_heatmap2, use_container_width=True)
+            st.plotly_chart(lr_heatmap2, width="stretch")
         else:
             st.info("Need at least 2 entities and 2 years for landing ratio heatmap.")
 
@@ -1170,7 +1211,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
                 "total_landed_value_usd": st.column_config.NumberColumn("Value", format="$%.2f"),
                 "total_quantity": st.column_config.NumberColumn("Qty", format="%.2f"),
             },
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1199,7 +1240,7 @@ def render_tab_analytics(df: pd.DataFrame, bd_df: pd.DataFrame, filters: dict):
                     "landing_ratio_pct": st.column_config.NumberColumn("Ratio %", format="%.1f%%"),
                     "total_quantity": st.column_config.NumberColumn("Qty", format="%.2f"),
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         else:

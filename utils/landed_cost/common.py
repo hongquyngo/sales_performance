@@ -189,7 +189,7 @@ def build_cost_trend_chart(df: pd.DataFrame) -> Optional[go.Figure]:
                  total_qty=("total_quantity", "sum"))
             .reset_index()
         )
-        agg["weighted_avg"] = agg["total_value"] / agg["total_qty"].replace(0, pd.NA)
+        agg["weighted_avg"] = agg["total_value"] / agg["total_qty"].replace(0, float("nan"))
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -283,7 +283,7 @@ def build_yoy_comparison_table(yoy_df: pd.DataFrame) -> pd.DataFrame:
     merged = curr_data.merge(prev_data, on=["pt_code", "legal_entity"], how="outer")
     merged["yoy_change_usd"] = merged[f"cost_{curr}"] - merged[f"cost_{prev}"]
     merged["yoy_change_pct"] = (
-        merged["yoy_change_usd"] / merged[f"cost_{prev}"].replace(0, pd.NA) * 100
+        merged["yoy_change_usd"] / merged[f"cost_{prev}"].replace(0, float("nan")) * 100
     )
 
     return merged.sort_values("yoy_change_pct", ascending=False, na_position="last")
@@ -320,11 +320,11 @@ def build_yoy_breakdown_table(
     # Compute YoY changes for purchase and landing
     base[f"purchase_yoy_pct"] = (
         (base[f"purchase_{curr}"] - base[f"purchase_{prev}"])
-        / base[f"purchase_{prev}"].replace(0, pd.NA) * 100
+        / base[f"purchase_{prev}"].replace(0, float("nan")) * 100
     ).round(1)
     base[f"landing_yoy_pct"] = (
         (base[f"landing_{curr}"] - base[f"landing_{prev}"])
-        / base[f"landing_{prev}"].replace(0, pd.NA) * 100
+        / base[f"landing_{prev}"].replace(0, float("nan")) * 100
     ).round(1)
     base["ratio_shift"] = (
         base[f"ratio_{curr}"].fillna(0) - base[f"ratio_{prev}"].fillna(0)
@@ -383,7 +383,7 @@ def build_landing_ratio_trend_chart(bd_df: pd.DataFrame) -> Optional[go.Figure]:
 
     agg["landing_ratio"] = (
         (agg["total_landed"] - agg["total_purchase"])
-        / agg["total_purchase"].replace(0, pd.NA) * 100
+        / agg["total_purchase"].replace(0, float("nan")) * 100
     ).round(2)
 
     fig = go.Figure()
@@ -554,7 +554,7 @@ def build_brand_year_heatmap(df: pd.DataFrame) -> Optional[go.Figure]:
         values="total_quantity", index="brand",
         columns="cost_year", aggfunc="sum", fill_value=0,
     )
-    avg_pivot = (pivot / qty_pivot.replace(0, pd.NA)).round(4)
+    avg_pivot = (pivot / qty_pivot.replace(0, float("nan"))).round(4)
     avg_pivot = avg_pivot.sort_index()
 
     fig = go.Figure(data=go.Heatmap(
@@ -621,7 +621,7 @@ def build_landing_ratio_heatmap(
         purchase=("total_purchase_value_usd", "sum"),
         landed=("total_landed_value_usd", "sum"),
     ).reset_index()
-    agg["ratio"] = ((agg["landed"] - agg["purchase"]) / agg["purchase"].replace(0, pd.NA) * 100).round(1)
+    agg["ratio"] = ((agg["landed"] - agg["purchase"]) / agg["purchase"].replace(0, float("nan")) * 100).round(1)
 
     # If too many items, take top N by value
     if agg[index_col].nunique() > C.HEATMAP_TOP_N:
