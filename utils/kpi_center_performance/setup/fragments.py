@@ -853,7 +853,7 @@ def split_rules_section(
         # Store context for dialog to access
         st.session_state['_split_dialog_can_approve'] = can_approve
         
-        if st.button("➕ Add Split Rule", type="primary"):
+        if st.button("➕ Add Split Rule(s)", type="primary"):
             _add_split_rule_dialog()
     elif not can_edit:
         # Show read-only notice for users without any write permission
@@ -1524,13 +1524,19 @@ def _render_current_split_structure(
 # ADD SPLIT RULE DIALOG (v2.9.0 - With Current Structure Insights)
 # =============================================================================
 
-@st.dialog("➕ Add Split Rule", width="large")
+@st.dialog("➕ Add Split Rules", width="large")
 def _add_split_rule_dialog():
     """
-    Dialog for adding a new split rule.
+    Dialog for adding split rules with batch queue support.
     
+    v2.12.1: Batch creation - add multiple rules to queue, save all at once.
     v2.9.0: Enhanced with Current Split Structure insights.
     v2.8.2: NEW - Converted from inline form to dialog for cleaner UX.
+    
+    Flow:
+    1. Fill in rule fields → "Add to Queue" (no page reload)
+    2. Queue shows pending rules with validation status
+    3. "Save All (N rules)" → batch INSERT in single transaction → 1 rerun
     """
     # Get context from session state
     user_id = st.session_state.get('user_id') or st.session_state.get('user_uuid')
@@ -1539,7 +1545,17 @@ def _add_split_rule_dialog():
     # Initialize queries
     setup_queries = SetupQueries(user_id=user_id)
     
-    # Form layout
+    # Initialize queue in session state
+    if '_split_rule_queue' not in st.session_state:
+        st.session_state['_split_rule_queue'] = []
+    
+    queue = st.session_state['_split_rule_queue']
+    
+    # =========================================================================
+    # INPUT FORM SECTION
+    # =========================================================================
+    st.markdown("##### 📝 Rule Details")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -1610,7 +1626,7 @@ def _add_split_rule_dialog():
         valid_to = st.date_input("Valid To *", value=date(date.today().year, 12, 31), key="dialog_valid_to")
     
     # =========================================================================
-    # v2.9.0: CURRENT SPLIT STRUCTURE INSIGHTS
+    # CURRENT SPLIT STRUCTURE (collapsed)
     # =========================================================================
     if customer_id and product_id and kpi_center_id and not centers_df.empty:
         selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
@@ -1622,18 +1638,18 @@ def _add_split_rule_dialog():
             product_id=product_id,
             kpi_type=selected_type,
             exclude_rule_id=None,
-            expanded=False  # Start collapsed in Add mode
+            expanded=False
         )
     
     # =========================================================================
-    # VALIDATION SECTION
+    # INLINE VALIDATION (lightweight - for Add to Queue decision)
     # =========================================================================
     st.divider()
     st.markdown("##### 🔍 Validation")
     
     validation_errors = []
     validation_warnings = []
-    can_save = True
+    can_add = True
     
     # 1. Period Validation
     period_validation = setup_queries.validate_period(valid_from, valid_to)
@@ -1641,7 +1657,7 @@ def _add_split_rule_dialog():
     if not period_validation['is_valid']:
         for err in period_validation['errors']:
             validation_errors.append(f"📅 {err}")
-        can_save = False
+        can_add = False
     
     for warn in period_validation.get('warnings', []):
         validation_warnings.append(f"📅 {warn}")
@@ -1661,21 +1677,25 @@ def _add_split_rule_dialog():
             validation_errors.append(
                 f"📅 Period overlaps with {overlap_check['overlap_count']} existing rule(s) for this KPI Center"
             )
-            can_save = False
-            
-            with st.expander(f"🔍 View {overlap_check['overlap_count']} overlapping rules", expanded=False):
-                for r in overlap_check['overlapping_rules']:
-                    st.caption(f"• Rule #{r['rule_id']}: {r['split_percentage']:.0f}% ({r['period_display']})")
+            can_add = False
     
     # 3. Split Percentage Validation
     if customer_id and product_id and kpi_center_id and not centers_df.empty:
         selected_type = centers_df[centers_df['kpi_center_id'] == kpi_center_id]['kpi_type'].iloc[0]
         
+        # Account for queued rules that affect the same combo
+        queued_pct = sum(
+            r['split_percentage'] for r in queue
+            if r['customer_id'] == customer_id
+            and r['product_id'] == product_id
+            and r.get('kpi_type') == selected_type
+        )
+        
         split_validation = setup_queries.validate_split_percentage(
             customer_id=customer_id,
             product_id=product_id,
             kpi_type=selected_type,
-            new_percentage=split_pct,
+            new_percentage=split_pct + queued_pct,  # Include queued rules
             exclude_rule_id=None
         )
         
@@ -1683,82 +1703,165 @@ def _add_split_rule_dialog():
         val_col1, val_col2, val_col3 = st.columns(3)
         
         with val_col1:
+            current_display = split_validation['current_total']
+            if queued_pct > 0:
+                current_display += queued_pct
             st.metric(
                 "Current Total",
-                f"{split_validation['current_total']:.0f}%",
-                help=f"Total for {selected_type} type"
+                f"{split_validation['current_total']:.0f}%"
+                + (f" + {queued_pct:.0f}% queued" if queued_pct > 0 else ""),
+                help=f"Total for {selected_type} type (DB + queued)"
             )
         
         with val_col2:
-            delta_color = "inverse" if split_validation['new_total'] > 100 else "off"
+            new_total = split_validation['current_total'] + queued_pct + split_pct
+            delta_color = "inverse" if new_total > 100 else "off"
             st.metric(
                 "After Save",
-                f"{split_validation['new_total']:.0f}%",
+                f"{new_total:.0f}%",
                 delta=f"+{split_pct:.0f}%",
                 delta_color=delta_color
             )
         
         with val_col3:
-            if split_validation['new_total'] == 100:
+            if new_total == 100:
                 st.success("✅ Perfect!")
-            elif split_validation['new_total'] > 100:
-                over_pct = split_validation['new_total'] - 100
+            elif new_total > 100:
+                over_pct = new_total - 100
                 st.error(f"🔴 Over by {over_pct:.0f}%")
                 validation_errors.append(
-                    f"📊 Total split ({split_validation['new_total']:.0f}%) exceeds 100% for {selected_type}"
+                    f"📊 Total split ({new_total:.0f}%) exceeds 100% for {selected_type}"
                 )
-                can_save = False
+                can_add = False
             else:
-                st.warning(f"⚠️ {split_validation['remaining']:.0f}% remaining")
-                validation_warnings.append(
-                    f"📊 Under-allocated: {split_validation['remaining']:.0f}% remaining for {selected_type}"
-                )
+                st.warning(f"⚠️ {100 - new_total:.0f}% remaining")
     
-    # Display validation summary
+    # Show validation messages
     if validation_errors:
         for err in validation_errors:
             st.error(err)
-    
-    if validation_warnings and not validation_errors:
+    elif validation_warnings:
         for warn in validation_warnings:
             st.warning(warn)
-    
-    if not validation_errors and not validation_warnings:
+    else:
         st.success("✅ All validations passed")
     
-    # Approve checkbox (only for admins)
+    # =========================================================================
+    # ADD TO QUEUE BUTTON
+    # =========================================================================
+    if st.button(
+        "➕ Add to Queue",
+        type="secondary",
+        use_container_width=True,
+        disabled=not can_add or not all([customer_id, product_id, kpi_center_id])
+    ):
+        # Build display labels
+        customer_label = format_customer_display(
+            customers_df[customers_df['customer_id'] == customer_id]['customer_name'].iloc[0],
+            customers_df[customers_df['customer_id'] == customer_id]['company_code'].iloc[0]
+        ) if not customers_df.empty else str(customer_id)
+        
+        product_label = format_product_option(
+            products_df[products_df['product_id'] == product_id].iloc[0]
+        ) if not products_df.empty else str(product_id)
+        
+        center_row = centers_df[centers_df['kpi_center_id'] == kpi_center_id].iloc[0]
+        center_label = center_row['kpi_center_name']
+        kpi_type_label = center_row['kpi_type']
+        
+        # Add to queue
+        st.session_state['_split_rule_queue'].append({
+            'customer_id': customer_id,
+            'product_id': product_id,
+            'kpi_center_id': kpi_center_id,
+            'split_percentage': split_pct,
+            'valid_from': valid_from,
+            'valid_to': valid_to,
+            # Display labels (not saved to DB, just for UI)
+            'customer_label': customer_label,
+            'product_label': product_label,
+            'center_label': center_label,
+            'kpi_type': kpi_type_label,
+        })
+        st.rerun(scope="fragment")
+    
+    # =========================================================================
+    # QUEUE DISPLAY
+    # =========================================================================
     st.divider()
     
+    queue = st.session_state.get('_split_rule_queue', [])
+    
+    st.markdown(f"##### 📋 Queue ({len(queue)} rule{'s' if len(queue) != 1 else ''})")
+    
+    if not queue:
+        st.caption("No rules in queue yet. Fill in the form above and click 'Add to Queue'.")
+    else:
+        # Display queue as compact table
+        for i, rule in enumerate(queue):
+            q_col1, q_col2, q_col3, q_col4, q_col5 = st.columns([3, 3, 2, 1.5, 0.5])
+            
+            with q_col1:
+                st.caption(f"**{rule['customer_label']}**")
+            with q_col2:
+                st.caption(f"{rule['product_label']}")
+            with q_col3:
+                st.caption(f"{KPI_TYPE_ICONS.get(rule['kpi_type'], '📁')} {rule['center_label']}")
+            with q_col4:
+                st.caption(f"**{rule['split_percentage']:.0f}%** | {rule['valid_from']} → {rule['valid_to']}")
+            with q_col5:
+                if st.button("❌", key=f"_q_remove_{i}", help="Remove from queue"):
+                    st.session_state['_split_rule_queue'].pop(i)
+                    st.rerun(scope="fragment")
+        
+        # Clear all button
+        if len(queue) > 1:
+            if st.button("🗑️ Clear Queue", type="secondary"):
+                st.session_state['_split_rule_queue'] = []
+                st.rerun(scope="fragment")
+    
+    # =========================================================================
+    # SAVE ALL BUTTON
+    # =========================================================================
+    st.divider()
+    
+    # Approve checkbox (only for admins)
     approve_on_create = False
     if can_approve:
         approve_on_create = st.checkbox(
-            "✅ Approve this rule",
+            "✅ Approve all rules",
             value=True,
             key="dialog_approve_on_create",
-            help="Automatically approve this rule upon creation"
+            help="Automatically approve all rules upon creation"
         )
     
-    # Button (Cancel removed - use dialog X button to close)
-    if st.button("💾 Save", type="primary", use_container_width=True, disabled=not can_save):
-        if not all([customer_id, product_id, kpi_center_id]):
-            st.error("Please fill all required fields")
-        else:
-            result = setup_queries.create_split_rule(
-                customer_id=customer_id,
-                product_id=product_id,
-                kpi_center_id=kpi_center_id,
-                split_percentage=split_pct,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                is_approved=approve_on_create,
-                approved_by=user_id if approve_on_create else None
-            )
+    save_disabled = len(queue) == 0
+    save_label = f"💾 Save All ({len(queue)} rule{'s' if len(queue) != 1 else ''})" if queue else "💾 Save (queue is empty)"
+    
+    if st.button(
+        save_label,
+        type="primary",
+        use_container_width=True,
+        disabled=save_disabled
+    ):
+        result = setup_queries.create_split_rules_batch(
+            rules=queue,
+            is_approved=approve_on_create,
+            approved_by=user_id if approve_on_create else None
+        )
+        
+        if result['success']:
+            # Clear queue
+            st.session_state['_split_rule_queue'] = []
+            st.toast(f"✅ {result['message']}", icon="✅")
             
-            if result['success']:
-                st.toast("✅ Created successfully!", icon="✅")
-                st.rerun()  # Close dialog and refresh
-            else:
-                st.error(result['message'])
+            if result['failed_count'] > 0:
+                for err in result['errors']:
+                    st.warning(err)
+            
+            st.rerun()  # Close dialog and refresh page — only 1 rerun for all rules
+        else:
+            st.error(result['message'])
 
 
 # =============================================================================

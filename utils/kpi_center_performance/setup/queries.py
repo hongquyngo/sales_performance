@@ -1578,6 +1578,109 @@ class SetupQueries:
         
         return self._execute_insert(query, params, "create_split_rule")
     
+    def create_split_rules_batch(
+        self,
+        rules: List[Dict],
+        is_approved: bool = False,
+        approved_by: int = None
+    ) -> Dict:
+        """
+        Batch create multiple split rules in a single transaction.
+        
+        v2.12.1: NEW - For batch creation from Add Split Rule dialog.
+        
+        Args:
+            rules: List of dicts, each with:
+                - customer_id (int)
+                - product_id (int)
+                - kpi_center_id (int)
+                - split_percentage (float)
+                - valid_from (date)
+                - valid_to (date)
+            is_approved: Whether rules are approved
+            approved_by: User ID who approved (FK -> users.id)
+            
+        Returns:
+            Dict with success, created_count, failed_count, new_ids, errors
+        """
+        if not rules:
+            return {
+                'success': False,
+                'created_count': 0,
+                'failed_count': 0,
+                'new_ids': [],
+                'errors': [],
+                'message': 'No rules to create'
+            }
+        
+        query = """
+            INSERT INTO kpi_center_split_by_customer_product (
+                customer_id, product_id, kpi_center_id, split_percentage,
+                valid_from, valid_to, isApproved, approved_by,
+                created_date, modified_date, created_by, modified_by, delete_flag, version
+            ) VALUES (
+                :customer_id, :product_id, :kpi_center_id, :split_percentage,
+                :valid_from, :valid_to, :is_approved, :approved_by,
+                NOW(), NOW(), :created_by, :created_by, 0, 0
+            )
+        """
+        
+        new_ids = []
+        errors = []
+        
+        try:
+            with self.engine.connect() as conn:
+                for i, rule in enumerate(rules):
+                    try:
+                        params = {
+                            'customer_id': rule['customer_id'],
+                            'product_id': rule['product_id'],
+                            'kpi_center_id': rule['kpi_center_id'],
+                            'split_percentage': rule['split_percentage'],
+                            'valid_from': rule['valid_from'],
+                            'valid_to': rule['valid_to'],
+                            'is_approved': 1 if is_approved else 0,
+                            'approved_by': approved_by,
+                            'created_by': self.user_id
+                        }
+                        
+                        conn.execute(text(query), params)
+                        last_id_result = conn.execute(text("SELECT LAST_INSERT_ID() as id"))
+                        last_id = last_id_result.fetchone()[0]
+                        new_ids.append(last_id)
+                        
+                    except Exception as e:
+                        errors.append(f"Rule #{i+1}: {str(e)}")
+                        logger.error(f"Batch create rule #{i+1} failed: {e}")
+                
+                # Commit all at once
+                conn.commit()
+                
+            created_count = len(new_ids)
+            failed_count = len(errors)
+            
+            logger.info(f"Batch create: {created_count} created, {failed_count} failed")
+            
+            return {
+                'success': created_count > 0,
+                'created_count': created_count,
+                'failed_count': failed_count,
+                'new_ids': new_ids,
+                'errors': errors,
+                'message': f"Created {created_count} rules" + (f", {failed_count} failed" if failed_count else "")
+            }
+            
+        except Exception as e:
+            logger.error(f"Batch create transaction failed: {e}")
+            return {
+                'success': False,
+                'created_count': 0,
+                'failed_count': len(rules),
+                'new_ids': [],
+                'errors': [str(e)],
+                'message': f"Transaction failed: {str(e)}"
+            }
+    
     # =========================================================================
     # KPI SPLIT RULES - UPDATE
     # =========================================================================
