@@ -272,8 +272,12 @@ def _check_customer_decline(
     if rev_col not in prev_sales_df.columns or 'customer' not in prev_sales_df.columns:
         return []
 
-    curr = sales_df.groupby('customer')[rev_col].sum().reset_index(name='curr_rev')
-    prev = prev_sales_df.groupby('customer')[rev_col].sum().reset_index(name='prev_rev')
+    # Exclude internal customers
+    df_curr = _exclude_internal(sales_df)
+    df_prev = _exclude_internal(prev_sales_df)
+
+    curr = df_curr.groupby('customer')[rev_col].sum().reset_index(name='curr_rev')
+    prev = df_prev.groupby('customer')[rev_col].sum().reset_index(name='prev_rev')
     merged = curr.merge(prev, on='customer', how='inner')
     if merged.empty:
         return []
@@ -364,8 +368,12 @@ def _check_inactive_customers(sales_df: pd.DataFrame) -> List[Dict]:
     if rev_col not in sales_df.columns or 'inv_date' not in sales_df.columns:
         return []
 
+    # Exclude internal customers
+    df = _exclude_internal(sales_df).copy()
+    if df.empty:
+        return []
+
     today = pd.Timestamp(date.today())
-    df = sales_df.copy()
     df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
 
     cust_rev = df.groupby('customer')[rev_col].sum()
@@ -401,7 +409,12 @@ def _check_concentration(sales_df: pd.DataFrame) -> List[Dict]:
     if rev_col not in sales_df.columns:
         return []
 
-    cust_rev = sales_df.groupby('customer')[rev_col].sum().sort_values(ascending=False)
+    # Exclude internal customers
+    df = _exclude_internal(sales_df)
+    if df.empty:
+        return []
+
+    cust_rev = df.groupby('customer')[rev_col].sum().sort_values(ascending=False)
     total = cust_rev.sum()
     if total <= 0 or len(cust_rev) < 5:
         return []
@@ -422,6 +435,13 @@ def _check_concentration(sales_df: pd.DataFrame) -> List[Dict]:
 # =============================================================================
 # HELPERS
 # =============================================================================
+
+def _exclude_internal(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter out internal customers (customer_type = 'Internal')."""
+    if df.empty or 'customer_type' not in df.columns:
+        return df
+    return df[df['customer_type'].str.lower() != 'internal']
+
 
 def _get_elapsed_ratio(period_type: str, filters: Dict = None) -> Optional[float]:
     """Ratio of time elapsed in period (0.0–1.0). None if undetermined."""
@@ -463,11 +483,14 @@ def _get_elapsed_ratio(period_type: str, filters: Dict = None) -> Optional[float
 
 
 def _get_top_ar_customers(ar_outstanding_df: pd.DataFrame, top_n: int = 3) -> List[Dict]:
-    """Top customers by outstanding amount with overdue info."""
+    """Top customers by outstanding invoice amount (USD) with overdue info."""
     if ar_outstanding_df is None or ar_outstanding_df.empty:
         return []
     df = ar_outstanding_df.copy()
-    if 'outstanding_amount' not in df.columns or 'customer' not in df.columns:
+
+    # Use sales_by_split_usd (USD) — outstanding_amount may be in local currency
+    amount_col = 'sales_by_split_usd'
+    if amount_col not in df.columns or 'customer' not in df.columns:
         return []
 
     today = pd.Timestamp(date.today())
@@ -478,7 +501,7 @@ def _get_top_ar_customers(ar_outstanding_df: pd.DataFrame, top_n: int = 3) -> Li
         df['days_overdue'] = 0
 
     cust_agg = df.groupby('customer').agg(
-        outstanding=('outstanding_amount', 'sum'),
+        outstanding=(amount_col, 'sum'),
         invoice_count=('inv_number', 'nunique'),
         max_overdue_days=('days_overdue', 'max'),
     ).reset_index()
