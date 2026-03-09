@@ -119,6 +119,7 @@ from utils.salesperson_performance.fragments import (
 from utils.salesperson_performance.filters import (
     analyze_period,
 )
+from utils.salesperson_performance.metrics import get_full_period_end_date
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1253,6 +1254,25 @@ with timer("Metrics: analyze_in_period_backlog"):
         year=active_filters['year']
     )
 
+# NEW v3.5.0: Calculate Backlog New Business (expected new business from pending orders)
+backlog_new_business = {'total': {'revenue': 0, 'gp': 0, 'orders': 0, 'combos': 0},
+                        'in_period': {'revenue': 0, 'gp': 0, 'orders': 0, 'combos': 0},
+                        'detail': pd.DataFrame()}
+complex_kpi_calc = st.session_state.get('raw_cached_data', {}).get('_complex_kpi_calculator')
+if complex_kpi_calc is not None and not data['backlog_detail'].empty:
+    # Use full period end for backlog (e.g., Dec 31 for YTD)
+    backlog_period_end = get_full_period_end_date(active_filters['period_type'], active_filters['year'])
+    if backlog_period_end is None:
+        backlog_period_end = active_filters['end_date']
+    
+    with timer("Pandas: calculate_backlog_new_business"):
+        backlog_new_business = complex_kpi_calc.calculate_backlog_new_business(
+            backlog_detail_df=data['backlog_detail'],
+            start_date=active_filters['start_date'],
+            end_date=backlog_period_end,
+            employee_ids=active_filters['employee_ids'] if active_filters['employee_ids'] else None
+        )
+
 # Get period context for display logic
 period_context = backlog_metrics.get('period_context', {})
 
@@ -1401,6 +1421,15 @@ with tab1:
         new_combos_detail_df=fresh_new_combos_detail_df
     )
     
+    # NEW v3.5.0: Show Backlog New Business pipeline summary
+    nb_total_rev = backlog_new_business.get('total', {}).get('revenue', 0)
+    nb_total_combos = backlog_new_business.get('total', {}).get('combos', 0)
+    if nb_total_rev > 0:
+        st.caption(
+            f"📦 **Backlog New Business Pipeline:** ${nb_total_rev:,.0f} from "
+            f"{nb_total_combos} new combos pending — see *Backlog & Forecast → 💼 New Business* tab for details"
+        )
+    
     st.divider()
     
     # Forecast section - only show for current/future periods
@@ -1429,8 +1458,21 @@ Each tab shows data ONLY from employees who have that specific KPI target:
 - **Revenue tab**: Employees with Revenue KPI
 - **GP tab**: Employees with Gross Profit KPI  
 - **GP1 tab**: Employees with GP1 KPI
+- **New Business tab**: Employees with New Business Revenue KPI
 
 This ensures accurate achievement calculation.
+
+---
+
+**💼 New Business Backlog (NEW):**
+
+Identifies pending orders for customer-product combos that are "new":
+- **Never Invoiced**: Combo has zero invoice history → completely new business
+- **New This Period**: Combo's first invoice is in current period → more volume from new combo
+
+```
+Forecast NB = Invoiced NB + In-Period Backlog NB
+```
 
 ---
 
@@ -1473,7 +1515,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
             st.caption(f"📊 GP1 backlog estimated using GP1/GP ratio: {gp1_gp_ratio:.2%}")
         
         # Tabs for different metrics
-        bf_tab1, bf_tab2, bf_tab3 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1"])
+        bf_tab1, bf_tab2, bf_tab3, bf_tab4 = st.tabs(["💰 Revenue", "📈 Gross Profit", "📊 GP1", "💼 New Business"])
         
         # =================================================================
         # TAB: REVENUE
@@ -1753,6 +1795,138 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     title="GP1: Target vs Forecast"
                 )
                 st.altair_chart(gap_chart, width="stretch")
+        
+        # =================================================================
+        # TAB: NEW BUSINESS (NEW v3.5.0)
+        # =================================================================
+        with bf_tab4:
+            nb_total = backlog_new_business.get('total', {})
+            nb_in_period = backlog_new_business.get('in_period', {})
+            nb_detail = backlog_new_business.get('detail', pd.DataFrame())
+            
+            # Get target for comparison
+            nb_target = metrics_calc._get_full_period_target('new_business_revenue', active_filters['period_type'], active_filters['year'])
+            nb_invoiced = complex_kpis.get('new_business_revenue', 0)
+            nb_in_period_rev = nb_in_period.get('revenue', 0)
+            
+            # Forecast = Invoiced + In-Period Backlog NB
+            if nb_target and nb_target > 0:
+                nb_forecast = nb_invoiced + nb_in_period_rev
+                nb_gap = nb_forecast - nb_target
+                nb_gap_pct = (nb_gap / nb_target * 100)
+                nb_forecast_ach = (nb_forecast / nb_target * 100)
+            else:
+                nb_forecast = None
+                nb_gap = None
+                nb_gap_pct = None
+                nb_forecast_ach = None
+            
+            nb_employees = metrics_calc._get_employees_with_kpi('new_business_revenue')
+            nb_emp_count = len(nb_employees)
+            
+            # Metrics cards row
+            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+            
+            with col_m1:
+                st.metric(
+                    label="Total Backlog NB",
+                    value=f"${nb_total.get('revenue', 0):,.0f}",
+                    delta=f"{nb_total.get('combos', 0)} combos / {nb_total.get('orders', 0)} orders",
+                    delta_color="off",
+                    help="All pending orders for new customer-product combos (never invoiced or first invoiced this period)"
+                )
+            
+            with col_m2:
+                pct = (nb_in_period_rev / nb_target * 100) if nb_target and nb_target > 0 else None
+                st.metric(
+                    label="In-Period (KPI)",
+                    value=f"${nb_in_period_rev:,.0f}",
+                    delta=f"{pct:.0f}% of target" if pct else f"{nb_in_period.get('combos', 0)} combos",
+                    delta_color="off",
+                    help=f"Backlog new business with ETD in period. Only from {nb_emp_count} employees with NB KPI."
+                )
+            
+            with col_m3:
+                if nb_target and nb_target > 0:
+                    st.metric(
+                        label="Target",
+                        value=f"${nb_target:,.0f}",
+                        delta=f"{nb_emp_count} people",
+                        delta_color="off",
+                        help=f"Sum of New Business Revenue targets from {nb_emp_count} employees"
+                    )
+                else:
+                    st.metric(label="Target", value="N/A", delta="No KPI assigned", delta_color="off")
+            
+            with col_m4:
+                if nb_forecast is not None:
+                    delta_color = "normal" if nb_forecast_ach and nb_forecast_ach >= 100 else "inverse"
+                    st.metric(
+                        label="Forecast (KPI)",
+                        value=f"${nb_forecast:,.0f}",
+                        delta=f"{nb_forecast_ach:.0f}% of target" if nb_forecast_ach else None,
+                        delta_color=delta_color if nb_forecast_ach else "off",
+                        help=f"Invoiced NB (${nb_invoiced:,.0f}) + In-Period Backlog NB (${nb_in_period_rev:,.0f})"
+                    )
+                else:
+                    st.metric(label="Forecast (KPI)", value="N/A", delta_color="off")
+            
+            with col_m5:
+                if nb_gap is not None:
+                    label = "Surplus ✅" if nb_gap >= 0 else "GAP ⚠️"
+                    delta_color = "normal" if nb_gap >= 0 else "inverse"
+                    st.metric(
+                        label=label,
+                        value=f"${nb_gap:+,.0f}",
+                        delta=f"{nb_gap_pct:+.1f}%" if nb_gap_pct else None,
+                        delta_color=delta_color,
+                        help="Forecast - Target. Positive = ahead, Negative = behind."
+                    )
+                else:
+                    st.metric(label="GAP", value="N/A", delta_color="off")
+            
+            # Breakdown by type
+            if not nb_detail.empty:
+                never_count = len(nb_detail[nb_detail['new_business_type'] == 'never_invoiced'])
+                new_period_count = len(nb_detail[nb_detail['new_business_type'] == 'new_this_period'])
+                
+                st.caption(
+                    f"📊 Backlog New Business Breakdown: "
+                    f"**{never_count}** lines never invoiced (completely new) + "
+                    f"**{new_period_count}** lines from combos new this period"
+                )
+                
+                # Show detail table in expander
+                with st.expander(f"📋 Detail ({len(nb_detail)} lines)", expanded=False):
+                    display_cols = {
+                        'oc_number': 'OC#',
+                        'etd': 'ETD',
+                        'customer': 'Customer',
+                        'product_pn': 'Product',
+                        'brand': 'Brand',
+                        'sales_name': 'Salesperson',
+                        'backlog_sales_by_split_usd': 'Revenue',
+                        'backlog_gp_by_split_usd': 'GP',
+                        'new_business_type': 'Type',
+                    }
+                    available_cols = [c for c in display_cols.keys() if c in nb_detail.columns]
+                    df_display = nb_detail[available_cols].copy()
+                    df_display = df_display.rename(columns={c: display_cols[c] for c in available_cols})
+                    df_display['Type'] = df_display['Type'].map({
+                        'never_invoiced': '🆕 Never Invoiced',
+                        'new_this_period': '📅 New This Period'
+                    })
+                    st.dataframe(
+                        df_display.style.format({
+                            'Revenue': '${:,.0f}',
+                            'GP': '${:,.0f}',
+                        }),
+                        width="stretch",
+                        hide_index=True,
+                        height=400
+                    )
+            else:
+                st.info("No backlog new business found for current filters")
         
         st.divider()
     else:

@@ -724,6 +724,168 @@ class ComplexKPICalculator:
         }
     
     # =========================================================================
+    # BACKLOG NEW BUSINESS (NEW v1.3.0)
+    # =========================================================================
+    
+    def calculate_backlog_new_business(
+        self,
+        backlog_detail_df: pd.DataFrame,
+        start_date: date,
+        end_date: date,
+        employee_ids: Optional[List[int]] = None
+    ) -> dict:
+        """
+        Identify backlog orders that represent "New Business".
+        
+        NEW v1.3.0: A backlog order is "new business" if the (customer, product)
+        combo has NEVER been invoiced, or was FIRST invoiced in the current period.
+        When these orders get shipped/invoiced, they'll contribute to New Business Revenue.
+        
+        Matching key: (customer_id, product_pn) — available in both sales and backlog data.
+        
+        Args:
+            backlog_detail_df: Backlog detail data with customer_id, product_pn, 
+                              backlog_sales_by_split_usd, backlog_gp_by_split_usd, etd, sales_id
+            start_date: Current period start date
+            end_date: Current period end date (full period end for backlog, e.g. Dec 31 for YTD)
+            employee_ids: Optional employee filter
+            
+        Returns:
+            Dict with:
+            - total: {revenue, gp, orders, combos} — all backlog new business
+            - in_period: {revenue, gp, orders, combos} — ETD within period only
+            - detail: DataFrame with each new business backlog line + new_business_type column
+        """
+        start_time = time.perf_counter()
+        
+        empty_result = {
+            'total': {'revenue': 0, 'gp': 0, 'orders': 0, 'combos': 0},
+            'in_period': {'revenue': 0, 'gp': 0, 'orders': 0, 'combos': 0},
+            'detail': pd.DataFrame(),
+        }
+        
+        if self._df.empty or backlog_detail_df.empty:
+            return empty_result
+        
+        # =====================================================================
+        # STEP 1: Build historical combo lookup by (customer_id, product_pn)
+        # =====================================================================
+        hist = self._df[
+            self._df['customer_id'].notna() & self._df['product_pn'].notna()
+        ]
+        
+        # Exclude service products from combo lookup (consistent with new_combos logic)
+        if 'is_service' in hist.columns:
+            hist = hist[hist['is_service'] != 1]
+        
+        # First invoice date per (customer_id, product_pn) combo
+        first_combo_by_pn = hist.groupby(['customer_id', 'product_pn']).agg(
+            first_combo_date=('inv_date', 'min')
+        ).reset_index()
+        
+        # =====================================================================
+        # STEP 2: Prepare backlog data
+        # =====================================================================
+        bl = backlog_detail_df.copy()
+        
+        # Filter by employee if provided
+        if employee_ids and 'sales_id' in bl.columns:
+            bl = bl[bl['sales_id'].isin(employee_ids)]
+        
+        if bl.empty:
+            return empty_result
+        
+        # Ensure required columns
+        if 'customer_id' not in bl.columns or 'product_pn' not in bl.columns:
+            logger.warning("Backlog missing customer_id or product_pn for new business matching")
+            return empty_result
+        
+        # =====================================================================
+        # STEP 3: Match backlog combos against history
+        # =====================================================================
+        # Left join: keep all backlog rows, add first_combo_date where match exists
+        bl = bl.merge(
+            first_combo_by_pn,
+            on=['customer_id', 'product_pn'],
+            how='left'
+        )
+        
+        # Classify each backlog row
+        period_start_ts = pd.Timestamp(start_date)
+        
+        # New business if:
+        # a) first_combo_date is NaT (never invoiced - completely new combo)
+        # b) first_combo_date >= period start (new combo this period)
+        bl['is_new_business'] = (
+            bl['first_combo_date'].isna() |
+            (bl['first_combo_date'] >= period_start_ts)
+        )
+        
+        # Sub-classify for insight
+        bl['new_business_type'] = 'existing'
+        bl.loc[bl['first_combo_date'].isna(), 'new_business_type'] = 'never_invoiced'
+        bl.loc[
+            bl['first_combo_date'].notna() & (bl['first_combo_date'] >= period_start_ts),
+            'new_business_type'
+        ] = 'new_this_period'
+        
+        # Filter to new business only
+        new_bl = bl[bl['is_new_business']].copy()
+        
+        if new_bl.empty:
+            return empty_result
+        
+        # =====================================================================
+        # STEP 4: Aggregate metrics
+        # =====================================================================
+        rev_col = 'backlog_sales_by_split_usd'
+        gp_col = 'backlog_gp_by_split_usd'
+        
+        def _agg(df):
+            return {
+                'revenue': df[rev_col].sum() if rev_col in df.columns else 0,
+                'gp': df[gp_col].sum() if gp_col in df.columns else 0,
+                'orders': df['oc_number'].nunique() if 'oc_number' in df.columns else len(df),
+                'combos': df.groupby(['customer_id', 'product_pn']).ngroups if not df.empty else 0,
+            }
+        
+        # Total (all backlog new business)
+        total_metrics = _agg(new_bl)
+        
+        # In-period (ETD within period)
+        in_period_metrics = {'revenue': 0, 'gp': 0, 'orders': 0, 'combos': 0}
+        if 'etd' in new_bl.columns:
+            new_bl['etd'] = pd.to_datetime(new_bl['etd'], errors='coerce')
+            in_period = new_bl[
+                (new_bl['etd'].notna()) &
+                (new_bl['etd'] >= pd.Timestamp(start_date)) &
+                (new_bl['etd'] <= pd.Timestamp(end_date))
+            ]
+            if not in_period.empty:
+                in_period_metrics = _agg(in_period)
+        
+        elapsed = time.perf_counter() - start_time
+        if DEBUG_TIMING:
+            never = len(new_bl[new_bl['new_business_type'] == 'never_invoiced'])
+            new_period = len(new_bl[new_bl['new_business_type'] == 'new_this_period'])
+            print(
+                f"   📊 [backlog_new_business] "
+                f"Total: {total_metrics['combos']} combos, ${total_metrics['revenue']:,.0f} | "
+                f"In-Period: {in_period_metrics['combos']} combos, ${in_period_metrics['revenue']:,.0f} | "
+                f"(never_invoiced={never}, new_this_period={new_period}) "
+                f"in {elapsed:.3f}s"
+            )
+        
+        return {
+            'total': total_metrics,
+            'in_period': in_period_metrics,
+            'detail': new_bl[['oc_number', 'oc_date', 'etd', 'customer', 'customer_id',
+                             'product_pn', 'brand', 'sales_name', 'sales_id',
+                             rev_col, gp_col, 'new_business_type']].copy() 
+                    if not new_bl.empty else pd.DataFrame(),
+        }
+    
+    # =========================================================================
     # UTILITY METHODS
     # =========================================================================
     
