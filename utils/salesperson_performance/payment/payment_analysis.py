@@ -604,7 +604,7 @@ def render_payment_section(payment_data: Optional[Dict]):
             title = "📅 Aging by Due Date" if aging_mode == 'overdue' else "📅 Aging by Invoice Date"
             st.markdown(f"##### {title}")
             chart = _build_aging_chart(aging)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
         with col_detail:
             st.markdown("##### 📋 Aging Detail")
@@ -617,7 +617,7 @@ def render_payment_section(payment_data: Optional[Dict]):
                     columns={'bucket': 'Aging Bucket'}
                 ),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
 
     # -----------------------------------------------------------------
@@ -633,7 +633,7 @@ def render_payment_section(payment_data: Optional[Dict]):
             with col_left:
                 st.markdown("##### 📈 Monthly Collection Trend")
                 chart = _build_collection_trend_chart(by_month)
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
 
         if has_customers:
             with col_right:
@@ -656,7 +656,7 @@ def render_payment_section(payment_data: Optional[Dict]):
                         columns={'customer': 'Customer'}
                     ),
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     height=min(350, 35 * len(display_cust) + 38),
                 )
         elif has_trend:
@@ -678,7 +678,7 @@ def render_payment_section(payment_data: Optional[Dict]):
                 columns={'legal_entity': 'Legal Entity'}
             ),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     # -----------------------------------------------------------------
@@ -696,7 +696,7 @@ def render_payment_section(payment_data: Optional[Dict]):
                 columns={'sales_name': 'Salesperson'}
             ),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
 

@@ -655,7 +655,7 @@ def _customer_analysis_section(
             columns={'customer': 'Customer'}
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=min(600, 35 * len(display) + 38),
     )
 
@@ -695,7 +695,7 @@ def _customer_analysis_section(
             ]
         ).properties(height=350)
 
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
 
     # Export
     _render_export_button(pay_df, fragment_key)

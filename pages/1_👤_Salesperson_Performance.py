@@ -1221,14 +1221,9 @@ with timer("Metrics: calculate_overview_metrics"):
 # Data is already available in cached data from Pandas processing
 fresh_new_business_df = data.get('new_business', pd.DataFrame())
 fresh_new_business_detail_df = data.get('new_business_detail', pd.DataFrame())
-if DEBUG_TIMING:
-    print(f"   ♻️ Using cached new_business data ({len(fresh_new_business_df)} rows)")
-    print(f"   ♻️ Using cached new_business_detail ({len(fresh_new_business_detail_df)} rows)")
 
 # NEW v1.1.0: Get new_combos_detail for New Combos metric
 fresh_new_combos_detail_df = data.get('new_combos_detail', pd.DataFrame())
-if DEBUG_TIMING:
-    print(f"   ♻️ Using cached new_combos_detail ({len(fresh_new_combos_detail_df)} rows)")
 
 with timer("Metrics: calculate_complex_kpis"):
     complex_kpis = metrics_calc.calculate_complex_kpis(
