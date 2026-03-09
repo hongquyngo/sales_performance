@@ -120,6 +120,10 @@ from utils.salesperson_performance.fragments import (
 
 # NEW v3.5.0: Payment & Collection tab
 from utils.salesperson_performance.payment import payment_tab_fragment
+from utils.salesperson_performance.payment.payment_analysis import (
+    analyze_payments as sp_analyze_payments,
+    _fmt_currency as _payment_fmt_currency,
+)
 
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -1291,6 +1295,15 @@ if complex_kpi_calc is not None and not data['backlog_detail'].empty:
 period_context = backlog_metrics.get('period_context', {})
 
 # =============================================================================
+# PAYMENT & COLLECTION METRICS (for Overview section)
+# Uses AR outstanding data for complete AR picture
+# =============================================================================
+payment_overview = None
+ar_df = data.get('ar_outstanding', pd.DataFrame())
+if not ar_df.empty and 'payment_status' in ar_df.columns:
+    payment_overview = sp_analyze_payments(ar_df)
+
+# =============================================================================
 # ANALYZE PERIOD TYPE
 # =============================================================================
 
@@ -1435,6 +1448,89 @@ with tab1:
         # NEW v1.3.0: Pass new combos detail for New Combos popup
         new_combos_detail_df=fresh_new_combos_detail_df
     )
+    
+    # =========================================================================
+    # PAYMENT & COLLECTION SECTION (NEW v3.5.0)
+    # Shows AR outstanding summary in Overview for quick visibility
+    # =========================================================================
+    if payment_overview and payment_overview.get('summary', {}).get('has_outstanding', False):
+        p_summary = payment_overview['summary']
+        p_aging = payment_overview.get('aging_buckets', pd.DataFrame())
+        
+        # Parse aging for overdue / not-yet-due split
+        p_outstanding = p_summary['total_outstanding']
+        p_overdue = 0
+        p_overdue_lines = 0
+        p_nyd = 0
+        p_nyd_lines = 0
+        p_weighted_days = 0
+        p_weighted_total = 0
+        
+        if not p_aging.empty and 'min_days' in p_aging.columns:
+            nyd_mask = p_aging['min_days'] < 0
+            p_nyd = p_aging.loc[nyd_mask, 'amount'].sum()
+            p_nyd_lines = int(p_aging.loc[nyd_mask, 'count'].sum())
+            
+            overdue_mask = p_aging['min_days'] >= 0
+            p_overdue = p_aging.loc[overdue_mask, 'amount'].sum()
+            p_overdue_lines = int(p_aging.loc[overdue_mask, 'count'].sum())
+            
+            for _, row in p_aging.iterrows():
+                mid = (row['min_days'] + min(row['max_days'], 365)) / 2
+                if mid > 0:
+                    p_weighted_days += mid * row['amount']
+                    p_weighted_total += row['amount']
+        
+        p_avg_days = int(p_weighted_days / p_weighted_total) if p_weighted_total > 0 else 0
+        p_unpaid_count = p_summary['unpaid_invoices'] + p_summary['partial_invoices']
+        
+        with st.container(border=True):
+            st.markdown("**💰 PAYMENT & COLLECTION**")
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            
+            with pc1:
+                st.metric(
+                    "Outstanding",
+                    _payment_fmt_currency(p_outstanding),
+                    f"{p_unpaid_count:,} invoices ({p_summary['unpaid_invoices']} unpaid · {p_summary['partial_invoices']} partial)",
+                    delta_color="off",
+                    help="Total AR outstanding — all unpaid/partially paid invoices"
+                )
+            with pc2:
+                if p_overdue > 0:
+                    overdue_pct = (p_overdue / p_outstanding * 100) if p_outstanding > 0 else 0
+                    st.metric(
+                        "🔴 Overdue",
+                        _payment_fmt_currency(p_overdue),
+                        f"{p_overdue_lines:,} lines · {overdue_pct:.0f}% of total",
+                        delta_color="inverse",
+                        help="Past due date — needs follow-up"
+                    )
+                else:
+                    st.metric("🟢 Overdue", "$0", "No overdue", delta_color="off")
+            with pc3:
+                nyd_pct = (p_nyd / p_outstanding * 100) if p_outstanding > 0 else 0
+                st.metric(
+                    "🟢 Not Yet Due",
+                    _payment_fmt_currency(p_nyd),
+                    f"{p_nyd_lines:,} lines · {nyd_pct:.0f}% of total",
+                    delta_color="off",
+                    help="Still within payment terms"
+                )
+            with pc4:
+                if p_avg_days > 0:
+                    severity = "🔴" if p_avg_days > 90 else "🟠" if p_avg_days > 45 else "🟢"
+                    st.metric(
+                        f"{severity} Avg Days Overdue",
+                        f"{p_avg_days} days",
+                        "weighted by amount",
+                        delta_color="off",
+                        help="Weighted average days past due date"
+                    )
+                else:
+                    st.metric("🟢 Avg Days Overdue", "0 days", "All within terms", delta_color="off")
+            
+            st.caption("See **💰 Payment** tab for full analysis, aging breakdown, and customer details")
     
     # NEW v3.5.0: Show Backlog New Business pipeline summary
     nb_total_rev = backlog_new_business.get('total', {}).get('revenue', 0)
