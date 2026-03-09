@@ -792,6 +792,20 @@ class ComplexKPICalculator:
         if employee_ids and 'sales_id' in bl.columns:
             bl = bl[bl['sales_id'].isin(employee_ids)]
         
+        # Exclude internal customers (consistent with exclude_internal flag)
+        # Identify internal customer_ids from raw sales data (before internal filter)
+        if self.exclude_internal and 'customer_type' in self._raw_df.columns:
+            internal_customer_ids = set(
+                self._raw_df[
+                    self._raw_df['customer_type'].str.lower() == 'internal'
+                ]['customer_id'].dropna().unique()
+            )
+            if internal_customer_ids and 'customer_id' in bl.columns:
+                before = len(bl)
+                bl = bl[~bl['customer_id'].isin(internal_customer_ids)]
+                if DEBUG_TIMING and before != len(bl):
+                    print(f"   📊 [backlog_new_business] Excluded {before - len(bl)} internal customer rows")
+        
         if bl.empty:
             return empty_result
         
