@@ -86,7 +86,7 @@ from .access_control import AccessControl
 logger = logging.getLogger(__name__)
 
 # Debug timing flag - set to True to see query timings
-DEBUG_QUERY_TIMING = True
+DEBUG_QUERY_TIMING = False
 
 
 class SalespersonQueries:

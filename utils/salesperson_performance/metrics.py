@@ -90,7 +90,7 @@ from .constants import MONTH_ORDER, QUARTER_MONTHS, KPI_TYPES
 logger = logging.getLogger(__name__)
 
 # Debug timing flag
-DEBUG_METRICS_TIMING = True
+DEBUG_METRICS_TIMING = False
 
 
 def get_full_period_end_date(period_type: str, year: int) -> date:

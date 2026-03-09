@@ -88,7 +88,9 @@ class SalespersonCharts:
         # NEW v1.5.0: Line-by-line new business combo detail
         new_business_detail_df: pd.DataFrame = None,
         # NEW v1.3.0: New combos detail for popup
-        new_combos_detail_df: pd.DataFrame = None
+        new_combos_detail_df: pd.DataFrame = None,
+        # NEW v3.5.0: Backlog new business pipeline summary
+        backlog_nb_pipeline: Dict = None,
     ):
         """
         Render KPI summary cards using Streamlit metrics with visual grouping.
@@ -743,6 +745,18 @@ class SalespersonCharts:
                                         )
                         else:
                             st.caption("")
+                
+                # Backlog New Business Pipeline summary
+                if backlog_nb_pipeline:
+                    _nb_rev = backlog_nb_pipeline.get('revenue', 0)
+                    _nb_combos = backlog_nb_pipeline.get('combos', 0)
+                    if _nb_rev > 0:
+                        st.caption(
+                            f"📦 **Backlog New Business Pipeline:** ${_nb_rev:,.0f} from "
+                            f"{_nb_combos} new combos pending — "
+                            f"see *Backlog & Forecast → 💼 New Business* tab for details"
+                        )
+                        
     # =========================================================================
     # MONTHLY TREND CHART
     # =========================================================================

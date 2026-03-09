@@ -32,7 +32,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Debug timing flag
-DEBUG_TIMING = True
+DEBUG_TIMING = False
 
 
 class SidebarOptionsExtractor:

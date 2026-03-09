@@ -915,7 +915,7 @@ class SalespersonFilters:
                 # =============================================================
                 submitted = st.form_submit_button(
                     "🔍 Apply Filters",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary"
                 )
             

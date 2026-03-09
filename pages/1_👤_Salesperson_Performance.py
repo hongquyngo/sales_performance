@@ -26,13 +26,15 @@ from utils.salesperson_performance.setup import setup_tab_fragment
 # DEBUG TIMING UTILITIES
 # =============================================================================
 
-# Set to True to enable timing output
+# Set to True to enable timing summary table
 DEBUG_TIMING = True
+# Set to True to enable individual step prints (verbose)
+DEBUG_VERBOSE = False
 
 _timing_log = []
 
 @contextmanager
-def timer(label: str, print_immediately: bool = True):
+def timer(label: str, print_immediately: bool = False):
     """Context manager for timing code blocks."""
     start = time.perf_counter()
     yield
@@ -53,7 +55,7 @@ def timing_decorator(label: str = None):
             elapsed = time.perf_counter() - start
             msg = f"⏱️ [{func_label}] {elapsed:.3f}s"
             _timing_log.append((func_label, elapsed))
-            if DEBUG_TIMING:
+            if DEBUG_VERBOSE:
                 print(msg)
             return result
         return wrapper
@@ -287,12 +289,12 @@ if access_cache_key not in st.session_state:
         'level': access.get_access_level(),
         'ids': _ac_ids
     }
-    if DEBUG_TIMING:
+    if DEBUG_VERBOSE:
         print(f"   ✅ AccessControl IDs cached: {access.get_access_level()}, {len(_ac_ids) if _ac_ids else 'all'} employees")
 else:
     # Inject cached IDs to avoid DB query
     access._accessible_ids = st.session_state[access_cache_key]['ids']
-    if DEBUG_TIMING:
+    if DEBUG_VERBOSE:
         _ac_level = st.session_state[access_cache_key]['level']
         _ac_ids = st.session_state[access_cache_key]['ids']
         print(f"   ♻️ Using cached AccessControl: {_ac_level}, {len(_ac_ids) if _ac_ids else 'all'} employees")
@@ -347,10 +349,10 @@ def _get_cached_sidebar_options():
             'default_end': default_end,
             'cached_at': datetime.now()
         }
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             print(f"   ✅ Sidebar options extracted from lookback data for employee_id={st.session_state.get('employee_id')}")
     else:
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             cached_at = st.session_state[cache_key].get('cached_at', 'unknown')
             print(f"   ♻️ Using cached sidebar options (cached at: {cached_at})")
     
@@ -406,9 +408,10 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     
     This significantly reduces load time for non-admin users.
     """
-    print(f"\n{'='*60}")
-    print(f"🚀 STARTING DATA LOAD: {start_year}-{end_year}")
-    print(f"{'='*60}")
+    if DEBUG_VERBOSE:
+        print(f"\n{'='*60}")
+        print(f"🚀 STARTING DATA LOAD: {start_year}-{end_year}")
+        print(f"{'='*60}")
     load_start_time = time.perf_counter()
     
     # OPTIMIZATION v2.6.0: Cache AccessControl accessible_ids in session_state
@@ -420,7 +423,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     if access_cache_key in st.session_state:
         access_level = st.session_state[access_cache_key]['level']
         accessible_ids = st.session_state[access_cache_key]['ids']
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             print(f"   ♻️ Using cached AccessControl ({access_level}, {len(accessible_ids) if accessible_ids else 'all'} employees)")
     else:
         with timer("AccessControl.init"):
@@ -474,7 +477,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → Sales rows: {len(data['sales']):,}")
+        if DEBUG_VERBOSE: print(f"   → Sales rows: {len(data['sales']):,}")
         
         progress_bar.progress(20, text="🎯 Loading KPI targets...")
         with timer("DB: get_kpi_targets (all years)"):
@@ -484,7 +487,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 if not t.empty:
                     targets_list.append(t)
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
-        print(f"   → Targets rows: {len(data['targets']):,}")
+        if DEBUG_VERBOSE: print(f"   → Targets rows: {len(data['targets']):,}")
         
         # =====================================================================
         # PHASE 1.5: KPI Type Weights (for Overall Achievement calculation)
@@ -492,7 +495,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # =====================================================================
         with timer("DB: get_kpi_type_weights"):
             data['kpi_type_weights'] = get_kpi_type_weights_cached()
-        print(f"   → KPI type weights: {len(data['kpi_type_weights'])} types")
+        if DEBUG_VERBOSE: print(f"   → KPI type weights: {len(data['kpi_type_weights'])} types")
         
         # =====================================================================
         # PHASE 2: Complex KPIs - Using Pandas Calculator (v3.0.0)
@@ -505,7 +508,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # Check if lookback data was already loaded for sidebar options
         if '_sidebar_lookback_df' in st.session_state and st.session_state['_sidebar_lookback_df'] is not None:
             lookback_df = st.session_state['_sidebar_lookback_df']
-            if DEBUG_TIMING:
+            if DEBUG_VERBOSE:
                 print(f"   ♻️ Reusing lookback data from sidebar ({len(lookback_df):,} rows)")
             # Clear the temporary storage to free memory
             # (we'll store it in data['_lookback_df'] instead)
@@ -515,7 +518,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             # Complex KPIs need GLOBAL first dates (first to COMPANY, not to salesperson)
             with timer("DB: get_lookback_sales_data"):
                 lookback_df = q.get_lookback_sales_data(end_date, lookback_years=5)
-            print(f"   → Lookback data rows: {len(lookback_df):,}")
+            if DEBUG_VERBOSE: print(f"   → Lookback data rows: {len(lookback_df):,}")
         
         # Store raw lookback data for later recalculation if exclude_internal changes
         data['_lookback_df'] = lookback_df
@@ -540,11 +543,11 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # Store calculator for instant recalculation on filter changes
         data['_complex_kpi_calculator'] = complex_kpi_calc
         
-        print(f"   → New customers: {len(data['new_customers']):,} rows")
-        print(f"   → New products: {len(data['new_products']):,} rows")
-        print(f"   → New combos detail: {len(data['new_combos_detail']):,} rows")  # NEW v1.1.0
-        print(f"   → New business: {len(data['new_business']):,} rows")
-        print(f"   → New business detail: {len(data['new_business_detail']):,} rows")
+        if DEBUG_VERBOSE: print(f"   → New customers: {len(data['new_customers']):,} rows")
+        if DEBUG_VERBOSE: print(f"   → New products: {len(data['new_products']):,} rows")
+        if DEBUG_VERBOSE: print(f"   → New combos detail: {len(data['new_combos_detail']):,} rows")  # NEW v1.1.0
+        if DEBUG_VERBOSE: print(f"   → New business: {len(data['new_business']):,} rows")
+        if DEBUG_VERBOSE: print(f"   → New business detail: {len(data['new_business_detail']):,} rows")
         
         # =====================================================================
         # PHASE 3: Backlog data - FILTERED by access control
@@ -556,7 +559,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → Total backlog rows: {len(data['total_backlog']):,}")
+        if DEBUG_VERBOSE: print(f"   → Total backlog rows: {len(data['total_backlog']):,}")
         
         with timer("DB: get_backlog_in_period"):
             data['in_period_backlog'] = q.get_backlog_in_period(
@@ -565,14 +568,14 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → In-period backlog rows: {len(data['in_period_backlog']):,}")
+        if DEBUG_VERBOSE: print(f"   → In-period backlog rows: {len(data['in_period_backlog']):,}")
         
         with timer("DB: get_backlog_by_month"):
             data['backlog_by_month'] = q.get_backlog_by_month(
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → Backlog by month rows: {len(data['backlog_by_month']):,}")
+        if DEBUG_VERBOSE: print(f"   → Backlog by month rows: {len(data['backlog_by_month']):,}")
         
         # Backlog detail - FILTERED by access control
         # UPDATED v2.2.0: Removed limit to get ALL backlog records for accurate totals
@@ -582,7 +585,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
+        if DEBUG_VERBOSE: print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
         
         # =====================================================================
         # PHASE 4: Sequential - Sales split data
@@ -590,7 +593,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         progress_bar.progress(90, text="👥 Loading sales split data...")
         with timer("DB: get_sales_split_data"):
             data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
-        print(f"   → Sales split rows: {len(data['sales_split']):,}")
+        if DEBUG_VERBOSE: print(f"   → Sales split rows: {len(data['sales_split']):,}")
         
         # =====================================================================
         # PHASE 5: AR Outstanding data (for Payment & Collection tab)
@@ -603,7 +606,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        print(f"   → AR outstanding rows: {len(data['ar_outstanding']):,}")
+        if DEBUG_VERBOSE: print(f"   → AR outstanding rows: {len(data['ar_outstanding']):,}")
         
         # Step 7: Clean all dataframes
         with timer("Clean dataframes"):
@@ -622,9 +625,10 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         
         # Print load summary
         total_load_time = time.perf_counter() - load_start_time
-        print(f"\n{'='*60}")
-        print(f"✅ DATA LOAD COMPLETE: {total_load_time:.2f}s total")
-        print(f"{'='*60}\n")
+        if DEBUG_VERBOSE:
+            print(f"\n{'='*60}")
+            print(f"✅ DATA LOAD COMPLETE: {total_load_time:.2f}s total")
+            print(f"{'='*60}\n")
         
     except Exception as e:
         progress_bar.empty()
@@ -659,7 +663,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     - Allows page to render with $0 values instead of blocking
     """
     filter_start = time.perf_counter()
-    if DEBUG_TIMING:
+    if DEBUG_VERBOSE:
         print(f"\n🔍 CLIENT-SIDE FILTERING...")
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
@@ -674,7 +678,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     # NEW v2.4.0: If empty selection, return empty DataFrames for data tables
     # This allows page to render with $0 values instead of blocking
     if is_empty_selection:
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             print(f"   ⚠️ Empty selection - returning empty DataFrames")
         for key, df in raw_data.items():
             if key.startswith('_'):
@@ -815,11 +819,11 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     
     # Print timing
     filter_elapsed = time.perf_counter() - filter_start
-    if DEBUG_TIMING:
+    if DEBUG_VERBOSE:
         print(f"⏱️ [Client-side filter] {filter_elapsed:.3f}s")
         for key, df in filtered.items():
             if isinstance(df, pd.DataFrame):
-                print(f"   → {key}: {len(df):,} rows")
+                if DEBUG_VERBOSE: print(f"   → {key}: {len(df):,} rows")
     
     return filtered
 
@@ -860,7 +864,7 @@ def _extract_previous_year_from_cache(
     
     cached_start_year, cached_end_year = cached_year_range
     if prev_start.year < cached_start_year or prev_end.year > cached_end_year:
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             print(f"   ⚠️ YoY cache miss: prev year {prev_start.year} outside cached range {cached_start_year}-{cached_end_year}")
         return None  # Signal to fall back to SQL
     
@@ -881,7 +885,7 @@ def _extract_previous_year_from_cache(
     if entity_ids and 'legal_entity_id' in df.columns:
         df = df[df['legal_entity_id'].isin(entity_ids)]
     
-    if DEBUG_TIMING:
+    if DEBUG_VERBOSE:
         print(f"   ♻️ YoY: Extracted {len(df):,} rows from cache (prev period: {prev_start} to {prev_end})")
     
     return df
@@ -1090,7 +1094,7 @@ if filters_submitted:
                     if k.startswith(cache_prefixes)]
     for key in keys_to_clear:
         del st.session_state[key]
-    if DEBUG_TIMING and keys_to_clear:
+    if DEBUG_VERBOSE and keys_to_clear:
         print(f"   🗑️ Cleared {len(keys_to_clear)} computed caches due to filter change")
 
 # Always use applied filters (not current form values)
@@ -1209,7 +1213,7 @@ if has_empty_data or active_filters.get('is_empty_selection', False):
 # CALCULATE METRICS
 # =============================================================================
 
-if DEBUG_TIMING:
+if DEBUG_VERBOSE:
     print(f"\n📈 CALCULATING METRICS...")
 
 with timer("Metrics: SalespersonMetrics init"):
@@ -1338,7 +1342,7 @@ if active_filters['compare_yoy'] and not period_info['is_multi_year']:
         st.session_state[yoy_cache_key] = previous_sales_df
     else:
         previous_sales_df = st.session_state[yoy_cache_key]
-        if DEBUG_TIMING:
+        if DEBUG_VERBOSE:
             print(f"   ♻️ Using cached previous_year_data ({len(previous_sales_df)} rows)")
     
     if not previous_sales_df.empty:
@@ -1367,7 +1371,6 @@ with timer("Metrics: calculate_overall_kpi_achievement"):
 if DEBUG_TIMING:
     print_timing_summary()
     reset_timing()
-    print(f"\n🖼️ RENDERING UI...")
 
 # =============================================================================
 # PAGE HEADER
@@ -1446,7 +1449,9 @@ with tab1:
         # NEW v1.5.0: Pass combo detail for New Business popup
         new_business_detail_df=fresh_new_business_detail_df,
         # NEW v1.3.0: Pass new combos detail for New Combos popup
-        new_combos_detail_df=fresh_new_combos_detail_df
+        new_combos_detail_df=fresh_new_combos_detail_df,
+        # NEW v3.5.0: Backlog new business pipeline for NEW BUSINESS section
+        backlog_nb_pipeline=backlog_new_business.get('total', {}),
     )
     
     # =========================================================================
@@ -1531,15 +1536,6 @@ with tab1:
                     st.metric("🟢 Avg Days Overdue", "0 days", "All within terms", delta_color="off")
             
             st.caption("See **💰 Payment** tab for full analysis, aging breakdown, and customer details")
-    
-    # NEW v3.5.0: Show Backlog New Business pipeline summary
-    nb_total_rev = backlog_new_business.get('total', {}).get('revenue', 0)
-    nb_total_combos = backlog_new_business.get('total', {}).get('combos', 0)
-    if nb_total_rev > 0:
-        st.caption(
-            f"📦 **Backlog New Business Pipeline:** ${nb_total_rev:,.0f} from "
-            f"{nb_total_combos} new combos pending — see *Backlog & Forecast → 💼 New Business* tab for details"
-        )
     
     st.divider()
     
@@ -2723,7 +2719,6 @@ with tab6:
 # Print final timing summary for UI rendering
 if DEBUG_TIMING:
     print_timing_summary()
-    print(f"✅ PAGE RENDER COMPLETE\n{'='*60}\n")
 
 st.divider()
 st.caption(
