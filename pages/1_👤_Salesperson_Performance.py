@@ -132,6 +132,12 @@ from utils.salesperson_performance.filters import (
 )
 from utils.salesperson_performance.metrics import get_full_period_end_date
 
+# NEW v3.6.0: Daily Warning Bulletin
+from utils.salesperson_performance.warning_bulletin import (
+    generate_warning_bulletin,
+    render_warning_bulletin,
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1367,6 +1373,32 @@ with timer("Metrics: calculate_overall_kpi_achievement"):
         new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
     )
 
+# =============================================================================
+# WARNING BULLETIN (NEW v3.6.0)
+# Generate daily warning bulletin from all calculated metrics — zero SQL queries
+# =============================================================================
+
+with timer("Generate: warning_bulletin"):
+    # Reuse already-loaded previous year sales data for customer decline detection
+    _prev_sales_cache_key = f"prev_year_data_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(active_filters['employee_ids'] or [])}"
+    _prev_sales_for_bulletin = st.session_state.get(_prev_sales_cache_key, pd.DataFrame())
+    
+    warning_bulletin = generate_warning_bulletin(
+        overview_metrics=overview_metrics,
+        yoy_metrics=yoy_metrics,
+        overall_achievement=overall_achievement,
+        pipeline_forecast=pipeline_forecast_metrics,
+        in_period_backlog_analysis=in_period_backlog_analysis,
+        complex_kpis=complex_kpis,
+        sales_df=data['sales'],
+        targets_df=data['targets'],
+        backlog_detail_df=data['backlog_detail'],
+        ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+        payment_overview=payment_overview,
+        active_filters=active_filters,
+        previous_sales_df=_prev_sales_for_bulletin,
+    )
+
 # Print timing summary before rendering
 if DEBUG_TIMING:
     print_timing_summary()
@@ -1433,6 +1465,14 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # =============================================================================
 
 with tab1:
+    # === Daily Warning Bulletin (NEW v3.6.0) ===
+    render_warning_bulletin(
+        bulletin=warning_bulletin,
+        ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+    )
+    
+    st.divider()
+    
     # KPI Cards - Performance & New Business sections
     SalespersonCharts.render_kpi_cards(
         metrics=overview_metrics,
