@@ -281,142 +281,119 @@ class GAPCalculator:
         
         return gap_df
     
-    def _add_safety_stock(
-        self,
-        gap_df: pd.DataFrame,
-        safety_df: pd.DataFrame,
-        group_by: str
-    ) -> pd.DataFrame:
-        """Add safety stock data"""
-        
-        if safety_df.empty or group_by != 'product':
-            gap_df['safety_stock_qty'] = 0
-            gap_df['reorder_point'] = 0
+
+    def _add_safety_stock(self, gap_df: pd.DataFrame, safety_df: pd.DataFrame, group_by: str) -> pd.DataFrame:
+            """
+            Add safety stock data using OUTER JOIN. 
+            Ensures 'product_id' exists in gap_df to prevent KeyError during merge.
+            """
+            # 1. Trường hợp không có dữ liệu Safety Stock hoặc không group theo Product
+            if safety_df.empty or group_by != 'product':
+                if 'safety_stock_qty' not in gap_df.columns:
+                    gap_df['safety_stock_qty'] = 0
+                if 'reorder_point' not in gap_df.columns:
+                    gap_df['reorder_point'] = 0
+                if 'avg_daily_demand' not in gap_df.columns:
+                    gap_df['avg_daily_demand'] = 0
+                return gap_df
+            
+            # 2. ĐẢM BẢO 'product_id' TỒN TẠI: 
+            # Nếu gap_df trống (không có Supply/Demand), nó có thể thiếu cột để join.
+            if 'product_id' not in gap_df.columns:
+                # Khởi tạo cột product_id trống với kiểu dữ liệu phù hợp
+                gap_df['product_id'] = pd.Series(dtype='int64')
+            
+            # 3. Chuẩn bị dữ liệu Safety Stock
+            desired_cols = [
+                'product_id', 'product_name', 'pt_code', 'brand', 'standard_uom', 
+                'safety_stock_qty', 'reorder_point', 'avg_daily_demand'
+            ]
+            
+            # Chỉ lấy những cột thực tế đang tồn tại trong safety_df
+            available_cols = [col for col in desired_cols if col in safety_df.columns]
+            
+            safety_data = safety_df[available_cols].copy()
+            safety_data = safety_data.groupby('product_id').first().reset_index()
+            
+            # 4. Thực hiện OUTER JOIN
+            # gap_df bây giờ chắc chắn có 'product_id', tránh được KeyError.
+            gap_df = pd.merge(gap_df, safety_data, on='product_id', how='outer', suffixes=('', '_safety'))
+            
+            # 5. Hợp nhất thông tin định danh cho các SKU mới từ Safety Stock
+            identity_cols = ['product_name', 'pt_code', 'brand', 'standard_uom']
+            for col in identity_cols:
+                safety_col_name = f'{col}_safety'
+                if safety_col_name in gap_df.columns:
+                    gap_df[col] = gap_df[col].fillna(gap_df[safety_col_name])
+                    gap_df.drop(safety_col_name, axis=1, inplace=True)
+            
+            # 6. Chuẩn hóa dữ liệu số (Điền 0 cho các giá trị NaN)
+            numeric_cols = gap_df.select_dtypes(include=['number']).columns
+            gap_df[numeric_cols] = gap_df[numeric_cols].fillna(0)
+            
             return gap_df
-        
-        available_cols = ['product_id']
-        desired_cols = ['safety_stock_qty', 'reorder_point', 'avg_daily_demand']
-        
-        for col in desired_cols:
-            if col in safety_df.columns:
-                available_cols.append(col)
-            else:
-                logger.warning(f"Column {col} not found in safety_stock_df, using default value 0")
-        
-        safety_data = safety_df[available_cols].copy()
-        safety_data = safety_data.groupby('product_id').first().reset_index()
-        gap_df = pd.merge(gap_df, safety_data, on='product_id', how='left')
-        
-        for col in desired_cols:
-            if col not in gap_df.columns:
-                gap_df[col] = 0
-            else:
-                gap_df[col] = gap_df[col].fillna(0)
-        
-        return gap_df
-    
+
+
     def _calculate_metrics(self, gap_df: pd.DataFrame, include_safety: bool) -> pd.DataFrame:
-        """
-        Calculate GAP metrics
-        v4.5: Improved status classification based on net_gap sign
-        """
-        
-        if 'total_supply' not in gap_df.columns:
-            gap_df['total_supply'] = 0
-            logger.warning("total_supply column missing, initialized to 0")
-        
-        if 'total_demand' not in gap_df.columns:
-            gap_df['total_demand'] = 0
-            logger.warning("total_demand column missing, initialized to 0")
-        
-        # Available supply (considering safety stock)
-        if include_safety and 'safety_stock_qty' in gap_df.columns:
-            gap_df['available_supply'] = np.maximum(
-                0,
-                gap_df['total_supply'] - gap_df['safety_stock_qty']
-            )
-        else:
-            gap_df['available_supply'] = gap_df['total_supply']
-        
-        # Net GAP
-        gap_df['net_gap'] = gap_df['available_supply'] - gap_df['total_demand']
-        
-        # True GAP (always ignores safety stock)
-        gap_df['true_gap'] = gap_df['total_supply'] - gap_df['total_demand']
-        
-        # Safety Gap = Total Supply - Safety Stock (can be negative)
-        if include_safety and 'safety_stock_qty' in gap_df.columns:
-            gap_df['safety_gap'] = gap_df['total_supply'] - gap_df['safety_stock_qty']
-        else:
-            gap_df['safety_gap'] = np.nan
-        
-        # Coverage ratio
-        gap_df['coverage_ratio'] = np.where(
-            gap_df['total_demand'] > 0,
-            gap_df['available_supply'] / gap_df['total_demand'],
-            np.nan
-        )
-        
-        # GAP percentage
-        gap_df['gap_percentage'] = np.where(
-            gap_df['total_demand'] > 0,
-            (gap_df['net_gap'] / gap_df['total_demand']) * 100,
-            np.nan
-        )
-        
-        # Safety metrics
-        if include_safety and 'safety_stock_qty' in gap_df.columns:
-            gap_df['safety_coverage'] = np.where(
-                gap_df['safety_stock_qty'] > 0,
-                gap_df.get('supply_inventory', gap_df['total_supply']) / gap_df['safety_stock_qty'],
-                np.nan
+            """
+            Calculate GAP metrics - v4.7 Optimized
+            - Available Supply: Non-negative (Physical sellable stock)
+            - Net GAP: Includes Safety Stock requirement (Supply - Safety - Demand)
+            """
+            # Đảm bảo các cột cơ bản tồn tại
+            for col in ['total_supply', 'total_demand']:
+                if col not in gap_df.columns:
+                    gap_df[col] = 0
+
+            # 1. Available supply (considering safety stock)
+            if include_safety and 'safety_stock_qty' in gap_df.columns:
+                # GIỮ NGUYÊN LOGIC CŨ: Không cho phép âm (Available to sell)
+                gap_df['available_supply'] = np.maximum(
+                    0,
+                    gap_df['total_supply'] - gap_df['safety_stock_qty']
+                )
+                # NET GAP: Phản ánh "Thiếu hụt Safety" (Có thể âm để tính toán Shortage)
+                gap_df['net_gap'] = (gap_df['total_supply'] - gap_df['safety_stock_qty']) - gap_df['total_demand']
+            else:
+                gap_df['available_supply'] = gap_df['total_supply']
+                gap_df['net_gap'] = gap_df['available_supply'] - gap_df['total_demand']
+            
+            # 2. True GAP & Safety Gap
+            gap_df['true_gap'] = gap_df['total_supply'] - gap_df['total_demand']
+            if include_safety and 'safety_stock_qty' in gap_df.columns:
+                gap_df['safety_gap'] = gap_df['total_supply'] - gap_df['safety_stock_qty']
+            else:
+                gap_df['safety_gap'] = np.nan
+            
+            # 3. Coverage ratio
+            gap_df['coverage_ratio'] = np.where(
+                gap_df['total_demand'] > 0,
+                gap_df['available_supply'] / gap_df['total_demand'],
+                np.where(gap_df['net_gap'] < 0, 0.0, np.nan)
             )
             
-            gap_df['below_reorder'] = (
-                gap_df.get('supply_inventory', gap_df['total_supply']) <= gap_df['reorder_point']
-            ) & (gap_df['reorder_point'] > 0)
-        
-        # v4.5: Status classification with NEW logic
-        gap_df['gap_status'] = gap_df.apply(
-            lambda row: self._classify_status_v45(row, include_safety), 
-            axis=1
-        )
-        
-        # Priority
-        gap_df['priority'] = gap_df.apply(self._get_priority, axis=1)
-        
-        # Suggested action
-        gap_df['suggested_action'] = gap_df.apply(self._get_action, axis=1)
-        
-        # Shortage cause
-        gap_df['shortage_cause'] = gap_df.apply(
-            lambda row: self._classify_shortage_cause(row, include_safety), 
-            axis=1
-        )
-        
-        # Financial metrics
-        if 'avg_unit_cost_usd' not in gap_df.columns:
-            gap_df['avg_unit_cost_usd'] = 0
-        
-        if 'avg_selling_price_usd' not in gap_df.columns:
-            gap_df['avg_selling_price_usd'] = 0
-        
-        if 'supply_value_usd' not in gap_df.columns:
-            gap_df['supply_value_usd'] = 0
-        
-        if 'demand_value_usd' not in gap_df.columns:
-            gap_df['demand_value_usd'] = 0
-        
-        gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
-        
-        gap_df['at_risk_value_usd'] = np.where(
-            gap_df['net_gap'] < 0,
-            abs(gap_df['net_gap']) * gap_df['avg_selling_price_usd'],
-            0
-        )
-        
-        return gap_df
-    
+            # 4. Phân loại Status & Priority (Sử dụng hàm apply hiện tại)
+            gap_df['gap_status'] = gap_df.apply(lambda r: self._classify_status_v45(r, include_safety), axis=1)
+            gap_df['priority'] = gap_df.apply(self._get_priority, axis=1)
+            gap_df['suggested_action'] = gap_df.apply(self._get_action, axis=1)
+            gap_df['shortage_cause'] = gap_df.apply(lambda r: self._classify_shortage_cause(r, include_safety), axis=1)
+            
+            # 5. Financial metrics
+            for col in ['avg_unit_cost_usd', 'avg_selling_price_usd']:
+                if col not in gap_df.columns: gap_df[col] = 0
+                gap_df[col] = gap_df[col].fillna(0)
+
+            gap_df['gap_value_usd'] = gap_df['net_gap'] * gap_df['avg_unit_cost_usd']
+            
+            # At Risk Value: Chỉ tính rủi ro trên lượng Demand thực tế bị thiếu
+            gap_df['at_risk_value_usd'] = np.where(
+                (gap_df['net_gap'] < 0) & (gap_df['total_demand'] > 0),
+                np.minimum(abs(gap_df['net_gap']), gap_df['total_demand']) * gap_df['avg_selling_price_usd'],
+                0
+            )
+            
+            return gap_df
+
     def _classify_status_v45(self, row: pd.Series, include_safety: bool) -> str:
         """
         v4.5 STATUS CLASSIFICATION LOGIC - FIXED
@@ -521,125 +498,75 @@ class GAPCalculator:
         # OK (P99)
         return THRESHOLDS['priority']['ok']
     
+
     def _get_action(self, row: pd.Series) -> str:
-        """
-        Get suggested action based on status - ENHANCED VERSION v4.5
-        Includes: $ at risk, PO incoming, timeline, coverage %, days of stock
-        Safety warnings are integrated into shortage actions
-        """
-        
-        status = row.get('gap_status', '')
-        net_gap = row.get('net_gap', 0)
-        true_gap = row.get('true_gap', 0)
-        at_risk = row.get('at_risk_value_usd', 0) or 0
-        safety_gap = row.get('safety_gap', 0) or 0
-        safety_stock = row.get('safety_stock_qty', 0) or 0
-        total_supply = row.get('total_supply', 0) or 0
-        total_demand = row.get('total_demand', 0) or 0
-        coverage = row.get('coverage_ratio', 0) or 0
-        
-        # Check incoming PO
-        incoming_po = row.get('supply_purchase_order', 0) or 0
-        
-        # Check safety severity
-        is_critical_safety = safety_stock > 0 and total_supply < safety_stock * 0.5
-        is_below_safety = safety_stock > 0 and total_supply < safety_stock
-        
-        # ===== CRITICAL SHORTAGE =====
-        if status == 'CRITICAL_SHORTAGE':
-            action = f"🚨 ORDER {abs(net_gap):.0f} units TODAY"
-            if is_critical_safety:
-                action += f" | ⚠️ Only {total_supply:.0f} vs {safety_stock:.0f} safety!"
-            elif at_risk > 0:
-                action += f" | ${at_risk:,.0f} at risk"
-            if incoming_po > 0:
-                action += f" | PO: {incoming_po:.0f} coming"
-            return action
-        
-        # ===== SEVERE SHORTAGE =====
-        elif status == 'SEVERE_SHORTAGE':
-            action = f"🔴 Order {abs(net_gap):.0f} units within 24h"
-            if is_critical_safety:
-                action += f" | ⚠️ Below 50% safety!"
-            elif at_risk > 0:
-                action += f" | ${at_risk:,.0f} at risk"
-            if incoming_po > 0:
-                action += f" | PO: {incoming_po:.0f}"
-            return action
-        
-        # ===== HIGH SHORTAGE =====
-        elif status == 'HIGH_SHORTAGE':
-            action = f"🟠 Order {abs(net_gap):.0f} units within 48h"
-            if is_below_safety:
-                action += f" | ⚠️ Below safety ({total_supply:.0f}/{safety_stock:.0f})"
-            elif incoming_po > 0:
-                action += f" | PO incoming: {incoming_po:.0f}"
-            elif at_risk > 0:
-                action += f" | ${at_risk:,.0f} at risk"
-            return action
-        
-        # ===== MODERATE SHORTAGE =====
-        elif status == 'MODERATE_SHORTAGE':
-            action = f"🟡 Order {abs(net_gap):.0f} units this week"
-            if is_below_safety:
-                action += f" | ⚠️ Below safety"
-            elif coverage > 0:
-                action += f" | Coverage: {coverage*100:.0f}%"
-            return action
-        
-        # ===== LIGHT SHORTAGE =====
-        elif status == 'LIGHT_SHORTAGE':
-            # Special case: Light shortage but critical safety issue
-            if is_critical_safety:
-                return f"⚠️ Gap: {abs(net_gap):.0f} | 🚨 Only {total_supply:.0f} vs {safety_stock:.0f} safety!"
-            elif is_below_safety:
-                gap_to_safety = abs(safety_gap)
-                return f"⚠️ Gap: {abs(net_gap):.0f} | Need +{gap_to_safety:.0f} to reach safety"
-            elif incoming_po >= abs(net_gap):
-                return f"⚠️ Gap: {abs(net_gap):.0f} | PO covers: {incoming_po:.0f} incoming"
+            """
+            Khôi phục cột Action gốc và tích hợp logic cảnh báo CHECK DEMAND.
+            """
+            status = row.get('gap_status', '')
+            net_gap = row.get('net_gap', 0)
+            safety_qty = row.get('safety_stock_qty', 0)
+            total_supply = row.get('total_supply', 0)
+            total_demand = row.get('total_demand', 0)
+            at_risk = row.get('at_risk_value_usd', 0) or 0
+            coverage = row.get('coverage_ratio', 0) or 0
+            incoming_po = row.get('supply_purchase_order', 0) or 0
             
-            action = f"⚠️ Consider ordering {abs(net_gap):.0f} units"
-            if coverage > 0:
-                action += f" | Coverage: {coverage*100:.0f}%"
-            return action
-        
-        # ===== BALANCED =====
-        elif status == 'BALANCED':
-            if is_below_safety:
-                return f"✅ Demand met | ⚠️ But below safety ({total_supply:.0f}/{safety_stock:.0f})"
-            return "✅ OK - Monitor weekly"
-        
-        # ===== LIGHT SURPLUS =====
-        elif status == 'LIGHT_SURPLUS':
-            return f"🔵 +{net_gap:.0f} surplus | OK - Reduce next order"
-        
-        # ===== MODERATE SURPLUS =====
-        elif status == 'MODERATE_SURPLUS':
-            return f"🟣 +{net_gap:.0f} surplus | Hold new orders | Consider promotion"
-        
-        # ===== HIGH SURPLUS =====
-        elif status == 'HIGH_SURPLUS':
-            days_of_stock = (total_supply / total_demand * 30) if total_demand > 0 else 999
-            if days_of_stock < 999:
-                return f"🟠 +{net_gap:.0f} surplus (~{days_of_stock:.0f} days) | Stop ordering"
-            return f"🟠 +{net_gap:.0f} surplus | Stop ordering"
-        
-        # ===== SEVERE SURPLUS =====
-        elif status == 'SEVERE_SURPLUS':
-            return f"🔴 +{net_gap:.0f} excess | Cancel PO | Transfer/discount"
-        
-        # ===== NO DEMAND =====
-        elif status == 'NO_DEMAND':
-            if total_supply > 0:
-                return f"⚪ {total_supply:.0f} units idle | Review: transfer/discontinue"
-            return "⚪ No demand"
-        
-        # ===== NO ACTIVITY =====
-        elif status == 'NO_ACTIVITY':
-            return "⚪ Inactive SKU - Review status"
-        
-        return "Review manually"
-    
+            # Check safety severity
+            is_critical_safety = safety_qty > 0 and total_supply < safety_qty * 0.5
+            is_below_safety = safety_qty > 0 and total_supply < safety_qty
+
+            # --- LOGIC MỚI: Cảnh báo rủi ro Overstock ---
+            # Nếu không có nhu cầu khách hàng mà phải nhập hàng cho Safety Stock
+            if total_demand == 0 and safety_qty > 0 and total_supply < safety_qty:
+                safety_shortage = safety_qty - total_supply
+                return f"🔍 CHECK DEMAND: Need {safety_shortage:.0f} for Safety but No Customer Demand. Risk of Overstock!"
+
+            # --- KHÔI PHỤC TOÀN BỘ LOGIC GỐC ---
+            if status == 'CRITICAL_SHORTAGE':
+                action = f"🚨 ORDER {abs(net_gap):.0f} units TODAY"
+                if is_critical_safety:
+                    action += f" | ⚠️ Only {total_supply:.0f} vs {safety_qty:.0f} safety!"
+                elif at_risk > 0:
+                    action += f" | ${at_risk:,.0f} at risk"
+                return action
+            
+            elif status == 'SEVERE_SHORTAGE':
+                action = f"🔴 Order {abs(net_gap):.0f} units within 24h"
+                if is_critical_safety: action += f" | ⚠️ Below 50% safety!"
+                return action
+            
+            elif status == 'HIGH_SHORTAGE':
+                return f"🟠 Order {abs(net_gap):.0f} units within 48h"
+            
+            elif status == 'MODERATE_SHORTAGE':
+                return f"🟡 Order {abs(net_gap):.0f} units this week"
+            
+            elif status == 'LIGHT_SHORTAGE':
+                if is_below_safety: return f"⚠️ Gap: {abs(net_gap):.0f} | Need to reach safety"
+                return f"⚠️ Consider ordering {abs(net_gap):.0f} units"
+            
+            elif status == 'BALANCED':
+                if is_below_safety: return f"✅ Demand met | ⚠️ Below safety ({total_supply:.0f}/{safety_qty:.0f})"
+                return "✅ OK - Monitor weekly"
+            
+            elif status == 'LIGHT_SURPLUS':
+                return f"🔵 +{net_gap:.0f} surplus | OK"
+                
+            elif status == 'MODERATE_SURPLUS':
+                return f"🟣 +{net_gap:.0f} surplus | Hold new orders"
+                
+            elif status == 'HIGH_SURPLUS':
+                return f"🟠 +{net_gap:.0f} surplus | Stop ordering"
+                
+            elif status == 'SEVERE_SURPLUS':
+                return f"🔴 +{net_gap:.0f} excess | Cancel PO"
+            
+            elif status == 'NO_DEMAND':
+                return "⚪ No demand | Review status" if total_supply > 0 else "⚪ No demand"
+                
+            return "Review manually"
+
     def _classify_shortage_cause(self, row: pd.Series, include_safety: bool) -> str:
         """Classify the cause of shortage for better user understanding"""
         

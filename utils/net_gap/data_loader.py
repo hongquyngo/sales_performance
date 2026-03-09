@@ -262,16 +262,14 @@ class GAPDataLoader:
             return []
     
     # ==================== PRODUCT METHODS ====================
-    
+
     @st.cache_data(ttl=CACHE_TTL['reference'])
-    def get_products(_self, entity_name: Optional[str] = None) -> pd.DataFrame:
+    def get_products(_self, entity_name: Optional[str] = None, include_safety: bool = False) -> pd.DataFrame:
         """
-        Get list of products with package_size
-        IMPORTANT: Gets products from supply/demand views to ensure they have data
+        Get list of products including those from safety stock if enabled.
         """
         try:
             _self._validate_entity_name(entity_name)
-            
             params = {}
             entity_filter = ""
             
@@ -279,22 +277,23 @@ class GAPDataLoader:
                 entity_filter = "WHERE entity_name = :entity_name"
                 params['entity_name'] = entity_name
             
-            # Get products from UNION of supply and demand views (like stable version)
+            # Tạo danh sách các nguồn truy vấn
+            sources = [
+                "SELECT product_id, product_name, pt_code, package_size, brand, standard_uom, entity_name FROM unified_supply_view",
+                "SELECT product_id, product_name, pt_code, package_size, brand, standard_uom, entity_name FROM unified_demand_view"
+            ]
+            
+            # Thêm nguồn từ safety stock nếu được yêu cầu
+            if include_safety:
+                sources.append("SELECT product_id, product_name, pt_code, package_size, brand, standard_uom, entity_name FROM safety_stock_current_view")
+            
+            union_query = " UNION ".join(sources)
+            
             query = f"""
                 SELECT DISTINCT 
                     product_id, product_name, pt_code, package_size,
                     brand, standard_uom
-                FROM (
-                    SELECT product_id, product_name, pt_code, package_size, 
-                           brand, standard_uom, entity_name
-                    FROM unified_supply_view
-                    WHERE product_id IS NOT NULL
-                    UNION
-                    SELECT product_id, product_name, pt_code, package_size, 
-                           brand, standard_uom, entity_name
-                    FROM unified_demand_view
-                    WHERE product_id IS NOT NULL
-                ) AS products
+                FROM ({union_query}) AS products
                 {entity_filter}
                 ORDER BY pt_code, product_name
             """
@@ -308,26 +307,20 @@ class GAPDataLoader:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: _self._normalize_text_field(x, col))
             
-            logger.info(f"Loaded {len(df)} products")
             return df
-            
-        except ValidationError:
-            raise
-        except SQLAlchemyError as e:
-            logger.error(f"Database error getting products: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error getting products: {e}")
             return pd.DataFrame()
-    
+
     # ==================== BRAND METHODS ====================
-    
+
     @st.cache_data(ttl=CACHE_TTL['reference'])
-    def get_brands(_self, entity_name: Optional[str] = None) -> List[str]:
+    def get_brands(_self, entity_name: Optional[str] = None, include_safety: bool = False) -> List[str]:
         """
-        Get list of unique brands
-        Gets brands from supply/demand views to ensure they have data
+        Get list of brands including those from safety stock if enabled.
         """
         try:
             _self._validate_entity_name(entity_name)
-            
             params = {}
             entity_filter = ""
             
@@ -335,39 +328,33 @@ class GAPDataLoader:
                 entity_filter = "WHERE entity_name = :entity_name"
                 params['entity_name'] = entity_name
             
-            # Get brands from UNION of supply and demand views (like stable version)
+            sources = [
+                "SELECT DISTINCT brand, entity_name FROM unified_supply_view",
+                "SELECT DISTINCT brand, entity_name FROM unified_demand_view"
+            ]
+            
+            if include_safety:
+                sources.append("SELECT DISTINCT brand, entity_name FROM safety_stock_current_view")
+                
+            union_query = " UNION ".join(sources)
+            
             query = f"""
                 SELECT DISTINCT brand
-                FROM (
-                    SELECT DISTINCT brand, entity_name FROM unified_supply_view 
-                    WHERE brand IS NOT NULL
-                    UNION
-                    SELECT DISTINCT brand, entity_name FROM unified_demand_view 
-                    WHERE brand IS NOT NULL
-                ) AS brands
+                FROM ({union_query}) AS brands
                 {entity_filter}
                 ORDER BY brand
             """
             
             with _self.get_connection() as conn:
                 result = conn.execute(text(query), params)
-                brands = []
-                for row in result:
-                    if row[0]:
-                        normalized = _self._normalize_text_field(row[0], 'brand')
-                        if normalized and normalized not in brands:
-                            brands.append(normalized)
-            
-            brands.sort()
-            logger.info(f"Loaded {len(brands)} brands")
-            return brands
-            
-        except ValidationError:
-            raise
-        except SQLAlchemyError as e:
-            logger.error(f"Database error getting brands: {e}", exc_info=True)
+                brands = [row[0] for row in result if row[0]]
+                
+            return sorted(list(set(_self._normalize_text_field(b, 'brand') for b in brands)))
+        except Exception as e:
+            logger.error(f"Error getting brands: {e}")
             return []
-    
+
+
     # ==================== SAFETY STOCK METHODS ====================
     
     @st.cache_data(ttl=CACHE_TTL['reference'])
@@ -422,6 +409,7 @@ class GAPDataLoader:
                     product_name,
                     pt_code,
                     brand,
+                    standard_uom,
                     entity_name,
                     customer_name,
                     COALESCE(safety_stock_qty, 0) as safety_stock_qty,
@@ -481,7 +469,7 @@ class GAPDataLoader:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
             # Normalize text fields
-            text_cols = ['pt_code', 'product_name', 'brand', 'entity_name']
+            text_cols = ['pt_code', 'product_name', 'brand', 'entity_name', 'standard_uom']
             for col in text_cols:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: _self._normalize_text_field(x, col))
@@ -507,7 +495,9 @@ class GAPDataLoader:
         brands: Optional[Tuple[str, ...]] = None,
         exclude_products: bool = False,
         exclude_brands: bool = False,
-        exclude_expired: bool = True
+        exclude_expired: bool = True,
+        po_approval_statuses: Optional[Tuple[str, ...]] = ('APPROVED',),
+        po_order_types: Optional[Tuple[str, ...]] = ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'),
     ) -> pd.DataFrame:
         """Load supply data from unified_supply_view"""
         try:
@@ -517,7 +507,8 @@ class GAPDataLoader:
             
             query, params = _self._build_supply_query(
                 entity_name, exclude_entity, product_ids, brands,
-                exclude_products, exclude_brands, exclude_expired
+                exclude_products, exclude_brands, exclude_expired,
+                po_approval_statuses, po_order_types
             )
             
             with _self.get_connection() as conn:
@@ -790,7 +781,9 @@ class GAPDataLoader:
         brands: Optional[Tuple[str, ...]],
         exclude_products: bool,
         exclude_brands: bool,
-        exclude_expired: bool
+        exclude_expired: bool,
+        po_approval_statuses: Optional[Tuple[str, ...]] = ('APPROVED',),
+        po_order_types: Optional[Tuple[str, ...]] = ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'),
     ) -> Tuple[str, Dict[str, Any]]:
         """Build supply query"""
         
@@ -858,6 +851,26 @@ class GAPDataLoader:
         
         if exclude_expired:
             query_parts.append("AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE())")
+        
+        # PO-specific filters: only apply to PURCHASE_ORDER rows (NULL = non-PO rows, always pass)
+        if po_approval_statuses:
+            placeholders = [f":po_appr_{i}" for i in range(len(po_approval_statuses))]
+            query_parts.append(
+                f"AND (supply_source != 'PURCHASE_ORDER' "
+                f"OR approval_status IN ({','.join(placeholders)}))"
+            )
+            for i, status in enumerate(po_approval_statuses):
+                params[f'po_appr_{i}'] = status
+        
+        if po_order_types:
+            placeholders = [f":po_type_{i}" for i in range(len(po_order_types))]
+            query_parts.append(
+                f"AND (supply_source != 'PURCHASE_ORDER' "
+                f"OR purchase_order_type IN ({','.join(placeholders)}) "
+                f"OR purchase_order_type IS NULL)"
+            )
+            for i, otype in enumerate(po_order_types):
+                params[f'po_type_{i}'] = otype
         
         query_parts.append("ORDER BY product_id, supply_priority, days_to_available")
         
@@ -950,7 +963,8 @@ class GAPDataLoader:
             'days_to_expiry', 'available_quantity', 'availability_date',
             'days_to_available', 'availability_status', 'warehouse_name',
             'to_location', 'entity_name', 'unit_cost_usd', 'total_value_usd',
-            'supply_reference_id', 'supplier_name', 'completion_percentage'
+            'supply_reference_id', 'supplier_name', 'completion_percentage',
+            'purchase_order_type', 'approval_status',
         ])
     
     def _get_empty_demand_dataframe(self) -> pd.DataFrame:

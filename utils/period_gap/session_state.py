@@ -69,7 +69,11 @@ def initialize_session_state():
         # It's only set when user confirms Quick Add selection
         'pgap_quick_add_cancelled': False,
         'pgap_show_quick_add': False,
-        'pgap_product_widget_counter': 0
+        'pgap_product_widget_counter': 0,
+        
+        # PO-specific filters
+        'pgap_po_approval_statuses': ['APPROVED'],
+        'pgap_po_order_types': ['REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'],
     }
     
     for key, default_value in defaults.items():

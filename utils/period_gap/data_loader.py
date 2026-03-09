@@ -92,13 +92,28 @@ class PeriodGAPDataLoader:
         return df
 
     @st.cache_data(ttl=1800)
-    def load_pending_po(_self):
-        """Load pending PO data"""
+    def load_pending_po(
+        _self,
+        po_approval_statuses: tuple = ('APPROVED',),
+        po_order_types: tuple = ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'),
+    ):
+        """Load pending PO data with optional approval_status and order_type filters"""
         engine = get_db_engine()
-        query = """
-        SELECT * FROM prostechvn.purchase_order_full_view
-        WHERE pending_standard_arrival_quantity > 0
-        """
+        
+        # Build WHERE clauses for PO filters
+        conditions = ["pending_standard_arrival_quantity > 0"]
+        
+        if po_approval_statuses:
+            placeholders = ', '.join(f"'{s}'" for s in po_approval_statuses)
+            conditions.append(f"approval_status IN ({placeholders})")
+        
+        if po_order_types:
+            placeholders = ', '.join(f"'{t}'" for t in po_order_types)
+            conditions.append(f"(purchase_order_type IN ({placeholders}) OR purchase_order_type IS NULL)")
+        
+        where_clause = ' AND '.join(conditions)
+        query = f"SELECT * FROM prostechvn.purchase_order_full_view WHERE {where_clause}"
+        
         df = pd.read_sql(text(query), engine)
         
         # Ensure numeric columns
@@ -107,7 +122,10 @@ class PeriodGAPDataLoader:
             'buying_quantity', 'purchase_unit_cost'
         ])
         
-        logger.info(f"Loaded {len(df)} pending PO records")
+        logger.info(
+            f"Loaded {len(df)} pending PO records "
+            f"[approval={po_approval_statuses}, type={po_order_types}]"
+        )
         return df
 
     @st.cache_data(ttl=1800)
@@ -468,7 +486,13 @@ class PeriodGAPDataLoader:
         
         return pd.DataFrame()
 
-    def get_supply_data(self, sources: List[str], exclude_expired: bool = True) -> pd.DataFrame:
+    def get_supply_data(
+        self,
+        sources: List[str],
+        exclude_expired: bool = True,
+        po_approval_statuses: tuple = ('APPROVED',),
+        po_order_types: tuple = ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'),
+    ) -> pd.DataFrame:
         """Get combined supply data with numeric safety"""
         today = pd.to_datetime("today").normalize()
         df_parts = []
@@ -486,7 +510,10 @@ class PeriodGAPDataLoader:
                 df_parts.append(can_df)
         
         if "Pending PO" in sources:
-            po_df = self.load_pending_po()
+            po_df = self.load_pending_po(
+                po_approval_statuses=po_approval_statuses,
+                po_order_types=po_order_types,
+            )
             if not po_df.empty:
                 po_df = self._prepare_po_data(po_df)
                 df_parts.append(po_df)

@@ -228,13 +228,51 @@ def render_source_selection() -> Dict[str, Any]:
         if supply_can: selected_supply.append("Pending CAN")
         if supply_po: selected_supply.append("Pending PO")
         if supply_wht: selected_supply.append("Pending WH Transfer")
+        
+        # PO-specific filters (only shown when Pending PO is selected)
+        po_approval_statuses = ('APPROVED',)
+        po_order_types = ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER')
+        
+        if supply_po:
+            st.markdown("**🔒 PO Filters**")
+            po_col1, po_col2 = st.columns(2)
+            
+            with po_col1:
+                st.caption("Approval Status")
+                _po_statuses = []
+                _defaults_appr = st.session_state.get('pgap_po_approval_statuses', ['APPROVED'])
+                for key, label, icon in [
+                    ('APPROVED',         'Approved',    '✅'),
+                    ('APPROVED_LEVEL_1', 'Approved L1', '🔶'),
+                    ('PENDING',          'Pending',     '⏳'),
+                ]:
+                    if st.checkbox(f"{icon} {label}", value=key in _defaults_appr, key=f"pgap_po_appr_{key}"):
+                        _po_statuses.append(key)
+                po_approval_statuses = tuple(_po_statuses) if _po_statuses else ('APPROVED',)
+                st.session_state['pgap_po_approval_statuses'] = list(po_approval_statuses)
+            
+            with po_col2:
+                st.caption("Order Type")
+                _po_types = []
+                _defaults_type = st.session_state.get('pgap_po_order_types', ['REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'])
+                for key, label, icon in [
+                    ('REGULAR_ORDER', 'Regular', '📦'),
+                    ('SAMPLE_ORDER',  'Sample',  '🧪'),
+                    ('MIXED_ORDER',   'Mixed',   '📋'),
+                ]:
+                    if st.checkbox(f"{icon} {label}", value=key in _defaults_type, key=f"pgap_po_type_{key}"):
+                        _po_types.append(key)
+                po_order_types = tuple(_po_types) if _po_types else ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER')
+                st.session_state['pgap_po_order_types'] = list(po_order_types)
     
     return {
         "demand": selected_demand,
         "supply": selected_supply,
         "include_converted": include_converted,
         "exclude_expired": exclude_expired,
-        "oc_date_field": oc_date_field
+        "oc_date_field": oc_date_field,
+        "po_approval_statuses": po_approval_statuses,
+        "po_order_types": po_order_types,
     }
 
 
@@ -572,7 +610,9 @@ def main():
                 
                 df_supply = data_loader.get_supply_data(
                     sources=selected_sources['supply'],
-                    exclude_expired=selected_sources.get('exclude_expired', True)
+                    exclude_expired=selected_sources.get('exclude_expired', True),
+                    po_approval_statuses=selected_sources.get('po_approval_statuses', ('APPROVED',)),
+                    po_order_types=selected_sources.get('po_order_types', ('REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER')),
                 )
                 
                 # Apply filters

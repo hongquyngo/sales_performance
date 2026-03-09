@@ -1,4 +1,4 @@
-# pages/1_📊_Net_GAP.py
+# pages/1_📉_Net_GAP.py
 
 """
 Net GAP Analysis Page - Enhanced with Expired Inventory Tracking v4.2
@@ -81,7 +81,9 @@ def calculate_gap(
             brands=filter_values.get('brands_tuple'),
             exclude_products=filter_values.get('exclude_products', False),
             exclude_brands=filter_values.get('exclude_brands', False),
-            exclude_expired=filter_values.get('exclude_expired', True)
+            exclude_expired=filter_values.get('exclude_expired', True),
+            po_approval_statuses=tuple(filter_values.get('po_approval_statuses', ['APPROVED'])),
+            po_order_types=tuple(filter_values.get('po_order_types', ['REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'])),
         )
         
         # Load expired inventory details if including expired
@@ -117,10 +119,14 @@ def calculate_gap(
             )
         
         # Validate data
-        if supply_df.empty and demand_df.empty:
-            st.warning("No data available for selected filters")
-            return None
+        is_safety_enabled = filter_values.get('include_safety', False)
+        has_safety_data = safety_stock_df is not None and not safety_stock_df.empty
         
+        # Cho phép tiếp tục nếu có dữ liệu Supply HOẶC Demand HOẶC (Bật Safety và có Safety Data)
+        if supply_df.empty and demand_df.empty and not (is_safety_enabled and has_safety_data):
+            st.warning("No data available for selected filters (Supply, Demand, and Safety Stock are all empty)")
+            return None
+   
         # Calculate GAP with expired inventory
         result = calculator.calculate_net_gap(
             supply_df=supply_df,

@@ -53,7 +53,9 @@ class GAPState:
             'group_by': 'product',
             'supply_sources': ['INVENTORY', 'CAN_PENDING', 'WAREHOUSE_TRANSFER', 'PURCHASE_ORDER'],
             'demand_sources': ['OC_PENDING'],
-            'include_safety': True
+            'include_safety': True,
+            'po_approval_statuses': ['APPROVED'],
+            'po_order_types': ['REGULAR_ORDER', 'SAMPLE_ORDER', 'MIXED_ORDER'],
         }
     
     # Filters
@@ -68,7 +70,8 @@ class GAPState:
         # Check if filters actually changed (simple comparison)
         changed = False
         for key in ['entity', 'products', 'brands', 'supply_sources', 'demand_sources', 
-                   'include_safety', 'group_by', 'exclude_expired']:
+                   'include_safety', 'group_by', 'exclude_expired',
+                   'po_approval_statuses', 'po_order_types']:
             if filters.get(key) != current.get(key):
                 changed = True
                 break

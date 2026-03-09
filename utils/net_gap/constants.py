@@ -241,6 +241,21 @@ DEMAND_SOURCES = {
 }
 
 # =============================================================================
+# PURCHASE ORDER FILTERS
+# =============================================================================
+PO_APPROVAL_STATUSES = {
+    'APPROVED':         {'label': 'Approved',       'icon': '✅'},
+    'APPROVED_LEVEL_1': {'label': 'Approved L1',    'icon': '🔶'},
+    'PENDING':          {'label': 'Pending',         'icon': '⏳'},
+}
+
+PO_ORDER_TYPES = {
+    'REGULAR_ORDER': {'label': 'Regular Order', 'icon': '📦'},
+    'SAMPLE_ORDER':  {'label': 'Sample Order',  'icon': '🧪'},
+    'MIXED_ORDER':   {'label': 'Mixed Order',   'icon': '📋'},
+}
+
+# =============================================================================
 # FIELD TOOLTIPS
 # =============================================================================
 FIELD_TOOLTIPS = {

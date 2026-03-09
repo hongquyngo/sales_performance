@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional, List, Tuple, Set
 from datetime import datetime, timedelta
 import logging
 
-from .constants import SUPPLY_SOURCES, DEMAND_SOURCES
+from .constants import SUPPLY_SOURCES, DEMAND_SOURCES, PO_APPROVAL_STATUSES, PO_ORDER_TYPES
 from .state import get_state
 
 logger = logging.getLogger(__name__)
@@ -242,96 +242,132 @@ class GAPFilters:
         self.state = get_state()
         self._safety_available = data_loader.check_safety_stock_availability()
     
+
     def render_filters(self) -> Dict[str, Any]:
-        """Render all filters with improved layout and Quick Add support"""
-        
-        # Initialize widget counter if not exists (FIX FOR BUG)
-        if 'product_widget_counter' not in st.session_state:
-            st.session_state.product_widget_counter = 0
-        
-        with st.container():
-            # Apply compact CSS with tooltip support
-            self._apply_compact_css()
+            """
+            Render all filters with improved layout and dynamic Safety Stock integration.
+            Refactored to ensure Product list updates based on Safety Stock toggle.
+            """
             
-            # Get current filters from state
-            current = self.state.get_filters()
-            filters = {}
+            # Initialize widget counter if not exists (FIX FOR BUG)
+            if 'product_widget_counter' not in st.session_state:
+                st.session_state.product_widget_counter = 0
             
-            # Date Range Display (non-editable, informational)
-            self._render_date_range_info()
+            with st.container():
+                # Apply compact CSS with tooltip support
+                self._apply_compact_css()
+                
+                # Get current filters từ session state
+                current = self.state.get_filters()
+                filters = {}
+                
+                # 1. Hiển thị thông tin Range ngày (Thông tin tham khảo)
+                self._render_date_range_info()
+                
+                # 2. PHẦN CHIẾN LƯỢC (STRATEGY) - Đưa Toggle lên đầu
+                # Điều này quan trọng vì nó quyết định danh sách Sản phẩm hiển thị bên dưới
+                st.markdown("#### 🛡️ Strategy")
+                col_strat_1, col_strat_2 = st.columns([4, 6])
+                with col_strat_1:
+                    filters['include_safety'] = st.toggle(
+                        "Include Safety Stock",
+                        value=current.get('include_safety', True),
+                        key="safety_toggle_main",
+                        help="Bật để tính toán GAP dựa trên Safety Stock và nạp các sản phẩm có thiết lập Safety"
+                    )
+                
+                # 3. PHẦN PHẠM VI (SCOPE)
+                st.markdown("#### 🔍 Scope")
+                
+                # Row 1: Entity | Brand
+                col_entity, col_brand = st.columns([6, 4])
+                
+                with col_entity:
+                    entity_data = self._render_entity_selector(current)
+                    filters['entity'] = entity_data['selected']
+                    filters['exclude_entity'] = entity_data['exclude']
+                
+                with col_brand:
+                    # Truyền include_safety vào để lấy đủ danh sách Brand
+                    brand_data = self._render_brand_selector(
+                        filters.get('entity'), 
+                        current,
+                        include_safety=filters['include_safety']
+                    )
+                    filters['brands'] = brand_data['selected']
+                    filters['exclude_brands'] = brand_data['exclude']
+                
+                # Row 2: Products with Quick Add | Exclude Expired Inventory
+                col_product, col_expired = st.columns([8, 2])
+                
+                with col_product:
+                    # Truyền include_safety vào để nạp thêm sản phẩm chỉ có trong Safety Stock
+                    product_data = self._render_product_selector_with_quick_add(
+                        filters.get('entity'), 
+                        current,
+                        include_safety=filters['include_safety']
+                    )
+                    filters['products'] = product_data['selected']
+                    filters['exclude_products'] = product_data['exclude']
+                
+                with col_expired:
+                    st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+                    filters['exclude_expired'] = st.checkbox(
+                        "🚫 No Expired",
+                        value=current.get('exclude_expired', True),
+                        key="exclude_expired",
+                        help="Loại bỏ hàng hết hạn khỏi nguồn cung (Supply)"
+                    )
+                
+                # 4. PHẦN NGUỒN DỮ LIỆU (DATA SOURCES)
+                st.markdown("#### 📊 Data Sources")
+                col_supply, col_demand, col_info_box = st.columns([4, 3, 3])
+                
+                with col_supply:
+                    filters['supply_sources'] = self._render_supply_sources(current)
+                
+                with col_demand:
+                    filters['demand_sources'] = self._render_demand_sources(current)
+                
+                with col_info_box:
+                    # Hiển thị tóm tắt bộ lọc đang hoạt động
+                    active_filters = self._count_active_filters(filters)
+                    if active_filters > 0:
+                        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+                        st.info(f"✔ {active_filters} filters active")
+                
+                # PO-specific filters (only shown when PURCHASE_ORDER is selected)
+                if 'PURCHASE_ORDER' in filters.get('supply_sources', []):
+                    with st.container():
+                        po_statuses, po_types = self._render_po_filters(current)
+                        filters['po_approval_statuses'] = po_statuses
+                        filters['po_order_types'] = po_types
+                else:
+                    # Giữ defaults khi PO source không được chọn
+                    filters['po_approval_statuses'] = ['APPROVED']
+                    filters['po_order_types'] = list(PO_ORDER_TYPES.keys())
+                
+                # 5. TÙY CHỌN PHÂN TÍCH (ANALYSIS OPTIONS)
+                st.divider()
+                col_group, col_empty = st.columns([4, 6])
+                
+                with col_group:
+                    filters['group_by'] = st.radio(
+                        "Analysis Level",
+                        options=['product', 'brand'],
+                        format_func=lambda x: f"📊 Group by {x.title()}",
+                        index=0 if current.get('group_by') == 'product' else 1,
+                        horizontal=True,
+                        key="group_by"
+                    )
             
-            # Scope Section - 2 Row Layout
-            st.markdown("#### 🔍 Scope")
+            # Chuyển đổi list sang tuple để hỗ trợ caching cho các hàm xử lý dữ liệu tiếp theo
+            filters['products_tuple'] = tuple(filters.get('products', []))
+            filters['brands_tuple'] = tuple(filters.get('brands', []))
             
-            # Row 1: Entity | Brand
-            col_entity, col_brand = st.columns([6, 4])
-            
-            with col_entity:
-                entity_data = self._render_entity_selector(current)
-                filters['entity'] = entity_data['selected']
-                filters['exclude_entity'] = entity_data['exclude']
-            
-            with col_brand:
-                brand_data = self._render_brand_selector(filters.get('entity'), current)
-                filters['brands'] = brand_data['selected']
-                filters['exclude_brands'] = brand_data['exclude']
-            
-            # Row 2: Products with Quick Add | Exclude Expired Inventory
-            col_product, col_expired = st.columns([8, 2])
-            
-            with col_product:
-                product_data = self._render_product_selector_with_quick_add(
-                    filters.get('entity'), current
-                )
-                filters['products'] = product_data['selected']
-                filters['exclude_products'] = product_data['exclude']
-            
-            with col_expired:
-                st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
-                filters['exclude_expired'] = st.checkbox(
-                    "🚫 No Expired",
-                    value=current.get('exclude_expired', True),
-                    key="exclude_expired",
-                    help="Exclude expired inventory from supply"
-                )
-            
-            # Data Sources Section
-            st.markdown("#### 📊 Data Sources")
-            col_supply, col_demand, col_safety = st.columns([4, 3, 3])
-            
-            with col_supply:
-                filters['supply_sources'] = self._render_supply_sources(current)
-            
-            with col_demand:
-                filters['demand_sources'] = self._render_demand_sources(current)
-            
-            with col_safety:
-                filters['include_safety'] = self._render_safety_toggle(current)
-            
-            # Analysis Options
-            col_group, col_info = st.columns([3, 7])
-            
-            with col_group:
-                filters['group_by'] = st.radio(
-                    "Group by",
-                    options=['product', 'brand'],
-                    format_func=lambda x: f"📊 By {x.title()}",
-                    index=0 if current.get('group_by') == 'product' else 1,
-                    horizontal=True,
-                    key="group_by"
-                )
-            
-            with col_info:
-                active_filters = self._count_active_filters(filters)
-                if active_filters > 0:
-                    st.info(f"✔ {active_filters} filters active")
-        
-        # Convert lists to tuples for caching
-        filters['products_tuple'] = tuple(filters.get('products', []))
-        filters['brands_tuple'] = tuple(filters.get('brands', []))
-        
-        return filters
-    
+            return filters
+
+
     def _apply_compact_css(self):
         """Apply CSS for compact layout with tooltip support"""
         st.markdown("""
@@ -445,10 +481,10 @@ class GAPFilters:
             st.error("Failed to load entities")
             return {'selected': None, 'exclude': False}
     
-    def _render_product_selector_with_quick_add(self, entity: Optional[str], current: Dict) -> Dict[str, Any]:
+    def _render_product_selector_with_quick_add(self, entity: Optional[str], current: Dict, include_safety=False) -> Dict[str, Any]:
         """Enhanced product selector with Quick Add functionality - FIXED WITH DYNAMIC KEY"""
         try:
-            products_df = self.data_loader.get_products(entity)
+            products_df = self.data_loader.get_products(entity, include_safety=include_safety)
             
             if products_df.empty:
                 return {'selected': [], 'exclude': False}
@@ -562,10 +598,10 @@ class GAPFilters:
             logger.error(f"Error loading products: {e}")
             return {'selected': [], 'exclude': False}
     
-    def _render_brand_selector(self, entity: Optional[str], current: Dict) -> Dict[str, Any]:
+    def _render_brand_selector(self, entity: Optional[str], current: Dict, include_safety=False) -> Dict[str, Any]:
         """Render brand multiselect"""
         try:
-            brands = self.data_loader.get_brands(entity)
+            brands = self.data_loader.get_brands(entity, include_safety=include_safety)
             
             if not brands:
                 return {'selected': [], 'exclude': False}
@@ -654,6 +690,48 @@ class GAPFilters:
             st.caption("⚠️ Not configured")
             return False
     
+    def _render_po_filters(self, current: Dict) -> tuple:
+        """
+        Render PO-specific filters: approval_status and order_type.
+        Only shown when PURCHASE_ORDER supply source is selected.
+        Default: only APPROVED status, all order types.
+        """
+        st.markdown("**🔒 PO Filters**")
+        
+        col_appr, col_type = st.columns([1, 1])
+        
+        with col_appr:
+            st.caption("Approval Status")
+            selected_statuses = []
+            default_statuses = current.get('po_approval_statuses', ['APPROVED'])
+            for key, cfg in PO_APPROVAL_STATUSES.items():
+                if st.checkbox(
+                    f"{cfg['icon']} {cfg['label']}",
+                    value=key in default_statuses,
+                    key=f"po_appr_{key}",
+                ):
+                    selected_statuses.append(key)
+            # Fallback: nếu bỏ chọn hết thì giữ APPROVED
+            if not selected_statuses:
+                selected_statuses = ['APPROVED']
+        
+        with col_type:
+            st.caption("Order Type")
+            selected_types = []
+            default_types = current.get('po_order_types', list(PO_ORDER_TYPES.keys()))
+            for key, cfg in PO_ORDER_TYPES.items():
+                if st.checkbox(
+                    f"{cfg['icon']} {cfg['label']}",
+                    value=key in default_types,
+                    key=f"po_type_{key}",
+                ):
+                    selected_types.append(key)
+            # Fallback: nếu bỏ chọn hết thì lấy tất cả
+            if not selected_types:
+                selected_types = list(PO_ORDER_TYPES.keys())
+        
+        return selected_statuses, selected_types
+
     def _count_active_filters(self, filters: Dict) -> int:
         """Count non-default filters"""
         count = 0
@@ -670,6 +748,10 @@ class GAPFilters:
         if set(filters.get('supply_sources', [])) != set(defaults['supply_sources']):
             count += 1
         if set(filters.get('demand_sources', [])) != set(defaults['demand_sources']):
+            count += 1
+        if set(filters.get('po_approval_statuses', [])) != set(defaults['po_approval_statuses']):
+            count += 1
+        if set(filters.get('po_order_types', [])) != set(defaults['po_order_types']):
             count += 1
         
         return count
