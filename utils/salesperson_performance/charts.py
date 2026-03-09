@@ -65,7 +65,7 @@ class SalespersonCharts:
     Usage:
         SalespersonCharts.render_kpi_cards(metrics, yoy_metrics, complex_kpis)
         chart = SalespersonCharts.build_monthly_trend_chart(monthly_df)
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
     """
     
     # =========================================================================
@@ -450,7 +450,7 @@ class SalespersonCharts:
                                     
                                     st.dataframe(
                                         display_df,
-                                        use_container_width=True,
+                                        width="stretch",
                                         hide_index=True,
                                         height=min(400, len(display_df) * 35 + 40)
                                     )
@@ -521,7 +521,7 @@ class SalespersonCharts:
                                     
                                     st.dataframe(
                                         display_df,
-                                        use_container_width=True,
+                                        width="stretch",
                                         hide_index=True,
                                         height=min(400, len(display_df) * 35 + 40)
                                     )
@@ -591,7 +591,7 @@ class SalespersonCharts:
                                     
                                     st.dataframe(
                                         display_df,
-                                        use_container_width=True,
+                                        width="stretch",
                                         hide_index=True,
                                         height=min(400, len(display_df) * 35 + 40)
                                     )
@@ -705,7 +705,7 @@ class SalespersonCharts:
                                     
                                     st.dataframe(
                                         display_df,
-                                        use_container_width=True,
+                                        width="stretch",
                                         hide_index=True,
                                         height=min(400, len(display_df) * 35 + 40)
                                     )
@@ -737,7 +737,7 @@ class SalespersonCharts:
                                         
                                         st.dataframe(
                                             display_df,
-                                            use_container_width=True,
+                                            width="stretch",
                                             hide_index=True,
                                             height=min(400, len(display_df) * 35 + 40)
                                         )

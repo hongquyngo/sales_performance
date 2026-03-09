@@ -185,7 +185,7 @@ def monthly_trend_fragment(
             show_gp1=False,
             title=""
         )
-        st.altair_chart(monthly_chart, use_container_width=True)
+        st.altair_chart(monthly_chart, width="stretch")
     
     with col2:
         st.markdown("##### 📈 Cumulative Performance")
@@ -193,7 +193,7 @@ def monthly_trend_fragment(
             monthly_df=monthly_summary,
             title=""
         )
-        st.altair_chart(cumulative_chart, use_container_width=True)
+        st.altair_chart(cumulative_chart, width="stretch")
 
 
 # =============================================================================
@@ -330,7 +330,7 @@ def yoy_comparison_fragment(
                     metric='revenue',
                     title=""
                 )
-                st.altair_chart(monthly_chart, use_container_width=True)
+                st.altair_chart(monthly_chart, width="stretch")
             
             with col_c2:
                 st.markdown("##### 📈 Cumulative Revenue by Year")
@@ -340,7 +340,7 @@ def yoy_comparison_fragment(
                     metric='revenue',
                     title=""
                 )
-                st.altair_chart(cum_chart, use_container_width=True)
+                st.altair_chart(cum_chart, width="stretch")
         
         # Tab 2: Gross Profit
         with my_tab2:
@@ -372,7 +372,7 @@ def yoy_comparison_fragment(
                     metric='gross_profit',
                     title=""
                 )
-                st.altair_chart(monthly_chart, use_container_width=True)
+                st.altair_chart(monthly_chart, width="stretch")
             
             with col_c2:
                 st.markdown("##### 📈 Cumulative Gross Profit by Year")
@@ -382,7 +382,7 @@ def yoy_comparison_fragment(
                     metric='gross_profit',
                     title=""
                 )
-                st.altair_chart(cum_chart, use_container_width=True)
+                st.altair_chart(cum_chart, width="stretch")
         
         # Tab 3: GP1
         with my_tab3:
@@ -414,7 +414,7 @@ def yoy_comparison_fragment(
                     metric='gp1',
                     title=""
                 )
-                st.altair_chart(monthly_chart, use_container_width=True)
+                st.altair_chart(monthly_chart, width="stretch")
             
             with col_c2:
                 st.markdown("##### 📈 Cumulative GP1 by Year")
@@ -424,7 +424,7 @@ def yoy_comparison_fragment(
                     metric='gp1',
                     title=""
                 )
-                st.altair_chart(cum_chart, use_container_width=True)
+                st.altair_chart(cum_chart, width="stretch")
     
     else:
         # =====================================================================
@@ -539,7 +539,7 @@ def yoy_comparison_fragment(
                         metric='revenue',
                         title=""
                     )
-                    st.altair_chart(yoy_chart, use_container_width=True)
+                    st.altair_chart(yoy_chart, width="stretch")
                 
                 with col_c2:
                     st.markdown("##### 📈 Cumulative Revenue")
@@ -549,7 +549,7 @@ def yoy_comparison_fragment(
                         metric='revenue',
                         title=""
                     )
-                    st.altair_chart(cum_chart, use_container_width=True)
+                    st.altair_chart(cum_chart, width="stretch")
             
             # Tab 2: Gross Profit
             with yoy_tab2:
@@ -585,7 +585,7 @@ def yoy_comparison_fragment(
                         metric='gross_profit',
                         title=""
                     )
-                    st.altair_chart(yoy_chart, use_container_width=True)
+                    st.altair_chart(yoy_chart, width="stretch")
                 
                 with col_c2:
                     st.markdown("##### 📈 Cumulative Gross Profit")
@@ -595,7 +595,7 @@ def yoy_comparison_fragment(
                         metric='gross_profit',
                         title=""
                     )
-                    st.altair_chart(cum_chart, use_container_width=True)
+                    st.altair_chart(cum_chart, width="stretch")
             
             # Tab 3: GP1
             with yoy_tab3:
@@ -631,7 +631,7 @@ def yoy_comparison_fragment(
                         metric='gp1',
                         title=""
                     )
-                    st.altair_chart(yoy_chart, use_container_width=True)
+                    st.altair_chart(yoy_chart, width="stretch")
                 
                 with col_c2:
                     st.markdown("##### 📈 Cumulative GP1")
@@ -641,7 +641,7 @@ def yoy_comparison_fragment(
                         metric='gp1',
                         title=""
                     )
-                    st.altair_chart(cum_chart, use_container_width=True)
+                    st.altair_chart(cum_chart, width="stretch")
         else:
             st.info(f"No data available for {primary_year - 1} comparison")
 
@@ -1015,14 +1015,14 @@ def sales_detail_fragment(
     st.dataframe(
         display_detail,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=600  # Increased height for more rows
     )
     
     # Legend for quick reference
     with st.expander("📖 Column Legend", expanded=False):
-        st.markdown("""
+        st.markdown(r"""
         | Column | Description | Formula |
         |--------|-------------|---------|
         | **OC / PO** | Order Confirmation & Customer PO | Combined display |
@@ -1123,7 +1123,7 @@ def pivot_analysis_fragment(
         
         st.dataframe(
             pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
-            use_container_width=True,
+            width="stretch",
             height=500
         )
     else:
@@ -1472,7 +1472,7 @@ def backlog_list_fragment(
     st.dataframe(
         display_bl,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=600  # Increased height for more rows
     )
@@ -1555,7 +1555,7 @@ def backlog_by_etd_fragment(
                 color_by_year=True,
                 show_totals_by_year=True
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             # Data table with year info
             display_cols = ['year_month', 'etd_year', 'backlog_revenue', 'backlog_gp', 'order_count']
@@ -1567,7 +1567,7 @@ def backlog_by_etd_fragment(
                     'backlog_gp': '${:,.0f}',
                     'order_count': '{:,.0f}'
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=400
             )
@@ -1588,7 +1588,7 @@ def backlog_by_etd_fragment(
                 monthly_df=backlog_monthly,
                 title=""
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             # Pivot table: months as rows, years as columns
             pivot_df = backlog_monthly.pivot_table(
@@ -1607,7 +1607,7 @@ def backlog_by_etd_fragment(
             
             st.dataframe(
                 pivot_df.style.format('${:,.0f}'),
-                use_container_width=True
+                width="stretch"
             )
         else:
             st.info("No backlog data to display")
@@ -1640,7 +1640,7 @@ def backlog_by_etd_fragment(
                 monthly_df=backlog_monthly,
                 title=f"Backlog by ETD Month - {selected_year}"
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
             # Monthly table
             st.dataframe(
@@ -1648,7 +1648,7 @@ def backlog_by_etd_fragment(
                     'backlog_revenue': '${:,.0f}',
                     'backlog_gp': '${:,.0f}',
                 }),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -1715,7 +1715,7 @@ def export_report_fragment(
         with col_exp1:
             generate_clicked = st.button(
                 "📊 Generate Report", 
-                use_container_width=True, 
+                width="stretch", 
                 key=f"{fragment_key}_generate"
             )
         
@@ -1851,14 +1851,14 @@ def export_report_fragment(
                     data=st.session_state[f'{fragment_key}_excel_bytes'],
                     file_name=f"salesperson_performance_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"{fragment_key}_download"
                 )
             else:
                 st.button(
                     "⬇️ Download Excel",
                     disabled=True,
-                    use_container_width=True,
+                    width="stretch",
                     key=f"{fragment_key}_download_disabled",
                     help="Click 'Generate Report' first"
                 )
@@ -1999,7 +1999,7 @@ def team_ranking_fragment(
         ranking_df.style
             .format(format_dict)
             .apply(highlight_sort_column),
-        use_container_width=True,
+        width="stretch",
         hide_index=True
     )
     
@@ -2784,7 +2784,7 @@ def _render_sales_list_content(
     
     st.dataframe(
         display_detail,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config=column_config,
         height=600
@@ -2845,7 +2845,7 @@ def _render_pivot_content(filtered_df: pd.DataFrame, key_prefix: str):
         
         st.dataframe(
             pivot_df.style.format("${:,.0f}").background_gradient(cmap='Blues', subset=['Total']),
-            use_container_width=True,
+            width="stretch",
             height=500
         )
     else:
@@ -3129,7 +3129,7 @@ def _render_backlog_list_content(
     
     st.dataframe(
         display_detail,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config=column_config,
         height=600
@@ -3193,7 +3193,7 @@ def _render_backlog_by_etd_content(
             
             st.dataframe(
                 timeline_df.style.format("${:,.0f}").background_gradient(cmap='Blues'),
-                use_container_width=True
+                width="stretch"
             )
     
     elif view_mode == "📊 Stacked":
@@ -3252,7 +3252,7 @@ def _render_backlog_by_etd_content(
                     'backlog_gp': 'GP',
                     'order_count': 'Orders'
                 }).style.format({'Revenue': '${:,.0f}', 'GP': '${:,.0f}'}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -3351,7 +3351,7 @@ def _render_risk_analysis_content(filtered_backlog: pd.DataFrame, key_prefix: st
         st.dataframe(
             display_df,
             column_config=column_config,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=400
         )

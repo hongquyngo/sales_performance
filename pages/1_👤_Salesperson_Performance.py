@@ -1078,7 +1078,7 @@ with st.sidebar:
     st.divider()
     col_r1, col_r2 = st.columns([1, 1])
     with col_r1:
-        if st.button("🔄 Refresh", use_container_width=True, help="Reload data from database"):
+        if st.button("🔄 Refresh", width="stretch", help="Reload data from database"):
             # Clear all cached data
             st.session_state.raw_cached_data = None
             if '_cached_start_year' in st.session_state:
@@ -1559,14 +1559,14 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='revenue',
                     title="Revenue Forecast vs Target"
                 )
-                st.altair_chart(forecast_chart, use_container_width=True)
+                st.altair_chart(forecast_chart, width="stretch")
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
                     backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['revenue'],
                     title="Revenue: Target vs Forecast"
                 )
-                st.altair_chart(gap_chart, use_container_width=True)
+                st.altair_chart(gap_chart, width="stretch")
         
         # =================================================================
         # TAB: GROSS PROFIT
@@ -1652,14 +1652,14 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gp',
                     title="GP Forecast vs Target"
                 )
-                st.altair_chart(forecast_chart, use_container_width=True)
+                st.altair_chart(forecast_chart, width="stretch")
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
                     backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['gp'],
                     title="GP: Target vs Forecast"
                 )
-                st.altair_chart(gap_chart, use_container_width=True)
+                st.altair_chart(gap_chart, width="stretch")
         
         # =================================================================
         # TAB: GP1
@@ -1745,14 +1745,14 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gp1',
                     title="GP1 Forecast vs Target"
                 )
-                st.altair_chart(forecast_chart, use_container_width=True)
+                st.altair_chart(forecast_chart, width="stretch")
             with col_bf2:
                 gap_chart = SalespersonCharts.build_gap_analysis_chart(
                     backlog_metrics=chart_backlog_metrics,
                     metrics_to_show=['gp1'],
                     title="GP1: Target vs Forecast"
                 )
-                st.altair_chart(gap_chart, use_container_width=True)
+                st.altair_chart(gap_chart, width="stretch")
         
         st.divider()
     else:
@@ -1846,7 +1846,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='revenue',
                     title="Top Customers by Revenue"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No customer data available")
         with col4:
@@ -1857,7 +1857,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='revenue',
                     title="Top Brands by Revenue"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No brand data available")
     
@@ -1871,7 +1871,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gross_profit',
                     title="Top Customers by Gross Profit"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No customer data available")
         with col4:
@@ -1882,7 +1882,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gross_profit',
                     title="Top Brands by Gross Profit"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No brand data available")
     
@@ -1896,7 +1896,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gp1',
                     title="Top Customers by GP1"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No customer data available")
         with col4:
@@ -1907,7 +1907,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                     metric='gp1',
                     title="Top Brands by GP1"
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.info("No brand data available")
     
@@ -1948,7 +1948,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
                 'GP1': '${:,.0f}',
                 'GP %': '{:.1f}%',
             }),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
     else:
@@ -2173,7 +2173,7 @@ with tab4:
                         df_display = pd.DataFrame(display_rows)
                         st.dataframe(
                             df_display,
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             column_config={
                                 'KPI': st.column_config.TextColumn('KPI', width='medium'),
@@ -2236,7 +2236,7 @@ with tab4:
                         df_display = pd.DataFrame(display_rows)
                         st.dataframe(
                             df_display,
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                             column_config={
                                 'KPI': st.column_config.TextColumn('KPI', width='medium'),
