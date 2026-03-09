@@ -1638,6 +1638,7 @@ def export_report_fragment(
     new_customers_df: pd.DataFrame = None,
     new_products_df: pd.DataFrame = None,
     new_business_df: pd.DataFrame = None,
+    new_combos_detail_df: pd.DataFrame = None,
     # Metrics calculator
     metrics_calc = None,  # SalespersonMetrics instance
     # NEW v2.5.0: KPI type weights for Overall Achievement calculation
@@ -1686,7 +1687,8 @@ def export_report_fragment(
                         year=filter_values.get('year', datetime.now().year),
                         new_customers_df=new_customers_df,
                         new_products_df=new_products_df,
-                        new_business_df=new_business_df
+                        new_business_df=new_business_df,
+                        new_combos_detail_df=new_combos_detail_df
                     )
                     monthly_df = metrics_calc.prepare_monthly_summary()
                     
@@ -1704,7 +1706,8 @@ def export_report_fragment(
                             kpi_type_weights=kpi_type_weights,
                             new_customers_df=new_customers_df,
                             new_products_df=new_products_df,
-                            new_business_df=new_business_df
+                            new_business_df=new_business_df,
+                            new_combos_detail_df=new_combos_detail_df
                         )
                     except Exception as e:
                         import logging
@@ -2439,6 +2442,8 @@ def kpi_progress_fragment(
                                         actual = summary.get('num_new_products', 0)
                                     elif kpi_name == 'new_business_revenue':
                                         actual = summary.get('new_business_revenue', 0)
+                                    elif kpi_name == 'num_new_combos':
+                                        actual = summary.get('num_new_combos', 0)
                                 except Exception:
                                     pass
                         
@@ -2456,6 +2461,7 @@ def kpi_progress_fragment(
                             'num_new_customers': 'New Customers',
                             'num_new_products': 'New Products',
                             'new_business_revenue': 'New Business Revenue',
+                            'num_new_combos': 'New Combos',
                         }
                         display_name = display_names.get(kpi_name, kpi_name.replace('_', ' ').title())
                         

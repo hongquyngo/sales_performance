@@ -1237,7 +1237,8 @@ with timer("Metrics: calculate_overall_kpi_achievement"):
         kpi_type_weights=data.get('kpi_type_weights'),
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=data.get('new_business', pd.DataFrame())
+        new_business_df=data.get('new_business', pd.DataFrame()),
+        new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
     )
 
 # Print timing summary before rendering
@@ -1843,7 +1844,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         year=active_filters['year'],
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
-        new_business_df=data.get('new_business', pd.DataFrame())
+        new_business_df=data.get('new_business', pd.DataFrame()),
+        new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
     )
     
     if not salesperson_summary.empty:
@@ -1899,6 +1901,7 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
         new_business_df=data.get('new_business', pd.DataFrame()),
+        new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame()),
         metrics_calc=metrics_calc,
         # NEW v2.5.0: Add kpi_type_weights for synced Overall Achievement
         kpi_type_weights=data.get('kpi_type_weights', {}),
@@ -2182,7 +2185,8 @@ with tab4:
                 'gross_profit': 'gross_profit_by_split_usd',
                 'gross_profit_1': 'gp1_by_split_usd',
             }
-            complex_kpi_names = ['num_new_customers', 'num_new_products', 'new_business_revenue']
+            # FIXED v3.3.1: Added num_new_combos to complex KPI names
+            complex_kpi_names = ['num_new_customers', 'num_new_products', 'new_business_revenue', 'num_new_combos']
             kpi_display_names = {
                 'revenue': 'Revenue',
                 'gross_profit': 'Gross Profit',
@@ -2191,6 +2195,7 @@ with tab4:
                 'num_new_products': 'New Products',
                 'new_business_revenue': 'New Business Revenue',
                 'num_new_projects': 'New Projects',
+                'num_new_combos': 'New Combos',
             }
             currency_kpis = ['revenue', 'gross_profit', 'gross_profit_1', 'new_business_revenue']
             
@@ -2198,13 +2203,15 @@ with tab4:
             kpi_progress = []
             sales_df = data['sales']
             
-            for kpi_name in targets_df['kpi_name'].str.lower().unique():
+            # FIXED v3.3.1: Normalize kpi_name with .replace(' ', '_') to match keys
+            for kpi_name_raw in targets_df['kpi_name'].str.lower().unique():
+                kpi_name = kpi_name_raw.replace(' ', '_')
                 employees_with_target = targets_df[
-                    targets_df['kpi_name'].str.lower() == kpi_name
+                    targets_df['kpi_name'].str.lower() == kpi_name_raw
                 ]['employee_id'].unique().tolist()
                 
                 kpi_target = targets_df[
-                    targets_df['kpi_name'].str.lower() == kpi_name
+                    targets_df['kpi_name'].str.lower() == kpi_name_raw
                 ]['annual_target_value_numeric'].sum()
                 
                 if kpi_target <= 0:
@@ -2234,6 +2241,8 @@ with tab4:
                                 actual = summary.get('num_new_products', 0)
                             elif kpi_name == 'new_business_revenue':
                                 actual = summary.get('new_business_revenue', 0)
+                            elif kpi_name == 'num_new_combos':
+                                actual = summary.get('num_new_combos', 0)
                             else:
                                 actual = 0
                         else:
@@ -2268,7 +2277,8 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame())
+                new_business_df=data.get('new_business', pd.DataFrame()),
+                new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
             )
             
             # Get overall achievement data
@@ -2280,7 +2290,8 @@ with tab4:
                 kpi_type_weights=data.get('kpi_type_weights'),
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame())
+                new_business_df=data.get('new_business', pd.DataFrame()),
+                new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
             )
             
             # Get complex KPI calculator for per-person calculation
@@ -2310,7 +2321,8 @@ with tab4:
                 year=active_filters['year'],
                 new_customers_df=data['new_customers'],
                 new_products_df=data['new_products'],
-                new_business_df=data.get('new_business', pd.DataFrame())
+                new_business_df=data.get('new_business', pd.DataFrame()),
+                new_combos_detail_df=data.get('new_combos_detail', pd.DataFrame())
             )
             team_ranking_fragment(
                 salesperson_summary_df=salesperson_summary,

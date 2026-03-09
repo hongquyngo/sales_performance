@@ -917,7 +917,8 @@ class SalespersonMetrics:
         kpi_type_weights: Dict[str, int] = None,
         new_customers_df: pd.DataFrame = None,
         new_products_df: pd.DataFrame = None,
-        new_business_df: pd.DataFrame = None
+        new_business_df: pd.DataFrame = None,
+        new_combos_detail_df: pd.DataFrame = None
     ) -> Dict:
         """
         Calculate overall weighted KPI achievement using KPI Type default weights.
@@ -927,6 +928,9 @@ class SalespersonMetrics:
         FIXED v2.9.1: Complex KPIs now correctly filter actual by employees with target
                       - Bug: Used team-wide actual (351 products) vs 1 person's target (20)
                       - Fix: Filter actual to only employees who have that KPI target
+        FIXED v2.9.5: Added num_new_combos to complex KPI handling
+                      - Bug: num_new_combos always showed 0 in KPI Progress
+                      - Root cause: Missing from complex_kpi_names set and actual calculation
         
         Formula: Overall = Σ(KPI_Type_Achievement × default_weight) / Σ(default_weight)
         
@@ -939,6 +943,7 @@ class SalespersonMetrics:
             new_customers_df: Raw new customers DataFrame with sales_id for filtering
             new_products_df: Raw new products DataFrame with sales_id for filtering
             new_business_df: Raw new business DataFrame with sales_id for filtering
+            new_combos_detail_df: Raw new combos detail DataFrame with sales_id for filtering
             
         Returns:
             Dict with overall_achievement, kpi_details, kpi_count, total_weight
@@ -1006,18 +1011,26 @@ class SalespersonMetrics:
                     filtered = new_business_df[new_business_df['sales_id'].isin(employee_ids)]
                     return filtered['new_business_revenue'].sum() if not filtered.empty else 0
             
+            # FIXED v2.9.5: Added num_new_combos handling
+            elif kpi_name == 'num_new_combos' and new_combos_detail_df is not None and not new_combos_detail_df.empty:
+                if 'sales_id' in new_combos_detail_df.columns:
+                    filtered = new_combos_detail_df[new_combos_detail_df['sales_id'].isin(employee_ids)]
+                    return len(filtered) if not filtered.empty else 0
+            
             # Fallback to old behavior if dataframes not provided
             if complex_kpis:
                 return complex_kpis.get({
                     'num_new_customers': 'new_customer_count',
                     'num_new_products': 'new_product_count',
-                    'new_business_revenue': 'new_business_revenue'
+                    'new_business_revenue': 'new_business_revenue',
+                    'num_new_combos': 'num_new_combos'
                 }.get(kpi_name, ''), 0)
             
             return 0
         
         # Complex KPI names for reference
-        complex_kpi_names = {'num_new_customers', 'num_new_products', 'new_business_revenue'}
+        # FIXED v2.9.5: Added num_new_combos
+        complex_kpi_names = {'num_new_customers', 'num_new_products', 'new_business_revenue', 'num_new_combos'}
         
         # FIXED v2.9.3: Detect single person to use weight_numeric instead of default_weight
         unique_employees = self.targets_df['employee_id'].nunique()
@@ -1996,7 +2009,8 @@ class SalespersonMetrics:
         complex_kpis: Dict = None,
         new_customers_df: pd.DataFrame = None,
         new_products_df: pd.DataFrame = None,
-        new_business_df: pd.DataFrame = None
+        new_business_df: pd.DataFrame = None,
+        new_combos_detail_df: pd.DataFrame = None
     ) -> pd.DataFrame:
         """
         Aggregate metrics by salesperson for ranking and comparison.
@@ -2099,6 +2113,15 @@ class SalespersonMetrics:
                     per_salesperson_complex_kpis[sid] = {}
                 per_salesperson_complex_kpis[sid]['new_business_revenue'] = row['new_business_revenue']
         
+        # FIXED v2.9.5: New Combos per salesperson (count of unique combos)
+        if new_combos_detail_df is not None and not new_combos_detail_df.empty and 'sales_id' in new_combos_detail_df.columns:
+            nc_by_sales = new_combos_detail_df.groupby('sales_id').size().reset_index(name='num_new_combos')
+            for _, row in nc_by_sales.iterrows():
+                sid = row['sales_id']
+                if sid not in per_salesperson_complex_kpis:
+                    per_salesperson_complex_kpis[sid] = {}
+                per_salesperson_complex_kpis[sid]['num_new_combos'] = row['num_new_combos']
+        
         # Add targets if available
         if not self.targets_df.empty:
             # FIXED: Normalize KPI names for comparison (replace spaces with underscores)
@@ -2199,7 +2222,7 @@ class SalespersonMetrics:
                         # Sales-based KPIs
                         actual_col = kpi_column_map[kpi_name]
                         actual = row[actual_col] if actual_col in row.index else 0
-                    elif kpi_name in {'num_new_customers', 'num_new_products', 'new_business_revenue'}:
+                    elif kpi_name in {'num_new_customers', 'num_new_products', 'new_business_revenue', 'num_new_combos'}:
                         # Complex KPIs - get from per_salesperson_complex_kpis, default to 0 if not found
                         # FIXED: Previously checked "kpi_name in sp_complex_kpis" which skipped KPIs 
                         # when salesperson had no data (actual=0), causing them to be excluded from Overall
