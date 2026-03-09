@@ -14,6 +14,12 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.5.0: ADDED get_ar_outstanding_data() for Payment & Collection tab
+          - Loads ALL unpaid/partially paid invoices (no date range filter)
+          - Used for "All Outstanding AR" dual-mode view
+          ADDED payment columns to get_sales_data() and _get_sales_data_cached()
+          - payment_status, payment_ratio, due_date, outstanding_amount, total_payment_received
+          - Requires unified_sales_by_salesperson_view v3 (with payment columns)
 - v3.2.0: ADDED get_kpi_type_weights() and get_kpi_type_weights_cached()
           - Dynamically load KPI type default_weight from kpi_types table
           - Used for Team Overall Achievement calculation
@@ -62,7 +68,7 @@ CHANGELOG:
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 
-VERSION: 3.1.0
+VERSION: 3.5.0
 """
 
 import logging
@@ -175,6 +181,11 @@ class SalespersonQueries:
                 gross_profit_by_split_usd,
                 gp1_by_split_usd,
                 allocated_broker_commission_usd,
+                payment_status,
+                payment_ratio,
+                due_date,
+                outstanding_amount,
+                total_payment_received,
                 invoice_month,
                 invoice_year
             FROM unified_sales_by_salesperson_view
@@ -214,6 +225,90 @@ class SalespersonQueries:
             employee_ids_tuple or tuple(self.access.get_accessible_employee_ids()),
             entity_ids_tuple
         )
+    
+    # =========================================================================
+    # AR OUTSTANDING DATA (NEW v3.5.0 - for Payment & Collection tab)
+    # =========================================================================
+    
+    def get_ar_outstanding_data(
+        self,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Load ALL outstanding AR data (Unpaid + Partially Paid invoices).
+        
+        No date range filter — returns all invoices that are not fully paid.
+        Used for the "All Outstanding AR" view in Payment tab.
+        
+        NEW v3.5.0: Added for Payment & Collection tab.
+        
+        Args:
+            employee_ids: Optional list of employee IDs to filter
+            entity_ids: Optional list of legal entity IDs
+            
+        Returns:
+            DataFrame with all outstanding invoice lines
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                data_source,
+                unified_line_id,
+                sales_id,
+                sales_name,
+                sales_email,
+                split_rate_percent,
+                inv_date,
+                inv_number,
+                vat_number,
+                legal_entity,
+                legal_entity_id,
+                customer,
+                customer_id,
+                customer_code,
+                customer_type,
+                customer_po_number,
+                oc_number,
+                oc_date,
+                product_id,
+                product_pn,
+                pt_code,
+                brand,
+                sales_by_split_usd,
+                gross_profit_by_split_usd,
+                gp1_by_split_usd,
+                payment_status,
+                payment_ratio,
+                due_date,
+                outstanding_amount,
+                total_payment_received,
+                invoice_month,
+                invoice_year
+            FROM unified_sales_by_salesperson_view
+            WHERE sales_id IN :employee_ids
+              AND payment_status IS NOT NULL
+              AND payment_status != 'Fully Paid'
+        """
+        
+        params = {
+            'employee_ids': tuple(employee_ids),
+        }
+        
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += " ORDER BY inv_date DESC"
+        
+        return self._execute_query(query, params, "ar_outstanding_data")
     
     # =========================================================================
     # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
@@ -819,6 +914,11 @@ def _get_sales_data_cached(
             gross_profit_by_split_usd,
             gp1_by_split_usd,
             allocated_broker_commission_usd,
+            payment_status,
+            payment_ratio,
+            due_date,
+            outstanding_amount,
+            total_payment_received,
             invoice_month,
             invoice_year
         FROM unified_sales_by_salesperson_view

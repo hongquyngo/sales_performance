@@ -2,12 +2,13 @@
 """
 👤 Salesperson Performance Dashboard (Tabbed Version)
 
-5 Tabs:
+6 Tabs:
 1. Overview - KPI summary, charts, trends
 2. Sales Detail - Transaction list, pivot analysis
 3. Backlog - Backlog detail, ETD analysis, risk
 4. KPI & Targets - KPI assignments, progress, ranking
-5. Setup - Sales split
+5. Payment - Payment & collection analysis, aging, AR outstanding
+6. Setup - Sales split
 
 """
 
@@ -116,6 +117,10 @@ from utils.salesperson_performance.fragments import (
     sales_detail_tab_fragment,
     backlog_tab_fragment,
 )
+
+# NEW v3.5.0: Payment & Collection tab
+from utils.salesperson_performance.payment import payment_tab_fragment
+
 from utils.salesperson_performance.filters import (
     analyze_period,
 )
@@ -583,6 +588,19 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
         print(f"   → Sales split rows: {len(data['sales_split']):,}")
         
+        # =====================================================================
+        # PHASE 5: AR Outstanding data (for Payment & Collection tab)
+        # All unpaid/partially paid invoices regardless of date range
+        # NEW v3.5.0
+        # =====================================================================
+        progress_bar.progress(93, text="💰 Loading AR outstanding data...")
+        with timer("DB: get_ar_outstanding_data"):
+            data['ar_outstanding'] = q.get_ar_outstanding_data(
+                employee_ids=filter_employee_ids,
+                entity_ids=None
+            )
+        print(f"   → AR outstanding rows: {len(data['ar_outstanding']):,}")
+        
         # Step 7: Clean all dataframes
         with timer("Clean dataframes"):
             for key in data:
@@ -667,7 +685,8 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     # FIXED v2.11.0: Backlog data should NOT be filtered by date range
     # Backlog represents ALL pending orders - date range only applies to Sales data
     # In-Period backlog is calculated separately using ETD field in metrics.py
-    backlog_keys = {'total_backlog', 'in_period_backlog', 'backlog_by_month', 'backlog_detail'}
+    # NEW v3.5.0: AR outstanding also NOT filtered by date range
+    backlog_keys = {'total_backlog', 'in_period_backlog', 'backlog_by_month', 'backlog_detail', 'ar_outstanding'}
     
     for key, df in raw_data.items():
         # Skip metadata
@@ -1389,11 +1408,12 @@ if empty_state_info:
 # TABS
 # =============================================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview",
     "📋 Sales Detail",
     "📦 Backlog",
     "🎯 KPI & Targets",
+    "💰 Payment",
     "⚙️ Setup"
 ])
 
@@ -2581,10 +2601,22 @@ with tab4:
             )
 
 # =============================================================================
-# TAB 5: SETUP
+# TAB 5: PAYMENT & COLLECTION (NEW v3.5.0)
 # =============================================================================
 
 with tab5:
+    payment_tab_fragment(
+        sales_df=data['sales'],
+        filter_values=active_filters,
+        key_prefix="sp_payment",
+        ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+    )
+
+# =============================================================================
+# TAB 6: SETUP
+# =============================================================================
+
+with tab6:
     setup_tab_fragment(
         sales_split_df=data['sales_split'],
         sales_df=data['sales'],
