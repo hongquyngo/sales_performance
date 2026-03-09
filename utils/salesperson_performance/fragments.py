@@ -206,6 +206,8 @@ def yoy_comparison_fragment(
     sales_df: pd.DataFrame,
     queries,  # SalespersonQueries instance
     filter_values: Dict,
+    raw_cached_sales_df: pd.DataFrame = None,  # OPTIMIZATION v3.4.0: cached raw data for prev year extraction
+    cached_year_range: tuple = None,  # OPTIMIZATION v3.4.0: (start_year, end_year) of cached data
     fragment_key: str = "yoy"
 ):
     """
@@ -437,16 +439,58 @@ def yoy_comparison_fragment(
         
         st.markdown(f"##### 📅 {primary_year} vs {primary_year - 1}")
         
-        # Load previous year data - OPTIMIZATION v2.6.0: Cache in session_state
+        # Load previous year data
+        # OPTIMIZATION v3.4.0: Try cached data first, fall back to SQL
         yoy_frag_cache_key = f"yoy_frag_prev_{filter_values['start_date']}_{filter_values['end_date']}_{tuple(filter_values['employee_ids'] or [])}"
+        # Also check main page's cache key (may already have the data)
+        main_cache_key = f"prev_year_data_{filter_values['start_date']}_{filter_values['end_date']}_{tuple(filter_values['employee_ids'] or [])}"
         
         if yoy_frag_cache_key not in st.session_state:
-            previous_sales_df = queries.get_previous_year_data(
-                start_date=filter_values['start_date'],
-                end_date=filter_values['end_date'],
-                employee_ids=filter_values['employee_ids'],
-                entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
-            )
+            if main_cache_key in st.session_state:
+                # Reuse main page's cached data
+                previous_sales_df = st.session_state[main_cache_key]
+            elif raw_cached_sales_df is not None and not raw_cached_sales_df.empty and cached_year_range is not None:
+                # Extract from cached raw data (no SQL query needed)
+                from datetime import date as _date
+                _start = filter_values['start_date']
+                _end = filter_values['end_date']
+                _prev_start = _date(_start.year - 1, _start.month, _start.day)
+                try:
+                    _prev_end = _date(_end.year - 1, _end.month, _end.day)
+                except ValueError:
+                    _prev_end = _date(_end.year - 1, _end.month, 28)
+                
+                _cached_start_yr, _cached_end_yr = cached_year_range
+                if _prev_start.year >= _cached_start_yr and _prev_end.year <= _cached_end_yr:
+                    _df = raw_cached_sales_df.copy()
+                    _df['inv_date'] = pd.to_datetime(_df['inv_date'], errors='coerce')
+                    _df = _df[
+                        (_df['inv_date'] >= pd.Timestamp(_prev_start)) &
+                        (_df['inv_date'] <= pd.Timestamp(_prev_end))
+                    ]
+                    _emp_ids = filter_values.get('employee_ids')
+                    if _emp_ids and 'sales_id' in _df.columns:
+                        _df = _df[_df['sales_id'].isin(_emp_ids)]
+                    _ent_ids = filter_values.get('entity_ids')
+                    if _ent_ids and 'legal_entity_id' in _df.columns:
+                        _df = _df[_df['legal_entity_id'].isin(_ent_ids)]
+                    previous_sales_df = _df
+                else:
+                    # Prev year outside cached range, fall back to SQL
+                    previous_sales_df = queries.get_previous_year_data(
+                        start_date=filter_values['start_date'],
+                        end_date=filter_values['end_date'],
+                        employee_ids=filter_values['employee_ids'],
+                        entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
+                    )
+            else:
+                # No cache available, fall back to SQL
+                previous_sales_df = queries.get_previous_year_data(
+                    start_date=filter_values['start_date'],
+                    end_date=filter_values['end_date'],
+                    employee_ids=filter_values['employee_ids'],
+                    entity_ids=filter_values['entity_ids'] if filter_values['entity_ids'] else None
+                )
             st.session_state[yoy_frag_cache_key] = previous_sales_df
         else:
             previous_sales_df = st.session_state[yoy_frag_cache_key]

@@ -800,6 +800,69 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     return filtered
 
 # =============================================================================
+# OPTIMIZATION v3.4.0: Extract Previous Year Data from Cache
+# Saves ~5.3s by avoiding duplicate SQL query for YoY comparison.
+# Previous year data is already in raw_cached_data when year range covers it.
+# =============================================================================
+
+def _extract_previous_year_from_cache(
+    raw_data: dict,
+    start_date: date,
+    end_date: date,
+    employee_ids: list = None,
+    entity_ids: list = None,
+) -> pd.DataFrame:
+    """
+    Extract previous year data from cached raw_data instead of querying DB.
+    
+    Returns:
+        DataFrame with previous year sales data, or None if prev year not in cache.
+    """
+    if 'sales' not in raw_data or raw_data['sales'].empty:
+        return None
+    
+    # Calculate previous year dates (same logic as queries.get_previous_year_data)
+    prev_start = date(start_date.year - 1, start_date.month, start_date.day)
+    try:
+        prev_end = date(end_date.year - 1, end_date.month, end_date.day)
+    except ValueError:
+        # Feb 29 -> Feb 28 for non-leap year
+        prev_end = date(end_date.year - 1, end_date.month, 28)
+    
+    # Check if prev year is within cached range
+    cached_year_range = raw_data.get('_year_range')
+    if cached_year_range is None:
+        return None
+    
+    cached_start_year, cached_end_year = cached_year_range
+    if prev_start.year < cached_start_year or prev_end.year > cached_end_year:
+        if DEBUG_TIMING:
+            print(f"   ⚠️ YoY cache miss: prev year {prev_start.year} outside cached range {cached_start_year}-{cached_end_year}")
+        return None  # Signal to fall back to SQL
+    
+    df = raw_data['sales'].copy()
+    
+    # Filter by previous year date range
+    df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+    df = df[
+        (df['inv_date'] >= pd.Timestamp(prev_start)) &
+        (df['inv_date'] <= pd.Timestamp(prev_end))
+    ]
+    
+    # Filter by employee_ids
+    if employee_ids and 'sales_id' in df.columns:
+        df = df[df['sales_id'].isin(employee_ids)]
+    
+    # Filter by entity_ids
+    if entity_ids and 'legal_entity_id' in df.columns:
+        df = df[df['legal_entity_id'].isin(entity_ids)]
+    
+    if DEBUG_TIMING:
+        print(f"   ♻️ YoY: Extracted {len(df):,} rows from cache (prev period: {prev_start} to {prev_end})")
+    
+    return df
+
+# =============================================================================
 # SMART CACHING LOGIC - Only reload when year range expands
 # =============================================================================
 
@@ -1202,17 +1265,29 @@ period_info = analyze_period(active_filters)
 # YoY comparison (only for single-year periods)
 yoy_metrics = None
 if active_filters['compare_yoy'] and not period_info['is_multi_year']:
-    # OPTIMIZATION v2.6.0: Cache previous year data
+    # OPTIMIZATION v3.4.0: Extract from cached raw data instead of SQL query
     yoy_cache_key = f"prev_year_data_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(active_filters['employee_ids'] or [])}"
     
     if yoy_cache_key not in st.session_state:
-        with timer("DB: get_previous_year_data"):
-            previous_sales_df = queries.get_previous_year_data(
-                start_date=active_filters['start_date'],
-                end_date=active_filters['end_date'],
-                employee_ids=active_filters['employee_ids'],
-                entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
-            )
+        # Try extracting from cached raw_data first (saves ~5.3s)
+        previous_sales_df = _extract_previous_year_from_cache(
+            raw_data=raw_data,
+            start_date=active_filters['start_date'],
+            end_date=active_filters['end_date'],
+            employee_ids=active_filters['employee_ids'],
+            entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None,
+        )
+        
+        if previous_sales_df is None:
+            # Previous year not in cache range, fall back to SQL
+            with timer("DB: get_previous_year_data (SQL fallback)"):
+                previous_sales_df = queries.get_previous_year_data(
+                    start_date=active_filters['start_date'],
+                    end_date=active_filters['end_date'],
+                    employee_ids=active_filters['employee_ids'],
+                    entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
+                )
+        
         st.session_state[yoy_cache_key] = previous_sales_df
     else:
         previous_sales_df = st.session_state[yoy_cache_key]
@@ -1718,6 +1793,8 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
         sales_df=data['sales'],
         queries=queries,
         filter_values=active_filters,
+        raw_cached_sales_df=raw_data.get('sales'),  # OPTIMIZATION v3.4.0
+        cached_year_range=_get_cached_year_range(),  # OPTIMIZATION v3.4.0
         fragment_key="yoy"
     )
     
