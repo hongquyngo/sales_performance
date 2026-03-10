@@ -446,7 +446,7 @@ def _render_customer_breakdown(
 
 
 # =============================================================================
-# LEVEL 3: INVOICE LIST (per customer) — with VAT#, docs, payment details
+# LEVEL 3: INVOICE LIST (per customer) — select row for detail + documents
 # =============================================================================
 
 def _render_invoice_list(
@@ -459,7 +459,10 @@ def _render_invoice_list(
     """
     Invoice-level detail for a single customer.
 
-    v2.1: Added vat_number, payment details for partially paid, document links.
+    v2.2: Per-invoice selection UX.
+    - Invoice table at top
+    - Selectbox to pick specific invoice
+    - Detail panel: payment transactions + document links for selected invoice only
     """
     if inv_data.empty:
         st.caption("No invoices")
@@ -473,35 +476,30 @@ def _render_invoice_list(
 
     # Sort by outstanding DESC
     out_col = LINE_OUTSTANDING_COL if LINE_OUTSTANDING_COL in display.columns else 'outstanding_usd'
-    display = display.sort_values(out_col, ascending=False)
+    display = display.sort_values(out_col, ascending=False).reset_index(drop=True)
 
     # Build display columns
     cols = []
     col_config = {}
 
-    # Invoice number
     if 'inv_number' in display.columns:
         cols.append('inv_number')
         col_config['inv_number'] = st.column_config.TextColumn("Invoice#")
 
-    # VAT Invoice Number (NEW v2.1)
     if 'vat_number' in display.columns:
         cols.append('vat_number')
         col_config['vat_number'] = st.column_config.TextColumn("VAT Inv#",
             help="VAT invoice number from sale_invoices")
 
-    # Dates
     for dc, label in [('inv_date', 'Inv Date'), ('due_date', 'Due Date')]:
         if dc in display.columns:
             cols.append(dc)
             col_config[dc] = st.column_config.DateColumn(label)
 
-    # Product
     if 'product_pn' in display.columns:
         cols.append('product_pn')
         col_config['product_pn'] = st.column_config.TextColumn("Product", width="medium")
 
-    # LC amounts
     if 'invoiced_currency' in display.columns:
         cols.append('invoiced_currency')
         col_config['invoiced_currency'] = st.column_config.TextColumn("Ccy")
@@ -520,7 +518,6 @@ def _render_invoice_list(
         cols.append('_os_lc')
         col_config['_os_lc'] = st.column_config.TextColumn("Outstanding (LC)")
 
-    # USD amounts
     if out_col in display.columns:
         display['_os_usd'] = display[out_col].apply(
             lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
@@ -528,7 +525,6 @@ def _render_invoice_list(
         cols.append('_os_usd')
         col_config['_os_usd'] = st.column_config.TextColumn("Outstanding (USD)")
 
-    # Payment status
     if 'payment_status' in display.columns:
         cols.append('payment_status')
         col_config['payment_status'] = st.column_config.TextColumn("Status")
@@ -540,7 +536,6 @@ def _render_invoice_list(
         cols.append('_ratio')
         col_config['_ratio'] = st.column_config.TextColumn("Paid%")
 
-    # Aging
     if 'aging_bucket' in display.columns:
         cols.append('aging_bucket')
         col_config['aging_bucket'] = st.column_config.TextColumn("Aging")
@@ -564,101 +559,214 @@ def _render_invoice_list(
     )
 
     # =========================================================================
-    # DOCUMENT LINKS (sale invoice + payment receipt documents from S3)
+    # PER-INVOICE DETAIL SELECTOR
     # =========================================================================
-    inv_numbers = display['inv_number'].dropna().unique().tolist() if 'inv_number' in display.columns else []
+    if 'inv_number' not in display.columns:
+        return
 
-    if inv_numbers and doc_loader is not None:
-        _render_document_section(
-            inv_numbers=inv_numbers,
-            doc_loader=doc_loader,
-            s3_url_generator=s3_url_generator,
-            fragment_key=f"{fragment_key}_docs",
+    inv_list = display['inv_number'].dropna().tolist()
+    if not inv_list:
+        return
+
+    # Build display labels: "INV123 | Unpaid | $5,000 | 90+ days"
+    inv_labels = {}
+    for _, row in display.iterrows():
+        inv_num = row.get('inv_number', '')
+        if pd.isna(inv_num):
+            continue
+        status = row.get('payment_status', '')
+        os_usd = row.get('_os_usd', '')
+        aging = row.get('aging_bucket', '')
+        label_parts = [str(inv_num)]
+        if status:
+            label_parts.append(str(status))
+        if os_usd:
+            label_parts.append(str(os_usd))
+        if aging:
+            label_parts.append(str(aging))
+        inv_labels[str(inv_num)] = ' · '.join(label_parts)
+
+    selected_inv = st.selectbox(
+        "🔍 Select invoice for details",
+        options=['— Select invoice —'] + list(inv_labels.keys()),
+        format_func=lambda x: inv_labels.get(x, x) if x != '— Select invoice —' else x,
+        key=f"{fragment_key}_inv_select",
+    )
+
+    if selected_inv == '— Select invoice —':
+        st.caption("Select an invoice above to view payment details and documents")
+        return
+
+    # =========================================================================
+    # SELECTED INVOICE DETAIL PANEL
+    # =========================================================================
+    sel_row = display[display['inv_number'] == selected_inv].iloc[0] if not display[display['inv_number'] == selected_inv].empty else None
+    if sel_row is None:
+        return
+
+    with st.container(border=True):
+        # Header
+        vat_num = sel_row.get('vat_number', '')
+        vat_display = f" · VAT: {vat_num}" if pd.notna(vat_num) and vat_num else ""
+        st.markdown(f"**{selected_inv}**{vat_display}")
+
+        # Key info row
+        ic1, ic2, ic3, ic4 = st.columns(4)
+        with ic1:
+            inv_date = sel_row.get('inv_date', '')
+            due_date = sel_row.get('due_date', '')
+            inv_str = pd.Timestamp(inv_date).strftime('%Y-%m-%d') if pd.notna(inv_date) else '—'
+            due_str = pd.Timestamp(due_date).strftime('%Y-%m-%d') if pd.notna(due_date) else '—'
+            st.caption(f"📅 Inv: {inv_str} · Due: {due_str}")
+        with ic2:
+            st.caption(f"💰 O/S: {sel_row.get('_os_usd', '—')}")
+        with ic3:
+            status = sel_row.get('payment_status', '—')
+            ratio = sel_row.get('_ratio', '0%')
+            st.caption(f"📊 {status} · {ratio}")
+        with ic4:
+            aging = sel_row.get('aging_bucket', '')
+            days = sel_row.get('_days', 0)
+            if aging:
+                st.caption(f"⏰ {aging} ({days}d)")
+
+        # -----------------------------------------------------------------
+        # Tab layout: Payment History | Documents
+        # -----------------------------------------------------------------
+        has_txn_loader = payment_txn_loader is not None
+        has_doc_loader = doc_loader is not None
+
+        if has_txn_loader or has_doc_loader:
+            detail_tabs = []
+            tab_keys = []
+            if has_txn_loader:
+                detail_tabs.append("💳 Payment History")
+                tab_keys.append("txn")
+            if has_doc_loader:
+                detail_tabs.append("📎 Documents")
+                tab_keys.append("docs")
+
+            tabs = st.tabs(detail_tabs)
+
+            for tab, tab_key in zip(tabs, tab_keys):
+                with tab:
+                    if tab_key == "txn":
+                        _render_invoice_payments(
+                            inv_number=selected_inv,
+                            payment_txn_loader=payment_txn_loader,
+                            fragment_key=f"{fragment_key}_txn_{selected_inv[:12]}",
+                        )
+                    elif tab_key == "docs":
+                        _render_invoice_documents(
+                            inv_number=selected_inv,
+                            doc_loader=doc_loader,
+                            s3_url_generator=s3_url_generator,
+                            fragment_key=f"{fragment_key}_doc_{selected_inv[:12]}",
+                        )
+
+
+# =============================================================================
+# PER-INVOICE: PAYMENT HISTORY
+# =============================================================================
+
+def _render_invoice_payments(
+    inv_number: str,
+    payment_txn_loader: Callable,
+    fragment_key: str = "ar_inv_txn",
+):
+    """Load and display payment transactions for a single invoice."""
+    try:
+        txn_df = payment_txn_loader([inv_number])
+    except Exception as e:
+        logger.error(f"Error loading payment transactions for {inv_number}: {e}")
+        st.caption(f"⚠️ Could not load payment details")
+        return
+
+    if txn_df is None or txn_df.empty:
+        st.caption("No payment transactions recorded for this invoice")
+        return
+
+    # Display columns
+    display = txn_df.copy()
+
+    cols_map = {
+        'payment_number': 'Payment#',
+        'payment_received_date': 'Payment Date',
+        'amount_received': 'Amount',
+        'currency_code': 'Ccy',
+        'payment_status': 'Status',
+        'payment_ratio': 'Paid%',
+        'receipt_bank': 'Bank',
+        'aging_bucket': 'Aging',
+    }
+
+    available = {k: v for k, v in cols_map.items() if k in display.columns}
+    if not available:
+        st.caption("No payment data columns available")
+        return
+
+    if 'payment_ratio' in display.columns:
+        display['payment_ratio'] = display['payment_ratio'].apply(
+            lambda x: f"{x:.0%}" if pd.notna(x) else "—"
         )
 
-    # =========================================================================
-    # PAYMENT TRANSACTION DETAIL
-    # =========================================================================
-    if payment_txn_loader is not None and inv_numbers:
-        # Check if any invoices are partially paid — auto-load for those
-        has_partial = False
-        if 'payment_status' in display.columns:
-            has_partial = display['payment_status'].str.contains('Partial', na=False).any()
+    st.dataframe(
+        display[list(available.keys())].rename(columns=available),
+        hide_index=True,
+        width="stretch",
+        height=min(250, 35 * len(display) + 38),
+    )
 
-        if has_partial:
-            # Auto-load payment details for partially paid invoices
-            _auto_load_payment_details(
-                inv_numbers=inv_numbers,
-                payment_txn_loader=payment_txn_loader,
-                fragment_key=f"{fragment_key}_auto_txn",
-            )
-        else:
-            # Manual load button for other cases
-            if st.button(
-                "💳 Load Payment Transactions",
-                key=f"{fragment_key}_load_txn",
-                help="Load detailed payment transactions for these invoices"
-            ):
-                with st.spinner("Loading payment details..."):
-                    txn_df = payment_txn_loader(inv_numbers)
-                _render_payment_transactions(txn_df, fragment_key)
+    # Summary
+    if 'amount_received_raw' in txn_df.columns and 'currency_code' in txn_df.columns:
+        by_ccy = txn_df.groupby('currency_code')['amount_received_raw'].sum()
+        summary_parts = [f"{amt:,.0f} {ccy}" for ccy, amt in by_ccy.items()]
+        st.caption(f"Total received: {' + '.join(summary_parts)} ({len(txn_df)} transactions)")
 
 
 # =============================================================================
-# DOCUMENT SECTION — S3 links for invoices and payment receipts
+# PER-INVOICE: DOCUMENTS (S3 links)
 # =============================================================================
 
-def _render_document_section(
-    inv_numbers: list,
+def _render_invoice_documents(
+    inv_number: str,
     doc_loader: Callable,
     s3_url_generator: Callable = None,
-    fragment_key: str = "ar_docs",
+    fragment_key: str = "ar_inv_doc",
 ):
-    """
-    Load and display document links for invoices and payments.
+    """Load and display documents for a single invoice."""
+    try:
+        docs_df = doc_loader([inv_number])
+    except Exception as e:
+        logger.error(f"Error loading documents for {inv_number}: {e}")
+        st.caption(f"⚠️ Could not load documents")
+        return
 
-    Args:
-        inv_numbers: List of invoice numbers
-        doc_loader: Callable(inv_numbers) → DataFrame with s3_key, filename, doc_type, etc.
-        s3_url_generator: Callable(s3_key) → presigned URL string
-        fragment_key: Widget key prefix
-    """
-    if st.button("📎 Show Documents", key=f"{fragment_key}_show_docs",
-                  help="Load document attachments for these invoices"):
-        with st.spinner("Loading documents..."):
-            try:
-                docs_df = doc_loader(inv_numbers)
-            except Exception as e:
-                logger.error(f"Error loading documents: {e}")
-                st.error(f"Failed to load documents: {e}")
-                return
+    if docs_df is None or docs_df.empty:
+        st.caption("No documents attached to this invoice")
+        return
 
-        if docs_df is None or docs_df.empty:
-            st.caption("No documents attached to these invoices")
-            return
+    # Group by doc_type
+    inv_docs = docs_df[docs_df['doc_type'] == 'invoice'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+    pmt_docs = docs_df[docs_df['doc_type'] == 'payment'] if 'doc_type' in docs_df.columns else pd.DataFrame()
 
-        # Group by doc_type
-        inv_docs = docs_df[docs_df['doc_type'] == 'invoice'] if 'doc_type' in docs_df.columns else pd.DataFrame()
-        pmt_docs = docs_df[docs_df['doc_type'] == 'payment'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+    # Render invoice documents
+    if not inv_docs.empty:
+        st.markdown(f"**📄 Invoice Documents** ({len(inv_docs)})")
+        for _, doc in inv_docs.iterrows():
+            _render_doc_link(doc, s3_url_generator)
 
-        # Render invoice documents
-        if not inv_docs.empty:
-            st.markdown("**📄 Invoice Documents**")
-            for _, doc in inv_docs.iterrows():
-                _render_doc_link(doc, s3_url_generator)
+    # Render payment receipt documents
+    if not pmt_docs.empty:
+        st.markdown(f"**💳 Payment Receipts** ({len(pmt_docs)})")
+        for _, doc in pmt_docs.iterrows():
+            pmt_label = f" ({doc['payment_number']})" if pd.notna(doc.get('payment_number')) else ""
+            _render_doc_link(doc, s3_url_generator, extra_label=pmt_label)
 
-        # Render payment documents
-        if not pmt_docs.empty:
-            st.markdown("**💳 Payment Receipt Documents**")
-            for _, doc in pmt_docs.iterrows():
-                pmt_label = f" ({doc['payment_number']})" if pd.notna(doc.get('payment_number')) else ""
-                _render_doc_link(doc, s3_url_generator, extra_label=pmt_label)
-
-        if inv_docs.empty and pmt_docs.empty:
-            # doc_type column might not exist, show all
-            st.markdown("**📎 Documents**")
-            for _, doc in docs_df.iterrows():
-                _render_doc_link(doc, s3_url_generator)
+    if inv_docs.empty and pmt_docs.empty:
+        st.markdown("**📎 Documents**")
+        for _, doc in docs_df.iterrows():
+            _render_doc_link(doc, s3_url_generator)
 
 
 def _render_doc_link(doc: pd.Series, s3_url_generator: Callable = None, extra_label: str = ""):
@@ -683,90 +791,3 @@ def _render_doc_link(doc: pd.Series, s3_url_generator: Callable = None, extra_la
 
     # Fallback: show filename without link
     st.caption(f"{icon} {filename}{extra_label} — {inv_num} (S3: {s3_key})")
-
-
-# =============================================================================
-# AUTO-LOAD PAYMENT DETAILS (for Partially Paid invoices)
-# =============================================================================
-
-def _auto_load_payment_details(
-    inv_numbers: list,
-    payment_txn_loader: Callable,
-    fragment_key: str = "ar_auto_txn",
-):
-    """
-    Automatically load and display payment transaction details.
-    Used when invoices are partially paid — user needs to see payment history.
-    """
-    try:
-        txn_df = payment_txn_loader(inv_numbers)
-    except Exception as e:
-        logger.error(f"Error auto-loading payment details: {e}")
-        st.caption(f"⚠️ Could not load payment details: {e}")
-        return
-
-    if txn_df is None or txn_df.empty:
-        st.caption("No payment transactions recorded yet")
-        return
-
-    _render_payment_transactions(txn_df, fragment_key)
-
-
-# =============================================================================
-# LEVEL 4: PAYMENT TRANSACTIONS (from customer_payment_full_view)
-# =============================================================================
-
-def _render_payment_transactions(
-    txn_df: pd.DataFrame,
-    fragment_key: str = "ar_txn",
-):
-    """Render payment transaction details."""
-    if txn_df is None or txn_df.empty:
-        st.info("No payment transactions found for these invoices")
-        return
-
-    st.markdown("##### 💳 Payment Transactions")
-
-    # Display columns
-    display = txn_df.copy()
-
-    cols_map = {
-        'payment_number': 'Payment#',
-        'sale_invoice_number': 'Invoice#',
-        'vat_number': 'VAT Inv#',
-        'payment_received_date': 'Payment Date',
-        'amount_received': 'Amount Received',
-        'currency_code': 'Ccy',
-        'payment_status': 'Status',
-        'payment_ratio': 'Paid%',
-        'customer': 'Customer',
-        'legal_entity': 'Entity',
-        'receipt_bank': 'Bank',
-        'days_outstanding': 'Days O/S',
-        'aging_bucket': 'Aging',
-        'created_by': 'Created By',
-    }
-
-    available = {k: v for k, v in cols_map.items() if k in display.columns}
-    if not available:
-        st.caption("No transaction columns available")
-        return
-
-    # Format payment_ratio
-    if 'payment_ratio' in display.columns:
-        display['payment_ratio'] = display['payment_ratio'].apply(
-            lambda x: f"{x:.0%}" if pd.notna(x) else "—"
-        )
-
-    st.dataframe(
-        display[list(available.keys())].rename(columns=available),
-        hide_index=True,
-        width="stretch",
-        height=min(400, 35 * len(display) + 38),
-    )
-
-    # Summary
-    if 'amount_received_raw' in txn_df.columns and 'currency_code' in txn_df.columns:
-        by_ccy = txn_df.groupby('currency_code')['amount_received_raw'].sum()
-        summary_parts = [f"{amt:,.0f} {ccy}" for ccy, amt in by_ccy.items()]
-        st.caption(f"Total received: {' + '.join(summary_parts)} ({len(txn_df)} transactions)")

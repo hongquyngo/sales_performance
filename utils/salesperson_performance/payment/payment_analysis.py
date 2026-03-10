@@ -638,12 +638,12 @@ def render_payment_section(payment_data: Optional[Dict]):
     """
     Render payment/collection analysis section.
 
+    v3.0: Row 1 metrics REMOVED — now shown in unified banner above tabs.
+
     Layout:
-      Row 1: 4 summary metrics (Outstanding, Overdue, Not Yet Due, Avg Days)
-      Row 2: Aging chart + detail table  (if outstanding > 0)
-      Row 3: Collection trend + top unpaid customers
-      Row 4: Collection by entity (if multi-entity)
-      Row 5: Collection by salesperson (if multiple salespeople)
+      Row 1: Aging chart + detail table  (if outstanding > 0)
+      Row 2: Collection trend (full-width)
+      Row 3: Collection by entity (if multi-entity)
     """
     if not payment_data:
         st.info("📊 Payment data not available for this period. "
@@ -664,74 +664,20 @@ def render_payment_section(payment_data: Optional[Dict]):
         st.caption(f"Payment statuses in data: {', '.join(raw_statuses)}")
 
     # -----------------------------------------------------------------
-    # ROW 1: Summary Metrics
+    # Avg Days Overdue (compact — unique metric not in unified banner)
     # -----------------------------------------------------------------
-    total_outstanding = summary['total_outstanding']
-    unpaid_count = summary['unpaid_invoices'] + summary['partial_invoices']
-
-    # Parse aging for overdue / not-yet-due split
-    not_yet_due_amount = 0
-    total_overdue_amount = 0
-    overdue_line_count = 0
-    nyd_line_count = 0
-    weighted_days_sum = 0
-    total_outstanding_for_avg = 0
-
     if not aging.empty and 'min_days' in aging.columns:
-        nyd_mask = aging['min_days'] < 0
-        not_yet_due_amount = aging.loc[nyd_mask, 'amount'].sum()
-        nyd_line_count = int(aging.loc[nyd_mask, 'count'].sum())
-
-        overdue_mask = aging['min_days'] >= 0
-        total_overdue_amount = aging.loc[overdue_mask, 'amount'].sum()
-        overdue_line_count = int(aging.loc[overdue_mask, 'count'].sum())
-
+        weighted_days_sum = 0
+        total_outstanding_for_avg = 0
         for _, row in aging.iterrows():
             mid = (row['min_days'] + min(row['max_days'], 365)) / 2
             if mid > 0:
                 weighted_days_sum += mid * row['amount']
                 total_outstanding_for_avg += row['amount']
-
-    avg_days = int(weighted_days_sum / total_outstanding_for_avg) if total_outstanding_for_avg > 0 else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric(
-            "💰 Outstanding",
-            _fmt_currency(total_outstanding),
-            f"{unpaid_count:,} invoices ({summary['unpaid_invoices']} unpaid · {summary['partial_invoices']} partial)",
-            delta_color="off",
-        )
-    with c2:
-        if total_overdue_amount > 0:
-            overdue_pct = (total_overdue_amount / total_outstanding * 100) if total_outstanding > 0 else 0
-            st.metric(
-                "🔴 Overdue",
-                _fmt_currency(total_overdue_amount),
-                f"{overdue_line_count:,} lines · {overdue_pct:.0f}% of total",
-                delta_color="inverse",
-            )
-        else:
-            st.metric("🟢 Overdue", "$0", "No overdue", delta_color="off")
-    with c3:
-        nyd_pct = (not_yet_due_amount / total_outstanding * 100) if total_outstanding > 0 else 0
-        st.metric(
-            "🟢 Not Yet Due",
-            _fmt_currency(not_yet_due_amount),
-            f"{nyd_line_count:,} lines · {nyd_pct:.0f}% of total",
-            delta_color="off",
-        )
-    with c4:
+        avg_days = int(weighted_days_sum / total_outstanding_for_avg) if total_outstanding_for_avg > 0 else 0
         if avg_days > 0:
             severity = "🔴" if avg_days > 90 else "🟠" if avg_days > 45 else "🟢"
-            st.metric(
-                f"{severity} Avg Days Overdue",
-                f"{avg_days} days",
-                "weighted by amount",
-                delta_color="off",
-            )
-        else:
-            st.metric("🟢 Avg Days Overdue", "0 days", "All within terms", delta_color="off")
+            st.caption(f"{severity} Weighted avg days overdue: **{avg_days} days**")
 
     if not has_outstanding:
         st.success("✅ All invoices fully collected — no outstanding balance")
