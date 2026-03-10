@@ -2,7 +2,7 @@
 """
 Payment & Collection Detail tab for Salesperson Performance.
 
-Architecture (v2.0 — no proxy calculations):
+Architecture (v3.0 — unified layout, no data duplication):
 
   Data source: customer_ar_by_salesperson_view (for BOTH modes)
     - Pre-calculated outstanding, collected, aging in SQL
@@ -18,9 +18,13 @@ Architecture (v2.0 — no proxy calculations):
     - Query: WHERE inv_date BETWEEN :start AND :end
     - Method: SalespersonQueries.get_payment_period_data()
 
-  All amounts are accurate — no proxy/estimated values anywhere.
+  Layout (v3.0):
+    - Unified metrics banner above tabs (no duplication)
+    - 3 sub-tabs: Overview & Aging | Invoice Detail | Drill-Down
+    - Customer Analysis merged into Drill-Down tab
+    - "By Salesperson" removed from Overview (now in Drill-Down only)
 
-VERSION: 2.0.0
+VERSION: 3.0.0
 """
 
 from .fragments import (

@@ -2,14 +2,20 @@
 """
 AR Drill-Down UI for Salesperson Performance — Payment & Collection Tab.
 
-3-level navigation:
-  Level 1: Salesperson Summary (cards with KPI metrics)
-  Level 2: Customer breakdown (per salesperson)
+4-level navigation:
+  Level 1: Salesperson Summary + Top Customers Overview (with stacked chart)
+  Level 2: Customer breakdown (per salesperson) — absorbs old Customer Analysis tab
   Level 3: Invoice list (per customer) with expandable payment details
+  Level 4: Payment transactions (from customer_payment_full_view)
 
-Payment transaction data comes from customer_payment_full_view.
+v2.0 CHANGES:
+- Absorbed Customer Analysis tab into Level 1 (top customers chart) + Level 2
+- Fixed double-count bug: dedup by invoice line before summing actual amounts
+- Unassigned: collection rate shows "N/A" instead of misleading "0%"
+- Unassigned section visually separated in Level 1
+- Added stacked bar chart (Collected vs Outstanding) at Level 1
 
-VERSION: 1.0.0
+VERSION: 2.0.0
 """
 
 import logging
@@ -33,7 +39,38 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# LEVEL 1: SALESPERSON AR SUMMARY
+# HELPERS
+# =============================================================================
+
+def _dedup_for_actual_amounts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Deduplicate multi-split rows before summing actual line amounts.
+
+    When using line_outstanding_usd (actual, not split-allocated), multi-split
+    invoices have duplicate rows (1 per split) with the same actual amount.
+    Summing without dedup would double-count.
+    """
+    if 'si_line_id' in df.columns:
+        return df.drop_duplicates(subset='si_line_id', keep='first')
+    elif 'unified_line_id' in df.columns:
+        return df.drop_duplicates(subset='unified_line_id', keep='first')
+    elif 'inv_number' in df.columns and 'product_pn' in df.columns:
+        return df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
+    return df
+
+
+def _fmt_days(d) -> str:
+    """Format days overdue for display."""
+    d = int(d)
+    if d > 0:
+        return f"⚠️ {d}d overdue"
+    elif d < 0:
+        return f"due in {abs(d)}d"
+    return "due today"
+
+
+# =============================================================================
+# LEVEL 1: SALESPERSON AR SUMMARY + TOP CUSTOMERS
 # =============================================================================
 
 def ar_by_salesperson_fragment(
@@ -42,7 +79,7 @@ def ar_by_salesperson_fragment(
     fragment_key: str = "ar_drill",
 ):
     """
-    Salesperson-level AR drill-down.
+    Salesperson-level AR drill-down with integrated customer overview.
 
     Args:
         pay_df: Filtered AR data (from payment_tab_fragment)
@@ -66,7 +103,9 @@ def ar_by_salesperson_fragment(
     sp_list = sorted(pay_df['sales_name'].unique().tolist())
 
     # Compute per-salesperson metrics
-    sp_metrics = []
+    assigned_metrics = []
+    unassigned_metrics = []
+
     for sp_name in sp_list:
         sp_data = pay_df[pay_df['sales_name'] == sp_name]
         is_unassigned = sp_name == 'Unassigned'
@@ -80,18 +119,23 @@ def ar_by_salesperson_fragment(
 
         # Overdue
         if 'due_date' in sp_data.columns:
+            use_col = out_col if not is_unassigned else line_out_col
             overdue_mask = (
                 sp_data['due_date'].notna() &
                 (sp_data['due_date'] < today) &
-                (sp_data[out_col if not is_unassigned else line_out_col] > 0.01)
+                (sp_data[use_col] > 0.01)
             )
-            overdue_amount = sp_data.loc[overdue_mask, out_col if not is_unassigned else line_out_col].sum()
+            overdue_amount = sp_data.loc[overdue_mask, use_col].sum()
         else:
             overdue_amount = 0
 
-        collection_rate = collected / invoiced if invoiced > 0 else 0
+        # Collection rate: N/A for Unassigned (split=0, so collected=0 always)
+        if is_unassigned:
+            collection_rate = None  # Will display as "N/A"
+        else:
+            collection_rate = collected / invoiced if invoiced > 0 else 0
 
-        sp_metrics.append({
+        row = {
             'sales_name': sp_name,
             'outstanding': outstanding,
             'collected': collected,
@@ -101,36 +145,66 @@ def ar_by_salesperson_fragment(
             'customers': n_customers,
             'invoices': n_invoices,
             'is_unassigned': is_unassigned,
-        })
+        }
 
-    sp_summary = pd.DataFrame(sp_metrics).sort_values('outstanding', ascending=False)
+        if is_unassigned:
+            unassigned_metrics.append(row)
+        else:
+            assigned_metrics.append(row)
+
+    sp_summary = pd.DataFrame(assigned_metrics + unassigned_metrics)
+    if sp_summary.empty:
+        st.info("No salesperson data available")
+        return
+
+    sp_summary = sp_summary.sort_values('outstanding', ascending=False).reset_index(drop=True)
 
     # =========================================================================
-    # RENDER: Salesperson selector
+    # RENDER: Assigned Salesperson Table
     # =========================================================================
     st.markdown("##### 👤 AR by Salesperson")
 
-    # Summary table first
-    display_sp = sp_summary.copy()
-    display_sp['#'] = range(1, len(display_sp) + 1)
-    display_sp['Outstanding'] = display_sp['outstanding'].apply(_fmt_currency)
-    display_sp['Overdue'] = display_sp['overdue'].apply(
-        lambda x: _fmt_currency(x) if x > 0 else "—"
-    )
-    display_sp['Rate'] = display_sp['collection_rate'].apply(
-        lambda x: f"{x:.0%}" if x > 0 else "—"
-    )
-    display_sp['Cust.'] = display_sp['customers'].astype(int)
-    display_sp['Inv.'] = display_sp['invoices'].astype(int)
+    assigned_df = sp_summary[~sp_summary['is_unassigned']]
+    if not assigned_df.empty:
+        display_sp = assigned_df.copy()
+        display_sp['#'] = range(1, len(display_sp) + 1)
+        display_sp['Outstanding'] = display_sp['outstanding'].apply(_fmt_currency)
+        display_sp['Overdue'] = display_sp['overdue'].apply(
+            lambda x: _fmt_currency(x) if x > 0 else "—"
+        )
+        display_sp['Rate'] = display_sp['collection_rate'].apply(
+            lambda x: f"{x:.0%}" if x is not None and x > 0 else "—"
+        )
+        display_sp['Cust.'] = display_sp['customers'].astype(int)
+        display_sp['Inv.'] = display_sp['invoices'].astype(int)
 
-    st.dataframe(
-        display_sp[['#', 'sales_name', 'Outstanding', 'Overdue', 'Rate', 'Cust.', 'Inv.']].rename(
-            columns={'sales_name': 'Salesperson'}
-        ),
-        hide_index=True,
-        width="stretch",
-        height=min(400, 35 * len(display_sp) + 38),
-    )
+        st.dataframe(
+            display_sp[['#', 'sales_name', 'Outstanding', 'Overdue', 'Rate', 'Cust.', 'Inv.']].rename(
+                columns={'sales_name': 'Salesperson'}
+            ),
+            hide_index=True,
+            width="stretch",
+            height=min(400, 35 * len(display_sp) + 38),
+        )
+
+    # =========================================================================
+    # RENDER: Unassigned Section (visually separated)
+    # =========================================================================
+    unassigned_df = sp_summary[sp_summary['is_unassigned']]
+    if not unassigned_df.empty:
+        ua = unassigned_df.iloc[0]
+        st.warning(
+            f"⚠️ **Unassigned AR**: {_fmt_currency(ua['outstanding'])} outstanding "
+            f"— {int(ua['customers'])} customers, {int(ua['invoices'])} invoices"
+            + (f" · {_fmt_currency(ua['overdue'])} overdue" if ua['overdue'] > 0 else ""),
+            icon="⚠️",
+        )
+
+    # =========================================================================
+    # TOP CUSTOMERS CHART (absorbed from old Customer Analysis tab)
+    # =========================================================================
+    if has_line_outstanding and len(pay_df['customer'].unique()) > 1:
+        _render_top_customers_chart(pay_df, fragment_key)
 
     # =========================================================================
     # LEVEL 2: Salesperson drill-down selector
@@ -160,6 +234,66 @@ def ar_by_salesperson_fragment(
 
 
 # =============================================================================
+# TOP CUSTOMERS STACKED BAR CHART
+# =============================================================================
+
+def _render_top_customers_chart(pay_df: pd.DataFrame, fragment_key: str):
+    """
+    Stacked bar chart: top 10 customers by outstanding (Collected vs Outstanding).
+    Absorbed from old Customer Analysis tab.
+    Uses deduped actual line amounts to avoid double-counting.
+    """
+    deduped = _dedup_for_actual_amounts(pay_df)
+
+    use_actual = LINE_OUTSTANDING_COL in deduped.columns
+    rev_col = ACTUAL_REVENUE_COL if use_actual and ACTUAL_REVENUE_COL in deduped.columns else REV_COL
+    out_col = LINE_OUTSTANDING_COL if use_actual else 'outstanding_usd'
+    coll_col = LINE_COLLECTED_COL if use_actual and LINE_COLLECTED_COL in deduped.columns else 'collected_usd'
+
+    cust_agg = deduped.groupby('customer').agg(
+        invoiced=(rev_col, 'sum'),
+        collected=(coll_col, 'sum'),
+        outstanding=(out_col, 'sum'),
+    ).reset_index()
+
+    top10 = cust_agg.nlargest(10, 'invoiced').copy()
+    if len(top10) < 2:
+        return
+
+    st.markdown("##### 📊 Top Customers — Collected vs Outstanding")
+    if use_actual:
+        st.caption("Actual invoice amounts (not split-allocated)")
+
+    melted = top10.melt(
+        id_vars=['customer'],
+        value_vars=['collected', 'outstanding'],
+        var_name='type', value_name='amount'
+    )
+    melted['type'] = melted['type'].map({
+        'collected': 'Collected', 'outstanding': 'Outstanding'
+    })
+
+    chart = alt.Chart(melted).mark_bar().encode(
+        y=alt.Y('customer:N', sort='-x', title=None,
+                axis=alt.Axis(labelLimit=200)),
+        x=alt.X('amount:Q', title='Amount (USD)',
+                axis=alt.Axis(format='~s')),
+        color=alt.Color('type:N', scale=alt.Scale(
+            domain=['Collected', 'Outstanding'],
+            range=['#28a745', '#dc3545']
+        ), legend=alt.Legend(orient='top', title=None)),
+        order=alt.Order('type:N', sort='ascending'),
+        tooltip=[
+            alt.Tooltip('customer:N', title='Customer'),
+            alt.Tooltip('type:N', title='Type'),
+            alt.Tooltip('amount:Q', title='Amount', format='$,.0f'),
+        ]
+    ).properties(height=350)
+
+    st.altair_chart(chart, width="stretch")
+
+
+# =============================================================================
 # LEVEL 2: CUSTOMER BREAKDOWN (per salesperson)
 # =============================================================================
 
@@ -170,13 +304,19 @@ def _render_customer_breakdown(
     payment_txn_loader=None,
     fragment_key: str = "ar_cust",
 ):
-    """Customer-level breakdown for a single salesperson."""
-
-    out_col = LINE_OUTSTANDING_COL if is_unassigned and LINE_OUTSTANDING_COL in sp_data.columns else 'outstanding_usd'
+    """
+    Customer-level breakdown for a single salesperson.
+    v2.0: Fixed dedup for actual amounts; added sort + overdue columns.
+    """
+    use_actual = is_unassigned and LINE_OUTSTANDING_COL in sp_data.columns
+    out_col = LINE_OUTSTANDING_COL if use_actual else 'outstanding_usd'
     today = pd.Timestamp(date.today())
 
+    # DEDUP: When using actual line amounts, dedup to avoid double-counting
+    agg_source = _dedup_for_actual_amounts(sp_data) if use_actual else sp_data
+
     # Aggregate by customer
-    has_inv = 'inv_number' in sp_data.columns
+    has_inv = 'inv_number' in agg_source.columns
     agg = {
         'outstanding': (out_col, 'sum'),
     }
@@ -186,28 +326,70 @@ def _render_customer_breakdown(
         agg['invoices'] = (out_col, 'count')
 
     # LC outstanding for display
-    if 'line_outstanding_lc' in sp_data.columns:
+    if 'line_outstanding_lc' in agg_source.columns:
         agg['outstanding_lc'] = ('line_outstanding_lc', 'sum')
-    if 'invoiced_currency' in sp_data.columns:
+    if 'invoiced_currency' in agg_source.columns:
         agg['currency'] = ('invoiced_currency', 'first')
 
-    cust_summary = sp_data.groupby('customer').agg(**agg).reset_index()
-    cust_summary = cust_summary.sort_values('outstanding', ascending=False).reset_index(drop=True)
+    # Overdue amount per customer
+    if 'due_date' in agg_source.columns:
+        overdue_source = agg_source[
+            (agg_source['due_date'].notna()) &
+            (agg_source['due_date'] < today) &
+            (agg_source[out_col] > 0.01)
+        ]
+        if not overdue_source.empty:
+            overdue_by_cust = overdue_source.groupby('customer').agg(
+                overdue=(out_col, 'sum'),
+            ).reset_index()
+        else:
+            overdue_by_cust = pd.DataFrame(columns=['customer', 'overdue'])
+    else:
+        overdue_by_cust = pd.DataFrame(columns=['customer', 'overdue'])
+
+    cust_summary = agg_source.groupby('customer').agg(**agg).reset_index()
+
+    # Merge overdue
+    if not overdue_by_cust.empty:
+        cust_summary = cust_summary.merge(overdue_by_cust, on='customer', how='left')
+        cust_summary['overdue'] = cust_summary['overdue'].fillna(0)
+    else:
+        cust_summary['overdue'] = 0
+
+    # Sort options
+    sort_col_map = {
+        'Outstanding (high→low)': ('outstanding', False),
+        'Overdue (high→low)': ('overdue', False),
+        'Invoices (high→low)': ('invoices', False),
+    }
+    sort_label = st.selectbox(
+        "Sort customers by",
+        list(sort_col_map.keys()),
+        key=f"{fragment_key}_cust_sort",
+    )
+    s_col, s_asc = sort_col_map[sort_label]
+    cust_summary = cust_summary.sort_values(s_col, ascending=s_asc).reset_index(drop=True)
 
     # Header metrics
     total_outstanding = cust_summary['outstanding'].sum()
     total_customers = len(cust_summary)
-    total_invoices = cust_summary['invoices'].sum()
+    total_invoices = int(cust_summary['invoices'].sum())
+    total_overdue = cust_summary['overdue'].sum()
 
     label = f"⚠️ {sales_name}" if is_unassigned else f"👤 {sales_name}"
-    st.markdown(f"##### {label} — {total_customers} customers, {total_invoices} invoices")
+    st.markdown(f"##### {label}")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Outstanding", _fmt_currency(total_outstanding))
     with c2:
-        st.metric("Customers", f"{total_customers}")
+        if total_overdue > 0:
+            st.metric("Overdue", _fmt_currency(total_overdue))
+        else:
+            st.metric("Overdue", "—")
     with c3:
+        st.metric("Customers", f"{total_customers}")
+    with c4:
         st.metric("Invoices", f"{total_invoices}")
 
     # =========================================================================
@@ -219,6 +401,7 @@ def _render_customer_breakdown(
         cust_name = cust_row['customer']
         cust_out = cust_row['outstanding']
         cust_inv_count = int(cust_row['invoices'])
+        cust_overdue = cust_row.get('overdue', 0)
 
         # Currency info
         lc_text = ""
@@ -228,7 +411,15 @@ def _render_customer_breakdown(
             if pd.notna(lc_val) and lc_val > 0 and ccy:
                 lc_text = f" · {lc_val:,.0f} {ccy}"
 
-        expander_label = f"**{cust_name}** — {_fmt_currency(cust_out)}{lc_text} ({cust_inv_count} inv.)"
+        # Overdue indicator in label
+        overdue_text = ""
+        if cust_overdue > 0:
+            overdue_text = f" · 🔴 {_fmt_currency(cust_overdue)} overdue"
+
+        expander_label = (
+            f"**{cust_name}** — {_fmt_currency(cust_out)}{lc_text} "
+            f"({cust_inv_count} inv.){overdue_text}"
+        )
 
         with st.expander(expander_label, expanded=False):
             _render_invoice_list(
@@ -293,14 +484,14 @@ def _render_invoice_list(
             lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
         )
         cols.append('_inv_lc')
-        col_config['_inv_lc'] = st.column_config.TextColumn("Invoiced LC")
+        col_config['_inv_lc'] = st.column_config.TextColumn("Invoiced (LC)")
 
     if 'line_outstanding_lc' in display.columns:
         display['_os_lc'] = display['line_outstanding_lc'].apply(
             lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
         )
         cols.append('_os_lc')
-        col_config['_os_lc'] = st.column_config.TextColumn("O/S LC")
+        col_config['_os_lc'] = st.column_config.TextColumn("Outstanding (LC)")
 
     # USD amounts
     if out_col in display.columns:
@@ -308,7 +499,7 @@ def _render_invoice_list(
             lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
         )
         cols.append('_os_usd')
-        col_config['_os_usd'] = st.column_config.TextColumn("O/S USD")
+        col_config['_os_usd'] = st.column_config.TextColumn("Outstanding (USD)")
 
     # Payment status
     if 'payment_status' in display.columns:

@@ -424,7 +424,22 @@ def _analyze_by_customer(
 
     # Use actual line outstanding (not split-allocated) for customer-level view
     # This prevents undercounting when multiple salespeople share a customer
-    outstanding_col = LINE_OUTSTANDING_COL if LINE_OUTSTANDING_COL in df.columns else '_outstanding_usd'
+    use_actual = LINE_OUTSTANDING_COL in df.columns
+    outstanding_col = LINE_OUTSTANDING_COL if use_actual else '_outstanding_usd'
+
+    # DEDUP: When using actual line amounts, multi-split invoices have duplicate
+    # rows (1 per split) with the same line_outstanding_usd → sum would double-count.
+    # Deduplicate by invoice line before aggregating.
+    if use_actual:
+        dedup_key = None
+        if 'si_line_id' in df.columns:
+            dedup_key = 'si_line_id'
+        elif 'unified_line_id' in df.columns:
+            dedup_key = 'unified_line_id'
+        elif 'inv_number' in df.columns and 'product_pn' in df.columns:
+            dedup_key = ['inv_number', 'product_pn']
+        if dedup_key is not None:
+            df = df.drop_duplicates(subset=dedup_key, keep='first')
 
     has_inv = 'inv_number' in df.columns
     agg_dict = {
@@ -750,47 +765,15 @@ def render_payment_section(payment_data: Optional[Dict]):
             )
 
     # -----------------------------------------------------------------
-    # ROW 3: Collection Trend + Top Unpaid Customers
+    # ROW 3: Collection Trend (full-width)
+    # NOTE: "Top Outstanding Customers" removed — now in Drill-Down tab
     # -----------------------------------------------------------------
     has_trend = not by_month.empty and len(by_month) >= 2
-    has_customers = not by_customer.empty
 
-    if has_trend or has_customers:
-        col_left, col_right = st.columns([3, 2])
-
-        if has_trend:
-            with col_left:
-                st.markdown("##### 📈 Monthly Collection Trend")
-                chart = _build_collection_trend_chart(by_month)
-                st.altair_chart(chart, width="stretch")
-
-        if has_customers:
-            with col_right:
-                st.markdown("##### 👥 Top Outstanding Customers")
-                display_cust = by_customer.head(10).copy()
-                display_cust['Outstanding'] = display_cust['outstanding'].apply(lambda x: f"${x:,.0f}")
-
-                def _fmt_days(d):
-                    d = int(d)
-                    if d > 0:
-                        return f"⚠️ {d}d overdue"
-                    elif d < 0:
-                        return f"due in {abs(d)}d"
-                    return "due today"
-                display_cust['Status'] = display_cust['max_days'].apply(_fmt_days)
-                display_cust['Inv.'] = display_cust['invoices'].astype(int)
-                display_cust['#'] = range(1, len(display_cust) + 1)
-                st.dataframe(
-                    display_cust[['#', 'customer', 'Outstanding', 'Inv.', 'Status']].rename(
-                        columns={'customer': 'Customer'}
-                    ),
-                    hide_index=True,
-                    width="stretch",
-                    height=min(350, 35 * len(display_cust) + 38),
-                )
-        elif has_trend:
-            with col_right:
-                st.info("No individual customer outstanding data available")
+    if has_trend:
+        st.markdown("##### 📈 Monthly Collection Trend")
+        chart = _build_collection_trend_chart(by_month)
+        st.altair_chart(chart, width="stretch")
 
     # -----------------------------------------------------------------
     # ROW 4: Collection by Entity
@@ -810,23 +793,7 @@ def render_payment_section(payment_data: Optional[Dict]):
             width="stretch",
         )
 
-    # -----------------------------------------------------------------
-    # ROW 5: Collection by Salesperson
-    # -----------------------------------------------------------------
-    if not by_salesperson.empty and len(by_salesperson) > 1:
-        st.markdown("##### 👤 Collection by Salesperson")
-        display_sp = by_salesperson.copy()
-        display_sp['Invoiced'] = display_sp['total_invoiced'].apply(lambda x: f"${x:,.0f}")
-        display_sp['Collected'] = display_sp['collected'].apply(lambda x: f"${x:,.0f}")
-        display_sp['Outstanding'] = display_sp['outstanding'].apply(lambda x: f"${x:,.0f}")
-        display_sp['Rate'] = display_sp['collection_rate'].apply(lambda x: f"{x:.0%}")
-        st.dataframe(
-            display_sp[['sales_name', 'Invoiced', 'Collected', 'Outstanding', 'Rate']].rename(
-                columns={'sales_name': 'Salesperson'}
-            ),
-            hide_index=True,
-            width="stretch",
-        )
+    # NOTE: "Collection by Salesperson" removed — now shown in Drill-Down tab only
 
 
 # =============================================================================

@@ -6,17 +6,17 @@ Adapted from legal_entity_performance/payment/fragments.py.
 
 Pattern:
 - payment_tab_fragment: Tab-level @st.fragment with filters + sub-tabs
-- Sub-tabs: Summary & Aging | Payment List | Customer Analysis
+- Sub-tabs: Overview & Aging | Invoice Detail | Drill-Down
 
-v2.0 CHANGES:
-- BOTH modes use customer_ar_by_salesperson_view (no proxy calculations)
-- AR Mode: All outstanding invoices (no date filter)
-- Period Mode: Invoices within selected date range (all payment statuses)
-- Salesperson is CURRENT (joined by CURDATE) in both modes
-- Customer Analysis uses actual line amounts (not split-allocated)
-- Pre-calculated outstanding/collected/aging used directly from SQL
+v3.0 CHANGES (from v2.0):
+- Unified metrics banner above tabs (no duplicate metrics per tab)
+- Merged 4 tabs → 3: Overview & Aging | Invoice Detail | Drill-Down
+- Customer Analysis absorbed into Drill-Down tab (Level 2)
+- Removed "By Salesperson" from Summary (now only in Drill-Down)
+- Removed Column Legend expander (help= tooltips sufficient)
+- Fixed _group_by_invoice for pandas 2.x compatibility
 
-VERSION: 2.0.0
+VERSION: 3.0.0
 """
 
 import logging
@@ -70,7 +70,7 @@ def _format_oc_po(row) -> str:
 def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
     """
     Merge multi-split rows into 1 row per invoice line.
-    
+
     For each si_line_id (or inv_number + product_pn combo):
       - Salesperson: "Brian Phạm 70% | Trang Phạm 30%"
       - Amounts: actual invoice amounts (from first row, not summed)
@@ -78,7 +78,7 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty:
         return df
-    
+
     # Determine grouping key
     if 'si_line_id' in df.columns:
         group_key = 'si_line_id'
@@ -90,7 +90,7 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
         group_key = '_group_key'
     else:
         return df  # can't group
-    
+
     # Build salesperson display: "Brian Phạm 70% | Trang Phạm 30%"
     def _build_sp_display(group):
         parts = []
@@ -102,16 +102,23 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
             elif name == 'Unassigned':
                 parts.append("Unassigned")
         return ' | '.join(parts) if parts else 'Unassigned'
-    
-    sp_display = df.groupby(group_key).apply(_build_sp_display).reset_index()
+
+    # pandas 2.x compatible: use include_groups=False
+    try:
+        sp_display = df.groupby(group_key).apply(
+            _build_sp_display, include_groups=False
+        ).reset_index()
+    except TypeError:
+        # pandas < 2.0 fallback
+        sp_display = df.groupby(group_key).apply(_build_sp_display).reset_index()
     sp_display.columns = [group_key, '_salesperson_display']
-    
+
     # Deduplicate: keep first row per group (actual invoice amounts)
     first_rows = df.drop_duplicates(subset=group_key, keep='first').copy()
-    
+
     # Merge salesperson display
     first_rows = first_rows.merge(sp_display, on=group_key, how='left')
-    
+
     # Use actual line amounts (not split-allocated) for grouped view
     # LC
     if 'line_invoiced_amount_lc' in first_rows.columns:
@@ -126,7 +133,7 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
         first_rows['_collected_lc_display'] = first_rows['line_collected_lc'].apply(
             lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
         )
-    
+
     # USD (actual line outstanding, not split)
     line_out_col = 'line_outstanding_usd' if 'line_outstanding_usd' in first_rows.columns else 'outstanding_usd'
     first_rows['_outstanding_usd_grouped'] = pd.to_numeric(
@@ -135,11 +142,11 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
     first_rows['_outstanding_usd_display'] = first_rows['_outstanding_usd_grouped'].apply(
         lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
     )
-    
+
     # Clean up temp column
     if '_group_key' in first_rows.columns:
         first_rows.drop(columns=['_group_key'], inplace=True)
-    
+
     return first_rows
 
 
@@ -163,9 +170,8 @@ def payment_tab_fragment(
       - All Outstanding AR: shows ALL unpaid/partial invoices regardless of date
       - Period Invoices: shows only invoices within the selected period
 
-    v2.0: Both modes use customer_ar_by_salesperson_view (accurate data).
-    The sales_df parameter is kept for backward compatibility but is no longer
-    used for payment calculations when period_payment_df is provided.
+    v3.0: Unified metrics above tabs. 3 sub-tabs instead of 4.
+    Customer Analysis merged into Drill-Down tab.
 
     Args:
         sales_df: Filtered sales data (fallback only if period_payment_df is None)
@@ -256,7 +262,6 @@ def payment_tab_fragment(
     )
 
     # v2.0: Use pre-calculated outstanding/collected from customer_ar_by_salesperson_view
-    # Both AR mode and Period mode use this view — no proxy calculations
     if PRECALC_OUTSTANDING_COL in pay_df.columns:
         pay_df['collected_usd'] = pd.to_numeric(
             pay_df[PRECALC_COLLECTED_COL], errors='coerce'
@@ -265,7 +270,7 @@ def payment_tab_fragment(
             pay_df[PRECALC_OUTSTANDING_COL], errors='coerce'
         ).fillna(0)
     else:
-        # Fallback for legacy callers (should not happen in normal flow)
+        # Fallback for legacy callers
         logger.warning("Pre-calculated columns not found, using proxy")
         pay_df['collected_usd'] = pay_df[REV_COL] * pay_df['payment_ratio']
         pay_df['outstanding_usd'] = pay_df[REV_COL] * (1 - pay_df['payment_ratio'])
@@ -277,7 +282,7 @@ def payment_tab_fragment(
     total_count = len(pay_df)
 
     # =========================================================================
-    # AR CONTEXT BANNER (dual-mode awareness)
+    # AR CONTEXT BANNER (AR mode only)
     # =========================================================================
     if is_ar_mode and filter_values:
         start_date = filter_values.get('start_date')
@@ -454,7 +459,7 @@ def payment_tab_fragment(
     if min_outstanding > 0:
         filtered_df = filtered_df[filtered_df['outstanding_usd'] >= min_outstanding]
 
-    # Assignment filter (Unassigned AR tracking)
+    # Assignment filter
     if assignment_filter == 'Assigned':
         if 'is_unassigned' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['is_unassigned'] == 0]
@@ -495,16 +500,23 @@ def payment_tab_fragment(
     if active_filters:
         st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
 
+    # =========================================================================
+    # UNIFIED METRICS BANNER (shown once, above tabs)
+    # =========================================================================
+    _render_unified_metrics(filtered_df)
+
     st.divider()
 
     # =========================================================================
-    # SUB-TABS
+    # SUB-TABS (3 tabs — no duplicated data between them)
     # =========================================================================
-    tab_summary, tab_list, tab_salesperson, tab_customer = st.tabs([
-        "📊 Summary & Aging", "📋 Payment List", "👤 AR by Salesperson", "👥 Customer Analysis"
+    tab_overview, tab_list, tab_drilldown = st.tabs([
+        "📊 Overview & Aging",
+        "📋 Invoice Detail",
+        "🔍 Drill-Down",
     ])
 
-    with tab_summary:
+    with tab_overview:
         payment_summary_fragment(
             pay_df=filtered_df,
             fragment_key=f"{key_prefix}_summary",
@@ -517,40 +529,29 @@ def payment_tab_fragment(
             total_count=total_count,
         )
 
-    with tab_salesperson:
+    with tab_drilldown:
         ar_by_salesperson_fragment(
             pay_df=filtered_df,
             payment_txn_loader=payment_txn_loader,
             fragment_key=f"{key_prefix}_ar_drill",
         )
 
-    with tab_customer:
-        _customer_analysis_section(
-            pay_df=filtered_df,
-            fragment_key=f"{key_prefix}_cust_analysis",
-        )
-
 
 # =============================================================================
-# PAYMENT LIST FRAGMENT
+# UNIFIED METRICS BANNER
 # =============================================================================
 
-def payment_list_fragment(
-    pay_df: pd.DataFrame,
-    fragment_key: str = "sp_pay_list",
-    total_count: int = None,
-):
-    """Payment transaction list with payment-focused columns."""
+def _render_unified_metrics(pay_df: pd.DataFrame):
+    """
+    Render key metrics ONCE above all tabs. Replaces per-tab metric duplication.
+    Shows: Outstanding, Overdue, Not Yet Due, Collection Rate, Invoice counts.
+    """
     if pay_df.empty:
-        st.info("No payment data for selected filters")
         return
 
-    original_count = total_count if total_count is not None else len(pay_df)
-
-    # =========================================================================
-    # SUMMARY METRICS
-    # =========================================================================
     total_outstanding = pay_df['outstanding_usd'].sum()
+    total_collected = pay_df.get('collected_usd', pd.Series(dtype=float)).sum()
+    total_invoiced = pay_df[REV_COL].sum() if REV_COL in pay_df.columns else 0
     inv_count = pay_df['inv_number'].nunique() if 'inv_number' in pay_df.columns else len(pay_df)
 
     status_counts = pay_df['payment_status'].value_counts()
@@ -572,31 +573,69 @@ def payment_list_fragment(
         overdue_lines = int(overdue_mask.sum())
         nyd_amount = total_outstanding - overdue_amount
 
+    collection_rate = (total_collected / total_invoiced) if total_invoiced > 0 else 0
+
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.metric("💰 Outstanding", f"${total_outstanding:,.0f}",
-                  delta=f"{inv_count:,} invoices", delta_color="off")
+        st.metric(
+            "💰 Outstanding",
+            _fmt_currency(total_outstanding),
+            delta=f"{inv_count:,} invoices",
+            delta_color="off",
+        )
     with c2:
         if overdue_amount > 0:
             overdue_pct = (overdue_amount / total_outstanding * 100) if total_outstanding > 0 else 0
-            st.metric("🔴 Overdue", f"${overdue_amount:,.0f}",
-                      delta=f"{overdue_lines:,} lines · {overdue_pct:.0f}%",
-                      delta_color="inverse")
+            st.metric(
+                "🔴 Overdue",
+                _fmt_currency(overdue_amount),
+                delta=f"{overdue_lines:,} lines · {overdue_pct:.0f}%",
+                delta_color="inverse",
+            )
         else:
             st.metric("🟢 Overdue", "$0", delta="None", delta_color="off")
     with c3:
         nyd_pct = (nyd_amount / total_outstanding * 100) if total_outstanding > 0 else 0
-        st.metric("🟢 Not Yet Due", f"${nyd_amount:,.0f}",
-                  delta=f"{nyd_pct:.0f}% of total", delta_color="off")
+        st.metric(
+            "🟢 Not Yet Due",
+            _fmt_currency(nyd_amount),
+            delta=f"{nyd_pct:.0f}% of total",
+            delta_color="off",
+        )
     with c4:
-        st.metric("🟡 Partial", f"{partial_lines:,} lines", delta_color="off")
+        st.metric(
+            "📊 Collection Rate",
+            f"{collection_rate:.0%}",
+            delta=f"{unpaid_lines:,} unpaid · {partial_lines:,} partial",
+            delta_color="off",
+        )
     with c5:
-        st.metric("🔴 Unpaid", f"{unpaid_lines:,} lines", delta_color="off")
+        st.metric(
+            "📋 Lines",
+            f"{len(pay_df):,}",
+            delta=f"{inv_count:,} unique invoices",
+            delta_color="off",
+        )
 
-    st.divider()
+
+# =============================================================================
+# PAYMENT LIST FRAGMENT (no metrics — shown above)
+# =============================================================================
+
+def payment_list_fragment(
+    pay_df: pd.DataFrame,
+    fragment_key: str = "sp_pay_list",
+    total_count: int = None,
+):
+    """Payment transaction list with payment-focused columns."""
+    if pay_df.empty:
+        st.info("No payment data for selected filters")
+        return
+
+    original_count = total_count if total_count is not None else len(pay_df)
 
     # =========================================================================
-    # VIEW MODE + SORT
+    # VIEW MODE + SORT (no duplicate metrics — unified banner above)
     # =========================================================================
     col_mode, col_sort = st.columns([1, 1])
 
@@ -652,12 +691,6 @@ def payment_list_fragment(
         display_df['days_overdue'] = (today - display_df['inv_date']).dt.days
 
     if is_grouped:
-        # =================================================================
-        # GROUP BY INVOICE MODE
-        # Merge multi-split rows into 1 row per invoice line
-        # Salesperson column: "Brian Phạm 70% | Trang Phạm 30%"
-        # Amounts: actual invoice amounts (not split-allocated)
-        # =================================================================
         display_df = _group_by_invoice(display_df)
 
     # Sort
@@ -704,7 +737,6 @@ def payment_list_fragment(
 
     # Row count label
     if is_grouped:
-        n_invoices = display_df['inv_number'].nunique() if 'inv_number' in display_df.columns else len(display_df)
         st.markdown(f"**{len(display_df):,} invoice lines** ({original_count:,} split rows before grouping)")
     else:
         st.markdown(
@@ -733,7 +765,7 @@ def payment_list_fragment(
             lambda x: f"{x:.0%}" if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else "0%"
         )
 
-    # Column configs
+    # Column configs — help= tooltips replace the old Column Legend expander
     if is_grouped:
         column_config = {
             'inv_date': st.column_config.DateColumn("Inv Date"),
@@ -747,14 +779,19 @@ def payment_list_fragment(
             'product_display': st.column_config.TextColumn("Product", width="large"),
             'brand': st.column_config.TextColumn("Brand"),
             'payment_status': st.column_config.TextColumn("Status"),
-            'payment_ratio': st.column_config.TextColumn("Paid%"),
+            'payment_ratio': st.column_config.TextColumn("Paid%",
+                help="Payment ratio from actual payment records"),
             'invoiced_currency': st.column_config.TextColumn("Ccy"),
-            '_invoiced_lc_display': st.column_config.TextColumn("Invoiced LC"),
-            '_outstanding_lc_display': st.column_config.TextColumn("O/S LC"),
-            '_collected_lc_display': st.column_config.TextColumn("Collected LC"),
-            '_outstanding_usd_display': st.column_config.TextColumn("O/S USD"),
+            '_invoiced_lc_display': st.column_config.TextColumn("Invoiced (LC)",
+                help="Invoice line amount in original currency (includes VAT)"),
+            '_outstanding_lc_display': st.column_config.TextColumn("Outstanding (LC)",
+                help="Outstanding in original currency"),
+            '_collected_lc_display': st.column_config.TextColumn("Collected (LC)"),
+            '_outstanding_usd_display': st.column_config.TextColumn("Outstanding (USD)",
+                help="Outstanding converted to USD"),
             'due_date': st.column_config.DateColumn("Due Date"),
-            'days_overdue': st.column_config.NumberColumn("Days O/D", format="%d"),
+            'days_overdue': st.column_config.NumberColumn("Days O/D", format="%d",
+                help="Days overdue (positive = past due, negative = not yet due)"),
         }
     else:
         column_config = {
@@ -767,18 +804,25 @@ def payment_list_fragment(
             'customer_type': st.column_config.TextColumn("Type"),
             'product_display': st.column_config.TextColumn("Product", width="large"),
             'brand': st.column_config.TextColumn("Brand"),
-            REV_COL: st.column_config.TextColumn("Revenue$", help="Split-allocated revenue (USD)"),
-            GP_COL: st.column_config.TextColumn("GP$", help="Split-allocated GP (USD)"),
+            REV_COL: st.column_config.TextColumn("Revenue (USD)",
+                help="Split-allocated invoiced amount (USD)"),
+            GP_COL: st.column_config.TextColumn("GP (USD)",
+                help="Split-allocated gross profit (USD)"),
             'payment_status': st.column_config.TextColumn("Status"),
-            'payment_ratio': st.column_config.TextColumn("Paid%"),
-            'collected_usd': st.column_config.TextColumn("Collected$", help="Split-allocated collected (USD)"),
-            'outstanding_usd': st.column_config.TextColumn("O/S USD", help="Split-allocated outstanding (USD)"),
+            'payment_ratio': st.column_config.TextColumn("Paid%",
+                help="Payment ratio from actual payment records"),
+            'collected_usd': st.column_config.TextColumn("Collected (USD)",
+                help="Split-allocated collected (USD)"),
+            'outstanding_usd': st.column_config.TextColumn("Outstanding (USD)",
+                help="Split-allocated outstanding (USD)"),
             'invoiced_currency': st.column_config.TextColumn("Ccy"),
-            'line_invoiced_amount_lc': st.column_config.TextColumn("Invoiced LC"),
-            'line_collected_lc': st.column_config.TextColumn("Collected LC"),
-            'line_outstanding_lc': st.column_config.TextColumn("O/S LC"),
+            'line_invoiced_amount_lc': st.column_config.TextColumn("Invoiced (LC)",
+                help="Invoice line amount in original currency"),
+            'line_collected_lc': st.column_config.TextColumn("Collected (LC)"),
+            'line_outstanding_lc': st.column_config.TextColumn("Outstanding (LC)"),
             'due_date': st.column_config.DateColumn("Due Date"),
-            'days_overdue': st.column_config.NumberColumn("Days O/D", format="%d"),
+            'days_overdue': st.column_config.NumberColumn("Days O/D", format="%d",
+                help="Days overdue (positive = past due, negative = not yet due)"),
         }
 
     st.dataframe(
@@ -788,32 +832,6 @@ def payment_list_fragment(
         hide_index=True,
         height=500,
     )
-
-    # Legend
-    with st.expander("📖 Column Legend"):
-        if is_grouped:
-            st.markdown("""
-| Column | Description |
-|--------|-------------|
-| **Salesperson(s)** | All salespersons with split % for this customer+product |
-| **Invoiced LC** | Invoice line amount in original currency (includes VAT) |
-| **O/S LC** | Outstanding in original currency |
-| **O/S USD** | Outstanding converted to USD |
-| **Paid%** | Payment ratio from actual payment records |
-| **Days O/D** | Days overdue (positive = past due, negative = not yet due) |
-            """)
-        else:
-            st.markdown("""
-| Column | Description |
-|--------|-------------|
-| **Revenue$** | Split-allocated invoiced amount (USD) |
-| **GP$** | Split-allocated gross profit (USD) |
-| **Collected$** | Split-allocated collected (USD) |
-| **O/S USD** | Split-allocated outstanding (USD) |
-| **Invoiced LC / O/S LC** | Amounts in original invoice currency |
-| **Paid%** | Payment ratio from actual payment records |
-| **Days O/D** | Days overdue (positive = past due, negative = not yet due) |
-            """)
 
     # Export
     _render_export_button(pay_df, fragment_key)
@@ -827,171 +845,13 @@ def payment_summary_fragment(
     pay_df: pd.DataFrame,
     fragment_key: str = "sp_pay_summary",
 ):
-    """Summary & Aging view — delegates to payment_analysis.render_payment_section."""
+    """Overview & Aging — delegates to payment_analysis.render_payment_section."""
     if pay_df.empty:
         st.info("No payment data for selected filters")
         return
 
     payment_data = analyze_payments(pay_df)
     render_payment_section(payment_data)
-
-
-# =============================================================================
-# CUSTOMER ANALYSIS SECTION
-# =============================================================================
-
-def _customer_analysis_section(
-    pay_df: pd.DataFrame,
-    fragment_key: str = "sp_pay_cust",
-):
-    """
-    Customer-level payment analysis.
-    Shows: collection rate by customer, outstanding breakdown, payment behavior.
-    """
-    if pay_df.empty:
-        st.info("No data for customer analysis")
-        return
-
-    # =========================================================================
-    # CUSTOMER SUMMARY TABLE
-    # =========================================================================
-    st.subheader("👥 Customer Payment Summary")
-
-    has_inv = 'inv_number' in pay_df.columns
-
-    # v2.0: Use actual line-level amounts for customer aggregation when available
-    # Customer AR is a company-level metric — split allocation undercounts
-    # when multiple salespersons share the same customer
-    use_actual = LINE_OUTSTANDING_COL in pay_df.columns
-    rev_col_for_cust = ACTUAL_REVENUE_COL if use_actual and ACTUAL_REVENUE_COL in pay_df.columns else REV_COL
-    out_col_for_cust = LINE_OUTSTANDING_COL if use_actual else 'outstanding_usd'
-    coll_col_for_cust = LINE_COLLECTED_COL if use_actual and LINE_COLLECTED_COL in pay_df.columns else 'collected_usd'
-
-    if use_actual:
-        st.caption("💡 Customer totals show actual invoice amounts (not split-allocated)")
-
-    agg_dict = {
-        'invoiced': (rev_col_for_cust, 'sum'),
-        'collected': (coll_col_for_cust, 'sum'),
-        'outstanding': (out_col_for_cust, 'sum'),
-    }
-    if has_inv:
-        agg_dict['invoices'] = ('inv_number', 'nunique')
-    else:
-        agg_dict['invoices'] = (REV_COL, 'count')
-
-    cust_df = pay_df.groupby('customer').agg(**agg_dict).reset_index()
-    cust_df['rate'] = np.where(
-        cust_df['invoiced'] > 0,
-        cust_df['collected'] / cust_df['invoiced'],
-        0
-    )
-
-    # Add overdue info
-    today = pd.Timestamp(date.today())
-    if 'due_date' in pay_df.columns:
-        overdue_df = pay_df[
-            (pay_df[out_col_for_cust] > 0.01) &
-            (pay_df['due_date'].notna()) &
-            (pay_df['due_date'] < today)
-        ]
-    else:
-        overdue_df = pd.DataFrame()
-
-    if not overdue_df.empty:
-        overdue_by_cust = overdue_df.groupby('customer').agg(
-            overdue_amount=(out_col_for_cust, 'sum'),
-            overdue_lines=(out_col_for_cust, 'count'),
-        ).reset_index()
-        cust_df = cust_df.merge(overdue_by_cust, on='customer', how='left')
-        cust_df['overdue_amount'] = cust_df['overdue_amount'].fillna(0)
-        cust_df['overdue_lines'] = cust_df['overdue_lines'].fillna(0).astype(int)
-    else:
-        cust_df['overdue_amount'] = 0
-        cust_df['overdue_lines'] = 0
-
-    # Sort
-    sort_by = st.selectbox(
-        "Sort by",
-        ['Outstanding (high→low)', 'Invoiced (high→low)',
-         'Collection Rate (low→high)', 'Overdue (high→low)'],
-        key=f"{fragment_key}_sort",
-    )
-    sort_map = {
-        'Outstanding (high→low)': ('outstanding', False),
-        'Invoiced (high→low)': ('invoiced', False),
-        'Collection Rate (low→high)': ('rate', True),
-        'Overdue (high→low)': ('overdue_amount', False),
-    }
-    s_col, s_asc = sort_map[sort_by]
-    cust_df = cust_df.sort_values(s_col, ascending=s_asc).reset_index(drop=True)
-
-    # Format for display
-    display = cust_df.copy()
-    display['#'] = range(1, len(display) + 1)
-    display['Invoiced'] = display['invoiced'].apply(lambda x: f"${x:,.0f}")
-    display['Collected'] = display['collected'].apply(lambda x: f"${x:,.0f}")
-    display['Outstanding'] = display['outstanding'].apply(lambda x: f"${x:,.0f}")
-    display['Rate'] = display['rate'].apply(lambda x: f"{x:.0%}")
-    display['Overdue'] = display.apply(
-        lambda r: (
-            f"${r['overdue_amount']:,.0f} ({int(r['overdue_lines'])} lines)"
-            if r['overdue_amount'] > 0 else "—"
-        ),
-        axis=1
-    )
-    display['Inv.'] = display['invoices'].astype(int)
-
-    st.dataframe(
-        display[['#', 'customer', 'Inv.', 'Invoiced', 'Collected',
-                 'Outstanding', 'Rate', 'Overdue']].rename(
-            columns={'customer': 'Customer'}
-        ),
-        hide_index=True,
-        width="stretch",
-        height=min(600, 35 * len(display) + 38),
-    )
-
-    # =========================================================================
-    # STATUS DISTRIBUTION BY CUSTOMER (top 10)
-    # =========================================================================
-    if len(cust_df) > 1:
-        st.subheader("📊 Payment Status Distribution")
-        st.caption("Top 10 customers by revenue — stacked bar: Collected vs Outstanding")
-
-        import altair as alt
-
-        top10 = cust_df.nlargest(10, 'invoiced').copy()
-        melted = top10.melt(
-            id_vars=['customer'],
-            value_vars=['collected', 'outstanding'],
-            var_name='type', value_name='amount'
-        )
-        melted['type'] = melted['type'].map({
-            'collected': 'Collected', 'outstanding': 'Outstanding'
-        })
-
-        chart = alt.Chart(melted).mark_bar().encode(
-            y=alt.Y('customer:N', sort='-x', title=None,
-                    axis=alt.Axis(labelLimit=200)),
-            x=alt.X('amount:Q', title='Amount (USD)',
-                    axis=alt.Axis(format='~s')),
-            color=alt.Color('type:N', scale=alt.Scale(
-                domain=['Collected', 'Outstanding'],
-                range=['#28a745', '#dc3545']
-            ), legend=alt.Legend(orient='top', title=None)),
-            order=alt.Order('type:N', sort='ascending'),
-            tooltip=[
-                alt.Tooltip('customer:N', title='Customer'),
-                alt.Tooltip('type:N', title='Type'),
-                alt.Tooltip('amount:Q', title='Amount', format='$,.0f'),
-            ]
-        ).properties(height=350)
-
-        st.altair_chart(chart, width="stretch")
-
-    # Export
-    _render_export_button(pay_df, fragment_key)
 
 
 # =============================================================================
