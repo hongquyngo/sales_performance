@@ -162,6 +162,8 @@ def payment_tab_fragment(
     ar_outstanding_df: pd.DataFrame = None,
     period_payment_df: pd.DataFrame = None,
     payment_txn_loader=None,
+    doc_loader=None,
+    s3_url_generator=None,
 ):
     """
     Fragment wrapper for Payment & Collection tab in Salesperson Performance.
@@ -180,6 +182,8 @@ def payment_tab_fragment(
         ar_outstanding_df: All outstanding AR data (from get_ar_outstanding_data)
         period_payment_df: Period payment data (from get_payment_period_data, NEW v2.0)
         payment_txn_loader: Callable(invoice_numbers) → DataFrame of payment transactions
+        doc_loader: Callable(invoice_numbers) → DataFrame of document metadata
+        s3_url_generator: Callable(s3_key) → presigned URL string
     """
     # Determine data availability
     has_ar_data = ar_outstanding_df is not None and not ar_outstanding_df.empty
@@ -533,6 +537,8 @@ def payment_tab_fragment(
         ar_by_salesperson_fragment(
             pay_df=filtered_df,
             payment_txn_loader=payment_txn_loader,
+            doc_loader=doc_loader,
+            s3_url_generator=s3_url_generator,
             fragment_key=f"{key_prefix}_ar_drill",
         )
 

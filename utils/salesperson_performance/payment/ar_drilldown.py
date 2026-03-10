@@ -5,22 +5,25 @@ AR Drill-Down UI for Salesperson Performance — Payment & Collection Tab.
 4-level navigation:
   Level 1: Salesperson Summary + Top Customers Overview (with stacked chart)
   Level 2: Customer breakdown (per salesperson) — absorbs old Customer Analysis tab
-  Level 3: Invoice list (per customer) with expandable payment details
-  Level 4: Payment transactions (from customer_payment_full_view)
+  Level 3: Invoice list (per customer) with VAT#, documents, payment details
+  Level 4: Payment transactions with document links
 
-v2.0 CHANGES:
+v2.1 CHANGES:
+- Added VAT invoice number (vat_number) in invoice list
+- Added payment details inline for Partially Paid invoices (auto-load)
+- Added S3 document links for sale invoices and payment receipts
+- New callbacks: doc_loader, s3_url_generator
 - Absorbed Customer Analysis tab into Level 1 (top customers chart) + Level 2
 - Fixed double-count bug: dedup by invoice line before summing actual amounts
 - Unassigned: collection rate shows "N/A" instead of misleading "0%"
 - Unassigned section visually separated in Level 1
-- Added stacked bar chart (Collected vs Outstanding) at Level 1
 
-VERSION: 2.0.0
+VERSION: 2.1.0
 """
 
 import logging
 from datetime import date
-from typing import Optional
+from typing import Optional, Callable
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -69,6 +72,12 @@ def _fmt_days(d) -> str:
     return "due today"
 
 
+def _get_file_icon(filename: str) -> str:
+    """Get emoji icon based on file type."""
+    ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    return {'pdf': '📄', 'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️'}.get(ext, '📎')
+
+
 # =============================================================================
 # LEVEL 1: SALESPERSON AR SUMMARY + TOP CUSTOMERS
 # =============================================================================
@@ -76,6 +85,8 @@ def _fmt_days(d) -> str:
 def ar_by_salesperson_fragment(
     pay_df: pd.DataFrame,
     payment_txn_loader=None,
+    doc_loader: Callable = None,
+    s3_url_generator: Callable = None,
     fragment_key: str = "ar_drill",
 ):
     """
@@ -84,6 +95,8 @@ def ar_by_salesperson_fragment(
     Args:
         pay_df: Filtered AR data (from payment_tab_fragment)
         payment_txn_loader: Callable(invoice_numbers) → DataFrame of payment transactions
+        doc_loader: Callable(invoice_numbers) → DataFrame of document metadata (s3_key, etc.)
+        s3_url_generator: Callable(s3_key) → presigned URL string
         fragment_key: Widget key prefix
     """
     if pay_df.empty:
@@ -102,7 +115,6 @@ def ar_by_salesperson_fragment(
     # Build summary per salesperson
     sp_list = sorted(pay_df['sales_name'].unique().tolist())
 
-    # Compute per-salesperson metrics
     assigned_metrics = []
     unassigned_metrics = []
 
@@ -129,9 +141,8 @@ def ar_by_salesperson_fragment(
         else:
             overdue_amount = 0
 
-        # Collection rate: N/A for Unassigned (split=0, so collected=0 always)
         if is_unassigned:
-            collection_rate = None  # Will display as "N/A"
+            collection_rate = None
         else:
             collection_rate = collected / invoiced if invoiced > 0 else 0
 
@@ -229,6 +240,8 @@ def ar_by_salesperson_fragment(
         sales_name=selected_sp,
         is_unassigned=is_unassigned,
         payment_txn_loader=payment_txn_loader,
+        doc_loader=doc_loader,
+        s3_url_generator=s3_url_generator,
         fragment_key=f"{fragment_key}_{selected_sp[:8]}",
     )
 
@@ -240,7 +253,6 @@ def ar_by_salesperson_fragment(
 def _render_top_customers_chart(pay_df: pd.DataFrame, fragment_key: str):
     """
     Stacked bar chart: top 10 customers by outstanding (Collected vs Outstanding).
-    Absorbed from old Customer Analysis tab.
     Uses deduped actual line amounts to avoid double-counting.
     """
     deduped = _dedup_for_actual_amounts(pay_df)
@@ -302,11 +314,13 @@ def _render_customer_breakdown(
     sales_name: str,
     is_unassigned: bool,
     payment_txn_loader=None,
+    doc_loader: Callable = None,
+    s3_url_generator: Callable = None,
     fragment_key: str = "ar_cust",
 ):
     """
     Customer-level breakdown for a single salesperson.
-    v2.0: Fixed dedup for actual amounts; added sort + overdue columns.
+    v2.1: Passes doc_loader and s3_url_generator through to Level 3.
     """
     use_actual = is_unassigned and LINE_OUTSTANDING_COL in sp_data.columns
     out_col = LINE_OUTSTANDING_COL if use_actual else 'outstanding_usd'
@@ -425,26 +439,33 @@ def _render_customer_breakdown(
             _render_invoice_list(
                 inv_data=sp_data[sp_data['customer'] == cust_name],
                 payment_txn_loader=payment_txn_loader,
+                doc_loader=doc_loader,
+                s3_url_generator=s3_url_generator,
                 fragment_key=f"{fragment_key}_c{idx}",
             )
 
 
 # =============================================================================
-# LEVEL 3: INVOICE LIST (per customer)
+# LEVEL 3: INVOICE LIST (per customer) — with VAT#, docs, payment details
 # =============================================================================
 
 def _render_invoice_list(
     inv_data: pd.DataFrame,
     payment_txn_loader=None,
+    doc_loader: Callable = None,
+    s3_url_generator: Callable = None,
     fragment_key: str = "ar_inv",
 ):
-    """Invoice-level detail for a single customer."""
+    """
+    Invoice-level detail for a single customer.
+
+    v2.1: Added vat_number, payment details for partially paid, document links.
+    """
     if inv_data.empty:
         st.caption("No invoices")
         return
 
     # Deduplicate: if multi-split, same invoice appears multiple times
-    # For invoice-level view, show each invoice once
     if 'inv_number' in inv_data.columns:
         display = inv_data.drop_duplicates(subset='inv_number', keep='first').copy()
     else:
@@ -462,6 +483,12 @@ def _render_invoice_list(
     if 'inv_number' in display.columns:
         cols.append('inv_number')
         col_config['inv_number'] = st.column_config.TextColumn("Invoice#")
+
+    # VAT Invoice Number (NEW v2.1)
+    if 'vat_number' in display.columns:
+        cols.append('vat_number')
+        col_config['vat_number'] = st.column_config.TextColumn("VAT Inv#",
+            help="VAT invoice number from sale_invoices")
 
     # Dates
     for dc, label in [('inv_date', 'Inv Date'), ('due_date', 'Due Date')]:
@@ -537,11 +564,36 @@ def _render_invoice_list(
     )
 
     # =========================================================================
-    # PAYMENT TRANSACTION DETAIL (expandable per invoice)
+    # DOCUMENT LINKS (sale invoice + payment receipt documents from S3)
     # =========================================================================
-    if payment_txn_loader is not None and 'inv_number' in display.columns:
-        inv_numbers = display['inv_number'].dropna().unique().tolist()
-        if inv_numbers:
+    inv_numbers = display['inv_number'].dropna().unique().tolist() if 'inv_number' in display.columns else []
+
+    if inv_numbers and doc_loader is not None:
+        _render_document_section(
+            inv_numbers=inv_numbers,
+            doc_loader=doc_loader,
+            s3_url_generator=s3_url_generator,
+            fragment_key=f"{fragment_key}_docs",
+        )
+
+    # =========================================================================
+    # PAYMENT TRANSACTION DETAIL
+    # =========================================================================
+    if payment_txn_loader is not None and inv_numbers:
+        # Check if any invoices are partially paid — auto-load for those
+        has_partial = False
+        if 'payment_status' in display.columns:
+            has_partial = display['payment_status'].str.contains('Partial', na=False).any()
+
+        if has_partial:
+            # Auto-load payment details for partially paid invoices
+            _auto_load_payment_details(
+                inv_numbers=inv_numbers,
+                payment_txn_loader=payment_txn_loader,
+                fragment_key=f"{fragment_key}_auto_txn",
+            )
+        else:
+            # Manual load button for other cases
             if st.button(
                 "💳 Load Payment Transactions",
                 key=f"{fragment_key}_load_txn",
@@ -550,6 +602,114 @@ def _render_invoice_list(
                 with st.spinner("Loading payment details..."):
                     txn_df = payment_txn_loader(inv_numbers)
                 _render_payment_transactions(txn_df, fragment_key)
+
+
+# =============================================================================
+# DOCUMENT SECTION — S3 links for invoices and payment receipts
+# =============================================================================
+
+def _render_document_section(
+    inv_numbers: list,
+    doc_loader: Callable,
+    s3_url_generator: Callable = None,
+    fragment_key: str = "ar_docs",
+):
+    """
+    Load and display document links for invoices and payments.
+
+    Args:
+        inv_numbers: List of invoice numbers
+        doc_loader: Callable(inv_numbers) → DataFrame with s3_key, filename, doc_type, etc.
+        s3_url_generator: Callable(s3_key) → presigned URL string
+        fragment_key: Widget key prefix
+    """
+    if st.button("📎 Show Documents", key=f"{fragment_key}_show_docs",
+                  help="Load document attachments for these invoices"):
+        with st.spinner("Loading documents..."):
+            try:
+                docs_df = doc_loader(inv_numbers)
+            except Exception as e:
+                logger.error(f"Error loading documents: {e}")
+                st.error(f"Failed to load documents: {e}")
+                return
+
+        if docs_df is None or docs_df.empty:
+            st.caption("No documents attached to these invoices")
+            return
+
+        # Group by doc_type
+        inv_docs = docs_df[docs_df['doc_type'] == 'invoice'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+        pmt_docs = docs_df[docs_df['doc_type'] == 'payment'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+
+        # Render invoice documents
+        if not inv_docs.empty:
+            st.markdown("**📄 Invoice Documents**")
+            for _, doc in inv_docs.iterrows():
+                _render_doc_link(doc, s3_url_generator)
+
+        # Render payment documents
+        if not pmt_docs.empty:
+            st.markdown("**💳 Payment Receipt Documents**")
+            for _, doc in pmt_docs.iterrows():
+                pmt_label = f" ({doc['payment_number']})" if pd.notna(doc.get('payment_number')) else ""
+                _render_doc_link(doc, s3_url_generator, extra_label=pmt_label)
+
+        if inv_docs.empty and pmt_docs.empty:
+            # doc_type column might not exist, show all
+            st.markdown("**📎 Documents**")
+            for _, doc in docs_df.iterrows():
+                _render_doc_link(doc, s3_url_generator)
+
+
+def _render_doc_link(doc: pd.Series, s3_url_generator: Callable = None, extra_label: str = ""):
+    """Render a single document link with icon and presigned URL."""
+    filename = doc.get('filename', 'Unknown')
+    s3_key = doc.get('s3_key', '')
+    icon = _get_file_icon(filename)
+    inv_num = doc.get('invoice_number', '')
+
+    if s3_url_generator and s3_key:
+        try:
+            url = s3_url_generator(s3_key)
+            if url:
+                st.markdown(
+                    f"{icon} [{filename}]({url}){extra_label} "
+                    f"— {inv_num}",
+                    unsafe_allow_html=False,
+                )
+                return
+        except Exception as e:
+            logger.warning(f"Failed to generate URL for {s3_key}: {e}")
+
+    # Fallback: show filename without link
+    st.caption(f"{icon} {filename}{extra_label} — {inv_num} (S3: {s3_key})")
+
+
+# =============================================================================
+# AUTO-LOAD PAYMENT DETAILS (for Partially Paid invoices)
+# =============================================================================
+
+def _auto_load_payment_details(
+    inv_numbers: list,
+    payment_txn_loader: Callable,
+    fragment_key: str = "ar_auto_txn",
+):
+    """
+    Automatically load and display payment transaction details.
+    Used when invoices are partially paid — user needs to see payment history.
+    """
+    try:
+        txn_df = payment_txn_loader(inv_numbers)
+    except Exception as e:
+        logger.error(f"Error auto-loading payment details: {e}")
+        st.caption(f"⚠️ Could not load payment details: {e}")
+        return
+
+    if txn_df is None or txn_df.empty:
+        st.caption("No payment transactions recorded yet")
+        return
+
+    _render_payment_transactions(txn_df, fragment_key)
 
 
 # =============================================================================
@@ -573,6 +733,7 @@ def _render_payment_transactions(
     cols_map = {
         'payment_number': 'Payment#',
         'sale_invoice_number': 'Invoice#',
+        'vat_number': 'VAT Inv#',
         'payment_received_date': 'Payment Date',
         'amount_received': 'Amount Received',
         'currency_code': 'Ccy',

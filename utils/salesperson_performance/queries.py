@@ -523,6 +523,68 @@ class SalespersonQueries:
         
         return self._execute_query(query, params, "payment_transactions")
     
+    def get_invoice_and_payment_docs(
+        self,
+        invoice_numbers: list,
+    ) -> pd.DataFrame:
+        """
+        Load S3 document paths for sale invoices and their related payments.
+        
+        Queries:
+          - sale_invoice_medias → medias (invoice documents)
+          - customer_payment_medias → medias (payment receipt documents)
+        
+        Args:
+            invoice_numbers: List of invoice numbers to look up
+            
+        Returns:
+            DataFrame with columns: invoice_number, doc_type, media_id,
+            filename, s3_key, created_date, payment_number (if payment doc)
+        """
+        if not invoice_numbers:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                si.invoice_number,
+                'invoice' AS doc_type,
+                m.id AS media_id,
+                m.name AS filename,
+                m.path AS s3_key,
+                m.created_date,
+                NULL AS payment_number
+            FROM sale_invoices si
+            JOIN sale_invoice_medias sim ON sim.sale_invoice_id = si.id AND sim.delete_flag = 0
+            JOIN medias m ON sim.media_id = m.id
+            WHERE si.invoice_number IN :invoice_numbers
+                AND si.delete_flag = 0
+            
+            UNION ALL
+            
+            SELECT
+                si.invoice_number,
+                'payment' AS doc_type,
+                m.id AS media_id,
+                m.name AS filename,
+                m.path AS s3_key,
+                m.created_date,
+                cp.payment_number
+            FROM customer_payment_details cpd
+            JOIN customer_payments cp ON cpd.customer_payment_id = cp.id AND cp.delete_flag = 0
+            JOIN customer_payment_medias cpm ON cpm.customer_payment_id = cp.id AND cpm.delete_flag = 0
+            JOIN medias m ON cpm.media_id = m.id
+            JOIN sale_invoices si ON cpd.sale_invoice_id = si.id
+            WHERE si.invoice_number IN :invoice_numbers
+                AND cpd.delete_flag = 0
+            ORDER BY invoice_number, doc_type, created_date DESC
+        """
+        
+        params = {
+            'invoice_numbers': tuple(invoice_numbers),
+        }
+        
+        return self._execute_query(query, params, "invoice_and_payment_docs")
+    
     # =========================================================================
     # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
     # UPDATED v3.1.0: Added columns for sidebar options extraction

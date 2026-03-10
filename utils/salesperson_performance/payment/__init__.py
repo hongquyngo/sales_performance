@@ -33,10 +33,13 @@ from .fragments import (
     payment_summary_fragment,
 )
 from .ar_drilldown import ar_by_salesperson_fragment
+from .s3_utils import get_s3_manager, generate_doc_url
 
 __all__ = [
     'payment_tab_fragment',
     'payment_list_fragment',
     'payment_summary_fragment',
     'ar_by_salesperson_fragment',
+    'get_s3_manager',
+    'generate_doc_url',
 ]
