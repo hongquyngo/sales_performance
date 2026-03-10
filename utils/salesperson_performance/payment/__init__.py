@@ -28,9 +28,11 @@ from .fragments import (
     payment_list_fragment,
     payment_summary_fragment,
 )
+from .ar_drilldown import ar_by_salesperson_fragment
 
 __all__ = [
     'payment_tab_fragment',
     'payment_list_fragment',
     'payment_summary_fragment',
+    'ar_by_salesperson_fragment',
 ]

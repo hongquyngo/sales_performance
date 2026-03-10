@@ -464,6 +464,66 @@ class SalespersonQueries:
         return self._execute_query(query, params, "payment_period_data")
     
     # =========================================================================
+    # PAYMENT TRANSACTION DETAILS (NEW v3.6.0)
+    # =========================================================================
+    
+    def get_payment_transactions(
+        self,
+        invoice_numbers: list,
+    ) -> pd.DataFrame:
+        """
+        Load payment transaction details from customer_payment_full_view.
+        
+        Used for drill-down: click invoice → see all payment records.
+        
+        Args:
+            invoice_numbers: List of invoice numbers to look up
+            
+        Returns:
+            DataFrame with payment transaction details
+        """
+        if not invoice_numbers:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                payment_number,
+                sale_invoice_number,
+                vat_number,
+                payment_received_date,
+                invoiced_date,
+                due_date,
+                customer,
+                legal_entity,
+                currency_code,
+                amount_received,
+                amount_received_raw,
+                total_invoiced_amount,
+                total_invoiced_amount_raw,
+                outstanding_amount_raw,
+                total_received_amount_raw,
+                payment_ratio,
+                payment_status,
+                days_outstanding,
+                days_overdue,
+                days_overdue_positive,
+                aging_bucket,
+                receipt_bank,
+                bank_account_number,
+                financing_cost_8pct,
+                created_by
+            FROM customer_payment_full_view
+            WHERE sale_invoice_number IN :invoice_numbers
+            ORDER BY sale_invoice_number, payment_received_date DESC
+        """
+        
+        params = {
+            'invoice_numbers': tuple(invoice_numbers),
+        }
+        
+        return self._execute_query(query, params, "payment_transactions")
+    
+    # =========================================================================
     # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
     # UPDATED v3.1.0: Added columns for sidebar options extraction
     # =========================================================================
