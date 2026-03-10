@@ -126,6 +126,8 @@ from utils.salesperson_performance.payment.payment_analysis import (
     analyze_payments as sp_analyze_payments,
     _fmt_currency as _payment_fmt_currency,
 )
+# NEW v3.7.0: Payment S3 document links
+from utils.salesperson_performance.payment.s3_utils import generate_doc_url
 
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -614,6 +616,19 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             )
         if DEBUG_VERBOSE: print(f"   → AR outstanding rows: {len(data['ar_outstanding']):,}")
         
+        # =====================================================================
+        # PHASE 5b: Period Payment data (for Payment tab Period mode)
+        # Invoices within the selected date range — all payment statuses
+        # NEW v3.7.0
+        # =====================================================================
+        with timer("DB: get_payment_period_data"):
+            data['period_payment'] = q.get_payment_period_data(
+                start_date=start_date,
+                end_date=end_date,
+                employee_ids=filter_employee_ids,
+            )
+        if DEBUG_VERBOSE: print(f"   → Period payment rows: {len(data['period_payment']):,}")
+        
         # Step 7: Clean all dataframes
         with timer("Clean dataframes"):
             for key in data:
@@ -700,7 +715,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     # Backlog represents ALL pending orders - date range only applies to Sales data
     # In-Period backlog is calculated separately using ETD field in metrics.py
     # NEW v3.5.0: AR outstanding also NOT filtered by date range
-    backlog_keys = {'total_backlog', 'in_period_backlog', 'backlog_by_month', 'backlog_detail', 'ar_outstanding'}
+    backlog_keys = {'total_backlog', 'in_period_backlog', 'backlog_by_month', 'backlog_detail', 'ar_outstanding', 'period_payment'}
     
     for key, df in raw_data.items():
         # Skip metadata
@@ -2737,6 +2752,10 @@ with tab5:
         filter_values=active_filters,
         key_prefix="sp_payment",
         ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+        period_payment_df=data.get('period_payment', pd.DataFrame()),
+        payment_txn_loader=lambda inv_nums: queries.get_payment_transactions(inv_nums),
+        doc_loader=lambda inv_nums: queries.get_invoice_and_payment_docs(inv_nums),
+        s3_url_generator=generate_doc_url,
     )
 
 # =============================================================================
