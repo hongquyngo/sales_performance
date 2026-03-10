@@ -4,22 +4,21 @@ Payment & Collection Analysis for Salesperson Performance.
 
 Adapted from legal_entity_performance/payment_analysis.py for salesperson view.
 
-Uses ACTUAL payment columns from unified_sales_by_salesperson_view:
-  - payment_ratio:          0.0 to 1.0 (invoice-level, applied to each line)
-  - payment_status:         'Fully Paid', 'Partially Paid', 'Unpaid', NULL
-  - outstanding_amount:     invoice-level local currency (for reference only)
-  - total_payment_received: invoice-level local currency (for reference only)
-  - due_date:               payment due date (for overdue aging)
+DATA SOURCE (v2.0):
+  Both AR mode and Period mode use customer_ar_by_salesperson_view:
+    - Pre-calculated columns: outstanding_by_split_usd, collected_by_split_usd,
+      days_overdue, aging_bucket, gp_outstanding_by_split_usd
+    - Sales split joined by CURDATE() → shows CURRENT salesperson
+    - All amounts derived from actual payment records (customer_payment_details)
+    - No proxy/estimated calculations
 
-USD calculation per line (using split amounts):
-  collected_usd   = sales_by_split_usd × payment_ratio
-  outstanding_usd = sales_by_split_usd × (1 - payment_ratio)
-  outstanding_gp  = gross_profit_by_split_usd × (1 - payment_ratio)
+  AR mode filter:     payment_status IN ('Unpaid', 'Partially Paid')
+  Period mode filter:  inv_date BETWEEN start AND end
 
-NOTE: HISTORY data (2014-2024) has payment columns = NULL.
-      Analysis only covers rows where payment_status IS NOT NULL.
+  Fallback proxy (revenue × ratio) is only triggered if pre-calculated columns
+  are missing — this should only happen with legacy callers.
 
-VERSION: 1.0.0
+VERSION: 2.0.0
 """
 
 import logging
@@ -41,6 +40,18 @@ logger = logging.getLogger(__name__)
 REV_COL = 'sales_by_split_usd'
 GP_COL = 'gross_profit_by_split_usd'
 GP1_COL = 'gp1_by_split_usd'
+
+# Pre-calculated columns from customer_ar_by_salesperson_view (NEW v2.0)
+# When these columns exist, use them DIRECTLY instead of proxy calculation
+PRECALC_OUTSTANDING_COL = 'outstanding_by_split_usd'
+PRECALC_COLLECTED_COL = 'collected_by_split_usd'
+PRECALC_GP_OUTSTANDING_COL = 'gp_outstanding_by_split_usd'
+PRECALC_DAYS_OVERDUE_COL = 'days_overdue'
+PRECALC_AGING_BUCKET_COL = 'aging_bucket'
+# Actual line-level amounts (not split-allocated, for customer-level analysis)
+LINE_OUTSTANDING_COL = 'line_outstanding_usd'
+LINE_COLLECTED_COL = 'line_collected_usd'
+ACTUAL_REVENUE_COL = 'calculated_invoiced_amount_usd'
 
 # Aging buckets based on days PAST DUE (due_date), not invoice date
 # Negative = not yet due, 0+ = overdue
@@ -152,12 +163,39 @@ def analyze_payments(
     df['_status'] = df['payment_status'].apply(_normalize_status)
 
     # =========================================================================
-    # LINE-LEVEL USD CALCULATION (using payment_ratio × split amounts)
+    # LINE-LEVEL USD CALCULATION
+    # v2.0: Always use pre-calculated columns from customer_ar_by_salesperson_view
+    # Both AR mode and Period mode now query the same view — no proxy needed
     # =========================================================================
-    df['_collected_usd'] = df[REV_COL] * df['payment_ratio']
-    df['_outstanding_usd'] = df[REV_COL] * (1 - df['payment_ratio'])
-    if GP_COL in df.columns:
-        df['_outstanding_gp'] = df[GP_COL] * (1 - df['payment_ratio'])
+    has_precalc = PRECALC_OUTSTANDING_COL in df.columns
+
+    if has_precalc:
+        # Use pre-calculated values from customer_ar_by_salesperson_view
+        # These are accurate: derived from actual payment records in SQL
+        df['_collected_usd'] = pd.to_numeric(
+            df[PRECALC_COLLECTED_COL], errors='coerce'
+        ).fillna(0)
+        df['_outstanding_usd'] = pd.to_numeric(
+            df[PRECALC_OUTSTANDING_COL], errors='coerce'
+        ).fillna(0)
+        if PRECALC_GP_OUTSTANDING_COL in df.columns:
+            df['_outstanding_gp'] = pd.to_numeric(
+                df[PRECALC_GP_OUTSTANDING_COL], errors='coerce'
+            ).fillna(0)
+        elif GP_COL in df.columns:
+            df['_outstanding_gp'] = df[GP_COL] * (1 - df['payment_ratio'])
+        logger.info("Using pre-calculated amounts from AR view (accurate)")
+    else:
+        # Fallback: only triggered if data does NOT come from AR view
+        # (e.g. legacy callers passing unified_sales data directly)
+        logger.warning(
+            "Pre-calculated columns not found — falling back to proxy. "
+            "Ensure data comes from customer_ar_by_salesperson_view."
+        )
+        df['_collected_usd'] = df[REV_COL] * df['payment_ratio']
+        df['_outstanding_usd'] = df[REV_COL] * (1 - df['payment_ratio'])
+        if GP_COL in df.columns:
+            df['_outstanding_gp'] = df[GP_COL] * (1 - df['payment_ratio'])
 
     # Raw status values
     raw_statuses = df['payment_status'].dropna().unique().tolist()
@@ -254,6 +292,9 @@ def _calculate_aging(
 ) -> pd.DataFrame:
     """
     Calculate aging buckets for outstanding amounts.
+
+    v2.0: If pre-calculated aging_bucket column exists (from AR view),
+    use it directly. Otherwise fall back to computing from dates.
     Uses due_date (overdue days) if available, else inv_date (invoice age).
     """
     if outstanding_df.empty:
@@ -261,8 +302,59 @@ def _calculate_aging(
 
     df = outstanding_df.copy()
     today_ts = pd.Timestamp(today)
+    total_outstanding = df['_outstanding_usd'].sum()
 
-    # Determine aging mode
+    # -----------------------------------------------------------------
+    # FAST PATH: Use pre-calculated aging_bucket from AR view
+    # -----------------------------------------------------------------
+    if PRECALC_AGING_BUCKET_COL in df.columns and df[PRECALC_AGING_BUCKET_COL].notna().any():
+        # Use SQL-calculated aging buckets directly
+        agg_dict = {
+            'amount': ('_outstanding_usd', 'sum'),
+            'count': ('_outstanding_usd', 'count'),
+        }
+        if '_outstanding_gp' in df.columns:
+            agg_dict['gp'] = ('_outstanding_gp', 'sum')
+
+        result = df.groupby(PRECALC_AGING_BUCKET_COL).agg(**agg_dict).reset_index()
+        result.rename(columns={PRECALC_AGING_BUCKET_COL: 'bucket'}, inplace=True)
+
+        if 'gp' not in result.columns:
+            result['gp'] = 0
+
+        result['share'] = np.where(
+            total_outstanding > 0,
+            result['amount'] / total_outstanding,
+            0
+        )
+
+        # Define display order and min_days for downstream compatibility
+        bucket_order = {
+            'Not Yet Due': (-999999, -1),
+            'No Due Date': (-999998, -1),
+            '1-30 days overdue': (1, 30),
+            '31-60 days overdue': (31, 60),
+            '61-90 days overdue': (61, 90),
+            '90+ days overdue': (91, 999999),
+        }
+        result['_order'] = result['bucket'].map(
+            {k: i for i, k in enumerate(bucket_order.keys())}
+        ).fillna(99)
+        result['min_days'] = result['bucket'].map(
+            lambda b: bucket_order.get(b, (0, 0))[0]
+        )
+        result['max_days'] = result['bucket'].map(
+            lambda b: bucket_order.get(b, (0, 0))[1]
+        )
+
+        result = result.sort_values('_order').drop(columns=['_order'])
+        result = result[result['amount'] > 0.01].reset_index(drop=True)
+        result.attrs['aging_mode'] = 'overdue'
+        return result
+
+    # -----------------------------------------------------------------
+    # FALLBACK: Calculate aging from date columns (period mode)
+    # -----------------------------------------------------------------
     has_due_date = 'due_date' in df.columns and df['due_date'].notna().any()
 
     if has_due_date:
@@ -274,7 +366,6 @@ def _calculate_aging(
         buckets = AGING_BUCKETS_BY_INV_DATE
         aging_mode = 'invoice_age'
 
-    total_outstanding = df['_outstanding_usd'].sum()
     rows = []
 
     for bucket_name, min_d, max_d in buckets:
@@ -309,28 +400,42 @@ def _analyze_by_customer(
     outstanding_df: pd.DataFrame,
     today: date,
 ) -> pd.DataFrame:
-    """Top customers by outstanding USD amount."""
+    """
+    Top customers by outstanding USD amount.
+
+    v2.0: When line_outstanding_usd is available (AR view), uses actual
+    invoice amounts for customer-level aggregation. Customer AR is a
+    company-level metric — split allocation would undercount if multiple
+    salespersons share the same customer.
+    """
     if outstanding_df.empty or 'customer' not in outstanding_df.columns:
         return pd.DataFrame()
 
     today_ts = pd.Timestamp(today)
     df = outstanding_df.copy()
 
-    if 'due_date' in df.columns and df['due_date'].notna().any():
+    # Use pre-calculated days_overdue if available, else compute
+    if PRECALC_DAYS_OVERDUE_COL in df.columns and df[PRECALC_DAYS_OVERDUE_COL].notna().any():
+        df['_days'] = pd.to_numeric(df[PRECALC_DAYS_OVERDUE_COL], errors='coerce').fillna(0)
+    elif 'due_date' in df.columns and df['due_date'].notna().any():
         df['_days'] = (today_ts - df['due_date']).dt.days
     else:
         df['_days'] = (today_ts - df['inv_date']).dt.days.clip(lower=0)
 
+    # Use actual line outstanding (not split-allocated) for customer-level view
+    # This prevents undercounting when multiple salespeople share a customer
+    outstanding_col = LINE_OUTSTANDING_COL if LINE_OUTSTANDING_COL in df.columns else '_outstanding_usd'
+
     has_inv = 'inv_number' in df.columns
     agg_dict = {
-        'outstanding': ('_outstanding_usd', 'sum'),
+        'outstanding': (outstanding_col, 'sum'),
         'max_days': ('_days', 'max'),
         'avg_days': ('_days', 'mean'),
     }
     if has_inv:
         agg_dict['invoices'] = ('inv_number', 'nunique')
     else:
-        agg_dict['invoices'] = ('_outstanding_usd', 'count')
+        agg_dict['invoices'] = (outstanding_col, 'count')
 
     result = df.groupby('customer').agg(**agg_dict).reset_index()
     return result.sort_values('outstanding', ascending=False).head(15).reset_index(drop=True)
@@ -341,11 +446,18 @@ def _analyze_by_customer(
 # =============================================================================
 
 def _analyze_by_salesperson(df: pd.DataFrame) -> pd.DataFrame:
-    """Collection rate by salesperson."""
+    """
+    Collection rate by salesperson.
+    
+    v2.0: Handles 'Unassigned' (is_unassigned=1 or sales_name='Unassigned').
+    Unassigned lines are grouped together with outstanding only (collected/invoiced = 0
+    since split_percentage = 0 for unassigned).
+    """
     if df.empty or 'sales_name' not in df.columns:
         return pd.DataFrame()
 
-    result = df.groupby(['sales_id', 'sales_name']).agg(
+    # Group by sales_name only (sales_id can be NULL for Unassigned)
+    result = df.groupby('sales_name').agg(
         total_invoiced=(REV_COL, 'sum'),
         collected=('_collected_usd', 'sum'),
         outstanding=('_outstanding_usd', 'sum'),
@@ -356,7 +468,24 @@ def _analyze_by_salesperson(df: pd.DataFrame) -> pd.DataFrame:
         result['collected'] / result['total_invoiced'],
         0
     )
-    return result.sort_values('total_invoiced', ascending=False).reset_index(drop=True)
+
+    # For Unassigned: show actual line outstanding even though split amounts are 0
+    if LINE_OUTSTANDING_COL in df.columns:
+        has_unassigned = 'is_unassigned' in df.columns
+        if has_unassigned:
+            unassigned_df = df[df['is_unassigned'] == 1]
+        else:
+            unassigned_df = df[df['sales_name'] == 'Unassigned']
+
+        if not unassigned_df.empty:
+            actual_outstanding = unassigned_df[LINE_OUTSTANDING_COL].sum()
+            # Update the Unassigned row with actual line outstanding
+            unassigned_mask = result['sales_name'] == 'Unassigned'
+            if unassigned_mask.any():
+                result.loc[unassigned_mask, 'outstanding'] = actual_outstanding
+                result.loc[unassigned_mask, 'total_invoiced'] = unassigned_df[LINE_OUTSTANDING_COL].sum()
+
+    return result.sort_values('outstanding', ascending=False).reset_index(drop=True)
 
 
 # =============================================================================

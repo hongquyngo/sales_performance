@@ -2,15 +2,25 @@
 """
 Payment & Collection Detail tab for Salesperson Performance.
 
-Adapted from legal_entity_performance/payment module.
-Uses unified_sales_by_salesperson_view with payment columns
-(payment_status, payment_ratio, due_date).
+Architecture (v2.0 — no proxy calculations):
 
-USD calculation per line:
-  collected_usd   = sales_by_split_usd × payment_ratio
-  outstanding_usd = sales_by_split_usd × (1 - payment_ratio)
+  Data source: customer_ar_by_salesperson_view (for BOTH modes)
+    - Pre-calculated outstanding, collected, aging in SQL
+    - Based on actual payment records (customer_payment_details)
+    - Sales split joined by CURDATE() → CURRENT salesperson
+    - Direct from sales_invoice_full_looker_view (1-layer, no UNION)
 
-VERSION: 1.0.0
+  AR Mode ("All Outstanding AR"):
+    - Query: WHERE payment_status IN ('Unpaid', 'Partially Paid')
+    - Method: SalespersonQueries.get_ar_outstanding_data()
+
+  Period Mode ("Period Invoices"):
+    - Query: WHERE inv_date BETWEEN :start AND :end
+    - Method: SalespersonQueries.get_payment_period_data()
+
+  All amounts are accurate — no proxy/estimated values anywhere.
+
+VERSION: 2.0.0
 """
 
 from .fragments import (

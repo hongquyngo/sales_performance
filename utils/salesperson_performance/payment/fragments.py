@@ -8,13 +8,15 @@ Pattern:
 - payment_tab_fragment: Tab-level @st.fragment with filters + sub-tabs
 - Sub-tabs: Summary & Aging | Payment List | Customer Analysis
 
-Key differences from Legal Entity version:
-- Uses sales_by_split_usd instead of calculated_invoiced_amount_usd
-- Includes salesperson filter (sales_name / sales_id)
-- AR outstanding query uses salesperson access control
-- Shows GP and GP1 columns
+v2.0 CHANGES:
+- BOTH modes use customer_ar_by_salesperson_view (no proxy calculations)
+- AR Mode: All outstanding invoices (no date filter)
+- Period Mode: Invoices within selected date range (all payment statuses)
+- Salesperson is CURRENT (joined by CURDATE) in both modes
+- Customer Analysis uses actual line amounts (not split-allocated)
+- Pre-calculated outstanding/collected/aging used directly from SQL
 
-VERSION: 1.0.0
+VERSION: 2.0.0
 """
 
 import logging
@@ -33,6 +35,11 @@ from .payment_analysis import (
     REV_COL,
     GP_COL,
     GP1_COL,
+    PRECALC_OUTSTANDING_COL,
+    PRECALC_COLLECTED_COL,
+    LINE_OUTSTANDING_COL,
+    LINE_COLLECTED_COL,
+    ACTUAL_REVENUE_COL,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +76,7 @@ def payment_tab_fragment(
     filter_values: Dict = None,
     key_prefix: str = "sp_payment_tab",
     ar_outstanding_df: pd.DataFrame = None,
+    period_payment_df: pd.DataFrame = None,
 ):
     """
     Fragment wrapper for Payment & Collection tab in Salesperson Performance.
@@ -77,19 +85,27 @@ def payment_tab_fragment(
       - All Outstanding AR: shows ALL unpaid/partial invoices regardless of date
       - Period Invoices: shows only invoices within the selected period
 
+    v2.0: Both modes use customer_ar_by_salesperson_view (accurate data).
+    The sales_df parameter is kept for backward compatibility but is no longer
+    used for payment calculations when period_payment_df is provided.
+
     Args:
-        sales_df: Filtered sales data (from filter_data_client_side)
+        sales_df: Filtered sales data (fallback only if period_payment_df is None)
         filter_values: Active filter values dict
         key_prefix: Unique key prefix for widgets
-        ar_outstanding_df: All outstanding AR data (not date-filtered)
+        ar_outstanding_df: All outstanding AR data (from get_ar_outstanding_data)
+        period_payment_df: Period payment data (from get_payment_period_data, NEW v2.0)
     """
-    # Check if we have any payment data at all
-    has_period_data = (
-        not sales_df.empty
-        and 'payment_status' in sales_df.columns
-        and sales_df['payment_status'].notna().any()
-    )
+    # Determine data availability
     has_ar_data = ar_outstanding_df is not None and not ar_outstanding_df.empty
+
+    # v2.0: Prefer period_payment_df (accurate, from AR view) over sales_df (unified view)
+    period_source = period_payment_df if period_payment_df is not None else sales_df
+    has_period_data = (
+        not period_source.empty
+        and 'payment_status' in period_source.columns
+        and period_source['payment_status'].notna().any()
+    )
 
     if not has_period_data and not has_ar_data:
         st.info(
@@ -122,7 +138,7 @@ def payment_tab_fragment(
         if not has_ar_data:
             st.warning("AR outstanding data not available. Showing period invoices instead.")
             is_ar_mode = False
-            source_df = sales_df
+            source_df = period_source
         else:
             source_df = ar_outstanding_df
     else:
@@ -132,7 +148,7 @@ def payment_tab_fragment(
                 "Switch to 'All Outstanding AR' to see full AR picture."
             )
             return
-        source_df = sales_df
+        source_df = period_source
 
     # Filter rows with payment data
     if 'payment_status' not in source_df.columns:
@@ -159,8 +175,21 @@ def payment_tab_fragment(
         pd.to_numeric(pay_df.get('payment_ratio', 0), errors='coerce')
         .fillna(0).clip(0, 1)
     )
-    pay_df['collected_usd'] = pay_df[REV_COL] * pay_df['payment_ratio']
-    pay_df['outstanding_usd'] = pay_df[REV_COL] * (1 - pay_df['payment_ratio'])
+
+    # v2.0: Use pre-calculated outstanding/collected from customer_ar_by_salesperson_view
+    # Both AR mode and Period mode use this view — no proxy calculations
+    if PRECALC_OUTSTANDING_COL in pay_df.columns:
+        pay_df['collected_usd'] = pd.to_numeric(
+            pay_df[PRECALC_COLLECTED_COL], errors='coerce'
+        ).fillna(0)
+        pay_df['outstanding_usd'] = pd.to_numeric(
+            pay_df[PRECALC_OUTSTANDING_COL], errors='coerce'
+        ).fillna(0)
+    else:
+        # Fallback for legacy callers (should not happen in normal flow)
+        logger.warning("Pre-calculated columns not found, using proxy")
+        pay_df['collected_usd'] = pay_df[REV_COL] * pay_df['payment_ratio']
+        pay_df['outstanding_usd'] = pay_df[REV_COL] * (1 - pay_df['payment_ratio'])
 
     if 'due_date' in pay_df.columns:
         pay_df['due_date'] = pd.to_datetime(pay_df['due_date'], errors='coerce')
@@ -176,6 +205,17 @@ def payment_tab_fragment(
         end_date = filter_values.get('end_date')
         total_ar_outstanding = pay_df['outstanding_usd'].sum()
 
+        # Unassigned AR detection
+        has_unassigned_col = 'is_unassigned' in pay_df.columns
+        if has_unassigned_col:
+            unassigned_mask = pay_df['is_unassigned'] == 1
+            unassigned_outstanding = pay_df.loc[unassigned_mask, 'outstanding_usd'].sum()
+            unassigned_lines = int(unassigned_mask.sum())
+        else:
+            unassigned_mask = pay_df['sales_name'].isin(['Unassigned']) | pay_df['sales_name'].isna()
+            unassigned_outstanding = pay_df.loc[unassigned_mask, 'outstanding_usd'].sum()
+            unassigned_lines = int(unassigned_mask.sum())
+
         if start_date and end_date and total_ar_outstanding > 0:
             period_mask = (
                 (pay_df['inv_date'] >= pd.Timestamp(start_date)) &
@@ -184,7 +224,7 @@ def payment_tab_fragment(
             in_period_outstanding = pay_df.loc[period_mask, 'outstanding_usd'].sum()
             carried_over = total_ar_outstanding - in_period_outstanding
 
-            bc1, bc2, bc3 = st.columns(3)
+            bc1, bc2, bc3, bc4 = st.columns(4)
             with bc1:
                 st.metric(
                     "📋 Total AR Outstanding",
@@ -214,6 +254,25 @@ def payment_tab_fragment(
                     delta=f"{pct_prior:.0f}% of total",
                     delta_color="inverse" if carried_over > 0 else "off",
                 )
+            with bc4:
+                if unassigned_outstanding > 0:
+                    pct_unassigned = (
+                        (unassigned_outstanding / total_ar_outstanding * 100)
+                        if total_ar_outstanding > 0 else 0
+                    )
+                    st.metric(
+                        "⚠️ Unassigned AR",
+                        f"${unassigned_outstanding:,.0f}",
+                        delta=f"{unassigned_lines:,} lines · {pct_unassigned:.0f}%",
+                        delta_color="inverse",
+                    )
+                else:
+                    st.metric(
+                        "✅ Unassigned AR",
+                        "$0",
+                        delta="All assigned",
+                        delta_color="off",
+                    )
             st.divider()
 
     # =========================================================================
@@ -265,9 +324,20 @@ def payment_tab_fragment(
         )
 
     with col_f5:
-        st.markdown("**Overdue Only**")
+        st.markdown("**Assignment**")
+        assignment_filter = st.radio(
+            "Assignment",
+            options=["All", "Assigned", "Unassigned"],
+            horizontal=True,
+            key=f"{key_prefix}_assignment",
+            label_visibility="collapsed",
+        )
+
+    # Extra filter row for overdue
+    _of1, _of2, _of3 = st.columns([1, 1, 3])
+    with _of1:
         overdue_only = st.checkbox(
-            "Show only overdue invoices", key=f"{key_prefix}_overdue_only"
+            "Overdue only", key=f"{key_prefix}_overdue_only"
         )
 
     # =========================================================================
@@ -290,6 +360,18 @@ def payment_tab_fragment(
     if min_outstanding > 0:
         filtered_df = filtered_df[filtered_df['outstanding_usd'] >= min_outstanding]
 
+    # Assignment filter (Unassigned AR tracking)
+    if assignment_filter == 'Assigned':
+        if 'is_unassigned' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['is_unassigned'] == 0]
+        else:
+            filtered_df = filtered_df[filtered_df['sales_name'] != 'Unassigned']
+    elif assignment_filter == 'Unassigned':
+        if 'is_unassigned' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['is_unassigned'] == 1]
+        else:
+            filtered_df = filtered_df[filtered_df['sales_name'] == 'Unassigned']
+
     if overdue_only and 'due_date' in filtered_df.columns:
         today = pd.Timestamp(date.today())
         filtered_df = filtered_df[
@@ -309,6 +391,8 @@ def payment_tab_fragment(
         active_filters.append(f"Entity: {', '.join(selected_entities)}")
     if min_outstanding > 0:
         active_filters.append(f"Outstanding ≥ ${min_outstanding:,.0f}")
+    if assignment_filter != 'All':
+        active_filters.append(f"Assignment: {assignment_filter}")
     if overdue_only:
         active_filters.append("Overdue only")
 
@@ -446,15 +530,21 @@ def payment_list_fragment(
     if 'oc_number' in display_df.columns:
         display_df['oc_po_display'] = display_df.apply(_format_oc_po, axis=1)
 
-    # Overdue days
+    # Overdue days — use pre-calculated if available (AR view)
     today = pd.Timestamp(date.today())
-    if 'due_date' in display_df.columns:
+    if 'days_overdue' in display_df.columns and display_df['days_overdue'].notna().any():
+        # AR mode: pre-calculated in SQL (based on due_date)
+        display_df['days_overdue'] = pd.to_numeric(
+            display_df['days_overdue'], errors='coerce'
+        ).fillna(0).astype(int)
+    elif 'due_date' in display_df.columns:
         display_df['days_overdue'] = (today - display_df['due_date']).dt.days
     else:
         display_df['days_overdue'] = (today - display_df['inv_date']).dt.days
 
     # =========================================================================
     # DISPLAY COLUMNS — salesperson-specific
+    # v2.1: Added local currency columns when available
     # =========================================================================
     display_columns = [
         'inv_date', 'inv_number', 'oc_po_display',
@@ -465,6 +555,8 @@ def payment_list_fragment(
         GP_COL,
         'payment_status', 'payment_ratio',
         'collected_usd', 'outstanding_usd',
+        'invoiced_currency', 'line_invoiced_amount_lc',
+        'line_collected_lc', 'line_outstanding_lc',
         'due_date', 'days_overdue',
     ]
     available_cols = [c for c in display_columns if c in display_df.columns]
@@ -476,11 +568,22 @@ def payment_list_fragment(
 
     detail = display_df[available_cols].head(row_limit).copy()
 
-    # Pre-format currency columns
+    # Pre-format USD currency columns
     for col in [REV_COL, GP_COL, 'collected_usd', 'outstanding_usd']:
         if col in detail.columns:
             detail[col] = detail[col].apply(
                 lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+            )
+
+    # Pre-format local currency columns (with currency code)
+    for col in ['line_invoiced_amount_lc', 'line_collected_lc', 'line_outstanding_lc']:
+        if col in detail.columns:
+            detail[col] = detail.apply(
+                lambda r: (
+                    f"{r[col]:,.0f}"
+                    if pd.notna(r.get(col)) else "0"
+                ),
+                axis=1
             )
     if 'payment_ratio' in detail.columns:
         detail['payment_ratio'] = detail['payment_ratio'].apply(
@@ -497,12 +600,16 @@ def payment_list_fragment(
         'customer_type': st.column_config.TextColumn("Type"),
         'product_display': st.column_config.TextColumn("Product", width="large"),
         'brand': st.column_config.TextColumn("Brand"),
-        REV_COL: st.column_config.TextColumn("Revenue", help="Invoiced amount by split (USD)"),
-        GP_COL: st.column_config.TextColumn("GP", help="Gross profit by split (USD)"),
+        REV_COL: st.column_config.TextColumn("Revenue$", help="Invoiced amount by split (USD)"),
+        GP_COL: st.column_config.TextColumn("GP$", help="Gross profit by split (USD)"),
         'payment_status': st.column_config.TextColumn("Status", help="Payment status"),
         'payment_ratio': st.column_config.TextColumn("Paid%", help="Payment ratio"),
-        'collected_usd': st.column_config.TextColumn("Collected", help="Collected amount (USD)"),
-        'outstanding_usd': st.column_config.TextColumn("Outstanding", help="Outstanding (USD)"),
+        'collected_usd': st.column_config.TextColumn("Collected$", help="Collected amount (USD)"),
+        'outstanding_usd': st.column_config.TextColumn("O/S USD", help="Outstanding (USD)"),
+        'invoiced_currency': st.column_config.TextColumn("Ccy", help="Invoice currency"),
+        'line_invoiced_amount_lc': st.column_config.TextColumn("Invoiced LC", help="Line amount in invoice currency"),
+        'line_collected_lc': st.column_config.TextColumn("Collected LC", help="Collected in invoice currency"),
+        'line_outstanding_lc': st.column_config.TextColumn("O/S LC", help="Outstanding in invoice currency"),
         'due_date': st.column_config.DateColumn("Due Date", help="Payment due date"),
         'days_overdue': st.column_config.NumberColumn(
             "Days O/D", help="Days overdue (negative = not yet due)",
@@ -526,9 +633,13 @@ def payment_list_fragment(
 | **Revenue** | Line item invoiced amount by split (USD) |
 | **GP** | Gross profit by split (USD) |
 | **Status** | Fully Paid / Partially Paid / Unpaid |
-| **Paid%** | `payment_ratio` from invoice (0% → 100%) |
-| **Collected** | `Revenue × Paid%` |
-| **Outstanding** | `Revenue × (1 - Paid%)` |
+| **Paid%** | `payment_ratio` from actual payments (0% → 100%) |
+| **Collected$** | Collected amount (USD) |
+| **O/S USD** | Outstanding amount (USD) |
+| **Ccy** | Invoice currency code (e.g. VND, USD, SGD) |
+| **Invoiced LC** | Line invoiced amount in original invoice currency |
+| **Collected LC** | Collected amount in invoice currency |
+| **O/S LC** | Outstanding amount in invoice currency |
 | **Due Date** | Payment due date (from invoice terms) |
 | **Days O/D** | Days overdue. Positive = past due. Negative = not yet due. |
         """)
@@ -577,10 +688,21 @@ def _customer_analysis_section(
 
     has_inv = 'inv_number' in pay_df.columns
 
+    # v2.0: Use actual line-level amounts for customer aggregation when available
+    # Customer AR is a company-level metric — split allocation undercounts
+    # when multiple salespersons share the same customer
+    use_actual = LINE_OUTSTANDING_COL in pay_df.columns
+    rev_col_for_cust = ACTUAL_REVENUE_COL if use_actual and ACTUAL_REVENUE_COL in pay_df.columns else REV_COL
+    out_col_for_cust = LINE_OUTSTANDING_COL if use_actual else 'outstanding_usd'
+    coll_col_for_cust = LINE_COLLECTED_COL if use_actual and LINE_COLLECTED_COL in pay_df.columns else 'collected_usd'
+
+    if use_actual:
+        st.caption("💡 Customer totals show actual invoice amounts (not split-allocated)")
+
     agg_dict = {
-        'invoiced': (REV_COL, 'sum'),
-        'collected': ('collected_usd', 'sum'),
-        'outstanding': ('outstanding_usd', 'sum'),
+        'invoiced': (rev_col_for_cust, 'sum'),
+        'collected': (coll_col_for_cust, 'sum'),
+        'outstanding': (out_col_for_cust, 'sum'),
     }
     if has_inv:
         agg_dict['invoices'] = ('inv_number', 'nunique')
@@ -598,7 +720,7 @@ def _customer_analysis_section(
     today = pd.Timestamp(date.today())
     if 'due_date' in pay_df.columns:
         overdue_df = pay_df[
-            (pay_df['outstanding_usd'] > 0.01) &
+            (pay_df[out_col_for_cust] > 0.01) &
             (pay_df['due_date'].notna()) &
             (pay_df['due_date'] < today)
         ]
@@ -607,8 +729,8 @@ def _customer_analysis_section(
 
     if not overdue_df.empty:
         overdue_by_cust = overdue_df.groupby('customer').agg(
-            overdue_amount=('outstanding_usd', 'sum'),
-            overdue_lines=('outstanding_usd', 'count'),
+            overdue_amount=(out_col_for_cust, 'sum'),
+            overdue_lines=(out_col_for_cust, 'count'),
         ).reset_index()
         cust_df = cust_df.merge(overdue_by_cust, on='customer', how='left')
         cust_df['overdue_amount'] = cust_df['overdue_amount'].fillna(0)
@@ -715,19 +837,35 @@ def _render_export_button(pay_df: pd.DataFrame, fragment_key: str):
             'customer_po_number': 'Customer PO',
             'sales_name': 'Salesperson',
             'sales_email': 'Email',
+            'split_rate_percent': 'Split %',
+            'is_unassigned': 'Unassigned',
             'legal_entity': 'Legal Entity',
             'customer': 'Customer',
             'customer_type': 'Type',
             'product_pn': 'Product',
             'brand': 'Brand',
-            REV_COL: 'Revenue (USD)',
-            GP_COL: 'GP (USD)',
-            GP1_COL: 'GP1 (USD)',
+            'invoiced_currency': 'Currency',
+            # LC amounts (what's on the invoice, including VAT)
+            'line_invoiced_amount_lc': 'Invoiced (LC)',
+            'line_collected_lc': 'Collected (LC)',
+            'line_outstanding_lc': 'Outstanding (LC)',
+            'outstanding_by_split_lc': 'O/S by Split (LC)',
+            'total_invoiced_amount': 'Invoice Total (LC)',
+            'total_payment_received': 'Total Received (LC)',
+            'invoice_outstanding_lc': 'Invoice O/S (LC)',
+            'line_vat_amount_lc': 'VAT Amount (LC)',
+            # USD amounts (GROSS, including VAT)
+            REV_COL: 'Revenue by Split (USD)',
+            'outstanding_usd': 'O/S by Split (USD)',
+            'collected_usd': 'Collected by Split (USD)',
+            GP_COL: 'GP by Split (USD)',
+            GP1_COL: 'GP1 by Split (USD)',
+            # Payment info
             'payment_status': 'Payment Status',
             'payment_ratio': 'Payment Ratio',
-            'collected_usd': 'Collected (USD)',
-            'outstanding_usd': 'Outstanding (USD)',
             'due_date': 'Due Date',
+            'days_overdue': 'Days Overdue',
+            'aging_bucket': 'Aging Bucket',
         }
 
         export_df = pay_df.copy()

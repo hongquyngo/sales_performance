@@ -14,6 +14,17 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.6.0: REFACTORED get_ar_outstanding_data() for Payment & Collection tab
+          - Now queries customer_ar_by_salesperson_view (NEW dedicated AR view)
+          - Skips 2 intermediate view layers → direct from SI view
+          - Sales split joined by CURDATE() → shows CURRENT salesperson
+          - Pre-calculated outstanding, collected, aging in SQL
+          - Includes unassigned invoices (current_sales_id IS NULL) for managers
+          - Backward-compatible column aliases (sales_by_split_usd, etc.)
+          ADDED get_payment_period_data() for Payment tab Period mode
+          - Same accurate view as AR mode, filtered by inv_date range
+          - Eliminates proxy calculation (revenue × ratio) entirely
+          - Added shared _AR_VIEW_SELECT constant for DRY column lists
 - v3.5.0: ADDED get_ar_outstanding_data() for Payment & Collection tab
           - Loads ALL unpaid/partially paid invoices (no date range filter)
           - Used for "All Outstanding AR" dual-mode view
@@ -68,7 +79,7 @@ CHANGELOG:
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 
-VERSION: 3.5.0
+VERSION: 3.6.0
 """
 
 import logging
@@ -87,6 +98,115 @@ logger = logging.getLogger(__name__)
 
 # Debug timing flag - set to True to see query timings
 DEBUG_QUERY_TIMING = False
+
+# =========================================================================
+# Shared SELECT clause for customer_ar_by_salesperson_view queries
+# Used by both get_ar_outstanding_data() and get_payment_period_data()
+# =========================================================================
+_AR_VIEW_SELECT = """
+    SELECT 
+        'REALTIME' AS data_source,
+        si_line_id AS unified_line_id,
+        
+        -- Current salesperson (joined by CURDATE, not inv_date)
+        -- Unassigned: no approved split for this customer+product as of today
+        COALESCE(current_sales_name, 'Unassigned') AS sales_name,
+        current_sales_id AS sales_id,
+        COALESCE(current_sales_email, 'unassigned') AS sales_email,
+        current_sales_status AS employment_status,
+        split_percentage AS split_rate_percent,
+        is_unassigned,
+        
+        -- Invoice info
+        inv_number,
+        inv_date,
+        due_date,
+        vat_number,
+        
+        -- Company info
+        legal_entity,
+        legal_entity_id,
+        customer,
+        customer_id,
+        customer_code,
+        customer_type,
+        
+        -- Order info
+        customer_po_number,
+        oc_number,
+        oc_date,
+        
+        -- Product info
+        product_id,
+        product_pn,
+        pt_code,
+        brand,
+        package_size,
+        
+        -- Currency & exchange rates
+        invoiced_currency,
+        oc_currency,
+        si_usd_rate,
+        oc_usd_rate,
+        
+        -- Payment data (invoice-level, from actual payment records)
+        payment_status,
+        payment_ratio,
+        total_invoiced_amount,
+        total_payment_received,
+        
+        -- =====================================================
+        -- LOCAL CURRENCY amounts (original invoice currency)
+        -- =====================================================
+        invoiced_amount AS line_invoiced_amount_lc,
+        inv_unit_price,
+        line_outstanding_lc,
+        line_collected_lc,
+        invoice_outstanding_lc,
+        line_vat_amount_lc,
+        outstanding_by_split_lc,
+        collected_by_split_lc,
+        
+        -- =====================================================
+        -- USD amounts — GROSS (including VAT, for AR/công nợ)
+        -- All amounts in payment module must be same basis (GROSS)
+        -- =====================================================
+        line_amount_usd_gross AS calculated_invoiced_amount_usd,
+        line_outstanding_usd_gross AS line_outstanding_usd,
+        line_collected_usd_gross AS line_collected_usd,
+        
+        -- Split-allocated GROSS — for AR outstanding tracking
+        -- revenue alias = GROSS so collection_rate = collected/invoiced is consistent
+        ROUND(
+            line_amount_usd_gross * split_percentage / 100, 4
+        ) AS sales_by_split_usd,
+        outstanding_by_split_usd,
+        collected_by_split_usd,
+        
+        -- GP split (NET — GP calculated on net amounts, unaffected by VAT)
+        gp_by_split_usd AS gross_profit_by_split_usd,
+        gp1_by_split_usd,
+        gp_outstanding_by_split_usd,
+        revenue_by_split_usd AS revenue_by_split_usd_net,
+        
+        -- NET amounts (for reference/audit)
+        line_amount_usd_net AS calculated_invoiced_amount_usd_net,
+        line_outstanding_usd_net,
+        line_collected_usd_net,
+        
+        -- Pre-calculated aging
+        days_overdue,
+        aging_bucket,
+        invoice_age_days,
+        
+        -- Cost audit
+        cost_source,
+        adjusted_gross_profit_percent AS gross_profit_percent,
+        
+        -- Time dimensions
+        DATE_FORMAT(inv_date, '%%b') AS invoice_month,
+        DATE_FORMAT(inv_date, '%%Y') AS invoice_year
+"""
 
 
 class SalespersonQueries:
@@ -241,10 +361,15 @@ class SalespersonQueries:
         No date range filter — returns all invoices that are not fully paid.
         Used for the "All Outstanding AR" view in Payment tab.
         
-        NEW v3.5.0: Added for Payment & Collection tab.
+        NEW v3.6.0: Uses customer_ar_by_salesperson_view instead of unified view.
+        Key improvements:
+          - Skips 2 intermediate view layers (direct from SI view)
+          - Joins sales_split by CURDATE() → shows CURRENT salesperson
+          - Pre-calculated outstanding, collected, aging in SQL
+          - No UNION ALL with history data (AR is real-time only)
         
         Args:
-            employee_ids: Optional list of employee IDs to filter
+            employee_ids: Optional list of employee IDs to filter (CURRENT assignment)
             entity_ids: Optional list of legal entity IDs
             
         Returns:
@@ -258,44 +383,14 @@ class SalespersonQueries:
         if not employee_ids:
             return pd.DataFrame()
         
-        query = """
-            SELECT 
-                data_source,
-                unified_line_id,
-                sales_id,
-                sales_name,
-                sales_email,
-                split_rate_percent,
-                inv_date,
-                inv_number,
-                vat_number,
-                legal_entity,
-                legal_entity_id,
-                customer,
-                customer_id,
-                customer_code,
-                customer_type,
-                customer_po_number,
-                oc_number,
-                oc_date,
-                product_id,
-                product_pn,
-                pt_code,
-                brand,
-                sales_by_split_usd,
-                gross_profit_by_split_usd,
-                gp1_by_split_usd,
-                payment_status,
-                payment_ratio,
-                due_date,
-                outstanding_amount,
-                total_payment_received,
-                invoice_month,
-                invoice_year
-            FROM unified_sales_by_salesperson_view
-            WHERE sales_id IN :employee_ids
-              AND payment_status IS NOT NULL
-              AND payment_status != 'Fully Paid'
+        # =====================================================================
+        # Query customer_ar_by_salesperson_view (NEW v3.6.0)
+        # Uses shared _AR_VIEW_SELECT for column consistency
+        # =====================================================================
+        query = _AR_VIEW_SELECT + """
+            FROM customer_ar_by_salesperson_view
+            WHERE (current_sales_id IN :employee_ids OR current_sales_id IS NULL)
+              AND payment_status IN ('Unpaid', 'Partially Paid')
         """
         
         params = {
@@ -309,6 +404,64 @@ class SalespersonQueries:
         query += " ORDER BY inv_date DESC"
         
         return self._execute_query(query, params, "ar_outstanding_data")
+    
+    # =========================================================================
+    # PAYMENT PERIOD DATA (NEW v3.6.0 - for Payment tab "Period Invoices" mode)
+    # =========================================================================
+    
+    def get_payment_period_data(
+        self,
+        start_date: date,
+        end_date: date,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Load payment & collection data for invoices within a date range.
+        
+        Uses customer_ar_by_salesperson_view — same accurate pre-calculated
+        amounts as AR mode. Returns ALL invoices (including Fully Paid) to
+        show collection performance for the period.
+        
+        NEW v3.6.0: Replaces the old proxy calculation where period mode used
+        unified_sales_by_salesperson_view with revenue × ratio estimation.
+        
+        Args:
+            start_date: Start of period
+            end_date: End of period
+            employee_ids: Optional employee IDs (CURRENT split assignment)
+            entity_ids: Optional legal entity IDs
+            
+        Returns:
+            DataFrame with accurate payment data for the period
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = _AR_VIEW_SELECT + """
+            FROM customer_ar_by_salesperson_view
+            WHERE inv_date BETWEEN :start_date AND :end_date
+              AND (current_sales_id IN :employee_ids OR current_sales_id IS NULL)
+        """
+        
+        params = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'employee_ids': tuple(employee_ids),
+        }
+        
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        query += " ORDER BY inv_date DESC"
+        
+        return self._execute_query(query, params, "payment_period_data")
     
     # =========================================================================
     # LOOKBACK DATA FOR COMPLEX KPIs (NEW v3.0.0)
