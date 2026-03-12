@@ -18,7 +18,13 @@ v2.1 CHANGES:
 - Unassigned: collection rate shows "N/A" instead of misleading "0%"
 - Unassigned section visually separated in Level 1
 
-VERSION: 2.1.0
+v3.0 CHANGES:
+- Replaced selectbox invoice selector with clickable row selection
+  (st.dataframe on_select="rerun", selection_mode="single-row")
+- Click any row → detail panel appears below with Payment History + Documents
+- Removed "Select invoice for details" selectbox — more intuitive UX
+
+VERSION: 3.0.0
 """
 
 import logging
@@ -459,10 +465,10 @@ def _render_invoice_list(
     """
     Invoice-level detail for a single customer.
 
-    v2.2: Per-invoice selection UX.
-    - Invoice table at top
-    - Selectbox to pick specific invoice
-    - Detail panel: payment transactions + document links for selected invoice only
+    v3.0: Click-to-select row instead of selectbox.
+    - Dataframe with selection_mode="single-row"
+    - Click row → detail panel appears below
+    - No extra selectbox needed
     """
     if inv_data.empty:
         st.caption("No invoices")
@@ -550,59 +556,44 @@ def _render_invoice_list(
         st.caption("No display columns available")
         return
 
-    st.dataframe(
+    # =========================================================================
+    # CLICKABLE ROW SELECTION (v3.0 — replaces selectbox)
+    # =========================================================================
+    st.caption("👆 Click a row to view payment history & documents")
+
+    event = st.dataframe(
         display[available],
         column_config=col_config,
         hide_index=True,
         width="stretch",
         height=min(300, 35 * len(display) + 38),
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"{fragment_key}_inv_table",
     )
 
     # =========================================================================
-    # PER-INVOICE DETAIL SELECTOR
+    # SELECTED ROW → DETAIL PANEL
     # =========================================================================
     if 'inv_number' not in display.columns:
         return
 
-    inv_list = display['inv_number'].dropna().tolist()
-    if not inv_list:
+    selected_rows = event.selection.rows if event and event.selection else []
+    if not selected_rows:
         return
 
-    # Build display labels: "INV123 | Unpaid | $5,000 | 90+ days"
-    inv_labels = {}
-    for _, row in display.iterrows():
-        inv_num = row.get('inv_number', '')
-        if pd.isna(inv_num):
-            continue
-        status = row.get('payment_status', '')
-        os_usd = row.get('_os_usd', '')
-        aging = row.get('aging_bucket', '')
-        label_parts = [str(inv_num)]
-        if status:
-            label_parts.append(str(status))
-        if os_usd:
-            label_parts.append(str(os_usd))
-        if aging:
-            label_parts.append(str(aging))
-        inv_labels[str(inv_num)] = ' · '.join(label_parts)
+    row_idx = selected_rows[0]
+    if row_idx >= len(display):
+        return
 
-    selected_inv = st.selectbox(
-        "🔍 Select invoice for details",
-        options=['— Select invoice —'] + list(inv_labels.keys()),
-        format_func=lambda x: inv_labels.get(x, x) if x != '— Select invoice —' else x,
-        key=f"{fragment_key}_inv_select",
-    )
-
-    if selected_inv == '— Select invoice —':
-        st.caption("Select an invoice above to view payment details and documents")
+    sel_row = display.iloc[row_idx]
+    selected_inv = str(sel_row.get('inv_number', ''))
+    if not selected_inv or selected_inv == 'nan':
         return
 
     # =========================================================================
     # SELECTED INVOICE DETAIL PANEL
     # =========================================================================
-    sel_row = display[display['inv_number'] == selected_inv].iloc[0] if not display[display['inv_number'] == selected_inv].empty else None
-    if sel_row is None:
-        return
 
     with st.container(border=True):
         # Header
