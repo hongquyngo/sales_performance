@@ -16,7 +16,15 @@ v3.0 CHANGES (from v2.0):
 - Removed Column Legend expander (help= tooltips sufficient)
 - Fixed _group_by_invoice for pandas 2.x compatibility
 
-VERSION: 3.0.0
+v3.1.0 FIX:
+- Unassigned AR now shows actual outstanding amount ($430K+ was hidden as $0)
+- Root cause: unassigned rows have split_percentage=0, so split-allocated amounts
+  (outstanding_by_split_usd, collected_by_split_usd, sales_by_split_usd) were all $0
+- Fix: after computing split-allocated amounts, override unassigned rows with actual
+  line amounts (line_outstanding_usd, line_collected_usd, calculated_invoiced_amount_usd)
+- Affects: AR Context Banner, Unified Metrics, all sub-tabs, and filter by Assignment
+
+VERSION: 3.1.0
 """
 
 import logging
@@ -279,6 +287,50 @@ def payment_tab_fragment(
         pay_df['collected_usd'] = pay_df[REV_COL] * pay_df['payment_ratio']
         pay_df['outstanding_usd'] = pay_df[REV_COL] * (1 - pay_df['payment_ratio'])
 
+    # =========================================================================
+    # FIX v3.1.0: Unassigned rows have split_percentage=0, so all
+    # split-allocated amounts (outstanding_by_split_usd, collected_by_split_usd,
+    # sales_by_split_usd) are $0. Override with actual line amounts so that
+    # unassigned AR is visible in banner, filters, metrics, and sub-tabs.
+    # =========================================================================
+    _unassigned_mask = None
+    if 'is_unassigned' in pay_df.columns:
+        _unassigned_mask = pay_df['is_unassigned'] == 1
+    elif 'sales_name' in pay_df.columns:
+        _unassigned_mask = pay_df['sales_name'] == 'Unassigned'
+
+    if _unassigned_mask is not None and _unassigned_mask.any():
+        n_unassigned = int(_unassigned_mask.sum())
+        # Outstanding: use actual line outstanding (not split-allocated)
+        if LINE_OUTSTANDING_COL in pay_df.columns:
+            pay_df.loc[_unassigned_mask, 'outstanding_usd'] = pd.to_numeric(
+                pay_df.loc[_unassigned_mask, LINE_OUTSTANDING_COL], errors='coerce'
+            ).fillna(0)
+            # Also override the pre-calculated column so that downstream
+            # functions (analyze_payments, etc.) read correct values
+            if PRECALC_OUTSTANDING_COL in pay_df.columns:
+                pay_df.loc[_unassigned_mask, PRECALC_OUTSTANDING_COL] = (
+                    pay_df.loc[_unassigned_mask, 'outstanding_usd']
+                )
+        # Collected: use actual line collected
+        if LINE_COLLECTED_COL in pay_df.columns:
+            pay_df.loc[_unassigned_mask, 'collected_usd'] = pd.to_numeric(
+                pay_df.loc[_unassigned_mask, LINE_COLLECTED_COL], errors='coerce'
+            ).fillna(0)
+            if PRECALC_COLLECTED_COL in pay_df.columns:
+                pay_df.loc[_unassigned_mask, PRECALC_COLLECTED_COL] = (
+                    pay_df.loc[_unassigned_mask, 'collected_usd']
+                )
+        # Revenue (invoiced): use actual line invoiced amount for display
+        if ACTUAL_REVENUE_COL in pay_df.columns:
+            pay_df.loc[_unassigned_mask, REV_COL] = pd.to_numeric(
+                pay_df.loc[_unassigned_mask, ACTUAL_REVENUE_COL], errors='coerce'
+            ).fillna(0)
+        logger.info(
+            f"Unassigned AR fix: {n_unassigned} rows overridden with actual line amounts "
+            f"(outstanding=${pay_df.loc[_unassigned_mask, 'outstanding_usd'].sum():,.0f})"
+        )
+
     if 'due_date' in pay_df.columns:
         pay_df['due_date'] = pd.to_datetime(pay_df['due_date'], errors='coerce')
     pay_df['inv_date'] = pd.to_datetime(pay_df['inv_date'], errors='coerce')
@@ -455,7 +507,13 @@ def payment_tab_fragment(
             filtered_df = filtered_df[filtered_df['customer'].isin(selected_customers)]
 
     if selected_salespeople:
-        filtered_df = filtered_df[filtered_df['sales_name'].isin(selected_salespeople)]
+        # FIX v3.1.0: Always keep unassigned rows alongside selected salespeople.
+        # Unassigned AR should be visible to all roles for complete AR picture.
+        _sp_mask = filtered_df['sales_name'].isin(selected_salespeople)
+        _unassigned_keep = filtered_df['sales_name'] == 'Unassigned'
+        if 'is_unassigned' in filtered_df.columns:
+            _unassigned_keep = _unassigned_keep | (filtered_df['is_unassigned'] == 1)
+        filtered_df = filtered_df[_sp_mask | _unassigned_keep]
 
     if selected_entities and 'legal_entity' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['legal_entity'].isin(selected_entities)]

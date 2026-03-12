@@ -751,7 +751,18 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
         if employee_ids:
             emp_ids_set = set(employee_ids)
             if 'sales_id' in df_filtered.columns:
-                df_filtered = df_filtered[df_filtered['sales_id'].isin(emp_ids_set)]
+                # FIX v3.8.0: For AR/Payment data, keep unassigned rows
+                # (sales_id IS NULL) alongside filtered employees.
+                # Unassigned invoices have no split assignment and should
+                # be visible to ALL roles for AR tracking purposes.
+                if key in ('ar_outstanding', 'period_payment'):
+                    _assigned_mask = df_filtered['sales_id'].isin(emp_ids_set)
+                    _unassigned_mask = df_filtered['sales_id'].isna()
+                    if 'is_unassigned' in df_filtered.columns:
+                        _unassigned_mask = _unassigned_mask | (df_filtered['is_unassigned'] == 1)
+                    df_filtered = df_filtered[_assigned_mask | _unassigned_mask]
+                else:
+                    df_filtered = df_filtered[df_filtered['sales_id'].isin(emp_ids_set)]
             elif 'employee_id' in df_filtered.columns:
                 df_filtered = df_filtered[df_filtered['employee_id'].isin(emp_ids_set)]
         
@@ -1326,6 +1337,27 @@ period_context = backlog_metrics.get('period_context', {})
 payment_overview = None
 ar_df = data.get('ar_outstanding', pd.DataFrame())
 if not ar_df.empty and 'payment_status' in ar_df.columns:
+    # FIX v3.8.0: Override unassigned rows with actual line amounts
+    # (same fix as payment/fragments.py v3.1.0 — unassigned split_percentage=0)
+    _ar_unassigned = None
+    if 'is_unassigned' in ar_df.columns:
+        _ar_unassigned = ar_df['is_unassigned'] == 1
+    elif 'sales_name' in ar_df.columns:
+        _ar_unassigned = ar_df['sales_name'] == 'Unassigned'
+    if _ar_unassigned is not None and _ar_unassigned.any():
+        ar_df = ar_df.copy()
+        if 'line_outstanding_usd' in ar_df.columns and 'outstanding_by_split_usd' in ar_df.columns:
+            ar_df.loc[_ar_unassigned, 'outstanding_by_split_usd'] = pd.to_numeric(
+                ar_df.loc[_ar_unassigned, 'line_outstanding_usd'], errors='coerce'
+            ).fillna(0)
+        if 'line_collected_usd' in ar_df.columns and 'collected_by_split_usd' in ar_df.columns:
+            ar_df.loc[_ar_unassigned, 'collected_by_split_usd'] = pd.to_numeric(
+                ar_df.loc[_ar_unassigned, 'line_collected_usd'], errors='coerce'
+            ).fillna(0)
+        if 'calculated_invoiced_amount_usd' in ar_df.columns and 'sales_by_split_usd' in ar_df.columns:
+            ar_df.loc[_ar_unassigned, 'sales_by_split_usd'] = pd.to_numeric(
+                ar_df.loc[_ar_unassigned, 'calculated_invoiced_amount_usd'], errors='coerce'
+            ).fillna(0)
     payment_overview = sp_analyze_payments(ar_df)
 
 # =============================================================================
