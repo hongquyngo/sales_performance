@@ -338,156 +338,6 @@ def payment_tab_fragment(
     total_count = len(pay_df)
 
     # =========================================================================
-    # AR CONTEXT BANNER (AR mode only)
-    # =========================================================================
-    if is_ar_mode and filter_values:
-        start_date = filter_values.get('start_date')
-        end_date = filter_values.get('end_date')
-        total_ar_outstanding = pay_df['outstanding_usd'].sum()
-
-        # Unassigned AR detection
-        has_unassigned_col = 'is_unassigned' in pay_df.columns
-        if has_unassigned_col:
-            unassigned_mask = pay_df['is_unassigned'] == 1
-            unassigned_outstanding = pay_df.loc[unassigned_mask, 'outstanding_usd'].sum()
-            unassigned_lines = int(unassigned_mask.sum())
-        else:
-            unassigned_mask = pay_df['sales_name'].isin(['Unassigned']) | pay_df['sales_name'].isna()
-            unassigned_outstanding = pay_df.loc[unassigned_mask, 'outstanding_usd'].sum()
-            unassigned_lines = int(unassigned_mask.sum())
-
-        if start_date and end_date and total_ar_outstanding > 0:
-            period_mask = (
-                (pay_df['inv_date'] >= pd.Timestamp(start_date)) &
-                (pay_df['inv_date'] <= pd.Timestamp(end_date))
-            )
-            in_period_outstanding = pay_df.loc[period_mask, 'outstanding_usd'].sum()
-            carried_over = total_ar_outstanding - in_period_outstanding
-
-            # ---------------------------------------------------------------
-            # Actual invoice-level totals (deduped for AR banner)
-            # ---------------------------------------------------------------
-            has_line_os = LINE_OUTSTANDING_COL in pay_df.columns
-            if has_line_os:
-                if 'unified_line_id' in pay_df.columns:
-                    _deduped = pay_df.drop_duplicates(subset='unified_line_id', keep='first')
-                elif 'inv_number' in pay_df.columns and 'product_pn' in pay_df.columns:
-                    _deduped = pay_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
-                else:
-                    _deduped = pay_df
-                actual_ar_total = pd.to_numeric(
-                    _deduped[LINE_OUTSTANDING_COL], errors='coerce'
-                ).fillna(0).sum()
-                actual_in_period = pd.to_numeric(
-                    _deduped.loc[
-                        (_deduped['inv_date'] >= pd.Timestamp(start_date)) &
-                        (_deduped['inv_date'] <= pd.Timestamp(end_date)),
-                        LINE_OUTSTANDING_COL
-                    ], errors='coerce'
-                ).fillna(0).sum()
-                actual_carried = actual_ar_total - actual_in_period
-            else:
-                actual_ar_total = None
-
-            bc1, bc2, bc3, bc4 = st.columns(4)
-            with bc1:
-                if actual_ar_total is not None:
-                    st.metric(
-                        "📋 Total AR Outstanding",
-                        f"${actual_ar_total:,.0f}",
-                        delta=f"Split: ${total_ar_outstanding:,.0f} · {len(pay_df):,} lines",
-                        delta_color="off",
-                        help=(
-                            "**Main value**: Actual invoice outstanding (deduped — true AR). "
-                            f"{pay_df['inv_number'].nunique() if 'inv_number' in pay_df.columns else '?'} invoices.\n\n"
-                            f"**Split**: ${total_ar_outstanding:,.0f} (split-allocated by salesperson %). "
-                            f"{len(pay_df):,} split lines."
-                        ),
-                    )
-                else:
-                    st.metric(
-                        "📋 Total AR Outstanding",
-                        f"${total_ar_outstanding:,.0f}",
-                        delta=f"{len(pay_df):,} lines",
-                        delta_color="off",
-                        help="Split-allocated outstanding (USD). 'Lines' = split rows.",
-                    )
-            with bc2:
-                if actual_ar_total is not None:
-                    pct_current = (actual_in_period / actual_ar_total * 100) if actual_ar_total > 0 else 0
-                    st.metric(
-                        "📅 Current Period",
-                        f"${actual_in_period:,.0f}",
-                        delta=f"Split: ${in_period_outstanding:,.0f} · {pct_current:.0f}%",
-                        delta_color="off",
-                        help=(
-                            f"Actual outstanding from invoices in period ({start_date} to {end_date}). "
-                            f"Deduped.\n\nSplit: ${in_period_outstanding:,.0f}."
-                        ),
-                    )
-                else:
-                    pct_current = (
-                        (in_period_outstanding / total_ar_outstanding * 100)
-                        if total_ar_outstanding > 0 else 0
-                    )
-                    st.metric(
-                        "📅 Current Period",
-                        f"${in_period_outstanding:,.0f}",
-                        delta=f"{pct_current:.0f}% of total",
-                        delta_color="off",
-                    )
-            with bc3:
-                if actual_ar_total is not None:
-                    pct_prior = (actual_carried / actual_ar_total * 100) if actual_ar_total > 0 else 0
-                    st.metric(
-                        "⏪ Carried Over",
-                        f"${actual_carried:,.0f}",
-                        delta=f"Split: ${carried_over:,.0f} · {pct_prior:.0f}%",
-                        delta_color="inverse" if actual_carried > 0 else "off",
-                        help=(
-                            "Actual outstanding from invoices BEFORE selected period. "
-                            "Older receivables not yet collected.\n\n"
-                            f"Split: ${carried_over:,.0f}."
-                        ),
-                    )
-                else:
-                    pct_prior = (
-                        (carried_over / total_ar_outstanding * 100)
-                        if total_ar_outstanding > 0 else 0
-                    )
-                    st.metric(
-                        "⏪ Carried Over (Prior Periods)",
-                        f"${carried_over:,.0f}",
-                        delta=f"{pct_prior:.0f}% of total",
-                        delta_color="inverse" if carried_over > 0 else "off",
-                    )
-            with bc4:
-                if unassigned_outstanding > 0:
-                    pct_unassigned = (
-                        (unassigned_outstanding / (actual_ar_total or total_ar_outstanding) * 100)
-                        if (actual_ar_total or total_ar_outstanding) > 0 else 0
-                    )
-                    st.metric(
-                        "⚠️ Unassigned AR",
-                        f"${unassigned_outstanding:,.0f}",
-                        delta=f"{unassigned_lines:,} lines · {pct_unassigned:.0f}%",
-                        delta_color="inverse",
-                        help=(
-                            "Invoices with no sales split assignment. Uses actual invoice amount. "
-                            "Go to Setup → Sales Split to assign."
-                        ),
-                    )
-                else:
-                    st.metric(
-                        "✅ Unassigned AR",
-                        "$0",
-                        delta="All assigned",
-                        delta_color="off",
-                        help="All outstanding invoices have an active sales split assignment.",
-                    )
-            st.divider()
-
-    # =========================================================================
     # FILTERS ROW 1
     # =========================================================================
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -635,9 +485,9 @@ def payment_tab_fragment(
         st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
 
     # =========================================================================
-    # UNIFIED METRICS BANNER (shown once, above tabs)
+    # METRICS BANNER (single banner, adaptive by mode)
     # =========================================================================
-    _render_unified_metrics(filtered_df)
+    _render_unified_metrics(filtered_df, is_ar_mode=is_ar_mode, filter_values=filter_values)
 
     st.divider()
 
@@ -674,32 +524,35 @@ def payment_tab_fragment(
 
 
 # =============================================================================
-# UNIFIED METRICS BANNER
+# METRICS BANNER — Single adaptive banner (v3.3.0)
+#
+# Row 1 (both modes): Outstanding | Overdue | Not Yet Due | Collection Rate | Invoices
+# Row 2 (adaptive):
+#   AR mode:     Current Period | Carried Over | Unassigned AR
+#   Period mode: Total Invoiced | Total Collected | Fully Paid
+#
+# All amounts: actual invoice (deduped) as main value, split-allocated in delta.
 # =============================================================================
 
-def _render_unified_metrics(pay_df: pd.DataFrame):
-    """
-    Render key metrics ONCE above all tabs.
-    
-    v3.2.0: Dual display — actual invoice amounts (primary) + split-allocated (secondary).
-    - Primary (main value): Actual invoice-level amounts (deduped, no double-count)
-    - Secondary (delta): Split-allocated amounts (salesperson's share)
-    
-    Dedup logic: multi-split invoices have duplicate rows (1 per salesperson).
-    Dedup by invoice line before summing actual amounts to avoid double-count.
-    """
+def _render_unified_metrics(
+    pay_df: pd.DataFrame,
+    is_ar_mode: bool = False,
+    filter_values: dict = None,
+):
+    """Single metrics banner above sub-tabs. Adaptive row 2 based on mode."""
     if pay_df.empty:
         return
 
     today_ts = pd.Timestamp(date.today())
     inv_count = pay_df['inv_number'].nunique() if 'inv_number' in pay_df.columns else len(pay_df)
     status_counts = pay_df['payment_status'].value_counts()
-    unpaid_count = status_counts.get('Unpaid', 0)
-    partial_count = status_counts.get('Partially Paid', 0)
+    unpaid_count = int(status_counts.get('Unpaid', 0))
+    partial_count = int(status_counts.get('Partially Paid', 0))
+    fully_paid_count = int(status_counts.get('Fully Paid', 0))
 
-    # =========================================================================
-    # SPLIT-ALLOCATED amounts (per-salesperson share)
-    # =========================================================================
+    # -----------------------------------------------------------------
+    # Split-allocated amounts (per-salesperson share)
+    # -----------------------------------------------------------------
     split_outstanding = pay_df['outstanding_usd'].sum()
     split_collected = pay_df.get('collected_usd', pd.Series(dtype=float)).sum()
     split_invoiced = pay_df[REV_COL].sum() if REV_COL in pay_df.columns else 0
@@ -708,179 +561,258 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
     split_overdue_lines = 0
     if 'due_date' in pay_df.columns:
         overdue_mask = (
-            (pay_df['due_date'].notna()) &
+            pay_df['due_date'].notna() &
             (pay_df['due_date'] < today_ts) &
             (pay_df['outstanding_usd'] > 0.01)
         )
         split_overdue = pay_df.loc[overdue_mask, 'outstanding_usd'].sum()
         split_overdue_lines = int(overdue_mask.sum())
     split_nyd = split_outstanding - split_overdue
+    split_rate = (split_collected / split_invoiced) if split_invoiced > 0 else 0
 
-    split_collection_rate = (split_collected / split_invoiced) if split_invoiced > 0 else 0
+    # -----------------------------------------------------------------
+    # Actual invoice amounts (deduped — no double-count)
+    # -----------------------------------------------------------------
+    has_actual = LINE_OUTSTANDING_COL in pay_df.columns
 
-    # =========================================================================
-    # ACTUAL INVOICE amounts (deduped — no double-count for multi-split)
-    # =========================================================================
-    has_line_outstanding = LINE_OUTSTANDING_COL in pay_df.columns
-    has_line_collected = LINE_COLLECTED_COL in pay_df.columns
-    has_actual_invoiced = ACTUAL_REVENUE_COL in pay_df.columns
-
-    if has_line_outstanding:
-        # Dedup: keep first row per invoice line
+    if has_actual:
         if 'unified_line_id' in pay_df.columns:
-            deduped = pay_df.drop_duplicates(subset='unified_line_id', keep='first')
+            dd = pay_df.drop_duplicates(subset='unified_line_id', keep='first')
         elif 'inv_number' in pay_df.columns and 'product_pn' in pay_df.columns:
-            deduped = pay_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
+            dd = pay_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
         else:
-            deduped = pay_df
+            dd = pay_df
 
-        actual_outstanding = pd.to_numeric(
-            deduped[LINE_OUTSTANDING_COL], errors='coerce'
-        ).fillna(0).sum()
-        actual_collected = pd.to_numeric(
-            deduped[LINE_COLLECTED_COL], errors='coerce'
-        ).fillna(0).sum() if has_line_collected else 0
-        actual_invoiced = pd.to_numeric(
-            deduped[ACTUAL_REVENUE_COL], errors='coerce'
-        ).fillna(0).sum() if has_actual_invoiced else 0
+        act_outstanding = pd.to_numeric(dd[LINE_OUTSTANDING_COL], errors='coerce').fillna(0).sum()
+        act_collected = (
+            pd.to_numeric(dd[LINE_COLLECTED_COL], errors='coerce').fillna(0).sum()
+            if LINE_COLLECTED_COL in dd.columns else 0
+        )
+        act_invoiced = (
+            pd.to_numeric(dd[ACTUAL_REVENUE_COL], errors='coerce').fillna(0).sum()
+            if ACTUAL_REVENUE_COL in dd.columns else 0
+        )
 
-        # Actual overdue (deduped)
-        actual_overdue = 0
-        actual_overdue_invs = 0
-        if 'due_date' in deduped.columns:
-            act_overdue_mask = (
-                (deduped['due_date'].notna()) &
-                (deduped['due_date'] < today_ts) &
-                (pd.to_numeric(deduped[LINE_OUTSTANDING_COL], errors='coerce').fillna(0) > 0.01)
+        act_overdue = 0
+        act_overdue_inv = 0
+        if 'due_date' in dd.columns:
+            od_mask = (
+                dd['due_date'].notna() &
+                (dd['due_date'] < today_ts) &
+                (pd.to_numeric(dd[LINE_OUTSTANDING_COL], errors='coerce').fillna(0) > 0.01)
             )
-            actual_overdue = pd.to_numeric(
-                deduped.loc[act_overdue_mask, LINE_OUTSTANDING_COL], errors='coerce'
-            ).fillna(0).sum()
-            actual_overdue_invs = deduped.loc[act_overdue_mask, 'inv_number'].nunique() if 'inv_number' in deduped.columns else int(act_overdue_mask.sum())
-        actual_nyd = actual_outstanding - actual_overdue
-
-        actual_collection_rate = (actual_collected / actual_invoiced) if actual_invoiced > 0 else 0
-        show_dual = True
+            act_overdue = pd.to_numeric(dd.loc[od_mask, LINE_OUTSTANDING_COL], errors='coerce').fillna(0).sum()
+            act_overdue_inv = dd.loc[od_mask, 'inv_number'].nunique() if 'inv_number' in dd.columns else int(od_mask.sum())
+        act_nyd = act_outstanding - act_overdue
+        act_rate = (act_collected / act_invoiced) if act_invoiced > 0 else 0
     else:
-        # No line-level columns — fall back to split-only
-        show_dual = False
+        # Fallback: use split amounts as primary
+        act_outstanding = split_outstanding
+        act_collected = split_collected
+        act_invoiced = split_invoiced
+        act_overdue = split_overdue
+        act_overdue_inv = 0
+        act_nyd = split_nyd
+        act_rate = split_rate
 
-    # =========================================================================
-    # RENDER — all amounts in exact format (matching AR Context Banner above)
-    # =========================================================================
+    # =====================================================================
+    # ROW 1: Primary metrics (both modes)
+    # =====================================================================
     c1, c2, c3, c4, c5 = st.columns(5)
 
     with c1:
-        if show_dual:
-            st.metric(
-                "💰 Outstanding",
-                f"${actual_outstanding:,.0f}",
-                delta=f"Split: ${split_outstanding:,.0f} · {inv_count:,} inv",
-                delta_color="off",
-                help=(
-                    "**Main value**: Actual invoice outstanding (deduped — no double-count). "
-                    "This is the real amount owed by customers.\n\n"
-                    "**Split**: Split-allocated outstanding (each salesperson's share by split %). "
-                    "Total split may differ from actual when split % ≠ 100%."
-                ),
-            )
-        else:
-            st.metric(
-                "💰 Outstanding",
-                f"${split_outstanding:,.0f}",
-                delta=f"{inv_count:,} invoices",
-                delta_color="off",
-                help="Split-allocated outstanding (USD) by salesperson %.",
-            )
+        st.metric(
+            "💰 Outstanding",
+            f"${act_outstanding:,.0f}",
+            delta=f"Split: ${split_outstanding:,.0f}" if has_actual else f"{inv_count:,} invoices",
+            delta_color="off",
+            help=(
+                "**Main**: Actual invoice outstanding (deduped). True AR amount.\n\n"
+                "**Split**: Each salesperson's share by split %."
+            ) if has_actual else "Split-allocated outstanding by salesperson %.",
+        )
 
     with c2:
-        if show_dual:
-            if actual_overdue > 0:
-                overdue_pct = (actual_overdue / actual_outstanding * 100) if actual_outstanding > 0 else 0
-                st.metric(
-                    "🔴 Overdue",
-                    f"${actual_overdue:,.0f}",
-                    delta=f"Split: ${split_overdue:,.0f} · {overdue_pct:.0f}%",
-                    delta_color="inverse",
-                    help=(
-                        "**Main value**: Actual invoice amount past due date (deduped). "
-                        f"{actual_overdue_invs:,} invoices overdue.\n\n"
-                        f"**Split**: ${split_overdue:,.0f} ({split_overdue_lines:,} split lines)."
-                    ),
-                )
-            else:
-                st.metric("🟢 Overdue", "$0", delta="None", delta_color="off",
-                          help="No invoices past due date.")
+        if act_overdue > 0:
+            od_pct = (act_overdue / act_outstanding * 100) if act_outstanding > 0 else 0
+            st.metric(
+                "🔴 Overdue",
+                f"${act_overdue:,.0f}",
+                delta=(
+                    f"Split: ${split_overdue:,.0f} · {od_pct:.0f}%"
+                    if has_actual else f"{split_overdue_lines:,} lines · {od_pct:.0f}%"
+                ),
+                delta_color="inverse",
+                help=(
+                    f"**Main**: Actual past-due amount (deduped). {act_overdue_inv:,} invoices.\n\n"
+                    f"**Split**: ${split_overdue:,.0f} ({split_overdue_lines:,} lines)."
+                ) if has_actual else "Split-allocated overdue (due_date < today).",
+            )
         else:
-            if split_overdue > 0:
-                overdue_pct = (split_overdue / split_outstanding * 100) if split_outstanding > 0 else 0
-                st.metric(
-                    "🔴 Overdue",
-                    f"${split_overdue:,.0f}",
-                    delta=f"{split_overdue_lines:,} lines · {overdue_pct:.0f}%",
-                    delta_color="inverse",
-                    help="Split-allocated overdue amount (due_date < today).",
-                )
-            else:
-                st.metric("🟢 Overdue", "$0", delta="None", delta_color="off")
+            st.metric("🟢 Overdue", "$0", delta="None", delta_color="off")
 
     with c3:
-        if show_dual:
-            nyd_pct = (actual_nyd / actual_outstanding * 100) if actual_outstanding > 0 else 0
-            st.metric(
-                "🟢 Not Yet Due",
-                f"${actual_nyd:,.0f}",
-                delta=f"Split: ${split_nyd:,.0f} · {nyd_pct:.0f}%",
-                delta_color="off",
-                help=(
-                    "**Main value**: Actual invoice amount still within payment terms (deduped). "
-                    "= Outstanding − Overdue.\n\n"
-                    f"**Split**: ${split_nyd:,.0f}."
-                ),
-            )
-        else:
-            nyd_pct = (split_nyd / split_outstanding * 100) if split_outstanding > 0 else 0
-            st.metric(
-                "🟢 Not Yet Due",
-                f"${split_nyd:,.0f}",
-                delta=f"{nyd_pct:.0f}% of total",
-                delta_color="off",
-                help="Split-allocated amount within payment terms. = Outstanding − Overdue.",
-            )
+        nyd_pct = (act_nyd / act_outstanding * 100) if act_outstanding > 0 else 0
+        st.metric(
+            "🟢 Not Yet Due",
+            f"${act_nyd:,.0f}",
+            delta=(
+                f"Split: ${split_nyd:,.0f} · {nyd_pct:.0f}%"
+                if has_actual else f"{nyd_pct:.0f}% of total"
+            ),
+            delta_color="off",
+            help="Within payment terms. = Outstanding − Overdue.",
+        )
 
     with c4:
-        if show_dual:
-            st.metric(
-                "📊 Collection Rate",
-                f"{actual_collection_rate:.0%}",
-                delta=f"Split: {split_collection_rate:.0%} · {unpaid_count:,} unpaid",
-                delta_color="off",
-                help=(
-                    "**Main value**: Invoice-level collection rate = Collected ÷ Invoiced (deduped, actual amounts).\n\n"
-                    f"**Split**: {split_collection_rate:.0%} (split-allocated). "
-                    f"{unpaid_count:,} unpaid + {partial_count:,} partially paid invoices."
-                ),
-            )
-        else:
-            st.metric(
-                "📊 Collection Rate",
-                f"{split_collection_rate:.0%}",
-                delta=f"{unpaid_count:,} unpaid · {partial_count:,} partial",
-                delta_color="off",
-                help="Collected ÷ Invoiced (split-allocated).",
-            )
+        st.metric(
+            "📊 Collection Rate",
+            f"{act_rate:.0%}",
+            delta=(
+                f"Split: {split_rate:.0%} · {unpaid_count:,} unpaid"
+                if has_actual else f"{unpaid_count:,} unpaid · {partial_count:,} partial"
+            ),
+            delta_color="off",
+            help=(
+                f"**Main**: Invoice-level (deduped). **Split**: {split_rate:.0%}.\n\n"
+                f"{unpaid_count:,} unpaid + {partial_count:,} partial invoices."
+            ),
+        )
 
     with c5:
         st.metric(
-            "📋 Lines / Invoices",
-            f"{inv_count:,} inv",
+            "📋 Invoices",
+            f"{inv_count:,}",
             delta=f"{len(pay_df):,} split lines",
             delta_color="off",
             help=(
-                f"**{inv_count:,} unique invoices** in this view.\n\n"
-                f"**{len(pay_df):,} split lines** = 1 invoice × N salespeople = N lines. "
-                "Use Invoice Detail → 'Group by Invoice' to see per-invoice view."
+                f"{inv_count:,} unique invoices. "
+                f"{len(pay_df):,} split lines (1 inv × N salespeople)."
             ),
+        )
+
+    # =====================================================================
+    # ROW 2: Context metrics (adaptive by mode)
+    # =====================================================================
+    if is_ar_mode and filter_values:
+        _render_context_row_ar(pay_df, filter_values, has_actual,
+                               act_outstanding if has_actual else split_outstanding)
+    else:
+        _render_context_row_period(pay_df, has_actual,
+                                   act_invoiced, act_collected, split_invoiced, split_collected,
+                                   fully_paid_count, inv_count)
+
+
+def _render_context_row_ar(pay_df, filter_values, has_actual, total_outstanding):
+    """Row 2 for AR mode: Current Period | Carried Over | Unassigned."""
+    start_date = filter_values.get('start_date')
+    end_date = filter_values.get('end_date')
+    if not start_date or not end_date or total_outstanding <= 0:
+        return
+
+    period_mask = (
+        (pay_df['inv_date'] >= pd.Timestamp(start_date)) &
+        (pay_df['inv_date'] <= pd.Timestamp(end_date))
+    )
+
+    if has_actual and LINE_OUTSTANDING_COL in pay_df.columns:
+        # Dedup for actual amounts
+        if 'unified_line_id' in pay_df.columns:
+            dd = pay_df.drop_duplicates(subset='unified_line_id', keep='first')
+        elif 'inv_number' in pay_df.columns and 'product_pn' in pay_df.columns:
+            dd = pay_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
+        else:
+            dd = pay_df
+        dd_period = (
+            (dd['inv_date'] >= pd.Timestamp(start_date)) &
+            (dd['inv_date'] <= pd.Timestamp(end_date))
+        )
+        in_period = pd.to_numeric(dd.loc[dd_period, LINE_OUTSTANDING_COL], errors='coerce').fillna(0).sum()
+        carried = total_outstanding - in_period
+    else:
+        in_period = pay_df.loc[period_mask, 'outstanding_usd'].sum()
+        carried = total_outstanding - in_period
+
+    # Split amounts for delta
+    split_in_period = pay_df.loc[period_mask, 'outstanding_usd'].sum()
+    split_carried = pay_df['outstanding_usd'].sum() - split_in_period
+
+    # Unassigned
+    if 'is_unassigned' in pay_df.columns:
+        ua_mask = pay_df['is_unassigned'] == 1
+    else:
+        ua_mask = pay_df['sales_name'] == 'Unassigned'
+    ua_outstanding = pay_df.loc[ua_mask, 'outstanding_usd'].sum()
+    ua_lines = int(ua_mask.sum())
+
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        pct = (in_period / total_outstanding * 100) if total_outstanding > 0 else 0
+        st.metric(
+            "📅 Current Period",
+            f"${in_period:,.0f}",
+            delta=f"Split: ${split_in_period:,.0f} · {pct:.0f}% of AR",
+            delta_color="off",
+            help=f"Outstanding from invoices within {start_date} – {end_date}.",
+        )
+    with rc2:
+        pct = (carried / total_outstanding * 100) if total_outstanding > 0 else 0
+        st.metric(
+            "⏪ Carried Over",
+            f"${carried:,.0f}",
+            delta=f"Split: ${split_carried:,.0f} · {pct:.0f}% of AR",
+            delta_color="inverse" if carried > 0 else "off",
+            help="Outstanding from invoices BEFORE selected period. Older receivables.",
+        )
+    with rc3:
+        if ua_outstanding > 0:
+            pct = (ua_outstanding / total_outstanding * 100) if total_outstanding > 0 else 0
+            st.metric(
+                "⚠️ Unassigned AR",
+                f"${ua_outstanding:,.0f}",
+                delta=f"{ua_lines:,} lines · {pct:.0f}%",
+                delta_color="inverse",
+                help="No sales split assignment. Uses actual invoice amount. Setup → Sales Split to assign.",
+            )
+        else:
+            st.metric(
+                "✅ Unassigned",
+                "$0",
+                delta="All assigned",
+                delta_color="off",
+            )
+
+
+def _render_context_row_period(pay_df, has_actual,
+                                act_invoiced, act_collected,
+                                split_invoiced, split_collected,
+                                fully_paid_count, inv_count):
+    """Row 2 for Period mode: Invoiced | Collected | Fully Paid."""
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        st.metric(
+            "📄 Total Invoiced",
+            f"${act_invoiced:,.0f}",
+            delta=f"Split: ${split_invoiced:,.0f}" if has_actual else None,
+            delta_color="off",
+            help="Total invoiced amount (actual, deduped)." if has_actual else "Split-allocated invoiced.",
+        )
+    with rc2:
+        st.metric(
+            "✅ Total Collected",
+            f"${act_collected:,.0f}",
+            delta=f"Split: ${split_collected:,.0f}" if has_actual else None,
+            delta_color="off",
+            help="Total collected from payment records (actual, deduped)." if has_actual else "Split-allocated collected.",
+        )
+    with rc3:
+        fp_pct = (fully_paid_count / inv_count * 100) if inv_count > 0 else 0
+        st.metric(
+            "💯 Fully Paid",
+            f"{fully_paid_count:,}",
+            delta=f"{fp_pct:.0f}% of {inv_count:,} invoices",
+            delta_color="off",
+            help="Number of invoices with payment_status = 'Fully Paid'.",
         )
 
 
