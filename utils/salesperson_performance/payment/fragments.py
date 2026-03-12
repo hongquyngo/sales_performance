@@ -766,7 +766,7 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
         show_dual = False
 
     # =========================================================================
-    # RENDER
+    # RENDER — all amounts in exact format (matching AR Context Banner above)
     # =========================================================================
     c1, c2, c3, c4, c5 = st.columns(5)
 
@@ -774,8 +774,8 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
         if show_dual:
             st.metric(
                 "💰 Outstanding",
-                _fmt_currency(actual_outstanding),
-                delta=f"Split: {_fmt_currency(split_outstanding)} · {inv_count:,} inv",
+                f"${actual_outstanding:,.0f}",
+                delta=f"Split: ${split_outstanding:,.0f} · {inv_count:,} inv",
                 delta_color="off",
                 help=(
                     "**Main value**: Actual invoice outstanding (deduped — no double-count). "
@@ -787,7 +787,7 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
         else:
             st.metric(
                 "💰 Outstanding",
-                _fmt_currency(split_outstanding),
+                f"${split_outstanding:,.0f}",
                 delta=f"{inv_count:,} invoices",
                 delta_color="off",
                 help="Split-allocated outstanding (USD) by salesperson %.",
@@ -799,13 +799,13 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
                 overdue_pct = (actual_overdue / actual_outstanding * 100) if actual_outstanding > 0 else 0
                 st.metric(
                     "🔴 Overdue",
-                    _fmt_currency(actual_overdue),
-                    delta=f"Split: {_fmt_currency(split_overdue)} · {overdue_pct:.0f}%",
+                    f"${actual_overdue:,.0f}",
+                    delta=f"Split: ${split_overdue:,.0f} · {overdue_pct:.0f}%",
                     delta_color="inverse",
                     help=(
                         "**Main value**: Actual invoice amount past due date (deduped). "
                         f"{actual_overdue_invs:,} invoices overdue.\n\n"
-                        f"**Split**: {_fmt_currency(split_overdue)} ({split_overdue_lines:,} split lines)."
+                        f"**Split**: ${split_overdue:,.0f} ({split_overdue_lines:,} split lines)."
                     ),
                 )
             else:
@@ -816,7 +816,7 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
                 overdue_pct = (split_overdue / split_outstanding * 100) if split_outstanding > 0 else 0
                 st.metric(
                     "🔴 Overdue",
-                    _fmt_currency(split_overdue),
+                    f"${split_overdue:,.0f}",
                     delta=f"{split_overdue_lines:,} lines · {overdue_pct:.0f}%",
                     delta_color="inverse",
                     help="Split-allocated overdue amount (due_date < today).",
@@ -829,20 +829,20 @@ def _render_unified_metrics(pay_df: pd.DataFrame):
             nyd_pct = (actual_nyd / actual_outstanding * 100) if actual_outstanding > 0 else 0
             st.metric(
                 "🟢 Not Yet Due",
-                _fmt_currency(actual_nyd),
-                delta=f"Split: {_fmt_currency(split_nyd)} · {nyd_pct:.0f}%",
+                f"${actual_nyd:,.0f}",
+                delta=f"Split: ${split_nyd:,.0f} · {nyd_pct:.0f}%",
                 delta_color="off",
                 help=(
                     "**Main value**: Actual invoice amount still within payment terms (deduped). "
                     "= Outstanding − Overdue.\n\n"
-                    f"**Split**: {_fmt_currency(split_nyd)}."
+                    f"**Split**: ${split_nyd:,.0f}."
                 ),
             )
         else:
             nyd_pct = (split_nyd / split_outstanding * 100) if split_outstanding > 0 else 0
             st.metric(
                 "🟢 Not Yet Due",
-                _fmt_currency(split_nyd),
+                f"${split_nyd:,.0f}",
                 delta=f"{nyd_pct:.0f}% of total",
                 delta_color="off",
                 help="Split-allocated amount within payment terms. = Outstanding − Overdue.",
