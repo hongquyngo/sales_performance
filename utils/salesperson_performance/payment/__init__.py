@@ -18,13 +18,15 @@ Architecture (v3.0 — unified layout, no data duplication):
     - Query: WHERE inv_date BETWEEN :start AND :end
     - Method: SalespersonQueries.get_payment_period_data()
 
-  Layout (v3.0):
+  Layout (v4.0):
     - Unified metrics banner above tabs (no duplication)
-    - 3 sub-tabs: Overview & Aging | Invoice Detail | Drill-Down
-    - Customer Analysis merged into Drill-Down tab
-    - "By Salesperson" removed from Overview (now in Drill-Down only)
+    - 2 sub-tabs: Overview & Aging | Invoice Detail
+    - Invoice Detail combines: AR summary + Top Customers chart
+      + Invoice table with click-to-select → payment/doc detail panel
+    - Top-level filters include "Exclude internal customers"
+    - Salesperson drill-down selectbox removed (top-level filter suffices)
 
-VERSION: 3.0.0
+VERSION: 4.0.0
 """
 
 from .fragments import (
@@ -32,7 +34,7 @@ from .fragments import (
     payment_list_fragment,
     payment_summary_fragment,
 )
-from .ar_drilldown import ar_by_salesperson_fragment
+from .ar_drilldown import ar_by_salesperson_fragment, ar_summary_section
 from .s3_utils import get_s3_manager, generate_doc_url
 
 __all__ = [
@@ -40,6 +42,7 @@ __all__ = [
     'payment_list_fragment',
     'payment_summary_fragment',
     'ar_by_salesperson_fragment',
+    'ar_summary_section',
     'get_s3_manager',
     'generate_doc_url',
 ]

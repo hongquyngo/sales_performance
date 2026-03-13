@@ -16,6 +16,16 @@ v3.0 CHANGES (from v2.0):
 - Removed Column Legend expander (help= tooltips sufficient)
 - Fixed _group_by_invoice for pandas 2.x compatibility
 
+v4.0.0 CHANGES (from v3.2):
+- Combined Invoice Detail + Drill-Down into single "Invoice Detail" tab
+  - AR by Salesperson summary + Top Customers chart shown above invoice table
+  - Removed salesperson selectbox in drill-down (top-level filter suffices)
+  - Click-to-select on invoice table → inline payment history + documents panel
+- Reduced from 3 sub-tabs to 2: Overview & Aging | Invoice Detail
+- Added "Exclude internal customers" checkbox to filters
+- payment_list_fragment now accepts payment_txn_loader, doc_loader, s3_url_generator
+- New helper: _render_selected_invoice_detail()
+
 v3.2.0 FIX:
 - Fixed double-count bug for INACTIVE co-split employees
 - Root cause: v3.1.0 override replaced split-allocated amounts with 100% line amounts
@@ -34,12 +44,12 @@ v3.1.0 FIX:
   line amounts (line_outstanding_usd, line_collected_usd, calculated_invoiced_amount_usd)
 - Affects: AR Context Banner, Unified Metrics, all sub-tabs, and filter by Assignment
 
-VERSION: 3.2.0
+VERSION: 4.0.0
 """
 
 import logging
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from io import BytesIO
 import pandas as pd
 import numpy as np
@@ -59,7 +69,12 @@ from .payment_analysis import (
     LINE_COLLECTED_COL,
     ACTUAL_REVENUE_COL,
 )
-from .ar_drilldown import ar_by_salesperson_fragment
+from .ar_drilldown import (
+    ar_by_salesperson_fragment,
+    ar_summary_section,
+    _render_invoice_payments,
+    _render_invoice_documents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -441,10 +456,16 @@ def payment_tab_fragment(
             label_visibility="collapsed",
         )
 
-    # Overdue checkbox
-    overdue_only = st.checkbox(
-        "Overdue only", key=f"{key_prefix}_overdue_only"
-    )
+    # Checkboxes row
+    _cb1, _cb2, _ = st.columns(3)
+    with _cb1:
+        overdue_only = st.checkbox(
+            "Overdue only", key=f"{key_prefix}_overdue_only"
+        )
+    with _cb2:
+        exclude_internal = st.checkbox(
+            "Exclude internal customers", key=f"{key_prefix}_excl_internal"
+        )
 
     # =========================================================================
     # APPLY FILTERS
@@ -500,6 +521,11 @@ def payment_tab_fragment(
             (filtered_df['outstanding_usd'] > 0.01)
         ]
 
+    if exclude_internal and 'customer_type' in filtered_df.columns:
+        filtered_df = filtered_df[
+            filtered_df['customer_type'].str.lower() != 'internal'
+        ]
+
     # Filter summary
     active_filters = []
     if selected_statuses:
@@ -517,6 +543,8 @@ def payment_tab_fragment(
         active_filters.append(f"Assignment: {assignment_filter}")
     if overdue_only:
         active_filters.append("Overdue only")
+    if exclude_internal:
+        active_filters.append("Excl. internal")
 
     if active_filters:
         st.caption(f"🔍 Active filters: {' | '.join(active_filters)}")
@@ -529,12 +557,11 @@ def payment_tab_fragment(
     st.divider()
 
     # =========================================================================
-    # SUB-TABS (3 tabs — no duplicated data between them)
+    # SUB-TABS (2 tabs — v4.0: Invoice Detail + Drill-Down combined)
     # =========================================================================
-    tab_overview, tab_list, tab_drilldown = st.tabs([
+    tab_overview, tab_detail = st.tabs([
         "📊 Overview & Aging",
         "📋 Invoice Detail",
-        "🔍 Drill-Down",
     ])
 
     with tab_overview:
@@ -543,20 +570,23 @@ def payment_tab_fragment(
             fragment_key=f"{key_prefix}_summary",
         )
 
-    with tab_list:
+    with tab_detail:
+        # Part 1: AR by Salesperson summary + Top Customers chart
+        ar_summary_section(
+            pay_df=filtered_df,
+            fragment_key=f"{key_prefix}_ar_summary",
+        )
+
+        st.divider()
+
+        # Part 2: Invoice Detail table with click-to-select for payment/doc details
         payment_list_fragment(
             pay_df=filtered_df,
             fragment_key=f"{key_prefix}_list",
             total_count=total_count,
-        )
-
-    with tab_drilldown:
-        ar_by_salesperson_fragment(
-            pay_df=filtered_df,
             payment_txn_loader=payment_txn_loader,
             doc_loader=doc_loader,
             s3_url_generator=s3_url_generator,
-            fragment_key=f"{key_prefix}_ar_drill",
         )
 
 
@@ -861,8 +891,16 @@ def payment_list_fragment(
     pay_df: pd.DataFrame,
     fragment_key: str = "sp_pay_list",
     total_count: int = None,
+    payment_txn_loader=None,
+    doc_loader: Callable = None,
+    s3_url_generator: Callable = None,
 ):
-    """Payment transaction list with payment-focused columns."""
+    """
+    Payment transaction list with click-to-select invoice detail.
+
+    v4.0: Added payment_txn_loader, doc_loader, s3_url_generator for
+    inline payment history and document viewing on row click.
+    """
     if pay_df.empty:
         st.info("No payment data for selected filters")
         return
@@ -1060,16 +1098,127 @@ def payment_list_fragment(
                 help="Days overdue (positive = past due, negative = not yet due)"),
         }
 
-    st.dataframe(
+    # =========================================================================
+    # CLICKABLE TABLE (v4.0 — click row for payment/doc details)
+    # =========================================================================
+    has_detail_loaders = payment_txn_loader is not None or doc_loader is not None
+
+    if has_detail_loaders:
+        st.caption("👆 Click a row to view payment history & documents")
+
+    event = st.dataframe(
         detail,
         column_config=column_config,
         width="stretch",
         hide_index=True,
         height=500,
+        on_select="rerun" if has_detail_loaders else "ignore",
+        selection_mode="single-row" if has_detail_loaders else None,
+        key=f"{fragment_key}_table",
     )
+
+    # =========================================================================
+    # SELECTED ROW → INVOICE DETAIL PANEL (v4.0)
+    # =========================================================================
+    if has_detail_loaders and event and event.selection:
+        selected_rows = event.selection.rows
+        if selected_rows:
+            row_idx = selected_rows[0]
+            if row_idx < len(display_df):
+                sel_row = display_df.iloc[row_idx]
+                selected_inv = str(sel_row.get('inv_number', ''))
+                if selected_inv and selected_inv != 'nan':
+                    _render_selected_invoice_detail(
+                        sel_row=sel_row,
+                        inv_number=selected_inv,
+                        payment_txn_loader=payment_txn_loader,
+                        doc_loader=doc_loader,
+                        s3_url_generator=s3_url_generator,
+                        fragment_key=fragment_key,
+                    )
 
     # Export
     _render_export_button(pay_df, fragment_key)
+
+
+# =============================================================================
+# SELECTED INVOICE DETAIL PANEL (v4.0)
+# =============================================================================
+
+def _render_selected_invoice_detail(
+    sel_row: pd.Series,
+    inv_number: str,
+    payment_txn_loader=None,
+    doc_loader: Callable = None,
+    s3_url_generator: Callable = None,
+    fragment_key: str = "inv_detail",
+):
+    """
+    Render inline detail panel for a selected invoice row.
+
+    Shows invoice metadata + tabs for Payment History and Documents.
+    Reuses _render_invoice_payments / _render_invoice_documents from ar_drilldown.
+    """
+    with st.container(border=True):
+        # Header
+        vat_num = sel_row.get('vat_number', '')
+        vat_display = f" · VAT: {vat_num}" if pd.notna(vat_num) and vat_num else ""
+        st.markdown(f"**{inv_number}**{vat_display}")
+
+        # Key info row
+        ic1, ic2, ic3, ic4 = st.columns(4)
+        with ic1:
+            inv_date = sel_row.get('inv_date', '')
+            due_date = sel_row.get('due_date', '')
+            inv_str = pd.Timestamp(inv_date).strftime('%Y-%m-%d') if pd.notna(inv_date) else '—'
+            due_str = pd.Timestamp(due_date).strftime('%Y-%m-%d') if pd.notna(due_date) else '—'
+            st.caption(f"📅 Inv: {inv_str} · Due: {due_str}")
+        with ic2:
+            customer = sel_row.get('customer', '—')
+            st.caption(f"🏢 {customer}")
+        with ic3:
+            status = sel_row.get('payment_status', '—')
+            ratio = sel_row.get('payment_ratio', '0%')
+            st.caption(f"📊 {status} · {ratio}")
+        with ic4:
+            aging = sel_row.get('aging_bucket', '')
+            days = sel_row.get('days_overdue', 0)
+            if aging:
+                st.caption(f"⏰ {aging} ({days}d)")
+            elif pd.notna(days):
+                st.caption(f"⏰ {int(days)}d overdue" if days > 0 else f"⏰ due in {abs(int(days))}d")
+
+        # Tabs: Payment History | Documents
+        detail_tabs = []
+        tab_keys = []
+        if payment_txn_loader is not None:
+            detail_tabs.append("💳 Payment History")
+            tab_keys.append("txn")
+        if doc_loader is not None:
+            detail_tabs.append("📎 Documents")
+            tab_keys.append("docs")
+
+        if not detail_tabs:
+            return
+
+        tabs = st.tabs(detail_tabs)
+        inv_key = inv_number[:12].replace('/', '_')
+
+        for tab, tab_key in zip(tabs, tab_keys):
+            with tab:
+                if tab_key == "txn":
+                    _render_invoice_payments(
+                        inv_number=inv_number,
+                        payment_txn_loader=payment_txn_loader,
+                        fragment_key=f"{fragment_key}_txn_{inv_key}",
+                    )
+                elif tab_key == "docs":
+                    _render_invoice_documents(
+                        inv_number=inv_number,
+                        doc_loader=doc_loader,
+                        s3_url_generator=s3_url_generator,
+                        fragment_key=f"{fragment_key}_doc_{inv_key}",
+                    )
 
 
 # =============================================================================

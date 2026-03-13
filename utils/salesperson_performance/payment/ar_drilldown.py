@@ -24,6 +24,13 @@ v3.0 CHANGES:
 - Click any row → detail panel appears below with Payment History + Documents
 - Removed "Select invoice for details" selectbox — more intuitive UX
 
+v4.0 CHANGES:
+- Extracted ar_summary_section() from ar_by_salesperson_fragment Level 1
+  for use in combined Invoice Detail tab (fragments.py v4.0)
+- ar_summary_section renders ONLY: salesperson table + unassigned warning
+  + top customers chart. No selectbox or customer breakdown.
+- ar_by_salesperson_fragment preserved as legacy full version (all 4 levels)
+
 v3.1 CHANGES:
 - Fixed is_unassigned detection: now uses is_unassigned column from data
   instead of name == 'Unassigned' string check
@@ -31,7 +38,7 @@ v3.1 CHANGES:
   (e.g. 'Ánh Phan [INACTIVE]'), not 'Unassigned'. Name-based check missed them.
 - Affects: Level 1 salesperson summary + Level 2 drill-down categorization
 
-VERSION: 3.1.0
+VERSION: 4.0.0
 """
 
 import logging
@@ -92,7 +99,134 @@ def _get_file_icon(filename: str) -> str:
 
 
 # =============================================================================
-# LEVEL 1: SALESPERSON AR SUMMARY + TOP CUSTOMERS
+# LEVEL 1 ONLY: AR SUMMARY (for combined Invoice Detail tab)
+# =============================================================================
+
+def ar_summary_section(
+    pay_df: pd.DataFrame,
+    fragment_key: str = "ar_summary",
+):
+    """
+    Render ONLY the AR by Salesperson summary table + Top Customers chart.
+
+    Extracted from ar_by_salesperson_fragment Level 1 for the combined
+    Invoice Detail tab (v4.0). No salesperson selectbox or customer
+    breakdown — those are handled by the top-level filter and the
+    invoice table's click-to-select.
+
+    Args:
+        pay_df: Filtered AR data (already filtered by top-level filters)
+        fragment_key: Widget key prefix
+    """
+    if pay_df.empty:
+        st.info("No AR data for selected filters")
+        return
+
+    has_line_outstanding = LINE_OUTSTANDING_COL in pay_df.columns
+    out_col = 'outstanding_usd'
+    line_out_col = LINE_OUTSTANDING_COL if has_line_outstanding else out_col
+    today = pd.Timestamp(date.today())
+
+    has_unassigned_col = 'is_unassigned' in pay_df.columns
+    sp_list = sorted(pay_df['sales_name'].unique().tolist())
+
+    assigned_metrics = []
+    unassigned_metrics = []
+
+    for sp_name in sp_list:
+        sp_data = pay_df[pay_df['sales_name'] == sp_name]
+
+        if has_unassigned_col:
+            is_unassigned = sp_data['is_unassigned'].max() == 1
+        else:
+            is_unassigned = sp_name == 'Unassigned'
+
+        outstanding = sp_data[line_out_col].sum() if is_unassigned else sp_data[out_col].sum()
+        collected = sp_data['collected_usd'].sum() if not is_unassigned else 0
+        invoiced = sp_data[REV_COL].sum() if not is_unassigned else sp_data[line_out_col].sum()
+
+        n_customers = sp_data['customer'].nunique()
+        n_invoices = sp_data['inv_number'].nunique() if 'inv_number' in sp_data.columns else len(sp_data)
+
+        if 'due_date' in sp_data.columns:
+            use_col = out_col if not is_unassigned else line_out_col
+            overdue_mask = (
+                sp_data['due_date'].notna() &
+                (sp_data['due_date'] < today) &
+                (sp_data[use_col] > 0.01)
+            )
+            overdue_amount = sp_data.loc[overdue_mask, use_col].sum()
+        else:
+            overdue_amount = 0
+
+        collection_rate = None if is_unassigned else (collected / invoiced if invoiced > 0 else 0)
+
+        row = {
+            'sales_name': sp_name,
+            'outstanding': outstanding,
+            'collected': collected,
+            'invoiced': invoiced,
+            'collection_rate': collection_rate,
+            'overdue': overdue_amount,
+            'customers': n_customers,
+            'invoices': n_invoices,
+            'is_unassigned': is_unassigned,
+        }
+
+        if is_unassigned:
+            unassigned_metrics.append(row)
+        else:
+            assigned_metrics.append(row)
+
+    sp_summary = pd.DataFrame(assigned_metrics + unassigned_metrics)
+    if sp_summary.empty:
+        return
+
+    sp_summary = sp_summary.sort_values('outstanding', ascending=False).reset_index(drop=True)
+
+    # --- Assigned Salesperson Table ---
+    assigned_df = sp_summary[~sp_summary['is_unassigned']]
+    if not assigned_df.empty:
+        st.markdown("##### 👤 AR by Salesperson")
+        display_sp = assigned_df.copy()
+        display_sp['#'] = range(1, len(display_sp) + 1)
+        display_sp['Outstanding'] = display_sp['outstanding'].apply(_fmt_currency)
+        display_sp['Overdue'] = display_sp['overdue'].apply(
+            lambda x: _fmt_currency(x) if x > 0 else "—"
+        )
+        display_sp['Rate'] = display_sp['collection_rate'].apply(
+            lambda x: f"{x:.0%}" if x is not None and x > 0 else "—"
+        )
+        display_sp['Cust.'] = display_sp['customers'].astype(int)
+        display_sp['Inv.'] = display_sp['invoices'].astype(int)
+
+        st.dataframe(
+            display_sp[['#', 'sales_name', 'Outstanding', 'Overdue', 'Rate', 'Cust.', 'Inv.']].rename(
+                columns={'sales_name': 'Salesperson'}
+            ),
+            hide_index=True,
+            width="stretch",
+            height=min(400, 35 * len(display_sp) + 38),
+        )
+
+    # --- Unassigned Section ---
+    unassigned_df = sp_summary[sp_summary['is_unassigned']]
+    if not unassigned_df.empty:
+        ua = unassigned_df.iloc[0]
+        st.warning(
+            f"⚠️ **Unassigned AR**: {_fmt_currency(ua['outstanding'])} outstanding "
+            f"— {int(ua['customers'])} customers, {int(ua['invoices'])} invoices"
+            + (f" · {_fmt_currency(ua['overdue'])} overdue" if ua['overdue'] > 0 else ""),
+            icon="⚠️",
+        )
+
+    # --- Top Customers Chart ---
+    if has_line_outstanding and len(pay_df['customer'].unique()) > 1:
+        _render_top_customers_chart(pay_df, fragment_key)
+
+
+# =============================================================================
+# LEVEL 1: SALESPERSON AR SUMMARY + TOP CUSTOMERS (legacy full version)
 # =============================================================================
 
 def ar_by_salesperson_fragment(
