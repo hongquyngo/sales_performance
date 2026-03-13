@@ -14,6 +14,11 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v3.7.0: UPDATED _AR_VIEW_SELECT for customer_ar_by_salesperson_view v2.3.1
+          - INACTIVE employees now show with status suffix (e.g. 'Ánh Phan [INACTIVE]')
+            instead of being lumped into 'Unassigned'
+          - Enables UI to distinguish "no split" vs "INACTIVE employee"
+          - Backward-compatible: is_unassigned column still correctly set
 - v3.6.0: REFACTORED get_ar_outstanding_data() for Payment & Collection tab
           - Now queries customer_ar_by_salesperson_view (NEW dedicated AR view)
           - Skips 2 intermediate view layers → direct from SI view
@@ -79,7 +84,7 @@ CHANGELOG:
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 
-VERSION: 3.6.0
+VERSION: 3.7.0
 """
 
 import logging
@@ -108,9 +113,15 @@ _AR_VIEW_SELECT = """
         'REALTIME' AS data_source,
         si_line_id AS unified_line_id,
         
-        -- Current salesperson (joined by CURDATE, not inv_date)
-        -- Unassigned: no approved split for this customer+product as of today
-        COALESCE(current_sales_name, 'Unassigned') AS sales_name,
+        -- Current salesperson (v2.3.1: latest effective period + status-aware)
+        -- ACTIVE: show name as-is
+        -- INACTIVE/TERMINATED: show name with status suffix for transparency
+        -- No split: 'Unassigned'
+        CASE
+            WHEN current_sales_name IS NULL THEN 'Unassigned'
+            WHEN current_sales_status = 'ACTIVE' THEN current_sales_name
+            ELSE CONCAT(current_sales_name, ' [', current_sales_status, ']')
+        END AS sales_name,
         current_sales_id AS sales_id,
         COALESCE(current_sales_email, 'unassigned') AS sales_email,
         current_sales_status AS employment_status,

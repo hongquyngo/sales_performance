@@ -16,6 +16,16 @@ v3.0 CHANGES (from v2.0):
 - Removed Column Legend expander (help= tooltips sufficient)
 - Fixed _group_by_invoice for pandas 2.x compatibility
 
+v3.2.0 FIX:
+- Fixed double-count bug for INACTIVE co-split employees
+- Root cause: v3.1.0 override replaced split-allocated amounts with 100% line amounts
+  for ALL is_unassigned=1 rows. But v2.3.1 SQL view now returns INACTIVE employees
+  with is_unassigned=1 AND split_percentage>0 (valid split allocations).
+  Override was 30% → 100%, causing 170% total when ACTIVE co-split also exists.
+- Fix: only override amounts when split_percentage=0 (truly no split), not for
+  INACTIVE employees whose split-allocated amounts are already correct from SQL.
+- Affects: AR Context Banner, Unified Metrics, all sub-tabs
+
 v3.1.0 FIX:
 - Unassigned AR now shows actual outstanding amount ($430K+ was hidden as $0)
 - Root cause: unassigned rows have split_percentage=0, so split-allocated amounts
@@ -24,7 +34,7 @@ v3.1.0 FIX:
   line amounts (line_outstanding_usd, line_collected_usd, calculated_invoiced_amount_usd)
 - Affects: AR Context Banner, Unified Metrics, all sub-tabs, and filter by Assignment
 
-VERSION: 3.1.0
+VERSION: 3.2.0
 """
 
 import logging
@@ -288,47 +298,64 @@ def payment_tab_fragment(
         pay_df['outstanding_usd'] = pay_df[REV_COL] * (1 - pay_df['payment_ratio'])
 
     # =========================================================================
-    # FIX v3.1.0: Unassigned rows have split_percentage=0, so all
-    # split-allocated amounts (outstanding_by_split_usd, collected_by_split_usd,
-    # sales_by_split_usd) are $0. Override with actual line amounts so that
-    # unassigned AR is visible in banner, filters, metrics, and sub-tabs.
+    # FIX v3.1.0 → v3.2.0: Unassigned AR visibility
+    #
+    # Problem: rows with split_percentage=0 have all split-allocated amounts = $0,
+    #   hiding real AR from the UI.
+    # Fix: override with actual line amounts for those rows.
+    #
+    # v3.2.0 IMPORTANT: Only override when split_percentage=0 (truly no split).
+    #   INACTIVE employees (is_unassigned=1 but split_percentage>0) have correct
+    #   split-allocated amounts from SQL — overriding those would double-count
+    #   when an ACTIVE co-split partner also exists.
+    #
+    # Scenarios:
+    #   is_unassigned=1, split=0%   → no split exists, override to line amounts ✅
+    #   is_unassigned=1, split=30%  → INACTIVE employee, SQL amounts correct, keep ✅
+    #   is_unassigned=0, split=70%  → ACTIVE employee, SQL amounts correct, keep ✅
     # =========================================================================
-    _unassigned_mask = None
-    if 'is_unassigned' in pay_df.columns:
-        _unassigned_mask = pay_df['is_unassigned'] == 1
+    _no_split_mask = None
+    if 'is_unassigned' in pay_df.columns and 'split_rate_percent' in pay_df.columns:
+        _no_split_mask = (
+            (pay_df['is_unassigned'] == 1) &
+            (pay_df['split_rate_percent'].fillna(0) == 0)
+        )
+    elif 'is_unassigned' in pay_df.columns:
+        # Fallback: no split_rate_percent column (legacy data)
+        _no_split_mask = pay_df['is_unassigned'] == 1
     elif 'sales_name' in pay_df.columns:
-        _unassigned_mask = pay_df['sales_name'] == 'Unassigned'
+        _no_split_mask = pay_df['sales_name'] == 'Unassigned'
 
-    if _unassigned_mask is not None and _unassigned_mask.any():
-        n_unassigned = int(_unassigned_mask.sum())
+    if _no_split_mask is not None and _no_split_mask.any():
+        n_no_split = int(_no_split_mask.sum())
         # Outstanding: use actual line outstanding (not split-allocated)
         if LINE_OUTSTANDING_COL in pay_df.columns:
-            pay_df.loc[_unassigned_mask, 'outstanding_usd'] = pd.to_numeric(
-                pay_df.loc[_unassigned_mask, LINE_OUTSTANDING_COL], errors='coerce'
+            pay_df.loc[_no_split_mask, 'outstanding_usd'] = pd.to_numeric(
+                pay_df.loc[_no_split_mask, LINE_OUTSTANDING_COL], errors='coerce'
             ).fillna(0)
             # Also override the pre-calculated column so that downstream
             # functions (analyze_payments, etc.) read correct values
             if PRECALC_OUTSTANDING_COL in pay_df.columns:
-                pay_df.loc[_unassigned_mask, PRECALC_OUTSTANDING_COL] = (
-                    pay_df.loc[_unassigned_mask, 'outstanding_usd']
+                pay_df.loc[_no_split_mask, PRECALC_OUTSTANDING_COL] = (
+                    pay_df.loc[_no_split_mask, 'outstanding_usd']
                 )
         # Collected: use actual line collected
         if LINE_COLLECTED_COL in pay_df.columns:
-            pay_df.loc[_unassigned_mask, 'collected_usd'] = pd.to_numeric(
-                pay_df.loc[_unassigned_mask, LINE_COLLECTED_COL], errors='coerce'
+            pay_df.loc[_no_split_mask, 'collected_usd'] = pd.to_numeric(
+                pay_df.loc[_no_split_mask, LINE_COLLECTED_COL], errors='coerce'
             ).fillna(0)
             if PRECALC_COLLECTED_COL in pay_df.columns:
-                pay_df.loc[_unassigned_mask, PRECALC_COLLECTED_COL] = (
-                    pay_df.loc[_unassigned_mask, 'collected_usd']
+                pay_df.loc[_no_split_mask, PRECALC_COLLECTED_COL] = (
+                    pay_df.loc[_no_split_mask, 'collected_usd']
                 )
         # Revenue (invoiced): use actual line invoiced amount for display
         if ACTUAL_REVENUE_COL in pay_df.columns:
-            pay_df.loc[_unassigned_mask, REV_COL] = pd.to_numeric(
-                pay_df.loc[_unassigned_mask, ACTUAL_REVENUE_COL], errors='coerce'
+            pay_df.loc[_no_split_mask, REV_COL] = pd.to_numeric(
+                pay_df.loc[_no_split_mask, ACTUAL_REVENUE_COL], errors='coerce'
             ).fillna(0)
         logger.info(
-            f"Unassigned AR fix: {n_unassigned} rows overridden with actual line amounts "
-            f"(outstanding=${pay_df.loc[_unassigned_mask, 'outstanding_usd'].sum():,.0f})"
+            f"No-split AR fix: {n_no_split} rows overridden with actual line amounts "
+            f"(outstanding=${pay_df.loc[_no_split_mask, 'outstanding_usd'].sum():,.0f})"
         )
 
     if 'due_date' in pay_df.columns:
@@ -366,7 +393,12 @@ def payment_tab_fragment(
 
     with col_f3:
         st.markdown("**Salesperson**")
-        sp_options = sorted(pay_df['sales_name'].dropna().unique().tolist())
+        # Exclude unassigned names from dropdown — controlled by Assignment filter
+        if 'is_unassigned' in pay_df.columns:
+            _assigned_df = pay_df[pay_df['is_unassigned'] == 0]
+        else:
+            _assigned_df = pay_df[pay_df['sales_name'] != 'Unassigned']
+        sp_options = sorted(_assigned_df['sales_name'].dropna().unique().tolist())
         selected_salespeople = st.multiselect(
             "Salesperson", sp_options,
             key=f"{key_prefix}_salesperson", placeholder="All salespeople",
@@ -416,6 +448,16 @@ def payment_tab_fragment(
 
     # =========================================================================
     # APPLY FILTERS
+    #
+    # Filter interaction rules (v3.2.0):
+    #   - Salesperson filter: only filters assigned salespeople
+    #     (unassigned controlled exclusively by Assignment filter)
+    #   - Assignment filter: applied AFTER salesperson filter
+    #     → "All": show selected salespeople + unassigned
+    #     → "Assigned": show selected salespeople only (no unassigned)
+    #     → "Unassigned": show unassigned only (ignore salesperson selection)
+    #   - When salesperson selected + Assignment="All": 
+    #     show ONLY the selected salespeople (not all unassigned too)
     # =========================================================================
     filtered_df = pay_df.copy()
 
@@ -428,14 +470,9 @@ def payment_tab_fragment(
         else:
             filtered_df = filtered_df[filtered_df['customer'].isin(selected_customers)]
 
+    # Salesperson filter: straightforward — only keep selected names
     if selected_salespeople:
-        # FIX v3.1.0: Always keep unassigned rows alongside selected salespeople.
-        # Unassigned AR should be visible to all roles for complete AR picture.
-        _sp_mask = filtered_df['sales_name'].isin(selected_salespeople)
-        _unassigned_keep = filtered_df['sales_name'] == 'Unassigned'
-        if 'is_unassigned' in filtered_df.columns:
-            _unassigned_keep = _unassigned_keep | (filtered_df['is_unassigned'] == 1)
-        filtered_df = filtered_df[_sp_mask | _unassigned_keep]
+        filtered_df = filtered_df[filtered_df['sales_name'].isin(selected_salespeople)]
 
     if selected_entities and 'legal_entity' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['legal_entity'].isin(selected_entities)]
@@ -443,7 +480,7 @@ def payment_tab_fragment(
     if min_outstanding > 0:
         filtered_df = filtered_df[filtered_df['outstanding_usd'] >= min_outstanding]
 
-    # Assignment filter
+    # Assignment filter (applied after salesperson filter)
     if assignment_filter == 'Assigned':
         if 'is_unassigned' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['is_unassigned'] == 0]

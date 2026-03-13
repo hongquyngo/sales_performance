@@ -24,7 +24,14 @@ v3.0 CHANGES:
 - Click any row → detail panel appears below with Payment History + Documents
 - Removed "Select invoice for details" selectbox — more intuitive UX
 
-VERSION: 3.0.0
+v3.1 CHANGES:
+- Fixed is_unassigned detection: now uses is_unassigned column from data
+  instead of name == 'Unassigned' string check
+- Reason: v2.3.1 SQL view returns INACTIVE employees with their real names
+  (e.g. 'Ánh Phan [INACTIVE]'), not 'Unassigned'. Name-based check missed them.
+- Affects: Level 1 salesperson summary + Level 2 drill-down categorization
+
+VERSION: 3.1.0
 """
 
 import logging
@@ -119,6 +126,9 @@ def ar_by_salesperson_fragment(
     today = pd.Timestamp(date.today())
 
     # Build summary per salesperson
+    # v2.3.1: INACTIVE employees have real names (e.g. 'Ánh Phan [INACTIVE]')
+    # but is_unassigned=1. Use column-based detection, not name matching.
+    has_unassigned_col = 'is_unassigned' in pay_df.columns
     sp_list = sorted(pay_df['sales_name'].unique().tolist())
 
     assigned_metrics = []
@@ -126,7 +136,13 @@ def ar_by_salesperson_fragment(
 
     for sp_name in sp_list:
         sp_data = pay_df[pay_df['sales_name'] == sp_name]
-        is_unassigned = sp_name == 'Unassigned'
+
+        # Determine if this salesperson group is "unassigned"
+        # Priority: is_unassigned column > name-based fallback
+        if has_unassigned_col:
+            is_unassigned = sp_data['is_unassigned'].max() == 1
+        else:
+            is_unassigned = sp_name == 'Unassigned'
 
         outstanding = sp_data[line_out_col].sum() if is_unassigned else sp_data[out_col].sum()
         collected = sp_data['collected_usd'].sum() if not is_unassigned else 0
@@ -239,7 +255,11 @@ def ar_by_salesperson_fragment(
         return
 
     sp_data = pay_df[pay_df['sales_name'] == selected_sp].copy()
-    is_unassigned = selected_sp == 'Unassigned'
+    # Use is_unassigned column from data (catches INACTIVE employees with real names)
+    if has_unassigned_col:
+        is_unassigned = sp_data['is_unassigned'].max() == 1
+    else:
+        is_unassigned = selected_sp == 'Unassigned'
 
     _render_customer_breakdown(
         sp_data=sp_data,
