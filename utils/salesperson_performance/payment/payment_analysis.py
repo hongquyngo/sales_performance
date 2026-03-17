@@ -699,8 +699,8 @@ def render_payment_section(payment_data: Optional[Dict]):
         with col_detail:
             st.markdown("##### 📋 Aging Detail")
             display = aging.copy()
-            display['Amount'] = display['amount'].apply(lambda x: f"${x:,.0f}")
-            display['Share'] = display['share'].apply(lambda x: f"{x:.0%}")
+            display['Amount'] = display['amount'].apply(lambda x: f"${x:,.2f}")
+            display['Share'] = display['share'].apply(lambda x: f"{x:.1%}")
             display['Lines'] = display['count'].astype(int)
             st.dataframe(
                 display[['bucket', 'Amount', 'Share', 'Lines']].rename(
@@ -727,10 +727,10 @@ def render_payment_section(payment_data: Optional[Dict]):
     if not by_entity.empty and len(by_entity) > 1:
         st.markdown("##### 🏢 Collection by Entity")
         display_ent = by_entity.copy()
-        display_ent['Invoiced'] = display_ent['total_invoiced'].apply(lambda x: f"${x:,.0f}")
-        display_ent['Collected'] = display_ent['collected'].apply(lambda x: f"${x:,.0f}")
-        display_ent['Outstanding'] = display_ent['outstanding'].apply(lambda x: f"${x:,.0f}")
-        display_ent['Rate'] = display_ent['collection_rate'].apply(lambda x: f"{x:.0%}")
+        display_ent['Invoiced'] = display_ent['total_invoiced'].apply(lambda x: f"${x:,.2f}")
+        display_ent['Collected'] = display_ent['collected'].apply(lambda x: f"${x:,.2f}")
+        display_ent['Outstanding'] = display_ent['outstanding'].apply(lambda x: f"${x:,.2f}")
+        display_ent['Rate'] = display_ent['collection_rate'].apply(lambda x: f"{x:.1%}")
         st.dataframe(
             display_ent[['legal_entity', 'Invoiced', 'Collected', 'Outstanding', 'Rate']].rename(
                 columns={'legal_entity': 'Legal Entity'}
@@ -764,9 +764,9 @@ def _build_aging_chart(aging_df: pd.DataFrame) -> alt.Chart:
         ), legend=None),
         tooltip=[
             alt.Tooltip('bucket:N', title='Bucket'),
-            alt.Tooltip('amount:Q', title='Amount', format='$,.0f'),
+            alt.Tooltip('amount:Q', title='Amount', format='$,.2f'),
             alt.Tooltip('count:Q', title='Line Items'),
-            alt.Tooltip('share:Q', title='Share', format='.0%'),
+            alt.Tooltip('share:Q', title='Share', format='.1%'),
         ]
     )
 
@@ -775,7 +775,7 @@ def _build_aging_chart(aging_df: pd.DataFrame) -> alt.Chart:
     ).encode(
         y=alt.Y('bucket:N', sort=alt.EncodingSortField(field='bucket_order')),
         x=alt.X('amount:Q'),
-        text=alt.Text('amount:Q', format='$,.0f'),
+        text=alt.Text('amount:Q', format='$,.2f'),
     )
 
     return (bars + text_labels).properties(
@@ -806,7 +806,7 @@ def _build_collection_trend_chart(by_month: pd.DataFrame) -> alt.Chart:
         tooltip=[
             alt.Tooltip('inv_month:N', title='Month'),
             alt.Tooltip('type:N', title='Type'),
-            alt.Tooltip('amount:Q', title='Amount', format='$,.0f'),
+            alt.Tooltip('amount:Q', title='Amount', format='$,.2f'),
         ]
     )
 
@@ -815,10 +815,10 @@ def _build_collection_trend_chart(by_month: pd.DataFrame) -> alt.Chart:
     ).encode(
         x=alt.X('inv_month:N'),
         y=alt.Y('collection_rate:Q', title='Collection Rate',
-                axis=alt.Axis(format='.0%')),
+                axis=alt.Axis(format='.1%')),
         tooltip=[
             alt.Tooltip('inv_month:N', title='Month'),
-            alt.Tooltip('collection_rate:Q', title='Rate', format='.0%'),
+            alt.Tooltip('collection_rate:Q', title='Rate', format='.1%'),
         ]
     )
 

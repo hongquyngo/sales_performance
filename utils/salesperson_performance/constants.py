@@ -185,7 +185,7 @@ CACHE_TTL_SECONDS = 1800  # 30 minutes
 EXCEL_STYLES = {
     "header_fill_color": "1f77b4",
     "header_font_color": "FFFFFF",
-    "currency_format": '#,##0',
+    "currency_format": '#,##0.00',
     "percent_format": '0.0%',
     "date_format": 'YYYY-MM-DD',
 }

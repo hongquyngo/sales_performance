@@ -190,12 +190,12 @@ def ar_summary_section(
         st.markdown("##### 👤 AR by Salesperson")
         display_sp = assigned_df.copy()
         display_sp['#'] = range(1, len(display_sp) + 1)
-        display_sp['Outstanding'] = display_sp['outstanding'].apply(_fmt_currency)
+        display_sp['Outstanding'] = display_sp['outstanding'].apply(lambda x: f"${x:,.2f}")
         display_sp['Overdue'] = display_sp['overdue'].apply(
-            lambda x: _fmt_currency(x) if x > 0 else "—"
+            lambda x: f"${x:,.2f}" if x > 0 else "—"
         )
         display_sp['Rate'] = display_sp['collection_rate'].apply(
-            lambda x: f"{x:.0%}" if x is not None and x > 0 else "—"
+            lambda x: f"{x:.1%}" if x is not None and x > 0 else "—"
         )
         display_sp['Cust.'] = display_sp['customers'].astype(int)
         display_sp['Inv.'] = display_sp['invoices'].astype(int)
@@ -214,9 +214,9 @@ def ar_summary_section(
     if not unassigned_df.empty:
         ua = unassigned_df.iloc[0]
         st.warning(
-            f"⚠️ **Unassigned AR**: {_fmt_currency(ua['outstanding'])} outstanding "
+            f"⚠️ **Unassigned AR**: ${ua['outstanding']:,.2f} outstanding "
             f"— {int(ua['customers'])} customers, {int(ua['invoices'])} invoices"
-            + (f" · {_fmt_currency(ua['overdue'])} overdue" if ua['overdue'] > 0 else ""),
+            + (f" · ${ua['overdue']:,.2f} overdue" if ua['overdue'] > 0 else ""),
             icon="⚠️",
         )
 
@@ -335,12 +335,12 @@ def ar_by_salesperson_fragment(
     if not assigned_df.empty:
         display_sp = assigned_df.copy()
         display_sp['#'] = range(1, len(display_sp) + 1)
-        display_sp['Outstanding'] = display_sp['outstanding'].apply(_fmt_currency)
+        display_sp['Outstanding'] = display_sp['outstanding'].apply(lambda x: f"${x:,.2f}")
         display_sp['Overdue'] = display_sp['overdue'].apply(
-            lambda x: _fmt_currency(x) if x > 0 else "—"
+            lambda x: f"${x:,.2f}" if x > 0 else "—"
         )
         display_sp['Rate'] = display_sp['collection_rate'].apply(
-            lambda x: f"{x:.0%}" if x is not None and x > 0 else "—"
+            lambda x: f"{x:.1%}" if x is not None and x > 0 else "—"
         )
         display_sp['Cust.'] = display_sp['customers'].astype(int)
         display_sp['Inv.'] = display_sp['invoices'].astype(int)
@@ -361,9 +361,9 @@ def ar_by_salesperson_fragment(
     if not unassigned_df.empty:
         ua = unassigned_df.iloc[0]
         st.warning(
-            f"⚠️ **Unassigned AR**: {_fmt_currency(ua['outstanding'])} outstanding "
+            f"⚠️ **Unassigned AR**: ${ua['outstanding']:,.2f} outstanding "
             f"— {int(ua['customers'])} customers, {int(ua['invoices'])} invoices"
-            + (f" · {_fmt_currency(ua['overdue'])} overdue" if ua['overdue'] > 0 else ""),
+            + (f" · ${ua['overdue']:,.2f} overdue" if ua['overdue'] > 0 else ""),
             icon="⚠️",
         )
 
@@ -555,10 +555,10 @@ def _render_customer_breakdown(
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Outstanding", _fmt_currency(total_outstanding))
+        st.metric("Outstanding", f"${total_outstanding:,.2f}")
     with c2:
         if total_overdue > 0:
-            st.metric("Overdue", _fmt_currency(total_overdue))
+            st.metric("Overdue", f"${total_overdue:,.2f}")
         else:
             st.metric("Overdue", "—")
     with c3:
@@ -583,15 +583,15 @@ def _render_customer_breakdown(
             lc_val = cust_row.get('outstanding_lc', 0)
             ccy = cust_row.get('currency', '')
             if pd.notna(lc_val) and lc_val > 0 and ccy:
-                lc_text = f" · {lc_val:,.0f} {ccy}"
+                lc_text = f" · {lc_val:,.2f} {ccy}"
 
         # Overdue indicator in label
         overdue_text = ""
         if cust_overdue > 0:
-            overdue_text = f" · 🔴 {_fmt_currency(cust_overdue)} overdue"
+            overdue_text = f" · 🔴 ${cust_overdue:,.2f} overdue"
 
         expander_label = (
-            f"**{cust_name}** — {_fmt_currency(cust_out)}{lc_text} "
+            f"**{cust_name}** — ${cust_out:,.2f}{lc_text} "
             f"({cust_inv_count} inv.){overdue_text}"
         )
 
@@ -666,21 +666,21 @@ def _render_invoice_list(
 
     if 'line_invoiced_amount_lc' in display.columns:
         display['_inv_lc'] = display['line_invoiced_amount_lc'].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            lambda x: f"{x:,.2f}" if pd.notna(x) else "0.00"
         )
         cols.append('_inv_lc')
         col_config['_inv_lc'] = st.column_config.TextColumn("Invoiced (LC)")
 
     if 'line_outstanding_lc' in display.columns:
         display['_os_lc'] = display['line_outstanding_lc'].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            lambda x: f"{x:,.2f}" if pd.notna(x) else "0.00"
         )
         cols.append('_os_lc')
         col_config['_os_lc'] = st.column_config.TextColumn("Outstanding (LC)")
 
     if out_col in display.columns:
         display['_os_usd'] = display[out_col].apply(
-            lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+            lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00"
         )
         cols.append('_os_usd')
         col_config['_os_usd'] = st.column_config.TextColumn("Outstanding (USD)")
@@ -691,7 +691,7 @@ def _render_invoice_list(
 
     if 'payment_ratio' in display.columns:
         display['_ratio'] = display['payment_ratio'].apply(
-            lambda x: f"{x:.0%}" if pd.notna(x) else "0%"
+            lambda x: f"{x:.1%}" if pd.notna(x) else "0.0%"
         )
         cols.append('_ratio')
         col_config['_ratio'] = st.column_config.TextColumn("Paid%")
@@ -852,7 +852,7 @@ def _render_invoice_payments(
 
     if 'payment_ratio' in display.columns:
         display['payment_ratio'] = display['payment_ratio'].apply(
-            lambda x: f"{x:.0%}" if pd.notna(x) else "—"
+            lambda x: f"{x:.1%}" if pd.notna(x) else "—"
         )
 
     st.dataframe(
@@ -865,7 +865,7 @@ def _render_invoice_payments(
     # Summary
     if 'amount_received_raw' in txn_df.columns and 'currency_code' in txn_df.columns:
         by_ccy = txn_df.groupby('currency_code')['amount_received_raw'].sum()
-        summary_parts = [f"{amt:,.0f} {ccy}" for ccy, amt in by_ccy.items()]
+        summary_parts = [f"{amt:,.2f} {ccy}" for ccy, amt in by_ccy.items()]
         st.caption(f"Total received: {' + '.join(summary_parts)} ({len(txn_df)} transactions)")
 
 

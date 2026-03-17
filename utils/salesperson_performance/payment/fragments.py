@@ -156,15 +156,15 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
     # LC
     if 'line_invoiced_amount_lc' in first_rows.columns:
         first_rows['_invoiced_lc_display'] = first_rows['line_invoiced_amount_lc'].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            lambda x: f"{x:,.2f}" if pd.notna(x) else "0.00"
         )
     if 'line_outstanding_lc' in first_rows.columns:
         first_rows['_outstanding_lc_display'] = first_rows['line_outstanding_lc'].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            lambda x: f"{x:,.2f}" if pd.notna(x) else "0.00"
         )
     if 'line_collected_lc' in first_rows.columns:
         first_rows['_collected_lc_display'] = first_rows['line_collected_lc'].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            lambda x: f"{x:,.2f}" if pd.notna(x) else "0.00"
         )
 
     # USD (actual line outstanding, not split)
@@ -173,7 +173,7 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
         first_rows[line_out_col], errors='coerce'
     ).fillna(0)
     first_rows['_outstanding_usd_display'] = first_rows['_outstanding_usd_grouped'].apply(
-        lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+        lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00"
     )
 
     # Clean up temp column
@@ -690,8 +690,8 @@ def _render_unified_metrics(
     with c1:
         st.metric(
             "💰 Outstanding",
-            f"${act_outstanding:,.0f}",
-            delta=f"Split: ${split_outstanding:,.0f}" if has_actual else f"{inv_count:,} invoices",
+            f"${act_outstanding:,.2f}",
+            delta=f"Split: ${split_outstanding:,.2f}" if has_actual else f"{inv_count:,} invoices",
             delta_color="off",
             help=(
                 "**Main**: Actual invoice outstanding (deduped). True AR amount.\n\n"
@@ -704,28 +704,28 @@ def _render_unified_metrics(
             od_pct = (act_overdue / act_outstanding * 100) if act_outstanding > 0 else 0
             st.metric(
                 "🔴 Overdue",
-                f"${act_overdue:,.0f}",
+                f"${act_overdue:,.2f}",
                 delta=(
-                    f"Split: ${split_overdue:,.0f} · {od_pct:.0f}%"
-                    if has_actual else f"{split_overdue_lines:,} lines · {od_pct:.0f}%"
+                    f"Split: ${split_overdue:,.2f} · {od_pct:.1f}%"
+                    if has_actual else f"{split_overdue_lines:,} lines · {od_pct:.1f}%"
                 ),
                 delta_color="inverse",
                 help=(
                     f"**Main**: Actual past-due amount (deduped). {act_overdue_inv:,} invoices.\n\n"
-                    f"**Split**: ${split_overdue:,.0f} ({split_overdue_lines:,} lines)."
+                    f"**Split**: ${split_overdue:,.2f} ({split_overdue_lines:,} lines)."
                 ) if has_actual else "Split-allocated overdue (due_date < today).",
             )
         else:
-            st.metric("🟢 Overdue", "$0", delta="None", delta_color="off")
+            st.metric("🟢 Overdue", "$0.00", delta="None", delta_color="off")
 
     with c3:
         nyd_pct = (act_nyd / act_outstanding * 100) if act_outstanding > 0 else 0
         st.metric(
             "🟢 Not Yet Due",
-            f"${act_nyd:,.0f}",
+            f"${act_nyd:,.2f}",
             delta=(
-                f"Split: ${split_nyd:,.0f} · {nyd_pct:.0f}%"
-                if has_actual else f"{nyd_pct:.0f}% of total"
+                f"Split: ${split_nyd:,.2f} · {nyd_pct:.1f}%"
+                if has_actual else f"{nyd_pct:.1f}% of total"
             ),
             delta_color="off",
             help="Within payment terms. = Outstanding − Overdue.",
@@ -734,14 +734,14 @@ def _render_unified_metrics(
     with c4:
         st.metric(
             "📊 Collection Rate",
-            f"{act_rate:.0%}",
+            f"{act_rate:.1%}",
             delta=(
-                f"Split: {split_rate:.0%} · {unpaid_count:,} unpaid"
+                f"Split: {split_rate:.1%} · {unpaid_count:,} unpaid"
                 if has_actual else f"{unpaid_count:,} unpaid · {partial_count:,} partial"
             ),
             delta_color="off",
             help=(
-                f"**Main**: Invoice-level (deduped). **Split**: {split_rate:.0%}.\n\n"
+                f"**Main**: Invoice-level (deduped). **Split**: {split_rate:.1%}.\n\n"
                 f"{unpaid_count:,} unpaid + {partial_count:,} partial invoices."
             ),
         )
@@ -817,8 +817,8 @@ def _render_context_row_ar(pay_df, filter_values, has_actual, total_outstanding)
         pct = (in_period / total_outstanding * 100) if total_outstanding > 0 else 0
         st.metric(
             "📅 Current Period",
-            f"${in_period:,.0f}",
-            delta=f"Split: ${split_in_period:,.0f} · {pct:.0f}% of AR",
+            f"${in_period:,.2f}",
+            delta=f"Split: ${split_in_period:,.2f} · {pct:.1f}% of AR",
             delta_color="off",
             help=f"Outstanding from invoices within {start_date} – {end_date}.",
         )
@@ -826,8 +826,8 @@ def _render_context_row_ar(pay_df, filter_values, has_actual, total_outstanding)
         pct = (carried / total_outstanding * 100) if total_outstanding > 0 else 0
         st.metric(
             "⏪ Carried Over",
-            f"${carried:,.0f}",
-            delta=f"Split: ${split_carried:,.0f} · {pct:.0f}% of AR",
+            f"${carried:,.2f}",
+            delta=f"Split: ${split_carried:,.2f} · {pct:.1f}% of AR",
             delta_color="inverse" if carried > 0 else "off",
             help="Outstanding from invoices BEFORE selected period. Older receivables.",
         )
@@ -836,15 +836,15 @@ def _render_context_row_ar(pay_df, filter_values, has_actual, total_outstanding)
             pct = (ua_outstanding / total_outstanding * 100) if total_outstanding > 0 else 0
             st.metric(
                 "⚠️ Unassigned AR",
-                f"${ua_outstanding:,.0f}",
-                delta=f"{ua_lines:,} lines · {pct:.0f}%",
+                f"${ua_outstanding:,.2f}",
+                delta=f"{ua_lines:,} lines · {pct:.1f}%",
                 delta_color="inverse",
                 help="No sales split assignment. Uses actual invoice amount. Setup → Sales Split to assign.",
             )
         else:
             st.metric(
                 "✅ Unassigned",
-                "$0",
+                "$0.00",
                 delta="All assigned",
                 delta_color="off",
             )
@@ -859,16 +859,16 @@ def _render_context_row_period(pay_df, has_actual,
     with rc1:
         st.metric(
             "📄 Total Invoiced",
-            f"${act_invoiced:,.0f}",
-            delta=f"Split: ${split_invoiced:,.0f}" if has_actual else None,
+            f"${act_invoiced:,.2f}",
+            delta=f"Split: ${split_invoiced:,.2f}" if has_actual else None,
             delta_color="off",
             help="Total invoiced amount (actual, deduped)." if has_actual else "Split-allocated invoiced.",
         )
     with rc2:
         st.metric(
             "✅ Total Collected",
-            f"${act_collected:,.0f}",
-            delta=f"Split: ${split_collected:,.0f}" if has_actual else None,
+            f"${act_collected:,.2f}",
+            delta=f"Split: ${split_collected:,.2f}" if has_actual else None,
             delta_color="off",
             help="Total collected from payment records (actual, deduped)." if has_actual else "Split-allocated collected.",
         )
@@ -877,7 +877,7 @@ def _render_context_row_period(pay_df, has_actual,
         st.metric(
             "💯 Fully Paid",
             f"{fully_paid_count:,}",
-            delta=f"{fp_pct:.0f}% of {inv_count:,} invoices",
+            delta=f"{fp_pct:.1f}% of {inv_count:,} invoices",
             delta_color="off",
             help="Number of invoices with payment_status = 'Fully Paid'.",
         )
@@ -1024,18 +1024,18 @@ def payment_list_fragment(
         for col in [REV_COL, GP_COL, 'collected_usd', 'outstanding_usd']:
             if col in detail.columns:
                 detail[col] = detail[col].apply(
-                    lambda x: f"${x:,.0f}" if pd.notna(x) else "$0"
+                    lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00"
                 )
         for col in ['line_invoiced_amount_lc', 'line_collected_lc', 'line_outstanding_lc']:
             if col in detail.columns:
                 detail[col] = detail.apply(
-                    lambda r: f"{r[col]:,.0f}" if pd.notna(r.get(col)) else "0",
+                    lambda r: f"{r[col]:,.2f}" if pd.notna(r.get(col)) else "0.00",
                     axis=1,
                 )
 
     if 'payment_ratio' in detail.columns:
         detail['payment_ratio'] = detail['payment_ratio'].apply(
-            lambda x: f"{x:.0%}" if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else "0%"
+            lambda x: f"{x:.1%}" if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else "0.0%"
         )
 
     # Column configs — help= tooltips replace the old Column Legend expander
@@ -1290,6 +1290,24 @@ def _render_export_button(pay_df: pd.DataFrame, fragment_key: str):
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             export_df.to_excel(writer, sheet_name='Payment Collection', index=False)
+
+            # Apply number formatting for financial precision
+            ws = writer.sheets['Payment Collection']
+            currency_headers = {
+                'Invoiced (LC)', 'Collected (LC)', 'Outstanding (LC)',
+                'O/S by Split (LC)', 'Invoice Total (LC)', 'Total Received (LC)',
+                'Invoice O/S (LC)', 'VAT Amount (LC)',
+                'Revenue by Split (USD)', 'O/S by Split (USD)',
+                'Collected by Split (USD)', 'GP by Split (USD)', 'GP1 by Split (USD)',
+            }
+            pct_headers = {'Split %', 'Payment Ratio'}
+            for col_idx, col_name in enumerate(export_df.columns, 1):
+                if col_name in currency_headers:
+                    for row_idx in range(2, len(export_df) + 2):
+                        ws.cell(row=row_idx, column=col_idx).number_format = '#,##0.00'
+                elif col_name in pct_headers:
+                    for row_idx in range(2, len(export_df) + 2):
+                        ws.cell(row=row_idx, column=col_idx).number_format = '0.0%'
 
         st.download_button(
             label="⬇️ Download Payment Data",
