@@ -2,8 +2,11 @@
 """
 KPI Center Performance Module
 
-VERSION: 6.0.0
+VERSION: 6.1.0
 CHANGELOG:
+- v6.1.0: Added Payment & Collection tab
+  - New payment/ subpackage with fragments, analysis, ar_drilldown, s3_utils
+  - AR query methods in queries.py
 - v6.0.0: Unified Analysis tab (Top Performers + Concentration + Mix)
   - Removed build_top_performers_chart (unused)
   - Simplified analysis exports
@@ -151,6 +154,17 @@ from .setup import (
     hierarchy_section,
 )
 
+# Payment & Collection — NEW v6.1.0
+from .payment import (
+    payment_tab_fragment,
+    payment_list_fragment,
+    payment_summary_fragment,
+    ar_by_kpi_center_fragment,
+    ar_summary_section as payment_ar_summary_section,
+    get_s3_manager,
+    generate_doc_url,
+)
+
 # Calculators
 from .backlog_calculator import BacklogCalculator
 from .complex_kpi_calculator import ComplexKPICalculator
@@ -266,6 +280,15 @@ __all__ = [
     'split_rules_section',
     'hierarchy_section',
     
+    # Fragments - Payment & Collection (NEW v6.1.0)
+    'payment_tab_fragment',
+    'payment_list_fragment',
+    'payment_summary_fragment',
+    'ar_by_kpi_center_fragment',
+    'payment_ar_summary_section',
+    'get_s3_manager',
+    'generate_doc_url',
+    
     # Constants
     'ALLOWED_ROLES',
     'LOOKBACK_YEARS',
@@ -285,4 +308,4 @@ __all__ = [
     'DEBUG_QUERY_TIMING',
 ]
 
-__version__ = '6.0.0'
+__version__ = '6.1.0'

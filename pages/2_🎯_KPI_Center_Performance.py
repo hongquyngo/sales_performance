@@ -57,6 +57,10 @@ from utils.kpi_center_performance import (
     # Setup
     setup_tab_fragment,
     
+    # Payment & Collection — NEW v6.1.0
+    payment_tab_fragment,
+    generate_doc_url,
+    
     # Constants
     ALLOWED_ROLES,
     DEBUG_TIMING,
@@ -509,11 +513,12 @@ def main():
     # TABS
     # =========================================================================
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Overview",
         "📋 Sales Detail",
         "📈 Analysis",
         "📦 Backlog",
+        "💰 Payment",
         "🎯 KPI & Targets",
         "⚙️ Setup"
     ])
@@ -600,10 +605,72 @@ def main():
         )
     
     # =========================================================================
-    # TAB 5: KPI & TARGETS
+    # TAB 5: PAYMENT & COLLECTION — NEW v6.1.0
     # =========================================================================
     
     with tab5:
+        st.subheader("💰 Payment & Collection")
+        
+        ar_outstanding_df = pd.DataFrame()
+        period_payment_df = pd.DataFrame()
+        
+        try:
+            kpc_ids = active_filters.get('kpi_center_ids_expanded',
+                                         active_filters.get('kpi_center_ids', []))
+            entity_ids = active_filters.get('entity_ids', [])
+            
+            with timer("Load: AR outstanding data"):
+                ar_outstanding_df = queries.get_ar_outstanding_data(
+                    kpi_center_ids=kpc_ids,
+                    entity_ids=entity_ids,
+                )
+            
+            with timer("Load: Period payment data"):
+                period_payment_df = queries.get_payment_period_data(
+                    start_date=active_filters['start_date'],
+                    end_date=active_filters['end_date'],
+                    kpi_center_ids=kpc_ids,
+                    entity_ids=entity_ids,
+                )
+        except Exception as e:
+            logger.warning(f"Payment data not available: {e}")
+            st.info(
+                "💰 Payment data requires `customer_ar_by_kpi_center_view` "
+                "to be configured in the database."
+            )
+        
+        if not ar_outstanding_df.empty or not period_payment_df.empty:
+            def _load_payment_txns(inv_numbers):
+                return queries.get_payment_transactions(inv_numbers)
+            
+            def _load_invoice_docs(inv_numbers):
+                return queries.get_invoice_documents(inv_numbers)
+            
+            s3_url_gen = None
+            try:
+                s3_url_gen = generate_doc_url
+            except Exception:
+                pass
+            
+            payment_tab_fragment(
+                sales_df=sales_df,
+                filter_values=active_filters,
+                key_prefix="kpc_payment",
+                ar_outstanding_df=ar_outstanding_df,
+                period_payment_df=period_payment_df,
+                payment_txn_loader=_load_payment_txns,
+                doc_loader=_load_invoice_docs,
+                s3_url_generator=s3_url_gen,
+            )
+        elif ar_outstanding_df.empty and period_payment_df.empty:
+            # Only show this if the try block didn't already show an error
+            pass
+    
+    # =========================================================================
+    # TAB 6: KPI & TARGETS
+    # =========================================================================
+    
+    with tab6:
         st.subheader("🎯 KPI & Targets")
         
         if targets_df.empty:
@@ -672,10 +739,10 @@ def main():
                 )
     
     # =========================================================================
-    # TAB 6: SETUP
+    # TAB 7: SETUP
     # =========================================================================
     
-    with tab6:
+    with tab7:
         setup_tab_fragment(
             kpi_center_ids=active_filters.get('kpi_center_ids', []),
             active_filters=active_filters

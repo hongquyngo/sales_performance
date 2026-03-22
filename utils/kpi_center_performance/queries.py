@@ -395,6 +395,209 @@ class KPICenterQueries:
             logger.error(f"Error getting ancestors for {kpi_center_id}: {e}")
             return [kpi_center_id] if include_self else []
     # =========================================================================
+    # PAYMENT & AR DATA — NEW v6.1.0
+    # =========================================================================
+
+    def get_ar_outstanding_data(
+        self,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Get ALL outstanding AR data (unpaid + partially paid).
+
+        Uses customer_ar_by_kpi_center_view which provides:
+        - Pre-calculated outstanding, collected amounts (split by KPI Center)
+        - Aging buckets, days overdue
+        - Payment status, ratio
+
+        Args:
+            kpi_center_ids: Optional KPI Center filter
+            entity_ids: Optional entity filter
+
+        Returns:
+            DataFrame with AR line items
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+
+        if not kpi_center_ids:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+
+        if not kpi_center_ids:
+            return pd.DataFrame()
+
+        query = """
+            SELECT *
+            FROM customer_ar_by_kpi_center_view
+            WHERE payment_status IN ('Unpaid', 'Partially Paid')
+              AND kpi_center_id IN :kpi_center_ids
+        """
+        params = {'kpi_center_ids': tuple(kpi_center_ids)}
+
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+
+        query += " ORDER BY outstanding_by_kpi_center_usd DESC"
+
+        return self._execute_query(query, params, "ar_outstanding_by_kpc")
+
+    def get_payment_period_data(
+        self,
+        start_date: date,
+        end_date: date,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Get payment data for invoices within a specific period.
+
+        Args:
+            start_date: Period start
+            end_date: Period end
+            kpi_center_ids: Optional KPI Center filter
+            entity_ids: Optional entity filter
+
+        Returns:
+            DataFrame with payment line items for the period
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+
+        if not kpi_center_ids:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+
+        if not kpi_center_ids:
+            return pd.DataFrame()
+
+        query = """
+            SELECT *
+            FROM customer_ar_by_kpi_center_view
+            WHERE inv_date BETWEEN :start_date AND :end_date
+              AND kpi_center_id IN :kpi_center_ids
+        """
+        params = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'kpi_center_ids': tuple(kpi_center_ids),
+        }
+
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+
+        query += " ORDER BY inv_date DESC"
+
+        return self._execute_query(query, params, "payment_period_by_kpc")
+
+    def get_payment_transactions(
+        self,
+        invoice_numbers: List[str],
+    ) -> pd.DataFrame:
+        """
+        Get payment transaction details for specific invoices.
+
+        Schema: customer_payment_details → sale_invoices (for invoice_number)
+                customer_payment_details → customer_payments (for payment header)
+
+        Args:
+            invoice_numbers: List of invoice numbers
+
+        Returns:
+            DataFrame with payment transactions
+        """
+        if not invoice_numbers:
+            return pd.DataFrame()
+
+        query = """
+            SELECT
+                si.invoice_number AS inv_number,
+                cp.payment_number,
+                cp.received_date AS payment_received_date,
+                cpd.sub_payment_total AS amount_received,
+                cpd.sub_payment_total AS amount_received_raw,
+                si_cur.code AS currency_code,
+                CASE
+                    WHEN COALESCE(ipi.payment_ratio, 0) >= 1 THEN 'Fully Paid'
+                    WHEN COALESCE(ipi.payment_ratio, 0) > 0 THEN 'Partially Paid'
+                    ELSE 'Unpaid'
+                END AS payment_status,
+                COALESCE(ipi.payment_ratio, 0) AS payment_ratio
+            FROM customer_payment_details cpd
+            INNER JOIN customer_payments cp 
+                ON cpd.customer_payment_id = cp.id
+                AND cp.delete_flag = 0
+            INNER JOIN sale_invoices si 
+                ON cpd.sale_invoice_id = si.id
+                AND si.delete_flag = 0
+            LEFT JOIN currencies si_cur 
+                ON si.currency_id = si_cur.id
+            LEFT JOIN (
+                SELECT 
+                    cpd2.sale_invoice_id,
+                    ROUND(
+                        SUM(cpd2.sub_payment_total) / NULLIF(MAX(si2.total_invoiced_amount), 0), 
+                        4
+                    ) AS payment_ratio
+                FROM customer_payment_details cpd2
+                INNER JOIN customer_payments cp2 ON cpd2.customer_payment_id = cp2.id
+                INNER JOIN sale_invoices si2 ON cpd2.sale_invoice_id = si2.id
+                WHERE cp2.delete_flag = 0 AND cpd2.delete_flag = 0
+                GROUP BY cpd2.sale_invoice_id
+            ) ipi ON si.id = ipi.sale_invoice_id
+            WHERE cpd.delete_flag = 0
+              AND si.invoice_number IN :invoice_numbers
+            ORDER BY cp.received_date DESC
+        """
+        params = {'invoice_numbers': tuple(invoice_numbers)}
+        return self._execute_query(query, params, "payment_transactions")
+
+    def get_invoice_documents(
+        self,
+        invoice_numbers: List[str],
+    ) -> pd.DataFrame:
+        """
+        Get document metadata for specific invoices.
+
+        Uses medias table joined through sale_invoice_details → sale_invoices.
+        Returns empty DataFrame if media tables not configured.
+
+        Args:
+            invoice_numbers: List of invoice numbers
+
+        Returns:
+            DataFrame with document info (filename, s3_key, doc_type)
+        """
+        if not invoice_numbers:
+            return pd.DataFrame()
+
+        # Try to query media attached to sale invoices
+        # This query is defensive — returns empty if tables don't exist
+        query = """
+            SELECT
+                m.id AS media_id,
+                m.filename,
+                m.s3_key,
+                'invoice' AS doc_type,
+                si.invoice_number
+            FROM medias m
+            INNER JOIN sale_invoices si 
+                ON m.sale_invoice_id = si.id
+                AND si.delete_flag = 0
+            WHERE si.invoice_number IN :invoice_numbers
+              AND (m.delete_flag = 0 OR m.delete_flag IS NULL)
+            ORDER BY m.created_date DESC
+        """
+        try:
+            params = {'invoice_numbers': tuple(invoice_numbers)}
+            return self._execute_query(query, params, "invoice_documents")
+        except Exception as e:
+            # Table structure may differ — handle gracefully
+            logger.debug(f"Invoice documents query failed (expected if media tables differ): {e}")
+            return pd.DataFrame()
+
+    # =========================================================================
     # HELPER METHODS
     # =========================================================================
     
