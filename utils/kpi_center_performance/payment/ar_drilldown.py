@@ -142,7 +142,7 @@ def ar_summary_section(
                     columns={'kpi_center': 'KPI Center'}
                 ),
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 height=min(400, 35 * len(display_kpc) + 38),
             )
 
@@ -188,7 +188,7 @@ def _render_top_customers_chart(
         ]
     ).properties(height=35 * min(len(chart_data), 10) + 40)
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 # =============================================================================
@@ -250,7 +250,7 @@ def _render_invoice_payments(
 
     st.dataframe(
         display[list(available.keys())].rename(columns=available),
-        hide_index=True, use_container_width=True,
+        hide_index=True, width="stretch",
         height=min(250, 35 * len(display) + 38),
     )
 

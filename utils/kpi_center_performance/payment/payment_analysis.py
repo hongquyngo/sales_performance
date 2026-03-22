@@ -469,7 +469,7 @@ def render_payment_section(payment_data: Optional[Dict]):
             title = "📅 Aging by Due Date" if aging_mode == 'overdue' else "📅 Aging by Invoice Date"
             st.markdown(f"##### {title}")
             chart = _build_aging_chart(aging)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
         with col_detail:
             st.markdown("##### 📋 Aging Detail")
@@ -479,14 +479,14 @@ def render_payment_section(payment_data: Optional[Dict]):
             display['Lines'] = display['count'].astype(int)
             st.dataframe(
                 display[['bucket', 'Amount', 'Share', 'Lines']].rename(columns={'bucket': 'Aging Bucket'}),
-                hide_index=True, use_container_width=True,
+                hide_index=True, width="stretch",
             )
 
     # Collection Trend
     if not by_month.empty and len(by_month) >= 2:
         st.markdown("##### 📈 Monthly Collection Trend")
         chart = _build_collection_trend_chart(by_month)
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
 
     # Collection by Entity
     if not by_entity.empty and len(by_entity) > 1:
@@ -500,7 +500,7 @@ def render_payment_section(payment_data: Optional[Dict]):
             display_ent[['legal_entity', 'Invoiced', 'Collected', 'Outstanding', 'Rate']].rename(
                 columns={'legal_entity': 'Legal Entity'}
             ),
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
         )
 
 

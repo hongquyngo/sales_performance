@@ -730,3 +730,151 @@ class DataProcessor:
             return None if current == 0 else 100.0
         
         return ((current - previous) / previous) * 100
+
+    # =========================================================================
+    # PAYMENT DATA EXTRACTION — NEW v6.1.0
+    # =========================================================================
+
+    def extract_payment_data(
+        self,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+        kpi_type: str = None,
+        start_date: date = None,
+        end_date: date = None,
+        exclude_internal: bool = True,
+    ) -> Dict:
+        """
+        Extract payment/AR data from already-loaded sales_raw.
+
+        ZERO additional SQL queries — uses "Load Once, Filter Many" pattern.
+        Computes derived AR columns (outstanding, collected, aging) in Pandas.
+
+        Args:
+            kpi_center_ids: KPI Center filter (expanded with children)
+            entity_ids: Entity filter
+            kpi_type: KPI type filter
+            start_date: Period start (for period_payment_df)
+            end_date: Period end (for period_payment_df)
+            exclude_internal: Exclude internal customers
+
+        Returns:
+            Dict with:
+            - ar_outstanding_df: All unpaid/partially paid invoices
+            - period_payment_df: All invoices in date range with payment info
+        """
+        start_time = time.perf_counter()
+
+        empty_result = {
+            'ar_outstanding_df': pd.DataFrame(),
+            'period_payment_df': pd.DataFrame(),
+        }
+
+        if self.sales_raw.empty or 'payment_status' not in self.sales_raw.columns:
+            return empty_result
+
+        # Start from rows that have payment tracking (REALTIME 2025+ only)
+        df = self.sales_raw[self.sales_raw['payment_status'].notna()].copy()
+
+        if df.empty:
+            return empty_result
+
+        # Apply filters
+        if kpi_center_ids:
+            df = df[df['kpi_center_id'].isin(kpi_center_ids)]
+        if entity_ids:
+            df = df[df['legal_entity_id'].isin(entity_ids)]
+        if kpi_type:
+            df = df[df['kpi_type'] == kpi_type]
+        if exclude_internal and 'customer_type' in df.columns:
+            df = df[df['customer_type'].str.lower() != 'internal']
+
+        if df.empty:
+            return empty_result
+
+        # Ensure types
+        df['payment_ratio'] = pd.to_numeric(df['payment_ratio'], errors='coerce').fillna(0).clip(0, 1)
+        df['calculated_invoiced_amount_usd'] = pd.to_numeric(
+            df['calculated_invoiced_amount_usd'], errors='coerce'
+        ).fillna(0)
+        if 'due_date' in df.columns:
+            df['due_date'] = pd.to_datetime(df['due_date'], errors='coerce')
+        df['inv_date'] = pd.to_datetime(df['inv_date'], errors='coerce')
+        df['split_rate_percent'] = pd.to_numeric(
+            df.get('split_rate_percent', 0), errors='coerce'
+        ).fillna(0)
+
+        # =====================================================================
+        # Compute derived AR columns (instant — Pandas vectorized)
+        # =====================================================================
+        rev_usd = df['calculated_invoiced_amount_usd']
+        ratio = df['payment_ratio']
+        split_pct = df['split_rate_percent'] / 100
+
+        # Line-level (actual, not split) — for deduped aggregation
+        df['line_outstanding_usd'] = (rev_usd * (1 - ratio)).round(4)
+        df['line_collected_usd'] = (rev_usd * ratio).round(4)
+
+        # Split-allocated — for per-KPI-Center metrics
+        df['outstanding_by_kpi_center_usd'] = (rev_usd * (1 - ratio) * split_pct).round(4)
+        df['collected_by_kpi_center_usd'] = (rev_usd * ratio * split_pct).round(4)
+
+        # GP outstanding
+        if 'gross_profit_by_kpi_center_usd' in df.columns:
+            gp = pd.to_numeric(df['gross_profit_by_kpi_center_usd'], errors='coerce').fillna(0)
+            df['gp_outstanding_by_kpi_center_usd'] = (gp * (1 - ratio)).round(4)
+
+        # Aging
+        today_ts = pd.Timestamp(date.today())
+        if 'due_date' in df.columns:
+            df['days_overdue'] = (today_ts - df['due_date']).dt.days
+            df['aging_bucket'] = df.apply(
+                lambda r: (
+                    'Paid' if r.get('payment_status') == 'Fully Paid'
+                    else 'No Due Date' if pd.isna(r.get('due_date'))
+                    else 'Not Yet Due' if r['days_overdue'] < 0
+                    else '1-30 days overdue' if r['days_overdue'] <= 30
+                    else '31-60 days overdue' if r['days_overdue'] <= 60
+                    else '61-90 days overdue' if r['days_overdue'] <= 90
+                    else '90+ days overdue'
+                ), axis=1
+            )
+        else:
+            df['days_overdue'] = 0
+            df['aging_bucket'] = 'No Due Date'
+
+        # LC amounts (if not present, estimate)
+        if 'line_invoiced_amount_lc' not in df.columns:
+            df['line_invoiced_amount_lc'] = df.get('total_invoiced_amount', 0)
+        if 'line_outstanding_lc' not in df.columns:
+            df['line_outstanding_lc'] = df.get('outstanding_amount', 0)
+        if 'line_collected_lc' not in df.columns:
+            lc_invoiced = pd.to_numeric(df.get('total_invoiced_amount', 0), errors='coerce').fillna(0)
+            df['line_collected_lc'] = (lc_invoiced * ratio).round(2)
+
+        # =====================================================================
+        # Split into AR mode and Period mode DataFrames
+        # =====================================================================
+        # AR Outstanding: all unpaid/partially paid
+        ar_outstanding_df = df[
+            df['payment_status'].isin(['Unpaid', 'Partially Paid'])
+        ].copy()
+
+        # Period: all invoices in date range (any payment status)
+        period_payment_df = pd.DataFrame()
+        if start_date and end_date:
+            start_ts = pd.Timestamp(start_date)
+            end_ts = pd.Timestamp(end_date)
+            period_payment_df = df[
+                (df['inv_date'] >= start_ts) & (df['inv_date'] <= end_ts)
+            ].copy()
+
+        elapsed = time.perf_counter() - start_time
+        if DEBUG_TIMING:
+            print(f"   📊 [extract_payment_data] {elapsed:.3f}s → "
+                  f"AR: {len(ar_outstanding_df):,}, Period: {len(period_payment_df):,}")
+
+        return {
+            'ar_outstanding_df': ar_outstanding_df,
+            'period_payment_df': period_payment_df,
+        }
