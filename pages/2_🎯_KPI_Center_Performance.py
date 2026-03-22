@@ -507,6 +507,37 @@ def main():
     filter_summary = filters.get_filter_summary(active_filters)
     st.caption(f"📊 {filter_summary}")
     
+    # =========================================================================
+    # STEP 8: LOAD PAYMENT DATA (before tabs — avoid SQL in tab body)
+    # =========================================================================
+    
+    ar_outstanding_df = pd.DataFrame()
+    period_payment_df = pd.DataFrame()
+    
+    if _PAYMENT_AVAILABLE:
+        try:
+            kpc_ids_for_payment = active_filters.get(
+                'kpi_center_ids_expanded',
+                active_filters.get('kpi_center_ids', [])
+            )
+            entity_ids_for_payment = active_filters.get('entity_ids', [])
+            
+            with timer("Load: AR outstanding data"):
+                ar_outstanding_df = queries.get_ar_outstanding_data(
+                    kpi_center_ids=kpc_ids_for_payment,
+                    entity_ids=entity_ids_for_payment,
+                )
+            
+            with timer("Load: Period payment data"):
+                period_payment_df = queries.get_payment_period_data(
+                    start_date=active_filters['start_date'],
+                    end_date=active_filters['end_date'],
+                    kpi_center_ids=kpc_ids_for_payment,
+                    entity_ids=entity_ids_for_payment,
+                )
+        except Exception as e:
+            logger.warning(f"Payment data not available: {e}")
+    
     if DEBUG_TIMING:
         print(f"\n🖼️ RENDERING UI...")
     
@@ -624,46 +655,12 @@ def main():
       with tab5:
         st.subheader("💰 Payment & Collection")
         
-        ar_outstanding_df = pd.DataFrame()
-        period_payment_df = pd.DataFrame()
-        
-        try:
-            kpc_ids = active_filters.get('kpi_center_ids_expanded',
-                                         active_filters.get('kpi_center_ids', []))
-            entity_ids = active_filters.get('entity_ids', [])
-            
-            with timer("Load: AR outstanding data"):
-                ar_outstanding_df = queries.get_ar_outstanding_data(
-                    kpi_center_ids=kpc_ids,
-                    entity_ids=entity_ids,
-                )
-            
-            with timer("Load: Period payment data"):
-                period_payment_df = queries.get_payment_period_data(
-                    start_date=active_filters['start_date'],
-                    end_date=active_filters['end_date'],
-                    kpi_center_ids=kpc_ids,
-                    entity_ids=entity_ids,
-                )
-        except Exception as e:
-            logger.warning(f"Payment data not available: {e}")
-            st.info(
-                "💰 Payment data requires `customer_ar_by_kpi_center_view` "
-                "to be configured in the database."
-            )
-        
         if not ar_outstanding_df.empty or not period_payment_df.empty:
             def _load_payment_txns(inv_numbers):
                 return queries.get_payment_transactions(inv_numbers)
             
             def _load_invoice_docs(inv_numbers):
                 return queries.get_invoice_documents(inv_numbers)
-            
-            s3_url_gen = None
-            try:
-                s3_url_gen = generate_doc_url
-            except Exception:
-                pass
             
             payment_tab_fragment(
                 sales_df=sales_df,
@@ -673,11 +670,13 @@ def main():
                 period_payment_df=period_payment_df,
                 payment_txn_loader=_load_payment_txns,
                 doc_loader=_load_invoice_docs,
-                s3_url_generator=s3_url_gen,
+                s3_url_generator=generate_doc_url if generate_doc_url else None,
             )
-        elif ar_outstanding_df.empty and period_payment_df.empty:
-            # Only show this if the try block didn't already show an error
-            pass
+        else:
+            st.info(
+                "💰 Payment data not available for selected filters.\n\n"
+                "Ensure `customer_ar_by_kpi_center_view` is configured in the database."
+            )
     
     # =========================================================================
     # TAB 6: KPI & TARGETS

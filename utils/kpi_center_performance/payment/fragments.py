@@ -5,7 +5,7 @@ Streamlit Fragments for KPI Center Performance — Payment & Collection Tab.
 Adapted from salesperson_performance/payment/fragments.py.
 
 Pattern:
-- payment_tab_fragment: Tab-level @st.fragment with filters + sub-tabs
+- payment_tab_fragment: Tab-level entry point with filters + sub-tabs
 - Sub-tabs: Overview & Aging | Invoice Detail
 
 VERSION: 1.0.0
@@ -129,7 +129,6 @@ def _group_by_invoice(df: pd.DataFrame) -> pd.DataFrame:
 # TAB-LEVEL FRAGMENT
 # =============================================================================
 
-@st.fragment
 def payment_tab_fragment(
     sales_df: pd.DataFrame,
     filter_values: Dict = None,
@@ -696,7 +695,7 @@ def payment_list_fragment(
     event = st.dataframe(
         detail,
         column_config=column_config,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=500,
         on_select="rerun" if has_detail_loaders else "ignore",
