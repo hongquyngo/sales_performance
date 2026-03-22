@@ -99,7 +99,6 @@ from utils.salesperson_performance import (
 # NEW v3.0.0: Pandas-based Complex KPI Calculator
 from utils.salesperson_performance.complex_kpi_calculator import (
     ComplexKPICalculator,
-    calculate_lookback_start,
 )
 
 # NEW v3.2.0: Dynamic KPI type weights from database
@@ -322,28 +321,28 @@ def _get_cached_sidebar_options():
     """
     Get sidebar options with session_state caching.
     
-    OPTIMIZED v3.1.0: Extract from lookback_sales_data instead of 3 SQL queries
-    - Before: 3 SQL queries = 7.33s
-    - After: 1 SQL query + Pandas extraction = ~2.8s + ~0.01s
-    - Savings: 4.5s on first load (subsequent loads still use cache)
+    OPTIMIZED v4.0.0: Uses get_sales_raw() which includes ALL columns
+    (sales display + complex KPIs + sidebar options).
+    This eliminates the need for a separate sales query in load_data_for_year_range().
+    
+    - Before v4.0.0: lookback (7.5s) + sales (7s) = 14.5s for 2 queries to same view
+    - After v4.0.0:  sales_raw (8s) = 1 query, reused for everything
     """
     cache_key = f"sidebar_options_{st.session_state.get('employee_id', 0)}"
     
     if cache_key not in st.session_state:
-        # Load lookback data for sidebar options extraction
-        # This is the same data we'll use for Complex KPIs later
-        with timer("Sidebar: load_lookback_for_options"):
-            lookback_df = queries.get_lookback_sales_data(
-                end_date=date.today(),
-                lookback_years=5
-            )
+        # Load unified raw data (all columns for sales + complex KPIs + sidebar)
+        lookback_start = date(date.today().year - 5, 1, 1)
         
-        # Store lookback data for reuse in data loading phase
-        st.session_state['_sidebar_lookback_df'] = lookback_df
+        with timer("Sidebar: load_sales_raw"):
+            sales_raw_df = queries.get_sales_raw(lookback_start=lookback_start)
+        
+        # Store for reuse in data loading phase (saves separate sales query)
+        st.session_state['_sidebar_lookback_df'] = sales_raw_df
         
         # Extract sidebar options from loaded data (instant - ~0.01s)
         with timer("Sidebar: extract_options_from_lookback"):
-            extractor = SidebarOptionsExtractor(lookback_df)
+            extractor = SidebarOptionsExtractor(sales_raw_df)
             accessible_ids = access.get_accessible_employee_ids()
             
             salesperson_opts = extractor.extract_salesperson_options(accessible_ids)
@@ -358,7 +357,7 @@ def _get_cached_sidebar_options():
             'cached_at': datetime.now()
         }
         if DEBUG_VERBOSE:
-            print(f"   ✅ Sidebar options extracted from lookback data for employee_id={st.session_state.get('employee_id')}")
+            print(f"   ✅ Sidebar options extracted from sales_raw for employee_id={st.session_state.get('employee_id')}")
     else:
         if DEBUG_VERBOSE:
             cached_at = st.session_state[cache_key].get('cached_at', 'unknown')
@@ -475,19 +474,54 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     
     try:
         # =====================================================================
-        # PHASE 1: Sequential - Sales data & KPI targets (needed first)
+        # PHASE 1: SALES RAW — Unified load (replaces lookback + sales queries)
+        # OPTIMIZED v4.0.0: Single query for everything
+        # - Before: lookback (7.5s) + sales (7s) = 14.5s
+        # - After: sales_raw (8s) reused for both = 8s
         # =====================================================================
         progress_bar.progress(10, text=f"📊 Loading sales data ({load_msg})...")
-        with timer("DB: get_sales_data"):
-            data['sales'] = q.get_sales_data(
-                start_date=start_date,
-                end_date=end_date,
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
-        if DEBUG_VERBOSE: print(f"   → Sales rows: {len(data['sales']):,}")
         
-        progress_bar.progress(20, text="🎯 Loading KPI targets...")
+        # Reuse sales_raw from sidebar if available (already loaded)
+        if '_sidebar_lookback_df' in st.session_state and st.session_state['_sidebar_lookback_df'] is not None:
+            sales_raw_df = st.session_state['_sidebar_lookback_df']
+            if DEBUG_VERBOSE:
+                print(f"   ♻️ Reusing sales_raw from sidebar ({len(sales_raw_df):,} rows)")
+            del st.session_state['_sidebar_lookback_df']
+        else:
+            # Load fresh if not available from sidebar
+            lookback_start = date(end_date.year - 5, 1, 1)
+            with timer("DB: get_sales_raw"):
+                sales_raw_df = q.get_sales_raw(lookback_start=lookback_start)
+            if DEBUG_VERBOSE: print(f"   → Sales raw rows: {len(sales_raw_df):,}")
+        
+        # Store raw data for Complex KPIs and later recalculation
+        data['_lookback_df'] = sales_raw_df
+        
+        # Extract sales for year range from raw (Pandas — instant)
+        # NOTE: Use full year range (not period) — same as old get_sales_data()
+        # Period filtering happens later in filter_data_client_side()
+        if not sales_raw_df.empty:
+            _inv_date = pd.to_datetime(sales_raw_df['inv_date'], errors='coerce')
+            _year_mask = (
+                (_inv_date >= pd.Timestamp(date(start_year, 1, 1))) &
+                (_inv_date <= pd.Timestamp(date(end_year, 12, 31)))
+            )
+            sales_year_df = sales_raw_df[_year_mask].copy()
+            
+            # Apply employee filter (raw has ALL employees for complex KPIs)
+            if filter_employee_ids and 'sales_id' in sales_year_df.columns:
+                sales_year_df = sales_year_df[sales_year_df['sales_id'].isin(filter_employee_ids)]
+            
+            data['sales'] = sales_year_df
+        else:
+            data['sales'] = pd.DataFrame()
+        
+        if DEBUG_VERBOSE: print(f"   → Sales (year range {start_year}-{end_year}): {len(data['sales']):,} rows")
+        
+        # =====================================================================
+        # PHASE 2: KPI Targets & Weights
+        # =====================================================================
+        progress_bar.progress(25, text="🎯 Loading KPI targets...")
         with timer("DB: get_kpi_targets (all years)"):
             targets_list = []
             for yr in range(start_year, end_year + 1):
@@ -497,97 +531,43 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         if DEBUG_VERBOSE: print(f"   → Targets rows: {len(data['targets']):,}")
         
-        # =====================================================================
-        # PHASE 1.5: KPI Type Weights (for Overall Achievement calculation)
-        # NEW v3.2.0: Dynamic loading from database
-        # =====================================================================
         with timer("DB: get_kpi_type_weights"):
             data['kpi_type_weights'] = get_kpi_type_weights_cached()
         if DEBUG_VERBOSE: print(f"   → KPI type weights: {len(data['kpi_type_weights'])} types")
         
         # =====================================================================
-        # PHASE 2: Complex KPIs - Using Pandas Calculator (v3.0.0)
-        # Single SQL query + in-memory processing
-        # Performance: 14.76s → ~3.0s (80% faster)
-        # OPTIMIZED v3.1.0: Reuse lookback_df from sidebar options if available
+        # PHASE 3: Complex KPIs — from sales_raw (already loaded, no extra SQL)
         # =====================================================================
-        progress_bar.progress(30, text="🆕 Loading lookback data for Complex KPIs...")
-        
-        # Check if lookback data was already loaded for sidebar options
-        if '_sidebar_lookback_df' in st.session_state and st.session_state['_sidebar_lookback_df'] is not None:
-            lookback_df = st.session_state['_sidebar_lookback_df']
-            if DEBUG_VERBOSE:
-                print(f"   ♻️ Reusing lookback data from sidebar ({len(lookback_df):,} rows)")
-            # Clear the temporary storage to free memory
-            # (we'll store it in data['_lookback_df'] instead)
-            del st.session_state['_sidebar_lookback_df']
-        else:
-            # Load lookback data (5 years) - single query, NO employee filter
-            # Complex KPIs need GLOBAL first dates (first to COMPANY, not to salesperson)
-            with timer("DB: get_lookback_sales_data"):
-                lookback_df = q.get_lookback_sales_data(end_date, lookback_years=5)
-            if DEBUG_VERBOSE: print(f"   → Lookback data rows: {len(lookback_df):,}")
-        
-        # Store raw lookback data for later recalculation if exclude_internal changes
-        data['_lookback_df'] = lookback_df
-        
-        # Create calculator and compute all Complex KPIs
-        progress_bar.progress(40, text="📊 Calculating Complex KPIs (Pandas)...")
+        progress_bar.progress(35, text="📊 Calculating Complex KPIs (Pandas)...")
         with timer("Pandas: ComplexKPICalculator"):
-            complex_kpi_calc = ComplexKPICalculator(lookback_df, exclude_internal=exclude_internal)
+            complex_kpi_calc = ComplexKPICalculator(sales_raw_df, exclude_internal=exclude_internal)
             complex_kpis_result = complex_kpi_calc.calculate_all(
                 start_date=start_date,
                 end_date=end_date,
                 employee_ids=filter_employee_ids
             )
         
-        # Unpack results (maintain same data structure as before)
         data['new_customers'] = complex_kpis_result['new_customers']
         data['new_products'] = complex_kpis_result['new_products']
-        data['new_combos_detail'] = complex_kpis_result['new_combos_detail']  # NEW v1.1.0
+        data['new_combos_detail'] = complex_kpis_result['new_combos_detail']
         data['new_business'] = complex_kpis_result['new_business']
         data['new_business_detail'] = complex_kpis_result['new_business_detail']
-        
-        # Store calculator for instant recalculation on filter changes
         data['_complex_kpi_calculator'] = complex_kpi_calc
         
-        if DEBUG_VERBOSE: print(f"   → New customers: {len(data['new_customers']):,} rows")
-        if DEBUG_VERBOSE: print(f"   → New products: {len(data['new_products']):,} rows")
-        if DEBUG_VERBOSE: print(f"   → New combos detail: {len(data['new_combos_detail']):,} rows")  # NEW v1.1.0
-        if DEBUG_VERBOSE: print(f"   → New business: {len(data['new_business']):,} rows")
-        if DEBUG_VERBOSE: print(f"   → New business detail: {len(data['new_business_detail']):,} rows")
+        if DEBUG_VERBOSE:
+            print(f"   → New customers: {len(data['new_customers']):,}")
+            print(f"   → New products: {len(data['new_products']):,}")
+            print(f"   → New combos detail: {len(data['new_combos_detail']):,}")
+            print(f"   → New business detail: {len(data['new_business_detail']):,}")
         
         # =====================================================================
-        # PHASE 3: Backlog data - FILTERED by access control
+        # PHASE 4: BACKLOG — Single detail query, aggregates in Pandas
+        # OPTIMIZED v4.0.0: 4 SQL queries → 1 query + Pandas
+        # - Before: detail (0.7s) + total (0.5s) + in_period (0.5s) + by_month (0.5s) = 2.2s
+        # - After: detail (0.7s) + Pandas aggregation (~0.01s) = 0.7s
         # =====================================================================
-        progress_bar.progress(60, text="📦 Loading backlog data...")
+        progress_bar.progress(55, text="📦 Loading backlog data...")
         
-        with timer("DB: get_backlog_data (total)"):
-            data['total_backlog'] = q.get_backlog_data(
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
-        if DEBUG_VERBOSE: print(f"   → Total backlog rows: {len(data['total_backlog']):,}")
-        
-        with timer("DB: get_backlog_in_period"):
-            data['in_period_backlog'] = q.get_backlog_in_period(
-                start_date=start_date,
-                end_date=end_date,
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
-        if DEBUG_VERBOSE: print(f"   → In-period backlog rows: {len(data['in_period_backlog']):,}")
-        
-        with timer("DB: get_backlog_by_month"):
-            data['backlog_by_month'] = q.get_backlog_by_month(
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
-        if DEBUG_VERBOSE: print(f"   → Backlog by month rows: {len(data['backlog_by_month']):,}")
-        
-        # Backlog detail - FILTERED by access control
-        # UPDATED v2.2.0: Removed limit to get ALL backlog records for accurate totals
-        progress_bar.progress(80, text="📋 Loading backlog details...")
         with timer("DB: get_backlog_detail"):
             data['backlog_detail'] = q.get_backlog_detail(
                 employee_ids=filter_employee_ids,
@@ -595,41 +575,99 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             )
         if DEBUG_VERBOSE: print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
         
+        # Compute backlog aggregates from detail (Pandas — instant)
+        with timer("Pandas: backlog_aggregates"):
+            bd = data['backlog_detail']
+            
+            # total_backlog: by salesperson
+            if not bd.empty and 'sales_id' in bd.columns:
+                data['total_backlog'] = bd.groupby(['sales_id', 'sales_name']).agg(
+                    total_backlog_revenue=('backlog_sales_by_split_usd', 'sum'),
+                    total_backlog_gp=('backlog_gp_by_split_usd', 'sum'),
+                    backlog_orders=('oc_number', 'nunique'),
+                    backlog_customers=('customer_id', 'nunique')
+                ).reset_index()
+            else:
+                data['total_backlog'] = pd.DataFrame()
+            
+            # in_period_backlog: filtered by ETD
+            if not bd.empty and 'etd' in bd.columns:
+                _bd = bd.copy()
+                _bd['etd'] = pd.to_datetime(_bd['etd'], errors='coerce')
+                _in_period = _bd[
+                    (_bd['etd'] >= pd.Timestamp(start_date)) &
+                    (_bd['etd'] <= pd.Timestamp(end_date))
+                ]
+                if not _in_period.empty:
+                    data['in_period_backlog'] = _in_period.groupby(['sales_id', 'sales_name']).agg(
+                        in_period_backlog_revenue=('backlog_sales_by_split_usd', 'sum'),
+                        in_period_backlog_gp=('backlog_gp_by_split_usd', 'sum'),
+                        in_period_orders=('oc_number', 'nunique'),
+                        in_period_customers=('customer_id', 'nunique')
+                    ).reset_index()
+                else:
+                    data['in_period_backlog'] = pd.DataFrame()
+            else:
+                data['in_period_backlog'] = pd.DataFrame()
+            
+            # backlog_by_month: using existing helper
+            data['backlog_by_month'] = _prepare_backlog_by_month_from_detail(bd)
+        
+        if DEBUG_VERBOSE:
+            print(f"   → Total backlog: {len(data['total_backlog']):,} rows")
+            print(f"   → In-period backlog: {len(data['in_period_backlog']):,} rows")
+            print(f"   → Backlog by month: {len(data['backlog_by_month']):,} rows")
+        
         # =====================================================================
-        # PHASE 4: Sequential - Sales split data
+        # PHASE 5: Sales split data (small — keep as is)
         # =====================================================================
-        progress_bar.progress(90, text="👥 Loading sales split data...")
+        progress_bar.progress(70, text="👥 Loading sales split data...")
         with timer("DB: get_sales_split_data"):
             data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
         if DEBUG_VERBOSE: print(f"   → Sales split rows: {len(data['sales_split']):,}")
         
         # =====================================================================
-        # PHASE 5: AR Outstanding data (for Payment & Collection tab)
-        # All unpaid/partially paid invoices regardless of date range
-        # NEW v3.5.0
+        # PHASE 6: PAYMENT — Single unified query, split in Pandas
+        # OPTIMIZED v4.0.0: 2 SQL queries → 1 query + Pandas
+        # - Before: AR (5.5s) + Period (5.9s) = 11.4s
+        # - After: unified (5.5s) + Pandas split (~0.001s) = 5.5s
         # =====================================================================
-        progress_bar.progress(93, text="💰 Loading AR outstanding data...")
-        with timer("DB: get_ar_outstanding_data"):
-            data['ar_outstanding'] = q.get_ar_outstanding_data(
+        progress_bar.progress(80, text="💰 Loading payment data...")
+        with timer("DB: get_payment_data_unified"):
+            payment_raw_df = q.get_payment_data_unified(
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        if DEBUG_VERBOSE: print(f"   → AR outstanding rows: {len(data['ar_outstanding']):,}")
+        
+        # Split into AR outstanding vs Period (Pandas — instant)
+        if not payment_raw_df.empty:
+            # AR outstanding: unpaid + partially paid (all dates)
+            data['ar_outstanding'] = payment_raw_df[
+                payment_raw_df['payment_status'].isin(['Unpaid', 'Partially Paid'])
+            ].copy()
+            
+            # Period payment: invoices within date range (all statuses)
+            if 'inv_date' in payment_raw_df.columns:
+                _pmt_dates = pd.to_datetime(payment_raw_df['inv_date'], errors='coerce')
+                _period_mask = (
+                    (_pmt_dates >= pd.Timestamp(start_date)) &
+                    (_pmt_dates <= pd.Timestamp(end_date))
+                )
+                data['period_payment'] = payment_raw_df[_period_mask].copy()
+            else:
+                data['period_payment'] = pd.DataFrame()
+        else:
+            data['ar_outstanding'] = pd.DataFrame()
+            data['period_payment'] = pd.DataFrame()
+        
+        if DEBUG_VERBOSE:
+            print(f"   → Payment raw: {len(payment_raw_df):,} rows")
+            print(f"   → AR outstanding: {len(data['ar_outstanding']):,} rows")
+            print(f"   → Period payment: {len(data['period_payment']):,} rows")
         
         # =====================================================================
-        # PHASE 5b: Period Payment data (for Payment tab Period mode)
-        # Invoices within the selected date range — all payment statuses
-        # NEW v3.7.0
+        # Clean all dataframes
         # =====================================================================
-        with timer("DB: get_payment_period_data"):
-            data['period_payment'] = q.get_payment_period_data(
-                start_date=start_date,
-                end_date=end_date,
-                employee_ids=filter_employee_ids,
-            )
-        if DEBUG_VERBOSE: print(f"   → Period payment rows: {len(data['period_payment']):,}")
-        
-        # Step 7: Clean all dataframes
         with timer("Clean dataframes"):
             for key in data:
                 if isinstance(data[key], pd.DataFrame) and not data[key].empty:

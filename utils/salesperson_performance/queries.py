@@ -671,6 +671,117 @@ class SalespersonQueries:
         return self._execute_query(query, params, "lookback_sales_data")
     
     # =========================================================================
+    # UNIFIED RAW DATA — NEW v4.0.0
+    # =========================================================================
+    
+    def get_sales_raw(self, lookback_start: date) -> pd.DataFrame:
+        """
+        Load ALL sales data from lookback_start — unified raw dataset.
+        
+        NEW v4.0.0: Replaces separate lookback + sales queries.
+        Single query loads all columns needed for:
+        - Sales display (inv detail, payment status, etc.)
+        - Complex KPIs (product_key via legacy_code, is_service)
+        - Sidebar options (sales_name, entity, years)
+        
+        No employee filter — needed for global first-date computation.
+        Employee filtering done in Pandas by caller.
+        
+        Args:
+            lookback_start: Start date for data loading
+            
+        Returns:
+            DataFrame with all sales data
+        """
+        query = """
+            SELECT 
+                v.data_source,
+                v.unified_line_id,
+                v.sales_id,
+                v.sales_name,
+                v.sales_email,
+                v.employment_status,
+                v.split_rate_percent,
+                v.inv_date,
+                v.inv_number,
+                v.vat_number,
+                v.invoice_month,
+                v.invoice_year,
+                v.legal_entity_id,
+                v.legal_entity,
+                v.customer,
+                v.customer_id,
+                v.customer_code,
+                v.customer_type,
+                v.customer_po_number,
+                v.oc_number,
+                v.oc_date,
+                v.product_id,
+                v.product_pn,
+                v.pt_code,
+                v.package_size,
+                v.legacy_code,
+                v.brand,
+                v.sales_by_split_usd,
+                v.gross_profit_by_split_usd,
+                v.gp1_by_split_usd,
+                v.allocated_broker_commission_usd,
+                v.payment_status,
+                v.payment_ratio,
+                v.due_date,
+                v.outstanding_amount,
+                v.total_payment_received,
+                COALESCE(p.is_service, 0) AS is_service
+            FROM unified_sales_by_salesperson_view v
+            LEFT JOIN products p ON v.product_id = p.id
+            WHERE v.inv_date >= :lookback_start
+            ORDER BY v.inv_date DESC
+        """
+        params = {'lookback_start': lookback_start}
+        return self._execute_query(query, params, "sales_raw")
+    
+    def get_payment_data_unified(
+        self,
+        employee_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Load ALL payment/AR data in a SINGLE query.
+        
+        NEW v4.0.0: Replaces 2 separate queries (get_ar_outstanding_data +
+        get_payment_period_data) which each materialized the full view.
+        
+        Single query returns all statuses/dates. Caller splits into
+        AR outstanding vs Period using Pandas (instant).
+        
+        Args:
+            employee_ids: Optional employee filter
+            entity_ids: Optional entity filter
+            
+        Returns:
+            DataFrame with ALL invoice rows (all statuses).
+        """
+        if employee_ids:
+            employee_ids = self.access.validate_selected_employees(employee_ids)
+        else:
+            employee_ids = self.access.get_accessible_employee_ids()
+        
+        if not employee_ids:
+            return pd.DataFrame()
+        
+        query = _AR_VIEW_SELECT + """
+            FROM customer_ar_by_salesperson_view
+            WHERE (current_sales_id IN :employee_ids OR current_sales_id IS NULL)
+        """
+        params = {'employee_ids': tuple(employee_ids)}
+        
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+        
+        return self._execute_query(query, params, "payment_unified")
+    
+    # =========================================================================
     # KPI TARGETS
     # =========================================================================
     
