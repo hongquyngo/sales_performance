@@ -155,15 +155,30 @@ from .setup import (
 )
 
 # Payment & Collection — NEW v6.1.0
-from .payment import (
-    payment_tab_fragment,
-    payment_list_fragment,
-    payment_summary_fragment,
-    ar_by_kpi_center_fragment,
-    ar_summary_section as payment_ar_summary_section,
-    get_s3_manager,
-    generate_doc_url,
-)
+# Wrapped in try/except: payment tab is optional, page works without it
+try:
+    from .payment import (
+        payment_tab_fragment,
+        payment_list_fragment,
+        payment_summary_fragment,
+        ar_by_kpi_center_fragment,
+        ar_summary_section as payment_ar_summary_section,
+        get_s3_manager,
+        generate_doc_url,
+    )
+    _PAYMENT_AVAILABLE = True
+except ImportError as _payment_err:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(f"Payment module not available: {_payment_err}")
+    _PAYMENT_AVAILABLE = False
+    # Stubs so imports don't crash
+    payment_tab_fragment = None
+    payment_list_fragment = None
+    payment_summary_fragment = None
+    ar_by_kpi_center_fragment = None
+    payment_ar_summary_section = None
+    get_s3_manager = None
+    generate_doc_url = None
 
 # Calculators
 from .backlog_calculator import BacklogCalculator
@@ -281,6 +296,7 @@ __all__ = [
     'hierarchy_section',
     
     # Fragments - Payment & Collection (NEW v6.1.0)
+    '_PAYMENT_AVAILABLE',
     'payment_tab_fragment',
     'payment_list_fragment',
     'payment_summary_fragment',

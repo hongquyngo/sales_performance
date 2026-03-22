@@ -58,6 +58,7 @@ from utils.kpi_center_performance import (
     setup_tab_fragment,
     
     # Payment & Collection — NEW v6.1.0
+    _PAYMENT_AVAILABLE,
     payment_tab_fragment,
     generate_doc_url,
     
@@ -513,15 +514,26 @@ def main():
     # TABS
     # =========================================================================
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "📊 Overview",
-        "📋 Sales Detail",
-        "📈 Analysis",
-        "📦 Backlog",
-        "💰 Payment",
-        "🎯 KPI & Targets",
-        "⚙️ Setup"
-    ])
+    if _PAYMENT_AVAILABLE:
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "📊 Overview",
+            "📋 Sales Detail",
+            "📈 Analysis",
+            "📦 Backlog",
+            "💰 Payment",
+            "🎯 KPI & Targets",
+            "⚙️ Setup"
+        ])
+    else:
+        tab1, tab2, tab3, tab4, tab6, tab7 = st.tabs([
+            "📊 Overview",
+            "📋 Sales Detail",
+            "📈 Analysis",
+            "📦 Backlog",
+            "🎯 KPI & Targets",
+            "⚙️ Setup"
+        ])
+        tab5 = None  # Payment tab not available
     
     # =========================================================================
     # TAB 1: OVERVIEW
@@ -608,7 +620,8 @@ def main():
     # TAB 5: PAYMENT & COLLECTION — NEW v6.1.0
     # =========================================================================
     
-    with tab5:
+    if _PAYMENT_AVAILABLE and tab5 is not None:
+      with tab5:
         st.subheader("💰 Payment & Collection")
         
         ar_outstanding_df = pd.DataFrame()
