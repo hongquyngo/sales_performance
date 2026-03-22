@@ -101,8 +101,8 @@ from .access_control import AccessControl
 
 logger = logging.getLogger(__name__)
 
-# Debug timing flag - set to True to see query timings
-DEBUG_QUERY_TIMING = False
+# Performance tracking via unified perf_logger
+from .perf_logger import perf, PerfCategory as PC
 
 # =========================================================================
 # Shared SELECT clause for customer_ar_by_salesperson_view queries
@@ -1254,14 +1254,23 @@ class SalespersonQueries:
             df = pd.read_sql(text(query), self.engine, params=params)
             elapsed = time.perf_counter() - start_time
             
-            if DEBUG_QUERY_TIMING:
-                print(f"   📊 SQL [{query_name}]: {elapsed:.3f}s → {len(df):,} rows")
+            # Extract table/view name from query for reference
+            query_hint = self._extract_query_hint(query)
+            perf.log_sql(query_name, elapsed=elapsed, rows=len(df), query_hint=query_hint)
             
             logger.debug(f"{query_name} returned {len(df)} rows in {elapsed:.3f}s")
             return df
         except Exception as e:
             logger.error(f"Error executing {query_name}: {e}")
             return pd.DataFrame()
+
+    @staticmethod
+    def _extract_query_hint(query: str) -> Optional[str]:
+        """Extract table/view name from SQL query for perf logging."""
+        import re
+        # Match FROM <table> or JOIN <table>
+        match = re.search(r'\bFROM\s+(\w+)', query, re.IGNORECASE)
+        return match.group(1) if match else None
 
 
 # =============================================================================
@@ -1338,8 +1347,8 @@ def _get_sales_data_cached(
     try:
         df = pd.read_sql(text(query), engine, params=params)
         elapsed = time.perf_counter() - start_time
-        if DEBUG_QUERY_TIMING:
-            print(f"   📊 SQL [cached_sales_data]: {elapsed:.3f}s → {len(df):,} rows")
+        perf.log_sql("cached_sales_data", elapsed=elapsed, rows=len(df),
+                      query_hint="unified_sales_by_salesperson_view")
         return df
     except Exception as e:
         logger.error(f"Error in cached sales query: {e}")
@@ -1396,8 +1405,8 @@ def get_kpi_type_weights_cached() -> Dict[str, int]:
         df = pd.read_sql(text(query), engine)
         elapsed = time.perf_counter() - start_time
         
-        if DEBUG_QUERY_TIMING:
-            print(f"   📊 SQL [kpi_type_weights]: {elapsed:.3f}s → {len(df):,} rows")
+        perf.log_sql("kpi_type_weights_cached", elapsed=elapsed, rows=len(df),
+                      query_hint="kpi_types")
         
         if df.empty:
             logger.warning("No KPI types found in database, using fallback weights")

@@ -31,8 +31,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Debug timing flag
-DEBUG_TIMING = False
+# Performance tracking via unified perf_logger
+from .perf_logger import perf, PerfCategory as PC
 
 
 class SidebarOptionsExtractor:
@@ -131,8 +131,7 @@ class SidebarOptionsExtractor:
         result = result.sort_values('sales_name').reset_index(drop=True)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [extract_salesperson_options] {len(result)} rows in {elapsed:.3f}s")
+        perf.log_event(f"SidebarExtract.extract_salesperson_options: {len(result)} rows in {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -181,8 +180,7 @@ class SidebarOptionsExtractor:
         result = result.sort_values('entity_name').reset_index(drop=True)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [extract_entity_options] {len(result)} rows in {elapsed:.3f}s")
+        perf.log_event(f"SidebarExtract.extract_entity_options: {len(result)} rows in {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -217,8 +215,7 @@ class SidebarOptionsExtractor:
             start_date = date(int(max_year), 1, 1)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [extract_date_range] {start_date} to {today} in {elapsed:.3f}s")
+        perf.log_event(f"SidebarExtract.extract_date_range: {start_date} to {today} in {elapsed:.3f}s", PC.PANDAS)
         
         return start_date, today
     
@@ -246,8 +243,7 @@ class SidebarOptionsExtractor:
         years = sorted([int(y) for y in years], reverse=True)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [extract_available_years] {len(years)} years in {elapsed:.3f}s")
+        perf.log_event(f"SidebarExtract.extract_available_years: {len(years)} years in {elapsed:.3f}s", PC.PANDAS)
         
         return years
     
@@ -282,8 +278,7 @@ class SidebarOptionsExtractor:
         }
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [extract_all] Total: {elapsed:.3f}s")
+        perf.log_event(f"SidebarExtract.extract_all: Total: {elapsed:.3f}s", PC.PANDAS)
         
         return result
 

@@ -38,8 +38,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Debug timing flag
-DEBUG_TIMING = False
+# Performance tracking via unified perf_logger
+from .perf_logger import perf, PerfCategory as PC
 
 
 class ComplexKPICalculator:
@@ -125,8 +125,7 @@ class ComplexKPICalculator:
             before = len(df)
             df = df[df['customer_type'].str.lower() != 'internal']
             after = len(df)
-            if DEBUG_TIMING:
-                print(f"   📊 [preprocess] Filtered internal: {before:,} → {after:,} rows")
+            perf.log_event(f"ComplexKPI.preprocess: filtered internal {before:,} → {after:,}", PC.PANDAS)
         
         # 2. Convert inv_date to datetime
         if 'inv_date' in df.columns:
@@ -154,8 +153,7 @@ class ComplexKPICalculator:
             df['combo_key'] = df['customer_id'].astype(str) + '|' + df['product_key'].fillna('')
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [preprocess] Completed in {elapsed:.3f}s → {len(df):,} rows")
+        perf.log_event(f"ComplexKPI.preprocess: {len(df):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return df
     
@@ -206,14 +204,12 @@ class ComplexKPICalculator:
             )
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(
-                f"   📊 [precalculate] First dates: "
-                f"customers={len(self._first_customer_dates):,}, "
-                f"products={len(self._first_product_dates):,}, "
-                f"combos={len(self._first_combo_dates):,} "
-                f"in {elapsed:.3f}s"
-            )
+        perf.log_event(
+            f"ComplexKPI.first_dates: "
+            f"C={len(self._first_customer_dates):,}, "
+            f"P={len(self._first_product_dates):,}, "
+            f"X={len(self._first_combo_dates):,}, "
+            f"{elapsed:.3f}s", PC.PANDAS)
     
     # =========================================================================
     # NEW CUSTOMERS
@@ -291,8 +287,7 @@ class ComplexKPICalculator:
         result = result.sort_values('first_invoice_date', ascending=False)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [new_customers] {len(result):,} rows in {elapsed:.3f}s")
+        perf.log_event(f"ComplexKPI.new_customers: {len(result):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -377,8 +372,7 @@ class ComplexKPICalculator:
         result = result.sort_values('first_sale_date', ascending=False)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [new_products] {len(result):,} rows in {elapsed:.3f}s")
+        perf.log_event(f"ComplexKPI.new_products: {len(result):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -474,8 +468,7 @@ class ComplexKPICalculator:
         result = result.sort_values('first_combo_date', ascending=False)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [new_combos_detail] {len(result):,} rows in {elapsed:.3f}s")
+        perf.log_event(f"ComplexKPI.new_combos: {len(result):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -557,8 +550,7 @@ class ComplexKPICalculator:
         result = result.sort_values('new_business_revenue', ascending=False)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [new_business_revenue] {len(result):,} rows in {elapsed:.3f}s")
+        perf.log_event(f"ComplexKPI.new_biz_rev: {len(result):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -654,8 +646,7 @@ class ComplexKPICalculator:
         result = result.sort_values('first_combo_date', ascending=False)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [new_business_detail] {len(result):,} rows in {elapsed:.3f}s")
+        perf.log_event(f"ComplexKPI.new_biz_detail: {len(result):,} rows, {elapsed:.3f}s", PC.PANDAS)
         
         return result
     
@@ -707,12 +698,7 @@ class ComplexKPICalculator:
         }
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            print(f"   📊 [calculate_all] Total: {elapsed:.3f}s")
-            print(f"      → New Customers: {summary['num_new_customers']}")
-            print(f"      → New Products: {summary['num_new_products']}")
-            print(f"      → New Combos: {summary['num_new_combos']}")
-            print(f"      → New Business Revenue: ${summary['new_business_revenue']:,.0f}")
+        perf.log_event(f"ComplexKPI.calculate_all: {elapsed:.3f}s", PC.PANDAS)
         
         return {
             'new_customers': new_customers,
@@ -803,8 +789,8 @@ class ComplexKPICalculator:
             if internal_customer_ids and 'customer_id' in bl.columns:
                 before = len(bl)
                 bl = bl[~bl['customer_id'].isin(internal_customer_ids)]
-                if DEBUG_TIMING and before != len(bl):
-                    print(f"   📊 [backlog_new_business] Excluded {before - len(bl)} internal customer rows")
+                if before != len(bl):
+                    perf.log_event(f"ComplexKPI.backlog_nb: excluded {before - len(bl)} internal rows", PC.PANDAS)
         
         if bl.empty:
             return empty_result
@@ -879,16 +865,11 @@ class ComplexKPICalculator:
                 in_period_metrics = _agg(in_period)
         
         elapsed = time.perf_counter() - start_time
-        if DEBUG_TIMING:
-            never = len(new_bl[new_bl['new_business_type'] == 'never_invoiced'])
-            new_period = len(new_bl[new_bl['new_business_type'] == 'new_this_period'])
-            print(
-                f"   📊 [backlog_new_business] "
-                f"Total: {total_metrics['combos']} combos, ${total_metrics['revenue']:,.0f} | "
-                f"In-Period: {in_period_metrics['combos']} combos, ${in_period_metrics['revenue']:,.0f} | "
-                f"(never_invoiced={never}, new_this_period={new_period}) "
-                f"in {elapsed:.3f}s"
-            )
+        perf.log_event(
+            f"ComplexKPI.backlog_nb: "
+            f"total={total_metrics['combos']} combos ${total_metrics['revenue']:,.0f}, "
+            f"in-period={in_period_metrics['combos']} combos ${in_period_metrics['revenue']:,.0f}, "
+            f"{elapsed:.3f}s", PC.PANDAS)
         
         return {
             'total': total_metrics,

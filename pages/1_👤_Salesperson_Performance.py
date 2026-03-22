@@ -17,70 +17,14 @@ from datetime import datetime, date
 import logging
 import pandas as pd
 import time
-from contextlib import contextmanager
-from functools import wraps
 
 from utils.salesperson_performance.setup import setup_tab_fragment
 
 # =============================================================================
-# DEBUG TIMING UTILITIES
+# PERFORMANCE TRACKING (unified via perf_logger)
 # =============================================================================
 
-# Set to True to enable timing summary table
-DEBUG_TIMING = True
-# Set to True to enable individual step prints (verbose)
-DEBUG_VERBOSE = False
-
-_timing_log = []
-
-@contextmanager
-def timer(label: str, print_immediately: bool = False):
-    """Context manager for timing code blocks."""
-    start = time.perf_counter()
-    yield
-    elapsed = time.perf_counter() - start
-    msg = f"⏱️ [{label}] {elapsed:.3f}s"
-    _timing_log.append((label, elapsed))
-    if DEBUG_TIMING and print_immediately:
-        print(msg)
-
-def timing_decorator(label: str = None):
-    """Decorator for timing functions."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            func_label = label or func.__name__
-            start = time.perf_counter()
-            result = func(*args, **kwargs)
-            elapsed = time.perf_counter() - start
-            msg = f"⏱️ [{func_label}] {elapsed:.3f}s"
-            _timing_log.append((func_label, elapsed))
-            if DEBUG_VERBOSE:
-                print(msg)
-            return result
-        return wrapper
-    return decorator
-
-def print_timing_summary():
-    """Print summary of all timing measurements."""
-    if not DEBUG_TIMING or not _timing_log:
-        return
-    print("\n" + "="*60)
-    print("📊 TIMING SUMMARY")
-    print("="*60)
-    total = sum(t[1] for t in _timing_log)
-    for label, elapsed in sorted(_timing_log, key=lambda x: -x[1]):
-        pct = (elapsed / total * 100) if total > 0 else 0
-        bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
-        print(f"{label:40} {elapsed:7.3f}s ({pct:5.1f}%) {bar}")
-    print("-"*60)
-    print(f"{'TOTAL':40} {total:7.3f}s")
-    print("="*60 + "\n")
-
-def reset_timing():
-    """Reset timing log for new page load."""
-    global _timing_log
-    _timing_log = []
+from utils.salesperson_performance.perf_logger import perf, PerfCategory as PC
 
 # Shared utilities
 from utils.auth import AuthManager
@@ -256,6 +200,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Reset performance logger for this page load
+perf.reset()
+
 # =============================================================================
 # AUTHENTICATION CHECK
 # =============================================================================
@@ -296,16 +243,11 @@ if access_cache_key not in st.session_state:
         'level': access.get_access_level(),
         'ids': _ac_ids
     }
-    if DEBUG_VERBOSE:
-        print(f"   ✅ AccessControl IDs cached: {access.get_access_level()}, {len(_ac_ids) if _ac_ids else 'all'} employees")
+    perf.log_cache_miss("access_control", reason="first load")
 else:
     # Inject cached IDs to avoid DB query
     access._accessible_ids = st.session_state[access_cache_key]['ids']
-    if DEBUG_VERBOSE:
-        _ac_level = st.session_state[access_cache_key]['level']
-        _ac_ids = st.session_state[access_cache_key]['ids']
-        print(f"   ♻️ Using cached AccessControl: {_ac_level}, {len(_ac_ids) if _ac_ids else 'all'} employees")
-
+    perf.log_cache_hit("access_control")
 queries = SalespersonQueries(access)
 filters_ui = SalespersonFilters(access)
 
@@ -334,14 +276,14 @@ def _get_cached_sidebar_options():
         # Load unified raw data (all columns for sales + complex KPIs + sidebar)
         lookback_start = date(date.today().year - 5, 1, 1)
         
-        with timer("Sidebar: load_sales_raw"):
+        with perf.track("Sidebar: load_sales_raw", PC.SQL):
             sales_raw_df = queries.get_sales_raw(lookback_start=lookback_start)
         
         # Store for reuse in data loading phase (saves separate sales query)
         st.session_state['_sidebar_lookback_df'] = sales_raw_df
         
         # Extract sidebar options from loaded data (instant - ~0.01s)
-        with timer("Sidebar: extract_options_from_lookback"):
+        with perf.track("Sidebar: extract_options", PC.PANDAS):
             extractor = SidebarOptionsExtractor(sales_raw_df)
             accessible_ids = access.get_accessible_employee_ids()
             
@@ -356,12 +298,9 @@ def _get_cached_sidebar_options():
             'default_end': default_end,
             'cached_at': datetime.now()
         }
-        if DEBUG_VERBOSE:
-            print(f"   ✅ Sidebar options extracted from sales_raw for employee_id={st.session_state.get('employee_id')}")
+        perf.log_cache_miss("sidebar_options", reason="first load")
     else:
-        if DEBUG_VERBOSE:
-            cached_at = st.session_state[cache_key].get('cached_at', 'unknown')
-            print(f"   ♻️ Using cached sidebar options (cached at: {cached_at})")
+        perf.log_cache_hit("sidebar_options")
     
     return st.session_state[cache_key]
 
@@ -415,10 +354,6 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     
     This significantly reduces load time for non-admin users.
     """
-    if DEBUG_VERBOSE:
-        print(f"\n{'='*60}")
-        print(f"🚀 STARTING DATA LOAD: {start_year}-{end_year}")
-        print(f"{'='*60}")
     load_start_time = time.perf_counter()
     
     # OPTIMIZATION v2.6.0: Cache AccessControl accessible_ids in session_state
@@ -430,13 +365,11 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
     if access_cache_key in st.session_state:
         access_level = st.session_state[access_cache_key]['level']
         accessible_ids = st.session_state[access_cache_key]['ids']
-        if DEBUG_VERBOSE:
-            print(f"   ♻️ Using cached AccessControl ({access_level}, {len(accessible_ids) if accessible_ids else 'all'} employees)")
     else:
-        with timer("AccessControl.init"):
+        with perf.track("AccessControl.init", PC.INIT):
             access_control = AccessControl(user_role, employee_id)
         
-        with timer("AccessControl.get_accessible_ids"):
+        with perf.track("AccessControl.get_accessible_ids", PC.INIT):
             access_level = access_control.get_access_level()
             accessible_ids = access_control.get_accessible_employee_ids()
         
@@ -484,15 +417,14 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # Reuse sales_raw from sidebar if available (already loaded)
         if '_sidebar_lookback_df' in st.session_state and st.session_state['_sidebar_lookback_df'] is not None:
             sales_raw_df = st.session_state['_sidebar_lookback_df']
-            if DEBUG_VERBOSE:
-                print(f"   ♻️ Reusing sales_raw from sidebar ({len(sales_raw_df):,} rows)")
+            perf.log_cache_hit("sales_raw (reused from sidebar)")
             del st.session_state['_sidebar_lookback_df']
         else:
             # Load fresh if not available from sidebar
             lookback_start = date(end_date.year - 5, 1, 1)
-            with timer("DB: get_sales_raw"):
+            with perf.track("DB: get_sales_raw", PC.SQL):
                 sales_raw_df = q.get_sales_raw(lookback_start=lookback_start)
-            if DEBUG_VERBOSE: print(f"   → Sales raw rows: {len(sales_raw_df):,}")
+            perf.log_event(f"Sales raw rows: {len(sales_raw_df):,}", PC.OTHER)
         
         # Store raw data for Complex KPIs and later recalculation
         data['_lookback_df'] = sales_raw_df
@@ -516,30 +448,30 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         else:
             data['sales'] = pd.DataFrame()
         
-        if DEBUG_VERBOSE: print(f"   → Sales (year range {start_year}-{end_year}): {len(data['sales']):,} rows")
+        perf.log_event(f"Sales (year range {start_year}-{end_year}): {len(data['sales']):,} rows", PC.OTHER)
         
         # =====================================================================
         # PHASE 2: KPI Targets & Weights
         # =====================================================================
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        with timer("DB: get_kpi_targets (all years)"):
+        with perf.track("DB: get_kpi_targets", PC.SQL):
             targets_list = []
             for yr in range(start_year, end_year + 1):
                 t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
                 if not t.empty:
                     targets_list.append(t)
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
-        if DEBUG_VERBOSE: print(f"   → Targets rows: {len(data['targets']):,}")
+        perf.log_event(f"Targets rows: {len(data['targets']):,}", PC.OTHER)
         
-        with timer("DB: get_kpi_type_weights"):
+        with perf.track("DB: get_kpi_type_weights", PC.SQL):
             data['kpi_type_weights'] = get_kpi_type_weights_cached()
-        if DEBUG_VERBOSE: print(f"   → KPI type weights: {len(data['kpi_type_weights'])} types")
+        perf.log_event(f"KPI type weights: {len(data['kpi_type_weights'])} types", PC.OTHER)
         
         # =====================================================================
         # PHASE 3: Complex KPIs — from sales_raw (already loaded, no extra SQL)
         # =====================================================================
         progress_bar.progress(35, text="📊 Calculating Complex KPIs (Pandas)...")
-        with timer("Pandas: ComplexKPICalculator"):
+        with perf.track("ComplexKPICalculator.init", PC.PANDAS):
             complex_kpi_calc = ComplexKPICalculator(sales_raw_df, exclude_internal=exclude_internal)
             complex_kpis_result = complex_kpi_calc.calculate_all(
                 start_date=start_date,
@@ -554,12 +486,6 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         data['new_business_detail'] = complex_kpis_result['new_business_detail']
         data['_complex_kpi_calculator'] = complex_kpi_calc
         
-        if DEBUG_VERBOSE:
-            print(f"   → New customers: {len(data['new_customers']):,}")
-            print(f"   → New products: {len(data['new_products']):,}")
-            print(f"   → New combos detail: {len(data['new_combos_detail']):,}")
-            print(f"   → New business detail: {len(data['new_business_detail']):,}")
-        
         # =====================================================================
         # PHASE 4: BACKLOG — Single detail query, aggregates in Pandas
         # OPTIMIZED v4.0.0: 4 SQL queries → 1 query + Pandas
@@ -568,15 +494,15 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # =====================================================================
         progress_bar.progress(55, text="📦 Loading backlog data...")
         
-        with timer("DB: get_backlog_detail"):
+        with perf.track("DB: get_backlog_detail", PC.SQL):
             data['backlog_detail'] = q.get_backlog_detail(
                 employee_ids=filter_employee_ids,
                 entity_ids=None
             )
-        if DEBUG_VERBOSE: print(f"   → Backlog detail rows: {len(data['backlog_detail']):,}")
+        perf.log_event(f"Backlog detail rows: {len(data['backlog_detail']):,}", PC.OTHER)
         
         # Compute backlog aggregates from detail (Pandas — instant)
-        with timer("Pandas: backlog_aggregates"):
+        with perf.track("Pandas: backlog_aggregates", PC.PANDAS):
             bd = data['backlog_detail']
             
             # total_backlog: by salesperson
@@ -613,18 +539,13 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             # backlog_by_month: using existing helper
             data['backlog_by_month'] = _prepare_backlog_by_month_from_detail(bd)
         
-        if DEBUG_VERBOSE:
-            print(f"   → Total backlog: {len(data['total_backlog']):,} rows")
-            print(f"   → In-period backlog: {len(data['in_period_backlog']):,} rows")
-            print(f"   → Backlog by month: {len(data['backlog_by_month']):,} rows")
-        
         # =====================================================================
         # PHASE 5: Sales split data (small — keep as is)
         # =====================================================================
         progress_bar.progress(70, text="👥 Loading sales split data...")
-        with timer("DB: get_sales_split_data"):
+        with perf.track("DB: get_sales_split_data", PC.SQL):
             data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
-        if DEBUG_VERBOSE: print(f"   → Sales split rows: {len(data['sales_split']):,}")
+        perf.log_event(f"Sales split rows: {len(data['sales_split']):,}", PC.OTHER)
         
         # =====================================================================
         # PHASE 6: PAYMENT — Single unified query, split in Pandas
@@ -633,7 +554,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # - After: unified (5.5s) + Pandas split (~0.001s) = 5.5s
         # =====================================================================
         progress_bar.progress(80, text="💰 Loading payment data...")
-        with timer("DB: get_payment_data_unified"):
+        with perf.track("DB: get_payment_data_unified", PC.SQL):
             payment_raw_df = q.get_payment_data_unified(
                 employee_ids=filter_employee_ids,
                 entity_ids=None
@@ -660,15 +581,10 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['ar_outstanding'] = pd.DataFrame()
             data['period_payment'] = pd.DataFrame()
         
-        if DEBUG_VERBOSE:
-            print(f"   → Payment raw: {len(payment_raw_df):,} rows")
-            print(f"   → AR outstanding: {len(data['ar_outstanding']):,} rows")
-            print(f"   → Period payment: {len(data['period_payment']):,} rows")
-        
         # =====================================================================
         # Clean all dataframes
         # =====================================================================
-        with timer("Clean dataframes"):
+        with perf.track("Clean dataframes", PC.PANDAS):
             for key in data:
                 if isinstance(data[key], pd.DataFrame) and not data[key].empty:
                     data[key] = _clean_dataframe_for_display(data[key])
@@ -684,11 +600,6 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         
         # Print load summary
         total_load_time = time.perf_counter() - load_start_time
-        if DEBUG_VERBOSE:
-            print(f"\n{'='*60}")
-            print(f"✅ DATA LOAD COMPLETE: {total_load_time:.2f}s total")
-            print(f"{'='*60}\n")
-        
     except Exception as e:
         progress_bar.empty()
         st.error(f"❌ Error loading data: {str(e)}")
@@ -722,8 +633,6 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     - Allows page to render with $0 values instead of blocking
     """
     filter_start = time.perf_counter()
-    if DEBUG_VERBOSE:
-        print(f"\n🔍 CLIENT-SIDE FILTERING...")
     start_date = filter_values['start_date']
     end_date = filter_values['end_date']
     employee_ids = filter_values['employee_ids']
@@ -737,8 +646,6 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     # NEW v2.4.0: If empty selection, return empty DataFrames for data tables
     # This allows page to render with $0 values instead of blocking
     if is_empty_selection:
-        if DEBUG_VERBOSE:
-            print(f"   ⚠️ Empty selection - returning empty DataFrames")
         for key, df in raw_data.items():
             if key.startswith('_'):
                 continue
@@ -872,7 +779,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     if '_complex_kpi_calculator' in raw_data and raw_data['_complex_kpi_calculator'] is not None:
         calc = raw_data['_complex_kpi_calculator']
         
-        with timer("Pandas: Recalculate Complex KPIs"):
+        with perf.track("Pandas: recalc_complex_kpis", PC.PANDAS):
             # Recalculate with current filters (employee_ids)
             complex_kpis_result = calc.calculate_all(
                 start_date=start_date,
@@ -889,12 +796,7 @@ def filter_data_client_side(raw_data: dict, filter_values: dict) -> dict:
     
     # Print timing
     filter_elapsed = time.perf_counter() - filter_start
-    if DEBUG_VERBOSE:
-        print(f"⏱️ [Client-side filter] {filter_elapsed:.3f}s")
-        for key, df in filtered.items():
-            if isinstance(df, pd.DataFrame):
-                if DEBUG_VERBOSE: print(f"   → {key}: {len(df):,} rows")
-    
+    perf.log_event(f"Client-side filter: {filter_elapsed:.3f}s", PC.FILTER)
     return filtered
 
 # =============================================================================
@@ -934,8 +836,6 @@ def _extract_previous_year_from_cache(
     
     cached_start_year, cached_end_year = cached_year_range
     if prev_start.year < cached_start_year or prev_end.year > cached_end_year:
-        if DEBUG_VERBOSE:
-            print(f"   ⚠️ YoY cache miss: prev year {prev_start.year} outside cached range {cached_start_year}-{cached_end_year}")
         return None  # Signal to fall back to SQL
     
     df = raw_data['sales'].copy()
@@ -954,9 +854,6 @@ def _extract_previous_year_from_cache(
     # Filter by entity_ids
     if entity_ids and 'legal_entity_id' in df.columns:
         df = df[df['legal_entity_id'].isin(entity_ids)]
-    
-    if DEBUG_VERBOSE:
-        print(f"   ♻️ YoY: Extracted {len(df):,} rows from cache (prev period: {prev_start} to {prev_end})")
     
     return df
 
@@ -1065,7 +962,7 @@ def _reload_complex_kpis(filter_values: dict):
     logger.info(f"Recreating ComplexKPICalculator with exclude_internal={exclude_internal}")
     
     # Recreate calculator with new exclude_internal setting
-    with timer("Pandas: Recreate ComplexKPICalculator"):
+    with perf.track("Pandas: recreate_complex_kpi_calc", PC.PANDAS):
         calc = ComplexKPICalculator(lookback_df, exclude_internal=exclude_internal)
     
     # Store updated calculator
@@ -1111,6 +1008,7 @@ def get_or_load_data(filter_values: dict) -> dict:
     
     # Check if we need to expand the cached range
     if _needs_data_reload(filter_values):
+        perf.log_cache_miss("raw_cached_data", reason=f"year range {required_start}-{required_end}")
         # Calculate expanded range
         if cached_start is not None and cached_end is not None:
             # Expand existing range
@@ -1138,6 +1036,7 @@ def get_or_load_data(filter_values: dict) -> dict:
     if _needs_complex_kpi_reload(filter_values):
         _reload_complex_kpis(filter_values)
     
+    perf.log_cache_hit("raw_cached_data")
     return st.session_state.raw_cached_data
 
 
@@ -1164,8 +1063,8 @@ if filters_submitted:
                     if k.startswith(cache_prefixes)]
     for key in keys_to_clear:
         del st.session_state[key]
-    if DEBUG_VERBOSE and keys_to_clear:
-        print(f"   🗑️ Cleared {len(keys_to_clear)} computed caches due to filter change")
+    if keys_to_clear:
+        perf.log_event(f"Cleared {len(keys_to_clear)} computed caches", PC.CACHE)
 
 # Always use applied filters (not current form values)
 # This ensures data stays consistent even if form values change without submit
@@ -1283,13 +1182,10 @@ if has_empty_data or active_filters.get('is_empty_selection', False):
 # CALCULATE METRICS
 # =============================================================================
 
-if DEBUG_VERBOSE:
-    print(f"\n📈 CALCULATING METRICS...")
-
-with timer("Metrics: SalespersonMetrics init"):
+with perf.track("Metrics: init", PC.METRICS):
     metrics_calc = SalespersonMetrics(data['sales'], data['targets'])
 
-with timer("Metrics: calculate_overview_metrics"):
+with perf.track("Metrics: overview", PC.METRICS):
     overview_metrics = metrics_calc.calculate_overview_metrics(
         period_type=active_filters['period_type'],
         year=active_filters['year']
@@ -1303,7 +1199,7 @@ fresh_new_business_detail_df = data.get('new_business_detail', pd.DataFrame())
 # NEW v1.1.0: Get new_combos_detail for New Combos metric
 fresh_new_combos_detail_df = data.get('new_combos_detail', pd.DataFrame())
 
-with timer("Metrics: calculate_complex_kpis"):
+with perf.track("Metrics: complex_kpis", PC.METRICS):
     complex_kpis = metrics_calc.calculate_complex_kpis(
         new_customers_df=data['new_customers'],
         new_products_df=data['new_products'],
@@ -1311,7 +1207,7 @@ with timer("Metrics: calculate_complex_kpis"):
         new_combos_detail_df=fresh_new_combos_detail_df  # NEW v1.1.0
     )
 
-with timer("Metrics: calculate_backlog_metrics"):
+with perf.track("Metrics: backlog", PC.METRICS):
     backlog_metrics = metrics_calc.calculate_backlog_metrics(
         total_backlog_df=data['total_backlog'],
         in_period_backlog_df=data['in_period_backlog'],
@@ -1324,7 +1220,7 @@ with timer("Metrics: calculate_backlog_metrics"):
 # NEW v2.5.0: Calculate Pipeline & Forecast with KPI-filtered logic
 # This ensures each metric (Revenue/GP/GP1) only includes data from
 # employees who have that specific KPI target assigned
-with timer("Metrics: calculate_pipeline_forecast_metrics"):
+with perf.track("Metrics: pipeline_forecast", PC.METRICS):
     pipeline_forecast_metrics = metrics_calc.calculate_pipeline_forecast_metrics(
         total_backlog_df=data['total_backlog'],
         in_period_backlog_df=data['in_period_backlog'],
@@ -1337,7 +1233,7 @@ with timer("Metrics: calculate_pipeline_forecast_metrics"):
 
 # Analyze in-period backlog for overdue detection
 # FIXED v2.11.0: Pass period_type and year for correct full period end date calculation
-with timer("Metrics: analyze_in_period_backlog"):
+with perf.track("Metrics: in_period_backlog", PC.METRICS):
     in_period_backlog_analysis = metrics_calc.analyze_in_period_backlog(
         backlog_detail_df=data['backlog_detail'],
         start_date=active_filters['start_date'],
@@ -1357,7 +1253,7 @@ if complex_kpi_calc is not None and not data['backlog_detail'].empty:
     if backlog_period_end is None:
         backlog_period_end = active_filters['end_date']
     
-    with timer("Pandas: calculate_backlog_new_business"):
+    with perf.track("Pandas: backlog_new_business", PC.PANDAS):
         backlog_new_business = complex_kpi_calc.calculate_backlog_new_business(
             backlog_detail_df=data['backlog_detail'],
             start_date=active_filters['start_date'],
@@ -1421,21 +1317,22 @@ if active_filters['compare_yoy'] and not period_info['is_multi_year']:
         )
         
         if previous_sales_df is None:
+            perf.log_cache_miss("yoy_prev_year", reason="outside cached year range")
             # Previous year not in cache range, fall back to SQL
-            with timer("DB: get_previous_year_data (SQL fallback)"):
+            with perf.track("DB: get_previous_year_data (SQL fallback)", PC.SQL):
                 previous_sales_df = queries.get_previous_year_data(
                     start_date=active_filters['start_date'],
                     end_date=active_filters['end_date'],
                     employee_ids=active_filters['employee_ids'],
                     entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
                 )
+        else:
+            perf.log_cache_hit("yoy_prev_year (from raw_data)")
         
         st.session_state[yoy_cache_key] = previous_sales_df
     else:
         previous_sales_df = st.session_state[yoy_cache_key]
-        if DEBUG_VERBOSE:
-            print(f"   ♻️ Using cached previous_year_data ({len(previous_sales_df)} rows)")
-    
+        perf.log_cache_hit("yoy_prev_year (session_state)")
     if not previous_sales_df.empty:
         prev_metrics_calc = SalespersonMetrics(previous_sales_df, None)
         prev_overview = prev_metrics_calc.calculate_overview_metrics(
@@ -1445,7 +1342,7 @@ if active_filters['compare_yoy'] and not period_info['is_multi_year']:
         yoy_metrics = metrics_calc.calculate_yoy_comparison(overview_metrics, prev_overview)
 
 # Overall KPI Achievement (weighted average)
-with timer("Metrics: calculate_overall_kpi_achievement"):
+with perf.track("Metrics: overall_achievement", PC.METRICS):
     overall_achievement = metrics_calc.calculate_overall_kpi_achievement(
         overview_metrics=overview_metrics,
         complex_kpis=complex_kpis,
@@ -1463,7 +1360,7 @@ with timer("Metrics: calculate_overall_kpi_achievement"):
 # Generate daily warning bulletin from all calculated metrics — zero SQL queries
 # =============================================================================
 
-with timer("Generate: warning_bulletin"):
+with perf.track("Generate: warning_bulletin", PC.METRICS):
     # Reuse already-loaded previous year sales data for customer decline detection
     _prev_sales_cache_key = f"prev_year_data_{active_filters['start_date']}_{active_filters['end_date']}_{tuple(active_filters['employee_ids'] or [])}"
     _prev_sales_for_bulletin = st.session_state.get(_prev_sales_cache_key, pd.DataFrame())
@@ -1484,10 +1381,8 @@ with timer("Generate: warning_bulletin"):
         previous_sales_df=_prev_sales_for_bulletin,
     )
 
-# Print timing summary before rendering
-if DEBUG_TIMING:
-    print_timing_summary()
-    reset_timing()
+# Mark end of data loading phase → start of UI rendering
+perf.log_event("── DATA LOADED, START RENDERING ──", PC.RENDER)
 
 # =============================================================================
 # PAGE HEADER
@@ -2846,8 +2741,7 @@ with tab6:
 # =============================================================================
 
 # Print final timing summary for UI rendering
-if DEBUG_TIMING:
-    print_timing_summary()
+perf.summary()
 
 st.divider()
 st.caption(

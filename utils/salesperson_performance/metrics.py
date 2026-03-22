@@ -89,8 +89,8 @@ from .constants import MONTH_ORDER, QUARTER_MONTHS, KPI_TYPES
 
 logger = logging.getLogger(__name__)
 
-# Debug timing flag
-DEBUG_METRICS_TIMING = False
+# Performance tracking via unified perf_logger
+from .perf_logger import perf, PerfCategory as PC, PERF_VERBOSE
 
 
 def get_full_period_end_date(period_type: str, year: int) -> date:
@@ -975,12 +975,6 @@ class SalespersonMetrics:
                 'num_new_combos': 55,
             }
             logger.warning("kpi_type_weights not provided, using fallback values")
-            if DEBUG_METRICS_TIMING:
-                print(f"   ⚠️ WARNING: kpi_type_weights not provided, using FALLBACK")
-        else:
-            if DEBUG_METRICS_TIMING:
-                print(f"   ✅ kpi_type_weights loaded from database: {len(kpi_type_weights)} types")
-                print(f"      Keys: {list(kpi_type_weights.keys())}")
         
         # Map KPI names to value columns for sales-based KPIs
         kpi_column_map = {
@@ -1036,11 +1030,7 @@ class SalespersonMetrics:
         unique_employees = self.targets_df['employee_id'].nunique()
         is_single_person = unique_employees == 1
         
-        if DEBUG_METRICS_TIMING:
-            if is_single_person:
-                print(f"   👤 Single person mode: using weight_numeric from KPI assignment")
-            else:
-                print(f"   👥 Team mode ({unique_employees} people): using default_weight from kpi_types")
+        # Mode logged via perf_logger (verbose mode only)
         
         # =====================================================================
         # STEP 1: Calculate aggregate metrics for each KPI TYPE
@@ -1113,8 +1103,7 @@ class SalespersonMetrics:
                 actual = get_complex_kpi_actual_for_employees(kpi_name, employee_ids)
                 kpi_type_aggregates[kpi_name]['actual_sum'] = actual
                 
-                if DEBUG_METRICS_TIMING:
-                    print(f"      📊 Complex KPI '{kpi_name}': actual={actual:.1f} from {len(employee_ids)} employees with target")
+                # Complex KPI actual tracked via perf_logger
         
         # =====================================================================
         # STEP 2: Calculate achievement for each KPI TYPE and build kpi_details
@@ -1138,8 +1127,8 @@ class SalespersonMetrics:
                 weight = kpi_type_weights.get(kpi_name, 50)
                 
                 # DEBUG: Check if key was found
-                if DEBUG_METRICS_TIMING and kpi_name not in kpi_type_weights:
-                    print(f"      ⚠️ Key '{kpi_name}' not found in kpi_type_weights, using default=50")
+                if kpi_name not in kpi_type_weights:
+                    logger.debug(f"Key '{kpi_name}' not in kpi_type_weights, using default=50")
             
             kpi_details.append({
                 'kpi_name': kpi_name,
@@ -1162,9 +1151,9 @@ class SalespersonMetrics:
         total_weight = 0
         
         # DEBUG: Print KPI details for verification
-        if DEBUG_METRICS_TIMING:
+        if PERF_VERBOSE:
             weight_source = "assignment_weight" if is_single_person else "default_weight"
-            print(f"\n   📊 [Overall Achievement Calculation - v2.9.3]")
+            print(f"\n   📊 [Overall Achievement]")
             print(f"   Weight source: {weight_source}")
             print(f"   {'KPI Type':<25} {'Achievement':>12} {'Weight':>10} {'Weighted':>12}")
             print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
@@ -1174,17 +1163,17 @@ class SalespersonMetrics:
             weighted_sum += kpi_weighted
             total_weight += kpi['weight']
             
-            if DEBUG_METRICS_TIMING:
+            if PERF_VERBOSE:
                 print(f"   {kpi['kpi_name']:<25} {kpi['achievement']:>11.1f}% {kpi['weight']:>10} {kpi_weighted:>12.1f}")
         
-        if DEBUG_METRICS_TIMING:
+        if PERF_VERBOSE:
             print(f"   {'-'*25} {'-'*12} {'-'*10} {'-'*12}")
             print(f"   {'TOTAL':<25} {'':<12} {total_weight:>10} {weighted_sum:>12.1f}")
         
         overall_achievement = (weighted_sum / total_weight) if total_weight > 0 else None
         
-        if DEBUG_METRICS_TIMING:
-            print(f"\n   🎯 Overall = {weighted_sum:.1f} / {total_weight} = {overall_achievement:.1f}%" if overall_achievement else "   🎯 Overall = N/A")
+        if PERF_VERBOSE:
+            print(f"   🎯 Overall = {weighted_sum:.1f} / {total_weight} = {overall_achievement:.1f}%" if overall_achievement else "   🎯 Overall = N/A")
         
         return {
             'overall_achievement': round(overall_achievement, 1) if overall_achievement else None,
@@ -1239,8 +1228,6 @@ class SalespersonMetrics:
             - summary: Dict with totals (for backward compatibility)
         """
         _start_time = time.perf_counter()
-        if DEBUG_METRICS_TIMING:
-            print(f"   📊 [pipeline_forecast] Starting calculation...")
         
         if year is None:
             year = datetime.now().year
@@ -1260,7 +1247,7 @@ class SalespersonMetrics:
             # Custom period - use provided end_date
             backlog_period_end = end_date
         
-        if DEBUG_METRICS_TIMING:
+        if PERF_VERBOSE:
             print(f"   📊 [pipeline_forecast] Period: {period_type}, "
                   f"Sales: {start_date} to {end_date}, "
                   f"Backlog In-Period: {start_date} to {backlog_period_end}")
@@ -1479,9 +1466,8 @@ class SalespersonMetrics:
             'backlog_period_end': backlog_period_end,  # For display in UI
         }
         
-        if DEBUG_METRICS_TIMING:
-            _elapsed = time.perf_counter() - _start_time
-            print(f"   📊 [pipeline_forecast] Completed in {_elapsed:.3f}s")
+        _elapsed = time.perf_counter() - _start_time
+        perf.log_event(f"pipeline_forecast: {_elapsed:.3f}s", PC.METRICS)
         
         return {
             'period_context': period_context,

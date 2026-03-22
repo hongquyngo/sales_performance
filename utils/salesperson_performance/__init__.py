@@ -35,6 +35,9 @@ from .export import SalespersonExport
 # Fragments
 from .fragments import kpi_progress_fragment
 
+# Performance Logger
+from .perf_logger import perf, PerfCategory
+
 # Constants
 from .constants import (
     COLORS,
@@ -60,6 +63,10 @@ __all__ = [
     
     # Fragments
     'kpi_progress_fragment',
+    
+    # Performance Logger
+    'perf',
+    'PerfCategory',
     
     # Constants
     'COLORS',
