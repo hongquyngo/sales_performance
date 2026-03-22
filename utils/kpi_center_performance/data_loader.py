@@ -186,6 +186,7 @@ class UnifiedDataLoader:
             'targets_raw_df': pd.DataFrame(),
             'hierarchy_df': pd.DataFrame(),
             'kpi_types_df': pd.DataFrame(),  # NEW v5.0.0: KPI Types with default_weight
+            'payment_raw_df': pd.DataFrame(),  # NEW v6.1.1: Payment/AR data
             '_loaded_at': None,
             '_lookback_start': None,
             '_lookback_end': None,
@@ -290,12 +291,24 @@ class UnifiedDataLoader:
             # =====================================================================
             # 5. KPI TYPES DATA - NEW v5.0.0 for default_weight
             # =====================================================================
-            progress_bar.progress(95, text="⚖️ Loading KPI types...")
+            progress_bar.progress(80, text="⚖️ Loading KPI types...")
             start = time.perf_counter()
             data['kpi_types_df'] = self._load_kpi_types()
             elapsed = time.perf_counter() - start
             if DEBUG_TIMING:
                 print(f"   📊 SQL [kpi_types]: {elapsed:.3f}s → {len(data['kpi_types_df']):,} rows")
+            
+            # =====================================================================
+            # 6. PAYMENT RAW DATA — NEW v6.1.1
+            # Load ALL invoices from customer_ar_by_kpi_center_view (cached)
+            # Replaces 2 × ~90s queries with 1 × ~5s cached load
+            # =====================================================================
+            progress_bar.progress(85, text="💰 Loading payment data...")
+            start = time.perf_counter()
+            data['payment_raw_df'] = self._load_payment_raw()
+            elapsed = time.perf_counter() - start
+            if DEBUG_TIMING:
+                print(f"   📊 SQL [payment_raw]: {elapsed:.3f}s → {len(data['payment_raw_df']):,} rows")
             
             progress_bar.progress(100, text="✅ Data loaded successfully!")
             
@@ -328,7 +341,8 @@ class UnifiedDataLoader:
             f"backlog={len(data['backlog_raw_df'])}, "
             f"targets={len(data['targets_raw_df'])}, "
             f"hierarchy={len(data['hierarchy_df'])}, "
-            f"kpi_types={len(data['kpi_types_df'])}"
+            f"kpi_types={len(data['kpi_types_df'])}, "
+            f"payment={len(data['payment_raw_df'])}"
         )
         
         return data
@@ -608,6 +622,31 @@ class UnifiedDataLoader:
             return df
         except Exception as e:
             logger.error(f"Error loading kpi_types: {e}")
+            return pd.DataFrame()
+    
+    def _load_payment_raw(self) -> pd.DataFrame:
+        """
+        Load ALL payment/AR data from customer_ar_by_kpi_center_view.
+        
+        NEW v6.1.1: Cached in unified data — replaces per-request queries.
+        
+        No WHERE clause — loads all invoices. Filtering by kpi_center_id,
+        payment_status, inv_date done in Pandas by main page.
+        
+        Returns:
+            DataFrame with all invoice rows (all statuses, all dates)
+        """
+        query = """
+            SELECT *
+            FROM customer_ar_by_kpi_center_view
+        """
+        
+        try:
+            df = pd.read_sql(text(query), self.engine)
+            return df
+        except Exception as e:
+            # Payment view may not exist — this is optional
+            logger.warning(f"Payment data not available (view may not exist): {e}")
             return pd.DataFrame()
     
     # =========================================================================

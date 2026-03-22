@@ -508,52 +508,59 @@ def main():
     st.caption(f"📊 {filter_summary}")
     
     # =========================================================================
-    # STEP 8: LOAD PAYMENT DATA — OPTIMIZED v6.1.1
-    # Single SQL query → split in Pandas (was 2 × ~90s, now 1 × ~5s)
-    # Source: customer_ar_by_kpi_center_view (GROSS amounts, pre-calc aging)
+    # STEP 8: FILTER PAYMENT DATA — OPTIMIZED v6.1.1
+    # Uses cached payment_raw_df from UnifiedDataLoader (loaded once in STEP 1)
+    # No SQL queries here — pure Pandas filtering (instant)
     # =========================================================================
     
     ar_outstanding_df = pd.DataFrame()
     period_payment_df = pd.DataFrame()
     
     if _PAYMENT_AVAILABLE:
-        kpc_ids_for_payment = active_filters.get(
-            'kpi_center_ids_expanded',
-            active_filters.get('kpi_center_ids', [])
-        )
-        entity_ids_for_payment = active_filters.get('entity_ids', [])
+        payment_raw_df = unified_cache.get('payment_raw_df', pd.DataFrame())
         
-        try:
-            with timer("Load: Payment data (unified)"):
-                payment_raw_df = queries.get_payment_data_unified(
-                    kpi_center_ids=kpc_ids_for_payment,
-                    entity_ids=entity_ids_for_payment,
+        if not payment_raw_df.empty:
+            with timer("Filter: Payment data (Pandas)"):
+                kpc_ids_for_payment = active_filters.get(
+                    'kpi_center_ids_expanded',
+                    active_filters.get('kpi_center_ids', [])
                 )
-            
-            if not payment_raw_df.empty:
-                # Split into AR outstanding vs Period using Pandas (instant)
-                ar_outstanding_df = payment_raw_df[
-                    payment_raw_df['payment_status'].isin(['Unpaid', 'Partially Paid'])
+                entity_ids_for_payment = active_filters.get('entity_ids', [])
+                
+                # Apply KPI Center filter
+                filtered_payment = payment_raw_df
+                if kpc_ids_for_payment:
+                    filtered_payment = filtered_payment[
+                        filtered_payment['kpi_center_id'].isin(kpc_ids_for_payment)
+                    ]
+                
+                # Apply Entity filter
+                if entity_ids_for_payment and 'legal_entity_id' in filtered_payment.columns:
+                    filtered_payment = filtered_payment[
+                        filtered_payment['legal_entity_id'].isin(entity_ids_for_payment)
+                    ]
+                
+                # Split into AR outstanding vs Period
+                ar_outstanding_df = filtered_payment[
+                    filtered_payment['payment_status'].isin(['Unpaid', 'Partially Paid'])
                 ].copy()
                 
                 # Period filter
                 start_date = active_filters['start_date']
                 end_date = active_filters['end_date']
-                if 'inv_date' in payment_raw_df.columns:
-                    inv_date_col = pd.to_datetime(payment_raw_df['inv_date'], errors='coerce')
+                if 'inv_date' in filtered_payment.columns:
+                    inv_date_col = pd.to_datetime(filtered_payment['inv_date'], errors='coerce')
                     period_mask = (
                         (inv_date_col >= pd.Timestamp(start_date)) &
                         (inv_date_col <= pd.Timestamp(end_date))
                     )
-                    period_payment_df = payment_raw_df[period_mask].copy()
+                    period_payment_df = filtered_payment[period_mask].copy()
                 
                 if DEBUG_TIMING:
-                    print(f"   → AR outstanding: {len(ar_outstanding_df):,} rows (Pandas filter)")
-                    print(f"   → Period payment: {len(period_payment_df):,} rows (Pandas filter)")
-        except Exception as e:
-            logger.warning(f"Payment data not available: {e}")
-            ar_outstanding_df = pd.DataFrame()
-            period_payment_df = pd.DataFrame()
+                    print(f"   → Payment raw (cached): {len(payment_raw_df):,} rows")
+                    print(f"   → After KPC/entity filter: {len(filtered_payment):,} rows")
+                    print(f"   → AR outstanding: {len(ar_outstanding_df):,} rows")
+                    print(f"   → Period payment: {len(period_payment_df):,} rows")
     
     if DEBUG_TIMING:
         print(f"\n🖼️ RENDERING UI...")
