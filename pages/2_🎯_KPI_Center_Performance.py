@@ -427,15 +427,23 @@ def main():
         new_business_by_center_df = data.get('new_business_by_center_df', pd.DataFrame())
         new_customers_by_center_df = data.get('new_customers_by_center_df', pd.DataFrame())
         new_products_by_center_df = data.get('new_products_by_center_df', pd.DataFrame())
+        new_combos_by_center_df = data.get('new_combos_by_center_df', pd.DataFrame())  # FIX v6.0.1: Add combos
         
         # Merge into complex_kpis_by_center
         for df, key in [
             (new_business_by_center_df, 'new_business_revenue'),
             (new_customers_by_center_df, 'num_new_customers'),
             (new_products_by_center_df, 'num_new_products'),
+            (new_combos_by_center_df, 'num_new_combos'),  # FIX v6.0.1: Add combos to progress
         ]:
             if not df.empty:
-                value_col = 'new_business_revenue' if 'new_business_revenue' in df.columns else 'weighted_count'
+                # Detect value column: each df uses different column name
+                if 'new_business_revenue' in df.columns:
+                    value_col = 'new_business_revenue'
+                elif 'combo_count' in df.columns:
+                    value_col = 'combo_count'
+                else:
+                    value_col = 'weighted_count'
                 for _, row in df.iterrows():
                     kpc_id = row['kpi_center_id']
                     if kpc_id not in complex_kpis_by_center:
