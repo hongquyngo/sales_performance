@@ -508,28 +508,38 @@ def main():
     st.caption(f"📊 {filter_summary}")
     
     # =========================================================================
-    # STEP 8: EXTRACT PAYMENT DATA (Pandas — instant, no SQL)
-    # Uses already-loaded sales_raw from unified cache. Zero additional queries.
+    # STEP 8: LOAD PAYMENT DATA (2 SQL queries — same pattern as Salesperson)
+    # Source: customer_ar_by_kpi_center_view (GROSS amounts, pre-calc aging)
     # =========================================================================
     
     ar_outstanding_df = pd.DataFrame()
     period_payment_df = pd.DataFrame()
     
     if _PAYMENT_AVAILABLE:
-        with timer("Extract: payment data (Pandas)"):
-            payment_data = processor.extract_payment_data(
-                kpi_center_ids=active_filters.get(
-                    'kpi_center_ids_expanded',
-                    active_filters.get('kpi_center_ids', [])
-                ),
-                entity_ids=active_filters.get('entity_ids', []),
-                kpi_type=active_filters.get('kpi_type_filter'),
-                start_date=active_filters.get('start_date'),
-                end_date=active_filters.get('end_date'),
-                exclude_internal=active_filters.get('exclude_internal_revenue', True),
-            )
-            ar_outstanding_df = payment_data.get('ar_outstanding_df', pd.DataFrame())
-            period_payment_df = payment_data.get('period_payment_df', pd.DataFrame())
+        kpc_ids_for_payment = active_filters.get(
+            'kpi_center_ids_expanded',
+            active_filters.get('kpi_center_ids', [])
+        )
+        entity_ids_for_payment = active_filters.get('entity_ids', [])
+        
+        try:
+            with timer("Load: AR outstanding data"):
+                ar_outstanding_df = queries.get_ar_outstanding_data(
+                    kpi_center_ids=kpc_ids_for_payment,
+                    entity_ids=entity_ids_for_payment,
+                )
+            
+            with timer("Load: Period payment data"):
+                period_payment_df = queries.get_payment_period_data(
+                    start_date=active_filters['start_date'],
+                    end_date=active_filters['end_date'],
+                    kpi_center_ids=kpc_ids_for_payment,
+                    entity_ids=entity_ids_for_payment,
+                )
+        except Exception as e:
+            logger.warning(f"Payment data not available: {e}")
+            ar_outstanding_df = pd.DataFrame()
+            period_payment_df = pd.DataFrame()
     
     if DEBUG_TIMING:
         print(f"\n🖼️ RENDERING UI...")
