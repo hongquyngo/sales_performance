@@ -357,42 +357,47 @@ class PerformanceLogger:
         if not self._records:
             return
 
-        total = sum(r.duration for r in self._records)
+        # Separate timed records from zero-duration event markers
+        timed = [r for r in self._records if r.duration > 0.001]
+        total = sum(r.duration for r in timed)
         page_elapsed = (time.perf_counter() - self._page_start) if self._page_start else total
 
+        if not timed:
+            return
+
         # Header
+        sql_count = sum(1 for r in timed if r.category == PerfCategory.SQL)
         print(f"\n{'='*90}")
-        print(f"📊 PERFORMANCE SUMMARY  |  Page total: {page_elapsed:.2f}s  |  "
-              f"Tracked: {total:.2f}s  |  Steps: {len(self._records)}")
+        print(f"📊 PERFORMANCE SUMMARY  |  Page: {page_elapsed:.2f}s  |  "
+              f"Tracked: {total:.2f}s  |  "
+              f"{len(timed)} steps ({sql_count} SQL)")
         print(f"{'='*90}")
 
         # Column headers
-        hdr = (f"{'':3} {'Category':<8} {'Label':<40} "
-               f"{'Duration':>8} {'%':>6} {'Rows':>10} {'Note'}")
+        hdr = (f"{'':3} {'Cat':<7} {'Label':<42} "
+               f"{'Time':>7} {'%':>5} {'Rows':>9} {'Note'}")
         print(hdr)
         print(f"{'─'*90}")
 
-        # Sort by timestamp (execution order)
-        for r in self._records:
-            if r.duration == 0.0:
-                continue  # skip event markers in summary
+        # Print timed records in execution order
+        for r in timed:
             pct = (r.duration / total * 100) if total > 0 else 0
-            rows_str = f"{r.rows:>10,}" if r.rows is not None else f"{'':>10}"
+            rows_str = f"{r.rows:>9,}" if r.rows is not None else f"{'':>9}"
             note = r.query_hint or ""
             if r.is_very_slow:
                 note = f"🔴 SLOW  {note}"
             elif r.is_slow:
                 note = f"🟡 slow  {note}"
-            cat_str = r.category.value[:8].ljust(8)
+            cat_str = r.category.value[:7].ljust(7)
 
-            print(f"{r.severity_icon:3} {cat_str} {r.label:<40} "
-                  f"{r.duration:>7.3f}s {pct:>5.1f}% {rows_str} {note}")
+            print(f"{r.severity_icon:3} {cat_str} {r.label:<42} "
+                  f"{r.duration:>6.3f}s {pct:>4.1f}% {rows_str} {note}")
 
         # Totals by category
         print(f"{'─'*90}")
 
         cat_totals = {}
-        for r in self._records:
+        for r in timed:
             cat = r.category.value
             cat_totals[cat] = cat_totals.get(cat, 0.0) + r.duration
 
@@ -402,7 +407,8 @@ class PerformanceLogger:
             print(f"    {cat:<8} {dur:>7.3f}s ({pct:>5.1f}%)  {bar}")
 
         print(f"{'─'*90}")
-        print(f"    {'TOTAL':<8} {total:>7.3f}s")
+        print(f"    {'TOTAL':<8} {total:>7.3f}s  |  "
+              f"Overhead (untracked): {max(0, page_elapsed - total):.2f}s")
 
         # Cache summary
         if self._cache_events:
@@ -414,11 +420,11 @@ class PerformanceLogger:
                     reason_str = f" — {e.reason}" if e.reason else ""
                     print(f"      💾 MISS: {e.key}{reason_str}")
 
-        # SQL query reference
-        sql_records = [r for r in self._records if r.category == PerfCategory.SQL]
+        # SQL query reference (deduplicated — only show log_sql records)
+        sql_records = [r for r in timed if r.category == PerfCategory.SQL]
         if sql_records:
-            print(f"\n    SQL Queries ({len(sql_records)} total, "
-                  f"{sum(r.duration for r in sql_records):.2f}s):")
+            sql_total = sum(r.duration for r in sql_records)
+            print(f"\n    SQL Queries ({len(sql_records)}, {sql_total:.2f}s):")
             for r in sorted(sql_records, key=lambda x: -x.duration):
                 rows_str = f"{r.rows:,}" if r.rows is not None else "?"
                 hint = f"  [{r.query_hint}]" if r.query_hint else ""
@@ -469,17 +475,19 @@ class PerformanceLogger:
 
     @property
     def total_duration(self) -> float:
-        """Total tracked duration in seconds."""
-        return sum(r.duration for r in self._records)
+        """Total tracked duration in seconds (timed records only)."""
+        return sum(r.duration for r in self._records if r.duration > 0.001)
 
     @property
     def sql_duration(self) -> float:
         """Total SQL query duration in seconds."""
-        return sum(r.duration for r in self._records if r.category == PerfCategory.SQL)
+        return sum(r.duration for r in self._records
+                   if r.category == PerfCategory.SQL and r.duration > 0.001)
 
     @property
     def record_count(self) -> int:
-        return len(self._records)
+        """Number of timed records (excludes zero-duration events)."""
+        return sum(1 for r in self._records if r.duration > 0.001)
 
     # =========================================================================
     # INTERNALS

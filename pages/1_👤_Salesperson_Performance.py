@@ -276,8 +276,7 @@ def _get_cached_sidebar_options():
         # Load unified raw data (all columns for sales + complex KPIs + sidebar)
         lookback_start = date(date.today().year - 5, 1, 1)
         
-        with perf.track("Sidebar: load_sales_raw", PC.SQL):
-            sales_raw_df = queries.get_sales_raw(lookback_start=lookback_start)
+        sales_raw_df = queries.get_sales_raw(lookback_start=lookback_start)
         
         # Store for reuse in data loading phase (saves separate sales query)
         st.session_state['_sidebar_lookback_df'] = sales_raw_df
@@ -422,8 +421,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         else:
             # Load fresh if not available from sidebar
             lookback_start = date(end_date.year - 5, 1, 1)
-            with perf.track("DB: get_sales_raw", PC.SQL):
-                sales_raw_df = q.get_sales_raw(lookback_start=lookback_start)
+            sales_raw_df = q.get_sales_raw(lookback_start=lookback_start)
             perf.log_event(f"Sales raw rows: {len(sales_raw_df):,}", PC.OTHER)
         
         # Store raw data for Complex KPIs and later recalculation
@@ -454,7 +452,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # PHASE 2: KPI Targets & Weights
         # =====================================================================
         progress_bar.progress(25, text="🎯 Loading KPI targets...")
-        with perf.track("DB: get_kpi_targets", PC.SQL):
+        with perf.track("DB: get_kpi_targets (loop)", PC.OTHER):
             targets_list = []
             for yr in range(start_year, end_year + 1):
                 t = q.get_kpi_targets(year=yr, employee_ids=filter_employee_ids)
@@ -463,8 +461,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
             data['targets'] = pd.concat(targets_list, ignore_index=True) if targets_list else pd.DataFrame()
         perf.log_event(f"Targets rows: {len(data['targets']):,}", PC.OTHER)
         
-        with perf.track("DB: get_kpi_type_weights", PC.SQL):
-            data['kpi_type_weights'] = get_kpi_type_weights_cached()
+        data['kpi_type_weights'] = get_kpi_type_weights_cached()
         perf.log_event(f"KPI type weights: {len(data['kpi_type_weights'])} types", PC.OTHER)
         
         # =====================================================================
@@ -494,11 +491,10 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # =====================================================================
         progress_bar.progress(55, text="📦 Loading backlog data...")
         
-        with perf.track("DB: get_backlog_detail", PC.SQL):
-            data['backlog_detail'] = q.get_backlog_detail(
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
+        data['backlog_detail'] = q.get_backlog_detail(
+            employee_ids=filter_employee_ids,
+            entity_ids=None
+        )
         perf.log_event(f"Backlog detail rows: {len(data['backlog_detail']):,}", PC.OTHER)
         
         # Compute backlog aggregates from detail (Pandas — instant)
@@ -543,8 +539,7 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # PHASE 5: Sales split data (small — keep as is)
         # =====================================================================
         progress_bar.progress(70, text="👥 Loading sales split data...")
-        with perf.track("DB: get_sales_split_data", PC.SQL):
-            data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
+        data['sales_split'] = q.get_sales_split_data(employee_ids=filter_employee_ids)
         perf.log_event(f"Sales split rows: {len(data['sales_split']):,}", PC.OTHER)
         
         # =====================================================================
@@ -554,11 +549,10 @@ def load_data_for_year_range(start_year: int, end_year: int, exclude_internal: b
         # - After: unified (5.5s) + Pandas split (~0.001s) = 5.5s
         # =====================================================================
         progress_bar.progress(80, text="💰 Loading payment data...")
-        with perf.track("DB: get_payment_data_unified", PC.SQL):
-            payment_raw_df = q.get_payment_data_unified(
-                employee_ids=filter_employee_ids,
-                entity_ids=None
-            )
+        payment_raw_df = q.get_payment_data_unified(
+            employee_ids=filter_employee_ids,
+            entity_ids=None
+        )
         
         # Split into AR outstanding vs Period (Pandas — instant)
         if not payment_raw_df.empty:
@@ -1319,13 +1313,12 @@ if active_filters['compare_yoy'] and not period_info['is_multi_year']:
         if previous_sales_df is None:
             perf.log_cache_miss("yoy_prev_year", reason="outside cached year range")
             # Previous year not in cache range, fall back to SQL
-            with perf.track("DB: get_previous_year_data (SQL fallback)", PC.SQL):
-                previous_sales_df = queries.get_previous_year_data(
-                    start_date=active_filters['start_date'],
-                    end_date=active_filters['end_date'],
-                    employee_ids=active_filters['employee_ids'],
-                    entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
-                )
+            previous_sales_df = queries.get_previous_year_data(
+                start_date=active_filters['start_date'],
+                end_date=active_filters['end_date'],
+                employee_ids=active_filters['employee_ids'],
+                entity_ids=active_filters['entity_ids'] if active_filters['entity_ids'] else None
+            )
         else:
             perf.log_cache_hit("yoy_prev_year (from raw_data)")
         

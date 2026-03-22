@@ -1266,10 +1266,13 @@ class SalespersonQueries:
 
     @staticmethod
     def _extract_query_hint(query: str) -> Optional[str]:
-        """Extract table/view name from SQL query for perf logging."""
+        """Extract main table/view name from SQL query for perf logging."""
         import re
-        # Match FROM <table> or JOIN <table>
-        match = re.search(r'\bFROM\s+(\w+)', query, re.IGNORECASE)
+        # Strip single-line SQL comments (-- ...) to avoid false matches
+        # e.g. "-- Payment data (invoice-level, from actual payment records)"
+        clean = re.sub(r'--[^\n]*', '', query)
+        # Match FROM <table> (the main FROM clause, not sub-selects)
+        match = re.search(r'\bFROM\s+(\w+)', clean, re.IGNORECASE)
         return match.group(1) if match else None
 
 
