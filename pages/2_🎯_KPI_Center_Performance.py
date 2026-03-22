@@ -508,7 +508,8 @@ def main():
     st.caption(f"📊 {filter_summary}")
     
     # =========================================================================
-    # STEP 8: LOAD PAYMENT DATA (2 SQL queries — same pattern as Salesperson)
+    # STEP 8: LOAD PAYMENT DATA — OPTIMIZED v6.1.1
+    # Single SQL query → split in Pandas (was 2 × ~90s, now 1 × ~5s)
     # Source: customer_ar_by_kpi_center_view (GROSS amounts, pre-calc aging)
     # =========================================================================
     
@@ -523,19 +524,32 @@ def main():
         entity_ids_for_payment = active_filters.get('entity_ids', [])
         
         try:
-            with timer("Load: AR outstanding data"):
-                ar_outstanding_df = queries.get_ar_outstanding_data(
+            with timer("Load: Payment data (unified)"):
+                payment_raw_df = queries.get_payment_data_unified(
                     kpi_center_ids=kpc_ids_for_payment,
                     entity_ids=entity_ids_for_payment,
                 )
             
-            with timer("Load: Period payment data"):
-                period_payment_df = queries.get_payment_period_data(
-                    start_date=active_filters['start_date'],
-                    end_date=active_filters['end_date'],
-                    kpi_center_ids=kpc_ids_for_payment,
-                    entity_ids=entity_ids_for_payment,
-                )
+            if not payment_raw_df.empty:
+                # Split into AR outstanding vs Period using Pandas (instant)
+                ar_outstanding_df = payment_raw_df[
+                    payment_raw_df['payment_status'].isin(['Unpaid', 'Partially Paid'])
+                ].copy()
+                
+                # Period filter
+                start_date = active_filters['start_date']
+                end_date = active_filters['end_date']
+                if 'inv_date' in payment_raw_df.columns:
+                    inv_date_col = pd.to_datetime(payment_raw_df['inv_date'], errors='coerce')
+                    period_mask = (
+                        (inv_date_col >= pd.Timestamp(start_date)) &
+                        (inv_date_col <= pd.Timestamp(end_date))
+                    )
+                    period_payment_df = payment_raw_df[period_mask].copy()
+                
+                if DEBUG_TIMING:
+                    print(f"   → AR outstanding: {len(ar_outstanding_df):,} rows (Pandas filter)")
+                    print(f"   → Period payment: {len(period_payment_df):,} rows (Pandas filter)")
         except Exception as e:
             logger.warning(f"Payment data not available: {e}")
             ar_outstanding_df = pd.DataFrame()

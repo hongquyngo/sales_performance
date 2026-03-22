@@ -396,7 +396,51 @@ class KPICenterQueries:
             return [kpi_center_id] if include_self else []
     # =========================================================================
     # PAYMENT & AR DATA — NEW v6.1.0
+    # UPDATED v6.1.1: Added get_payment_data_unified() — single query
     # =========================================================================
+
+    def get_payment_data_unified(
+        self,
+        kpi_center_ids: List[int] = None,
+        entity_ids: List[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Load ALL payment/AR data in a SINGLE query.
+
+        NEW v6.1.1: Replaces 2 separate queries (get_ar_outstanding_data +
+        get_payment_period_data) which each materialized the full view (~90s each).
+
+        Single query: ~5s total. Caller splits into AR vs Period using Pandas.
+
+        Args:
+            kpi_center_ids: KPI Center filter
+            entity_ids: Optional entity filter
+
+        Returns:
+            DataFrame with ALL invoice rows (all statuses).
+            Caller filters by payment_status / inv_date in Pandas.
+        """
+        if not self.access.can_access_page():
+            return pd.DataFrame()
+
+        if not kpi_center_ids:
+            kpi_center_ids = self.access.get_accessible_kpi_center_ids()
+
+        if not kpi_center_ids:
+            return pd.DataFrame()
+
+        query = """
+            SELECT *
+            FROM customer_ar_by_kpi_center_view
+            WHERE kpi_center_id IN :kpi_center_ids
+        """
+        params = {'kpi_center_ids': tuple(kpi_center_ids)}
+
+        if entity_ids:
+            query += " AND legal_entity_id IN :entity_ids"
+            params['entity_ids'] = tuple(entity_ids)
+
+        return self._execute_query(query, params, "payment_unified_by_kpc")
 
     def get_ar_outstanding_data(
         self,
