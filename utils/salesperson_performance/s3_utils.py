@@ -1,14 +1,18 @@
-# utils/salesperson_performance/payment/s3_utils.py
+# utils/salesperson_performance/s3_utils.py
 """
-S3 Utilities for Payment & Collection Tab — Document Viewing.
+S3 Utilities for Salesperson Performance — Document Viewing.
 
 Read-only S3 access for generating presigned URLs to view attached documents
-(sale invoice files, payment receipt files) in the drill-down UI.
+(sale invoice files, payment receipt files) in drill-down UIs.
 
 No upload/delete operations — this module only generates viewing URLs.
 
+MOVED v4.1.0: From payment/s3_utils.py to salesperson_performance/s3_utils.py
+  - Used by both Sales Detail drill-down and Payment tab
+  - Shared page-level utility, not payment-specific
+
 Usage:
-    from .s3_utils import get_s3_manager, generate_doc_url
+    from utils.salesperson_performance.s3_utils import get_s3_manager, generate_doc_url
 
     # In page setup (cached singleton):
     s3 = get_s3_manager()
@@ -16,13 +20,13 @@ Usage:
     # Generate URL for a single document:
     url = generate_doc_url("product-file/173552558.pdf")
 
-    # Or as callback for ar_drilldown:
-    payment_tab_fragment(
+    # Or as callback for drill-down:
+    sales_detail_tab_fragment(
         ...,
         s3_url_generator=generate_doc_url,
     )
 
-VERSION: 1.0.0
+VERSION: 1.1.0
 """
 
 import logging
@@ -158,6 +162,7 @@ def generate_doc_url(s3_key: str, expiration: int = 3600) -> Optional[str]:
     Convenience function — generate presigned URL using the singleton client.
 
     Can be passed directly as `s3_url_generator` callback:
+        sales_detail_tab_fragment(..., s3_url_generator=generate_doc_url)
         payment_tab_fragment(..., s3_url_generator=generate_doc_url)
 
     Args:

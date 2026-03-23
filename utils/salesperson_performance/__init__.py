@@ -12,6 +12,7 @@ Components:
 - filters: Sidebar filter components
 - charts: Altair visualizations
 - export: Formatted Excel report generation
+- s3_utils: S3 presigned URL generation for document viewing (MOVED v4.1.0)
 
 Usage:
     from utils.salesperson_performance import (
@@ -21,7 +22,8 @@ Usage:
         SalespersonFilters,
         SalespersonCharts,
         SalespersonExport,
-        CONSTANTS
+        CONSTANTS,
+        generate_doc_url,
     )
 """
 
@@ -37,6 +39,9 @@ from .fragments import kpi_progress_fragment
 
 # Performance Logger
 from .perf_logger import perf, PerfCategory
+
+# S3 Utilities (MOVED v4.1.0: from payment/s3_utils to module root)
+from .s3_utils import get_s3_manager, generate_doc_url
 
 # Constants
 from .constants import (
@@ -68,6 +73,10 @@ __all__ = [
     'perf',
     'PerfCategory',
     
+    # S3 Utilities
+    'get_s3_manager',
+    'generate_doc_url',
+    
     # Constants
     'COLORS',
     'MONTH_ORDER',
@@ -81,4 +90,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '3.3.0'
+__version__ = '4.1.0'

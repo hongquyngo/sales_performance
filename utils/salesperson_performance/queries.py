@@ -14,6 +14,10 @@ All queries respect access control filtering.
 Uses @st.cache_data for performance.
 
 CHANGELOG:
+- v4.1.0: ADDED Sales Detail drill-down query methods
+          - get_order_details(): OC lines from order_confirmation_full_looker_view
+          - get_delivery_details(): DN lines from delivery_full_view
+          - Used by Sales Detail tab click-to-expand drill-down panel
 - v3.7.0: UPDATED _AR_VIEW_SELECT for customer_ar_by_salesperson_view v2.3.1
           - INACTIVE employees now show with status suffix (e.g. 'Ánh Phan [INACTIVE]')
             instead of being lumped into 'Unassigned'
@@ -84,7 +88,7 @@ CHANGELOG:
 - v1.1.0: Fixed num_new_customers logic - now "new to company" instead of "new to salesperson"
           Changed PARTITION BY customer_id, sales_id -> PARTITION BY customer_id
 
-VERSION: 3.7.0
+VERSION: 4.1.0
 """
 
 import logging
@@ -1226,6 +1230,125 @@ class SalespersonQueries:
         except Exception as e:
             logger.error(f"Error loading KPI type weights: {e}")
             return _get_fallback_kpi_weights()
+    
+    # =========================================================================
+    # SALES DETAIL DRILL-DOWN (NEW v4.1.0)
+    # =========================================================================
+    
+    def get_order_details(self, oc_numbers: list) -> pd.DataFrame:
+        """
+        Load order confirmation details for drill-down.
+        
+        Uses order_confirmation_full_looker_view which includes:
+        - OC header: dates, payment/delivery terms, currency
+        - OC lines: product, qty (ordered/cancelled/delivered/invoiced), amounts
+        - Status: pending/in_process/completed/excess/etc.
+        - Linked invoices and VAT numbers
+        
+        Args:
+            oc_numbers: List of OC numbers to look up
+            
+        Returns:
+            DataFrame with OC line details
+        """
+        if not oc_numbers:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT 
+                oc_number,
+                customer_po_number,
+                oc_date,
+                etd,
+                customer,
+                customer_code,
+                legal_entity,
+                product_pn,
+                pt_code,
+                package_size,
+                brand,
+                selling_uom,
+                currency,
+                selling_unit_price,
+                usd_exchange_rate,
+                original_selling_quantity,
+                total_cancelled_quantity,
+                selling_quantity,
+                total_delivered_selling_quantity,
+                total_invoiced_selling_quantity,
+                total_amount_usd,
+                invoiced_amount_usd,
+                outstanding_amount_usd,
+                delivered_amount_usd,
+                gross_profit_percent,
+                invoice_number,
+                vat_invoice_number,
+                payment_term,
+                delivery_term,
+                status
+            FROM order_confirmation_full_looker_view
+            WHERE oc_number IN :oc_numbers
+            ORDER BY oc_number, product_pn
+        """
+        
+        params = {'oc_numbers': tuple(oc_numbers)}
+        return self._execute_query(query, params, "order_details_drilldown")
+    
+    def get_delivery_details(self, oc_numbers: list) -> pd.DataFrame:
+        """
+        Load delivery/shipment details for drill-down.
+        
+        Uses delivery_full_view which includes:
+        - DN header: dn_number, shipment status, dates (ETD/dispatched/delivered)
+        - Line details: stock out request vs actual, remaining qty
+        - Fulfillment: warehouse, inventory, gap analysis
+        - Timeline: overdue detection, delivery status
+        
+        Args:
+            oc_numbers: List of OC numbers to look up
+            
+        Returns:
+            DataFrame with delivery line details
+        """
+        if not oc_numbers:
+            return pd.DataFrame()
+        
+        query = """
+            SELECT
+                dn_number,
+                oc_number,
+                oc_date,
+                shipment_status,
+                shipment_status_vn,
+                delivery_timeline_status,
+                days_overdue,
+                sto_etd_date AS etd,
+                dispatched_date,
+                delivered_date,
+                delivery_confirmed,
+                product_pn,
+                pt_code,
+                package_size,
+                brand,
+                stock_out_request_quantity,
+                stock_out_quantity,
+                remaining_quantity_to_deliver,
+                fulfillment_status,
+                preferred_warehouse,
+                customer,
+                recipient_company,
+                recipient_address,
+                recipient_contact,
+                reference_packing_list,
+                shipping_cost,
+                legal_entity
+            FROM delivery_full_view
+            WHERE oc_number IN :oc_numbers
+            ORDER BY dn_number DESC, product_pn
+        """
+        
+        params = {'oc_numbers': tuple(oc_numbers)}
+        return self._execute_query(query, params, "delivery_details_drilldown")
     
     # =========================================================================
     # HELPER METHODS

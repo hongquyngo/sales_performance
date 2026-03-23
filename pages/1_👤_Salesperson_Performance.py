@@ -69,8 +69,8 @@ from utils.salesperson_performance.payment.payment_analysis import (
     analyze_payments as sp_analyze_payments,
     _fmt_currency as _payment_fmt_currency,
 )
-# NEW v3.7.0: Payment S3 document links
-from utils.salesperson_performance.payment.s3_utils import generate_doc_url
+# NEW v3.7.0: S3 document links (MOVED v4.1.0: from payment/ to module root)
+from utils.salesperson_performance.s3_utils import generate_doc_url
 
 from utils.salesperson_performance.filters import (
     analyze_period,
@@ -2287,11 +2287,18 @@ Backlog GP1 = Backlog GP × (GP1/GP ratio from invoiced data)
 with tab2:
     # Combined fragment: filters above + sub-tabs below
     # When filter changes, all sub-tabs update (no full page rerun)
+    # NEW v4.1.0: Drill-down loaders for Order → Delivery → Payment → Documents
     sales_detail_tab_fragment(
         sales_df=data['sales'],
         overview_metrics=overview_metrics,
         filter_values=active_filters,
-        fragment_key="sales_detail_tab"
+        fragment_key="sales_detail_tab",
+        # Drill-down loaders (v4.1.0)
+        order_detail_loader=lambda oc_nums: queries.get_order_details(oc_nums),
+        delivery_detail_loader=lambda oc_nums: queries.get_delivery_details(oc_nums),
+        payment_txn_loader=lambda inv_nums: queries.get_payment_transactions(inv_nums),
+        doc_loader=lambda inv_nums: queries.get_invoice_and_payment_docs(inv_nums),
+        s3_url_generator=generate_doc_url,
     )
 
 # =============================================================================

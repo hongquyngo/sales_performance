@@ -6,9 +6,19 @@ Uses @st.fragment to enable partial reruns for filter-heavy sections.
 Each fragment only reruns when its internal widgets change,
 NOT when sidebar filters or other sections change.
 
-VERSION: 3.4.0 - Combined fragments with filters above sub-tabs
+VERSION: 4.1.0 - Sales Detail drill-down (Order → Delivery → Payment → Docs)
 
 CHANGELOG:
+- v4.1.0: NEW Sales Detail drill-down panel
+          - Click any row in Sales List → 4-tab detail panel expands below
+          - 📦 Order: OC lines from order_confirmation_full_looker_view
+            (qty ordered/delivered/invoiced, ETD, amount, GP%, status)
+          - 🚚 Delivery: DN lines from delivery_full_view
+            (shipment status, ETD/dispatched/delivered dates, fulfillment, warehouse)
+          - 💳 Payment: reuse pattern from payment/ar_drilldown
+          - 📎 Documents: S3 presigned URLs for invoice & payment docs
+          - sales_detail_tab_fragment accepts 5 new loader callbacks
+          - Added vat_number column to Sales List display
 - v3.4.0: NEW Combined fragments with filters ABOVE sub-tabs (like KPI Center)
           - sales_detail_tab_fragment: Filters + Sales List + Pivot sub-tabs
           - backlog_tab_fragment: Filters + Backlog List + By ETD + Risk sub-tabs
@@ -2541,7 +2551,13 @@ def sales_detail_tab_fragment(
     sales_df: pd.DataFrame,
     overview_metrics: Dict,
     filter_values: Dict,
-    fragment_key: str = "sales_detail_tab"
+    fragment_key: str = "sales_detail_tab",
+    # NEW v4.1.0: Drill-down loaders
+    order_detail_loader=None,
+    delivery_detail_loader=None,
+    payment_txn_loader=None,
+    doc_loader=None,
+    s3_url_generator=None,
 ):
     """
     Combined fragment for entire Sales Detail tab.
@@ -2552,6 +2568,12 @@ def sales_detail_tab_fragment(
     
     When filters change, both sub-tabs update.
     Fragment prevents full page rerun.
+    
+    NEW v4.1.0: Click any row in Sales List → drill-down panel with 4 tabs:
+    - 📦 Order Details (from order_confirmation_full_looker_view)
+    - 🚚 Delivery (from delivery_full_view)
+    - 💳 Payment History (from customer_payment_full_view)
+    - 📎 Documents (S3 links)
     """
     st.subheader("📋 Sales Transaction Detail")
     
@@ -2648,7 +2670,14 @@ def sales_detail_tab_fragment(
     detail_tab1, detail_tab2 = st.tabs(["📄 Sales List", "📊 Pivot Analysis"])
     
     with detail_tab1:
-        _render_sales_list_content(filtered_df, sales_df, filter_values, f"{fragment_key}_list")
+        _render_sales_list_content(
+            filtered_df, sales_df, filter_values, f"{fragment_key}_list",
+            order_detail_loader=order_detail_loader,
+            delivery_detail_loader=delivery_detail_loader,
+            payment_txn_loader=payment_txn_loader,
+            doc_loader=doc_loader,
+            s3_url_generator=s3_url_generator,
+        )
     
     with detail_tab2:
         _render_pivot_content(filtered_df, f"{fragment_key}_pivot")
@@ -2658,9 +2687,15 @@ def _render_sales_list_content(
     filtered_df: pd.DataFrame,
     original_df: pd.DataFrame,
     filter_values: Dict,
-    key_prefix: str
+    key_prefix: str,
+    # NEW v4.1.0: Drill-down loaders
+    order_detail_loader=None,
+    delivery_detail_loader=None,
+    payment_txn_loader=None,
+    doc_loader=None,
+    s3_url_generator=None,
 ):
-    """Render Sales List content (without filters - filters are above)."""
+    """Render Sales List content with click-to-expand drill-down (v4.1.0)."""
     if filtered_df.empty:
         st.info("No transactions match the current filters")
         return
@@ -2788,13 +2823,44 @@ def _render_sales_list_content(
         'sales_name': st.column_config.TextColumn("Salesperson"),
     }
     
-    st.dataframe(
+    # Determine if drill-down is available
+    has_drilldown = any([
+        order_detail_loader, delivery_detail_loader,
+        payment_txn_loader, doc_loader
+    ])
+    
+    if has_drilldown:
+        st.caption("💡 Click a row to view Order → Delivery → Payment details")
+    
+    event = st.dataframe(
         display_detail,
         width="stretch",
         hide_index=True,
         column_config=column_config,
-        height=600
+        height=600,
+        on_select="rerun" if has_drilldown else "ignore",
+        selection_mode="single-row" if has_drilldown else None,
+        key=f"{key_prefix}_table",
     )
+    
+    # =========================================================================
+    # DRILL-DOWN PANEL — Click row to expand (NEW v4.1.0)
+    # =========================================================================
+    if has_drilldown and event and event.selection:
+        selected_rows = event.selection.rows
+        if selected_rows:
+            row_idx = selected_rows[0]
+            if row_idx < len(display_detail):
+                sel_row = display_df.iloc[row_idx]  # Use full display_df (has all columns)
+                _render_sales_drilldown_panel(
+                    sel_row=sel_row,
+                    order_detail_loader=order_detail_loader,
+                    delivery_detail_loader=delivery_detail_loader,
+                    payment_txn_loader=payment_txn_loader,
+                    doc_loader=doc_loader,
+                    s3_url_generator=s3_url_generator,
+                    fragment_key=key_prefix,
+                )
     
     # Export button
     from datetime import datetime as dt
@@ -2807,6 +2873,439 @@ def _render_sales_list_content(
             mime="text/csv",
             key=f"{key_prefix}_download"
         )
+
+
+# =============================================================================
+# SALES DETAIL DRILL-DOWN PANEL (NEW v4.1.0)
+# Click a row → expand detail with Order, Delivery, Payment, Documents tabs
+# =============================================================================
+
+def _render_sales_drilldown_panel(
+    sel_row: pd.Series,
+    order_detail_loader=None,
+    delivery_detail_loader=None,
+    payment_txn_loader=None,
+    doc_loader=None,
+    s3_url_generator=None,
+    fragment_key: str = "sales_drill",
+):
+    """
+    Render inline drill-down panel for a selected sales transaction row.
+    
+    Shows invoice/OC context header + tabs:
+    - 📦 Order Details (OC lines: qty ordered/delivered/invoiced, status)
+    - 🚚 Delivery (DN: shipment status, ETD, fulfillment)
+    - 💳 Payment History (reuse from payment tab)
+    - 📎 Documents (S3 links, reuse from payment tab)
+    """
+    inv_number = str(sel_row.get('inv_number', '')) if pd.notna(sel_row.get('inv_number')) else ''
+    oc_number = str(sel_row.get('oc_number', '')) if pd.notna(sel_row.get('oc_number')) else ''
+    vat_number = str(sel_row.get('vat_number', '')) if pd.notna(sel_row.get('vat_number')) else ''
+    
+    if not inv_number and not oc_number:
+        return
+    
+    with st.container(border=True):
+        # === Header ===
+        title_parts = []
+        if inv_number:
+            title_parts.append(f"**{inv_number}**")
+        if vat_number:
+            title_parts.append(f"VAT: {vat_number}")
+        if oc_number:
+            title_parts.append(f"OC: {oc_number}")
+        st.markdown(" · ".join(title_parts))
+        
+        # === Key info row ===
+        ic1, ic2, ic3, ic4, ic5 = st.columns(5)
+        with ic1:
+            inv_date = sel_row.get('inv_date', '')
+            inv_str = pd.Timestamp(inv_date).strftime('%Y-%m-%d') if pd.notna(inv_date) else '—'
+            st.caption(f"📅 {inv_str}")
+        with ic2:
+            customer = sel_row.get('customer', '—')
+            st.caption(f"🏢 {customer}")
+        with ic3:
+            rev = sel_row.get('sales_by_split_usd', 0) or 0
+            st.caption(f"💰 ${rev:,.0f}")
+        with ic4:
+            status = sel_row.get('payment_status', '')
+            if pd.notna(status) and status:
+                ratio = sel_row.get('payment_ratio', '')
+                ratio_str = f" · {ratio}" if pd.notna(ratio) and ratio else ""
+                st.caption(f"📊 {status}{ratio_str}")
+            else:
+                st.caption("📊 —")
+        with ic5:
+            sp = sel_row.get('sales_name', '—')
+            split = sel_row.get('split_rate_percent', 100)
+            split_str = f" ({split:.0f}%)" if pd.notna(split) and split < 100 else ""
+            st.caption(f"👤 {sp}{split_str}")
+        
+        # === Build tabs dynamically ===
+        tab_labels = []
+        tab_keys = []
+        
+        if order_detail_loader and oc_number:
+            tab_labels.append("📦 Order")
+            tab_keys.append("order")
+        if delivery_detail_loader and oc_number:
+            tab_labels.append("🚚 Delivery")
+            tab_keys.append("delivery")
+        if payment_txn_loader and inv_number:
+            tab_labels.append("💳 Payment")
+            tab_keys.append("payment")
+        if doc_loader and inv_number:
+            tab_labels.append("📎 Documents")
+            tab_keys.append("docs")
+        
+        if not tab_labels:
+            st.caption("No drill-down data available")
+            return
+        
+        tabs = st.tabs(tab_labels)
+        # Safe key suffix
+        safe_key = (inv_number or oc_number)[:15].replace('/', '_').replace(' ', '_')
+        
+        for tab, tab_key in zip(tabs, tab_keys):
+            with tab:
+                if tab_key == "order":
+                    _render_order_details_tab(oc_number, order_detail_loader, f"{fragment_key}_oc_{safe_key}")
+                elif tab_key == "delivery":
+                    _render_delivery_details_tab(oc_number, delivery_detail_loader, f"{fragment_key}_dn_{safe_key}")
+                elif tab_key == "payment":
+                    _render_payment_history_tab(inv_number, payment_txn_loader, f"{fragment_key}_pmt_{safe_key}")
+                elif tab_key == "docs":
+                    _render_documents_tab(inv_number, doc_loader, s3_url_generator, f"{fragment_key}_doc_{safe_key}")
+
+
+def _render_order_details_tab(oc_number: str, loader, fragment_key: str):
+    """Tab 📦 Order Details — OC lines with qty/status breakdown."""
+    try:
+        oc_df = loader([oc_number])
+    except Exception as e:
+        st.caption(f"⚠️ Could not load order details: {e}")
+        return
+    
+    if oc_df is None or oc_df.empty:
+        st.caption("No order confirmation data found")
+        return
+    
+    # === OC Header info (from first row) ===
+    first = oc_df.iloc[0]
+    hc1, hc2, hc3, hc4 = st.columns(4)
+    with hc1:
+        oc_date = first.get('oc_date', '')
+        oc_str = pd.Timestamp(oc_date).strftime('%Y-%m-%d') if pd.notna(oc_date) else '—'
+        st.caption(f"📅 OC Date: {oc_str}")
+    with hc2:
+        cpo = first.get('customer_po_number', '—') or '—'
+        st.caption(f"📝 PO: {cpo}")
+    with hc3:
+        pt = first.get('payment_term', '—') or '—'
+        st.caption(f"💳 Payment: {pt}")
+    with hc4:
+        dt_val = first.get('delivery_term', '—') or '—'
+        st.caption(f"🚚 Delivery: {dt_val}")
+    
+    # === OC Lines table ===
+    display = oc_df.copy()
+    
+    # Format ETD
+    if 'etd' in display.columns:
+        display['etd'] = pd.to_datetime(display['etd'], errors='coerce').dt.strftime('%Y-%m-%d')
+    
+    # Build product display
+    def _fmt_product(row):
+        parts = []
+        if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+            parts.append(str(row['pt_code']))
+        if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+            parts.append(str(row['product_pn']))
+        if pd.notna(row.get('package_size')) and row.get('package_size'):
+            parts.append(str(row['package_size']))
+        return ' | '.join(parts) if parts else str(row.get('product_pn', ''))
+    
+    display['product'] = display.apply(_fmt_product, axis=1)
+    
+    # Status icon
+    status_icons = {
+        'completed': '✅', 'pending': '⏳', 'in_process': '🔄',
+        'delivered_full_invoiced_partial': '📦', 'invoiced_full_delivered_partial': '📄',
+        'excess_delivered': '⚠️', 'excess_invoiced': '⚠️',
+        'excess_invoiced_and_delivered': '⚠️', 'partial_status': '🔄',
+    }
+    if 'status' in display.columns:
+        display['status_display'] = display['status'].apply(
+            lambda s: f"{status_icons.get(s, '❓')} {s.replace('_', ' ').title()}" if pd.notna(s) else '—'
+        )
+    
+    # Select display columns
+    col_map = {
+        'product': 'Product',
+        'brand': 'Brand',
+        'selling_quantity': 'Qty Ordered',
+        'total_delivered_selling_quantity': 'Delivered',
+        'total_invoiced_selling_quantity': 'Invoiced',
+        'etd': 'ETD',
+        'total_amount_usd': 'Amount (USD)',
+        'gross_profit_percent': 'GP%',
+        'invoice_number': 'Invoice#',
+        'status_display': 'Status',
+    }
+    available = {k: v for k, v in col_map.items() if k in display.columns}
+    
+    if not available:
+        st.caption("No displayable columns")
+        return
+    
+    st.dataframe(
+        display[list(available.keys())].rename(columns=available),
+        hide_index=True,
+        width="stretch",
+        height=min(400, 35 * len(display) + 38),
+        column_config={
+            'Qty Ordered': st.column_config.NumberColumn(format="%.1f"),
+            'Delivered': st.column_config.NumberColumn(format="%.1f"),
+            'Invoiced': st.column_config.NumberColumn(format="%.1f"),
+            'Amount (USD)': st.column_config.NumberColumn(format="$%.0f"),
+            'GP%': st.column_config.NumberColumn(format="%.1f%%"),
+        }
+    )
+    
+    # Summary line
+    total_amt = display['total_amount_usd'].sum() if 'total_amount_usd' in display.columns else 0
+    n_lines = len(display)
+    ccy = first.get('currency', '')
+    ccy_str = f" ({ccy})" if pd.notna(ccy) and ccy else ""
+    st.caption(f"{n_lines} line(s) · Total: ${total_amt:,.0f} USD{ccy_str}")
+
+
+def _render_delivery_details_tab(oc_number: str, loader, fragment_key: str):
+    """Tab 🚚 Delivery — DN lines with shipment status and fulfillment."""
+    try:
+        dn_df = loader([oc_number])
+    except Exception as e:
+        st.caption(f"⚠️ Could not load delivery details: {e}")
+        return
+    
+    if dn_df is None or dn_df.empty:
+        st.caption("No delivery/shipment records found for this order")
+        return
+    
+    # === Group by DN for summary ===
+    dn_numbers = dn_df['dn_number'].dropna().unique().tolist() if 'dn_number' in dn_df.columns else []
+    
+    if not dn_numbers:
+        st.caption("No DN numbers found")
+        return
+    
+    for dn_num in dn_numbers:
+        dn_data = dn_df[dn_df['dn_number'] == dn_num]
+        if dn_data.empty:
+            continue
+        
+        first = dn_data.iloc[0]
+        
+        # DN header with status badge
+        status = first.get('shipment_status', 'UNKNOWN')
+        timeline = first.get('delivery_timeline_status', '')
+        status_colors = {
+            'DELIVERED': '🟢', 'ON_DELIVERY': '🔵', 'DISPATCHED': '🔵',
+            'STOCKED_OUT': '🟡', 'PARTIALLY_STOCKED_OUT': '🟡', 'PENDING': '⚪',
+        }
+        badge = status_colors.get(status, '❓')
+        
+        timeline_colors = {
+            'Completed': '🟢', 'In Transit': '🔵', 'On Schedule': '🟡',
+            'Due Today': '🟠', 'Overdue': '🔴', 'Ready to Ship': '✅',
+        }
+        timeline_badge = timeline_colors.get(timeline, '')
+        
+        st.markdown(f"**{badge} {dn_num}** — {status.replace('_', ' ').title()}"
+                     + (f" · {timeline_badge} {timeline}" if timeline else ""))
+        
+        # Date row
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        with dc1:
+            etd = first.get('etd', '')
+            etd_str = pd.Timestamp(etd).strftime('%Y-%m-%d') if pd.notna(etd) else '—'
+            st.caption(f"📅 ETD: {etd_str}")
+        with dc2:
+            dispatched = first.get('dispatched_date', '')
+            disp_str = pd.Timestamp(dispatched).strftime('%Y-%m-%d') if pd.notna(dispatched) else '—'
+            st.caption(f"📤 Dispatched: {disp_str}")
+        with dc3:
+            delivered = first.get('delivered_date', '')
+            del_str = pd.Timestamp(delivered).strftime('%Y-%m-%d') if pd.notna(delivered) else '—'
+            st.caption(f"📥 Delivered: {del_str}")
+        with dc4:
+            days = first.get('days_overdue', None)
+            if pd.notna(days) and days and int(days) > 0:
+                st.caption(f"⚠️ {int(days)}d overdue")
+            elif pd.notna(first.get('preferred_warehouse')):
+                st.caption(f"🏭 {first['preferred_warehouse']}")
+        
+        # Line items
+        display = dn_data.copy()
+        
+        def _fmt_product(row):
+            parts = []
+            if pd.notna(row.get('pt_code')) and row.get('pt_code'):
+                parts.append(str(row['pt_code']))
+            if pd.notna(row.get('product_pn')) and row.get('product_pn'):
+                parts.append(str(row['product_pn']))
+            return ' | '.join(parts) if parts else str(row.get('product_pn', ''))
+        
+        display['product'] = display.apply(_fmt_product, axis=1)
+        
+        # Fulfillment status icon
+        fulfill_icons = {
+            'Fulfilled': '✅', 'Partial Fulfilled': '🟡', 'Out of Stock': '🔴',
+            'No Remaining': '✅', 'Stocked Out - Ready': '✅', 'Delivered': '🟢',
+        }
+        if 'fulfillment_status' in display.columns:
+            display['fulfill_display'] = display['fulfillment_status'].apply(
+                lambda s: f"{fulfill_icons.get(s, '❓')} {s}" if pd.notna(s) else '—'
+            )
+        
+        col_map = {
+            'product': 'Product',
+            'stock_out_request_quantity': 'Requested',
+            'stock_out_quantity': 'Stocked Out',
+            'remaining_quantity_to_deliver': 'Remaining',
+            'fulfill_display': 'Fulfillment',
+        }
+        available = {k: v for k, v in col_map.items() if k in display.columns}
+        
+        if available:
+            st.dataframe(
+                display[list(available.keys())].rename(columns=available),
+                hide_index=True,
+                width="stretch",
+                height=min(250, 35 * len(display) + 38),
+                column_config={
+                    'Requested': st.column_config.NumberColumn(format="%.1f"),
+                    'Stocked Out': st.column_config.NumberColumn(format="%.1f"),
+                    'Remaining': st.column_config.NumberColumn(format="%.1f"),
+                }
+            )
+        
+        # Recipient info
+        recipient = first.get('recipient_company', '')
+        address = first.get('recipient_address', '')
+        if pd.notna(recipient) and recipient:
+            parts = [f"📍 Ship to: {recipient}"]
+            if pd.notna(address) and address:
+                parts.append(address)
+            st.caption(" — ".join(parts))
+        
+        # Packing list reference
+        pl_ref = first.get('reference_packing_list', '')
+        if pd.notna(pl_ref) and pl_ref:
+            st.caption(f"📋 PL Ref: {pl_ref}")
+
+
+def _render_payment_history_tab(inv_number: str, loader, fragment_key: str):
+    """Tab 💳 Payment History — reuse pattern from payment/ar_drilldown."""
+    try:
+        txn_df = loader([inv_number])
+    except Exception as e:
+        st.caption(f"⚠️ Could not load payment details: {e}")
+        return
+    
+    if txn_df is None or txn_df.empty:
+        st.caption("No payment transactions recorded for this invoice")
+        return
+    
+    display = txn_df.copy()
+    
+    cols_map = {
+        'payment_number': 'Payment#',
+        'payment_received_date': 'Payment Date',
+        'amount_received': 'Amount',
+        'currency_code': 'Ccy',
+        'payment_status': 'Status',
+        'payment_ratio': 'Paid%',
+        'receipt_bank': 'Bank',
+        'aging_bucket': 'Aging',
+    }
+    available = {k: v for k, v in cols_map.items() if k in display.columns}
+    
+    if not available:
+        st.caption("No payment data columns available")
+        return
+    
+    if 'payment_ratio' in display.columns:
+        display['payment_ratio'] = display['payment_ratio'].apply(
+            lambda x: f"{x:.1%}" if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else "—"
+        )
+    
+    st.dataframe(
+        display[list(available.keys())].rename(columns=available),
+        hide_index=True,
+        width="stretch",
+        height=min(250, 35 * len(display) + 38),
+    )
+    
+    # Summary
+    if 'amount_received_raw' in txn_df.columns and 'currency_code' in txn_df.columns:
+        by_ccy = txn_df.groupby('currency_code')['amount_received_raw'].sum()
+        summary_parts = [f"{amt:,.2f} {ccy}" for ccy, amt in by_ccy.items()]
+        st.caption(f"Total received: {' + '.join(summary_parts)} ({len(txn_df)} transactions)")
+
+
+def _render_documents_tab(inv_number: str, loader, s3_url_generator=None, fragment_key: str = "docs"):
+    """Tab 📎 Documents — S3 links for invoice and payment docs."""
+    try:
+        docs_df = loader([inv_number])
+    except Exception as e:
+        st.caption(f"⚠️ Could not load documents: {e}")
+        return
+    
+    if docs_df is None or docs_df.empty:
+        st.caption("No documents attached to this invoice")
+        return
+    
+    # Group by doc_type
+    inv_docs = docs_df[docs_df['doc_type'] == 'invoice'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+    pmt_docs = docs_df[docs_df['doc_type'] == 'payment'] if 'doc_type' in docs_df.columns else pd.DataFrame()
+    
+    def _get_file_icon(filename: str) -> str:
+        ext = filename.split('.')[-1].lower() if '.' in str(filename) else ''
+        return {'pdf': '📄', 'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️'}.get(ext, '📎')
+    
+    def _render_doc_link(doc, extra_label=""):
+        filename = doc.get('filename', 'Unknown')
+        s3_key = doc.get('s3_key', '')
+        icon = _get_file_icon(str(filename))
+        
+        if s3_url_generator and s3_key:
+            try:
+                url = s3_url_generator(s3_key)
+                if url:
+                    st.markdown(f"{icon} [{filename}]({url}){extra_label}")
+                    return
+            except Exception:
+                pass
+        # Fallback
+        st.caption(f"{icon} {filename}{extra_label}")
+    
+    if not inv_docs.empty:
+        st.markdown(f"**📄 Invoice Documents** ({len(inv_docs)})")
+        for _, doc in inv_docs.iterrows():
+            _render_doc_link(doc)
+    
+    if not pmt_docs.empty:
+        st.markdown(f"**💳 Payment Receipts** ({len(pmt_docs)})")
+        for _, doc in pmt_docs.iterrows():
+            pmt_label = f" ({doc['payment_number']})" if pd.notna(doc.get('payment_number')) else ""
+            _render_doc_link(doc, extra_label=pmt_label)
+    
+    if inv_docs.empty and pmt_docs.empty:
+        st.markdown("**📎 Documents**")
+        for _, doc in docs_df.iterrows():
+            _render_doc_link(doc)
 
 
 def _render_pivot_content(filtered_df: pd.DataFrame, key_prefix: str):
