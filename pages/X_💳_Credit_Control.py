@@ -5,7 +5,7 @@
 5 Tabs: Dashboard | Send Notification | Run Credit Check | Notification History | Block History
 
 Depends on: utils.auth, utils.db, utils.credit_control
-VERSION: 1.0.0
+VERSION: 1.1.0 — Added granular access control per tab/action
 """
 
 import streamlit as st
@@ -26,8 +26,33 @@ if not auth.check_session():
     st.warning("⚠️ Please login to access this page"); st.stop()
 
 user_role = st.session_state.get('user_role', 'viewer')
-if user_role.lower() not in ['admin', 'gm', 'md', 'sales_manager']:
-    st.error("⛔ Access denied. Requires admin / GM / MD / sales_manager."); st.stop()
+employee_id = st.session_state.get('employee_id')
+
+# ═══════════════════════════════════════════════════════════════
+# ACCESS CONTROL MATRIX
+# ═══════════════════════════════════════════════════════════════
+PAGE_ROLES = ['admin', 'gm', 'md', 'fa_manager', 'sales_manager', 'accountant', 'sales']
+
+# Tab 2: Send Notification — template permissions per role
+_SEND_TEMPLATES = {
+    'admin':         ['overdue_reminder', 'overdue_escalation', 'credit_warning', 'credit_exceeded', 'block_notice'],
+    'gm':            ['overdue_reminder', 'overdue_escalation', 'credit_warning', 'credit_exceeded', 'block_notice'],
+    'md':            ['overdue_reminder', 'overdue_escalation', 'credit_warning', 'credit_exceeded', 'block_notice'],
+    'fa_manager':    ['overdue_reminder', 'overdue_escalation', 'credit_warning', 'credit_exceeded'],
+    'sales_manager': ['overdue_reminder', 'overdue_escalation', 'credit_warning'],
+}
+
+# Tab 3: Batch credit check
+_DRYRUN_ROLES = ['admin', 'gm', 'md', 'fa_manager']
+_EXECUTE_ROLES = ['admin', 'gm', 'md']
+
+# Tab 5: Unblock
+_UNBLOCK_ROLES = ['admin', 'gm', 'md']
+
+_role = user_role.lower()
+
+if _role not in PAGE_ROLES:
+    st.error("⛔ Access denied. Contact admin for Credit Control access."); st.stop()
 
 db_ok, db_err = check_db_connection()
 if not db_ok:
@@ -43,12 +68,24 @@ from utils.credit_control.queries import get_notification_history, get_block_his
 st.title("💳 Credit Control")
 st.caption(f"User: {st.session_state.get('user_fullname', '?')} | Role: {user_role}")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📧 Send Notification", "🔄 Run Credit Check", "📋 Notification History", "🔒 Block History"])
+# ─── Build tabs dynamically based on role ───
+_can_send = _role in _SEND_TEMPLATES
+_can_batch = _role in _DRYRUN_ROLES
+
+tab_labels = ["📊 Dashboard"]
+if _can_send:  tab_labels.append("📧 Send Notification")
+if _can_batch: tab_labels.append("🔄 Run Credit Check")
+tab_labels += ["📋 Notification History", "🔒 Block History"]
+
+tabs = st.tabs(tab_labels)
+_ti = 0  # tab index counter
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 1: DASHBOARD
+# TAB 1: DASHBOARD — All roles
 # ═══════════════════════════════════════════════════════════════
-with tab1:
+with tabs[_ti]:
+    _ti += 1
+
     if st.button("🔄 Refresh", key="d_refresh"):
         st.cache_data.clear()
 
@@ -99,75 +136,92 @@ with tab1:
         st.dataframe(disp, hide_index=True, width="stretch", height=600)
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 2: SEND NOTIFICATION
+# TAB 2: SEND NOTIFICATION — admin/gm/md/fa_manager/sales_manager
 # ═══════════════════════════════════════════════════════════════
-with tab2:
-    st.subheader("📧 Send Manual Notification")
+if _can_send:
+    with tabs[_ti]:
+        _ti += 1
+        st.subheader("📧 Send Manual Notification")
 
-    @st.cache_data(ttl=300)
-    def _cust_opts():
-        d = get_all_credit_statuses()
-        if d.empty: return [], []
-        labels = [f"{r['customer_name']} ({r['customer_code']}) — {r['alert_level']}" for _, r in d.iterrows()]
-        return labels, d['customer_id'].tolist()
+        if not employee_id:
+            st.error("⚠️ Employee ID not found in session. Cannot send notifications — contact admin.")
+        else:
+            allowed_templates = _SEND_TEMPLATES.get(_role, [])
 
-    labels, ids = _cust_opts()
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        sel = st.selectbox("Customer", range(len(labels)), format_func=lambda i: labels[i], key="m_cust") if labels else None
-        cid = ids[sel] if sel is not None else None
-    with sc2:
-        tpl = st.selectbox("Template", ['overdue_reminder','overdue_escalation','credit_warning','credit_exceeded','block_notice'], key="m_tpl")
-        extra = st.text_input("Extra emails (comma-sep)", key="m_extra")
+            @st.cache_data(ttl=300)
+            def _cust_opts():
+                d = get_all_credit_statuses()
+                if d.empty: return [], []
+                labels = [f"{r['customer_name']} ({r['customer_code']}) — {r['alert_level']}" for _, r in d.iterrows()]
+                return labels, d['customer_id'].tolist()
 
-    if cid:
-        bc1, bc2 = st.columns(2)
-        with bc1:
-            if st.button("👁️ Preview", key="m_prev"):
-                r = send_manual(cid, tpl, st.session_state.get('employee_id'), [e.strip() for e in extra.split(',') if e.strip()] if extra else None, dry_run=True)
-                if r.get('status') == 'dry_run':
-                    st.success(f"Would send to {len(r.get('to',[]))} recipients")
-                    st.json({'subject': r.get('subject'), 'to': r.get('to'), 'cc': r.get('cc')})
+            labels, ids = _cust_opts()
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                sel = st.selectbox("Customer", range(len(labels)), format_func=lambda i: labels[i], key="m_cust") if labels else None
+                cid = ids[sel] if sel is not None else None
+            with sc2:
+                tpl = st.selectbox("Template", allowed_templates, key="m_tpl")
+                extra = st.text_input("Extra emails (comma-sep)", key="m_extra")
+
+            if cid:
+                extra_list = [e.strip() for e in extra.split(',') if e.strip()] if extra else None
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("👁️ Preview", key="m_prev"):
+                        r = send_manual(cid, tpl, employee_id, extra_list, dry_run=True)
+                        if r.get('status') == 'dry_run':
+                            st.success(f"Would send to {len(r.get('to',[]))} recipients")
+                            st.json({'subject': r.get('subject'), 'to': r.get('to'), 'cc': r.get('cc')})
+                        else:
+                            st.error(r.get('error', r.get('reason', '?')))
+                with bc2:
+                    if st.button("📤 Send", type="primary", key="m_send"):
+                        r = send_manual(cid, tpl, employee_id, extra_list, dry_run=False)
+                        if r.get('status') == 'sent':
+                            st.success(f"✅ Sent to: {', '.join(r.get('to',[]))}")
+                        else:
+                            st.error(f"❌ {r.get('error','?')}")
+
+# ═══════════════════════════════════════════════════════════════
+# TAB 3: RUN CREDIT CHECK — dry: exec+fa_manager / execute: exec only
+# ═══════════════════════════════════════════════════════════════
+if _can_batch:
+    with tabs[_ti]:
+        _ti += 1
+        st.subheader("🔄 Batch Credit Check")
+        st.markdown("Process all customers against notification rules. Dry run previews; Execute sends real emails.")
+
+        if not employee_id:
+            st.error("⚠️ Employee ID not found in session. Cannot run batch — contact admin.")
+        else:
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("👁️ Dry Run", key="b_dry", use_container_width=True):
+                    with st.spinner("Checking..."):
+                        res = run_batch(dry_run=True, triggered_by_user_id=employee_id)
+                        st.success(f"✅ {res.summary()}")
+                        if res.details:
+                            st.dataframe(pd.DataFrame(res.details), hide_index=True, height=400, width="stretch")
+            with rc2:
+                if _role in _EXECUTE_ROLES:
+                    if st.button("🚀 Execute", type="primary", key="b_exec", use_container_width=True):
+                        if st.checkbox("I confirm — send real emails", key="b_confirm"):
+                            with st.spinner("Sending..."):
+                                res = run_batch(dry_run=False, triggered_by_user_id=employee_id)
+                                (st.success if res.total_failed == 0 else st.warning)(f"{'✅' if res.total_failed == 0 else '⚠️'} {res.summary()}")
+                                if res.details:
+                                    st.dataframe(pd.DataFrame(res.details), hide_index=True, height=400, width="stretch")
+                        else:
+                            st.warning("Check the confirmation box")
                 else:
-                    st.error(r.get('error', r.get('reason', '?')))
-        with bc2:
-            if st.button("📤 Send", type="primary", key="m_send"):
-                r = send_manual(cid, tpl, st.session_state.get('employee_id'), [e.strip() for e in extra.split(',') if e.strip()] if extra else None, dry_run=False)
-                if r.get('status') == 'sent':
-                    st.success(f"✅ Sent to: {', '.join(r.get('to',[]))}")
-                else:
-                    st.error(f"❌ {r.get('error','?')}")
+                    st.info(f"🔒 Execute requires admin / GM / MD (current: {user_role})")
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 3: RUN CREDIT CHECK
+# TAB 4: NOTIFICATION HISTORY — All roles
 # ═══════════════════════════════════════════════════════════════
-with tab3:
-    st.subheader("🔄 Batch Credit Check")
-    st.markdown("Process all customers against notification rules. Dry run previews; Execute sends real emails.")
-
-    rc1, rc2 = st.columns(2)
-    with rc1:
-        if st.button("👁️ Dry Run", key="b_dry", use_container_width=True):
-            with st.spinner("Checking..."):
-                res = run_batch(dry_run=True, triggered_by_user_id=st.session_state.get('employee_id'))
-                st.success(f"✅ {res.summary()}")
-                if res.details:
-                    st.dataframe(pd.DataFrame(res.details), hide_index=True, height=400, width="stretch")
-    with rc2:
-        if st.button("🚀 Execute", type="primary", key="b_exec", use_container_width=True):
-            if st.checkbox("I confirm — send real emails", key="b_confirm"):
-                with st.spinner("Sending..."):
-                    res = run_batch(dry_run=False, triggered_by_user_id=st.session_state.get('employee_id'))
-                    (st.success if res.total_failed == 0 else st.warning)(f"{'✅' if res.total_failed == 0 else '⚠️'} {res.summary()}")
-                    if res.details:
-                        st.dataframe(pd.DataFrame(res.details), hide_index=True, height=400, width="stretch")
-            else:
-                st.warning("Check the confirmation box")
-
-# ═══════════════════════════════════════════════════════════════
-# TAB 4: NOTIFICATION HISTORY
-# ═══════════════════════════════════════════════════════════════
-with tab4:
+with tabs[_ti]:
+    _ti += 1
     st.subheader("📋 Notification History")
     lim = st.selectbox("Show", [25, 50, 100], index=1, key="h_lim")
     hdf = get_notification_history(limit=lim)
@@ -185,7 +239,7 @@ with tab4:
 # ═══════════════════════════════════════════════════════════════
 # TAB 5: BLOCK HISTORY + MANUAL UNBLOCK
 # ═══════════════════════════════════════════════════════════════
-with tab5:
+with tabs[_ti]:
     st.subheader("🔒 Block / Unblock History")
     bdf = get_block_history(limit=50)
     if bdf.empty:
@@ -201,20 +255,33 @@ with tab5:
 
     st.divider()
     st.markdown("##### Manual Unblock")
-    if user_role.lower() in ['admin', 'gm', 'md']:
-        uc = st.number_input("Customer ID", min_value=1, step=1, key="u_cid")
-        ur = st.text_input("Reason", key="u_reason", placeholder="e.g. Payment plan agreed")
-        if st.button("🔓 Unblock", key="u_btn"):
-            if ur:
-                for cs in get_status(int(uc)):
-                    if cs.is_blocked:
-                        ok = execute_unblock(cs, reason='gm_override', performed_by='user',
-                                             user_id=st.session_state.get('employee_id'), notes=ur)
-                        st.success(f"✅ Unblocked {cs.customer_name}") if ok else st.error("Failed")
-            else:
-                st.warning("Enter a reason")
+    if _role in _UNBLOCK_ROLES:
+        if not employee_id:
+            st.error("⚠️ Employee ID not found in session — contact admin.")
+        else:
+            uc = st.number_input("Customer ID", min_value=1, step=1, key="u_cid")
+            ur = st.text_input("Reason", key="u_reason", placeholder="e.g. Payment plan agreed")
+            if st.button("🔓 Unblock", key="u_btn"):
+                if not ur:
+                    st.warning("Enter a reason")
+                else:
+                    statuses = get_status(int(uc))
+                    if not statuses:
+                        st.error(f"❌ No credit terms found for customer ID {int(uc)}")
+                    else:
+                        blocked = [cs for cs in statuses if cs.is_blocked]
+                        if not blocked:
+                            st.info(f"ℹ️ Customer **{statuses[0].customer_name}** is not currently blocked (status: {statuses[0].credit_status})")
+                        else:
+                            for cs in blocked:
+                                ok = execute_unblock(cs, reason='gm_override', performed_by='user',
+                                                     user_id=employee_id, notes=ur)
+                                if ok:
+                                    st.success(f"✅ Unblocked **{cs.customer_name}** ({cs.legal_entity_name or '—'})")
+                                else:
+                                    st.error(f"❌ Failed to unblock {cs.customer_name}")
     else:
-        st.info("Only admin/GM/MD can unblock")
+        st.info("🔒 Only admin / GM / MD can unblock customers")
 
 st.divider()
-st.caption(f"Credit Control v1.0 | {st.session_state.get('user_fullname','?')} | {user_role}")
+st.caption(f"Credit Control v1.1 | {st.session_state.get('user_fullname','?')} | {user_role}")
