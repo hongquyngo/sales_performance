@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import pandas as pd
 
-from utils.db import execute_query_df, execute_query, execute_update
+from utils.db import execute_query_df, execute_query, execute_update, get_connection
+from sqlalchemy import text as sa_text
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ def log_notification(
         )
     """
     try:
-        execute_update(q, {
+        params = {
             'notification_type': notification_type, 'severity': severity,
             'customer_id': customer_id, 'legal_entity_id': legal_entity_id, 'employee_id': employee_id,
             'outstanding_usd': outstanding_usd, 'credit_limit_usd': credit_limit_usd,
@@ -133,10 +134,12 @@ def log_notification(
             'sent_at': sent_at, 'delivery_status': delivery_status, 'error_message': error_message,
             'triggered_by': triggered_by, 'triggered_by_user_id': triggered_by_user_id,
             'rule_id': rule_id, 'invoice_numbers_json': invoice_numbers_json,
-        })
-        # Get last insert id
-        rows = execute_query("SELECT LAST_INSERT_ID() AS id")
-        return rows[0]['id'] if rows else None
+        }
+        # Use same connection for INSERT + LAST_INSERT_ID (session-specific)
+        with get_connection() as conn:
+            conn.execute(sa_text(q), params)
+            row = conn.execute(sa_text("SELECT LAST_INSERT_ID() AS id")).fetchone()
+            return row[0] if row else None
     except Exception as e:
         logger.error(f"log_notification: {e}")
         return None
@@ -208,16 +211,18 @@ def log_block_action(
         )
     """
     try:
-        execute_update(q, {
+        params = {
             'cid': customer_id, 'eid': legal_entity_id,
             'action': action, 'reason': reason, 'scope': blocked_scope,
             'outstanding': outstanding, 'limit': credit_limit,
             'overdue': overdue, 'max_days': max_days,
             'performed_by': performed_by, 'uid': user_id,
             'ahid': approval_history_id, 'nid': notification_id, 'notes': notes,
-        })
-        rows = execute_query("SELECT LAST_INSERT_ID() AS id")
-        return rows[0]['id'] if rows else None
+        }
+        with get_connection() as conn:
+            conn.execute(sa_text(q), params)
+            row = conn.execute(sa_text("SELECT LAST_INSERT_ID() AS id")).fetchone()
+            return row[0] if row else None
     except Exception as e:
         logger.error(f"log_block_action: {e}")
         return None
