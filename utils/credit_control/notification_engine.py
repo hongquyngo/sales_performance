@@ -8,13 +8,13 @@ VERSION: 1.0.0
 
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import pandas as pd
 
 from .models import CreditStatus, RuleMatch, Recipient
-from .credit_check import get_all_statuses, get_status, match_rules, check_cooldown
+from .credit_check import get_all_statuses, get_status, match_rules
 from .recipient_resolver import resolve
 from .email_templates import render_template
 from .email_sender import send_email
@@ -58,13 +58,26 @@ def run_batch(dry_run: bool = False, triggered_by_user_id: int = None) -> BatchR
         result.finished_at = datetime.now()
         return result
 
+    # Prefetch ALL cooldowns in 1 query (replaces N individual queries)
+    cooldown_map = queries.get_all_cooldowns()
+    logger.info(f"Batch: {len(all_cs)} customers, {len(rules_df)} rules, {len(cooldown_map)} cooldown entries")
+
+    # Build cooldown_days lookup from rules
+    rule_cooldowns = {int(r['id']): int(r['cooldown_days']) for _, r in rules_df.iterrows()}
+
     for cs in all_cs:
         if cs.alert_level == 'CLEAR':
             continue
         for match in match_rules(cs, rules_df):
             result.total_matched += 1
-            cd = int(rules_df.loc[rules_df['id'] == match.rule_id, 'cooldown_days'].iloc[0]) if match.rule_id else 7
-            match = check_cooldown(match, cd)
+
+            # Check cooldown using prefetched data (no DB call)
+            cd = rule_cooldowns.get(match.rule_id, 7)
+            last_sent = cooldown_map.get((cs.customer_id, match.rule_type))
+            if last_sent and datetime.now() < last_sent + timedelta(days=cd):
+                match.should_send = False
+                match.skip_reason = f"cooldown (last {last_sent.strftime('%Y-%m-%d')})"
+
             if not match.should_send:
                 result.total_skipped += 1
                 result.details.append({'customer': cs.customer_name, 'rule': match.rule_name,

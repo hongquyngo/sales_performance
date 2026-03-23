@@ -26,7 +26,7 @@ Architecture (v3.0 — unified layout, no data duplication):
     - Top-level filters include "Exclude internal customers"
     - Salesperson drill-down selectbox removed (top-level filter suffices)
 
-VERSION: 4.0.0
+VERSION: 4.1.0
 """
 
 from .fragments import (
@@ -35,7 +35,10 @@ from .fragments import (
     payment_summary_fragment,
 )
 from .ar_drilldown import ar_by_salesperson_fragment, ar_summary_section
-from .s3_utils import get_s3_manager, generate_doc_url
+
+# MOVED v4.1.0: s3_utils now lives at parent level (salesperson_performance/)
+# Re-export here for backward compatibility
+from utils.salesperson_performance.s3_utils import get_s3_manager, generate_doc_url
 
 __all__ = [
     'payment_tab_fragment',

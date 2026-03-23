@@ -10,6 +10,7 @@ VERSION: 1.0.0
 
 import logging
 from datetime import datetime
+from time import perf_counter
 from typing import Dict, List, Optional
 import pandas as pd
 
@@ -20,12 +21,29 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
+# TIMING UTILITY
+# ═══════════════════════════════════════════════════════════════
+def _timed_query(label: str, func, *args, **kwargs):
+    """Execute a query function with timing. Logs slow queries (>200ms)."""
+    t0 = perf_counter()
+    result = func(*args, **kwargs)
+    elapsed_ms = (perf_counter() - t0) * 1000
+    rows = len(result) if hasattr(result, '__len__') else '?'
+    if elapsed_ms > 200:
+        logger.warning(f"⏱ SLOW query [{label}]: {elapsed_ms:.0f}ms, {rows} rows")
+    else:
+        logger.debug(f"⏱ [{label}]: {elapsed_ms:.0f}ms, {rows} rows")
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
 # CREDIT STATUS (read from view)
 # ═══════════════════════════════════════════════════════════════
 
 def get_all_credit_statuses() -> pd.DataFrame:
     try:
-        return execute_query_df("SELECT * FROM customer_credit_status_view")
+        return _timed_query("get_all_credit_statuses",
+                            execute_query_df, "SELECT * FROM customer_credit_status_view")
     except Exception as e:
         logger.error(f"get_all_credit_statuses: {e}")
         return pd.DataFrame()
@@ -60,7 +78,8 @@ def get_overdue_invoices(customer_id: int) -> pd.DataFrame:
         ORDER BY days_overdue DESC
     """
     try:
-        return execute_query_df(q, {'cid': customer_id})
+        return _timed_query(f"get_overdue_invoices({customer_id})",
+                            execute_query_df, q, {'cid': customer_id})
     except Exception as e:
         logger.error(f"get_overdue_invoices({customer_id}): {e}")
         return pd.DataFrame()
@@ -95,6 +114,32 @@ def get_last_sent_at(customer_id: int, notification_type: str) -> Optional[datet
     except Exception as e:
         logger.error(f"get_last_sent_at: {e}")
         return None
+
+
+def get_all_cooldowns() -> Dict[tuple, datetime]:
+    """
+    Prefetch all cooldown timestamps in a single query.
+    Returns: {(customer_id, notification_type): last_sent_at}
+
+    Replaces N individual get_last_sent_at() calls in batch processing.
+    """
+    try:
+        df = _timed_query("get_all_cooldowns", execute_query_df, """
+            SELECT customer_id, notification_type, MAX(sent_at) AS last_sent
+            FROM credit_notifications
+            WHERE delivery_status = 'sent' AND sent_at IS NOT NULL
+            GROUP BY customer_id, notification_type
+        """)
+        if df.empty:
+            return {}
+        return {
+            (int(r['customer_id']), str(r['notification_type'])): r['last_sent']
+            for _, r in df.iterrows()
+            if pd.notna(r['last_sent'])
+        }
+    except Exception as e:
+        logger.error(f"get_all_cooldowns: {e}")
+        return {}
 
 
 def log_notification(
@@ -159,7 +204,8 @@ def get_notification_history(customer_id: int = None, limit: int = 50) -> pd.Dat
         params['cid'] = customer_id
     q += f" ORDER BY cn.created_at DESC LIMIT {limit}"
     try:
-        return execute_query_df(q, params)
+        return _timed_query(f"get_notification_history(limit={limit})",
+                            execute_query_df, q, params)
     except Exception as e:
         logger.error(f"get_notification_history: {e}")
         return pd.DataFrame()
@@ -244,7 +290,8 @@ def get_block_history(customer_id: int = None, limit: int = 50) -> pd.DataFrame:
         params['cid'] = customer_id
     q += f" ORDER BY bl.created_at DESC LIMIT {limit}"
     try:
-        return execute_query_df(q, params)
+        return _timed_query(f"get_block_history(limit={limit})",
+                            execute_query_df, q, params)
     except Exception as e:
         logger.error(f"get_block_history: {e}")
         return pd.DataFrame()
