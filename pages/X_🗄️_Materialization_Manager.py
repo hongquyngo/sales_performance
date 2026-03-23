@@ -32,7 +32,7 @@ st.set_page_config(
 
 # Auth
 auth = AuthManager()
-auth.require_role(["admin", "manager"])
+auth.require_role(["admin"])
 
 # Manager
 mgr = get_mat_manager()
