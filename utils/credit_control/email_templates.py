@@ -133,6 +133,36 @@ def render_credit_exceeded(cs: CreditStatus) -> Tuple[str, str, str]:
     return subj, f"<html><head><style>{_CSS}</style></head><body>{html}</body></html>", plain
 
 
+def render_weekly_summary(cs: CreditStatus, inv_df: pd.DataFrame) -> Tuple[str, str, str]:
+    from datetime import datetime
+    week = datetime.now().strftime('%Y-W%W')
+    subj = f"[Weekly AR Summary] {cs.customer_name} — ${cs.outstanding_usd:,.0f} outstanding"
+    html = f"""<div class='hdr' style='background:#17a2b8'><h2>📊 Weekly AR Summary — {cs.customer_name}</h2></div>
+<div class='cnt'>
+<p>Week {week} snapshot for <b>{cs.customer_name}</b> ({cs.customer_code or ''}):</p>
+{_metrics_html(cs)}
+{f"<table><thead><tr><th>Invoice#</th><th>Date</th><th>Due</th><th>Days</th><th>O/S</th></tr></thead><tbody>{_inv_rows(inv_df, 20)}</tbody></table>" if not inv_df.empty else ""}
+<p>Payment term: <b>{cs.payment_term or '—'}</b> · Entity: <b>{cs.legal_entity_name or '—'}</b></p>
+<div class='ftr'>Prostech Credit Control · Automated Weekly Summary</div></div>"""
+    plain = f"Weekly: {cs.customer_name}, O/S ${cs.outstanding_usd:,.0f}, Overdue ${cs.overdue_usd:,.0f}, Max {cs.max_overdue_days}d"
+    return subj, f"<html><head><style>{_CSS}</style></head><body>{html}</body></html>", plain
+
+def render_monthly_summary(cs: CreditStatus, inv_df: pd.DataFrame) -> Tuple[str, str, str]:
+    from datetime import datetime
+    month = datetime.now().strftime('%B %Y')
+    subj = f"[Monthly Credit Report] {cs.customer_name} — {month}"
+    html = f"""<div class='hdr' style='background:#6f42c1'><h2>📋 Monthly Credit Report — {cs.customer_name}</h2></div>
+<div class='cnt'>
+<p><b>{month}</b> credit report for <b>{cs.customer_name}</b> ({cs.customer_code or ''}):</p>
+{_metrics_html(cs)}
+{f"<p>Credit limit: <b>${cs.credit_limit:,.0f}</b> · Utilization: <b>{cs.utilization_pct:.0f}%</b> · Available: <b>${cs.available_credit_usd:,.0f}</b></p>" if cs.credit_limit else ""}
+{f"<table><thead><tr><th>Invoice#</th><th>Date</th><th>Due</th><th>Days</th><th>O/S</th></tr></thead><tbody>{_inv_rows(inv_df, 20)}</tbody></table>" if not inv_df.empty else ""}
+<p>Status: <b>{cs.alert_level}</b> · Payment term: <b>{cs.payment_term or '—'}</b> · Entity: <b>{cs.legal_entity_name or '—'}</b></p>
+<div class='ftr'>Prostech Credit Control · Automated Monthly Report</div></div>"""
+    plain = f"Monthly: {cs.customer_name}, O/S ${cs.outstanding_usd:,.0f}, Overdue ${cs.overdue_usd:,.0f}, Limit ${cs.credit_limit or 0:,.0f}"
+    return subj, f"<html><head><style>{_CSS}</style></head><body>{html}</body></html>", plain
+
+
 # ═══════════════════════════════════════════════════════════════
 # ROUTER
 # ═══════════════════════════════════════════════════════════════
@@ -146,5 +176,7 @@ def render_template(key: str, cs: CreditStatus, inv_df: pd.DataFrame = None, sal
         'block_notice': lambda: render_block_notice(cs, inv_df),
         'credit_warning': lambda: render_credit_warning(cs),
         'credit_exceeded': lambda: render_credit_exceeded(cs),
+        'weekly_summary': lambda: render_weekly_summary(cs, inv_df),
+        'monthly_summary': lambda: render_monthly_summary(cs, inv_df),
     }
     return t.get(key, lambda: render_overdue_reminder(cs, inv_df, sales_contact))()

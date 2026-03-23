@@ -89,6 +89,24 @@ def run_batch(dry_run: bool = False, triggered_by_user_id: int = None) -> BatchR
     return result
 
 
+_TEMPLATE_TO_RULE_TYPE = {
+    'overdue_reminder': 'overdue_reminder',
+    'overdue_escalation': 'escalation',
+    'overdue_critical': 'escalation',
+    'credit_warning': 'credit_warning',
+    'credit_exceeded': 'credit_exceeded',
+    'block_notice': 'escalation',
+}
+_TEMPLATE_SEVERITY = {
+    'overdue_reminder': 'warning',
+    'overdue_escalation': 'critical',
+    'overdue_critical': 'critical',
+    'credit_warning': 'warning',
+    'credit_exceeded': 'critical',
+    'block_notice': 'critical',
+}
+
+
 def send_manual(customer_id: int, template_key: str = 'overdue_reminder',
                 triggered_by_user_id: int = None, extra_emails: List[str] = None,
                 dry_run: bool = False) -> Dict:
@@ -97,8 +115,10 @@ def send_manual(customer_id: int, template_key: str = 'overdue_reminder',
     if not statuses:
         return {'status': 'error', 'error': f'No credit terms for customer {customer_id}'}
     cs = statuses[0]
-    match = RuleMatch(rule_id=0, rule_name=f'Manual: {template_key}', rule_type='overdue_reminder',
-                      severity='warning', email_template_key=template_key,
+    rule_type = _TEMPLATE_TO_RULE_TYPE.get(template_key, 'overdue_reminder')
+    severity = _TEMPLATE_SEVERITY.get(template_key, 'warning')
+    match = RuleMatch(rule_id=0, rule_name=f'Manual: {template_key}', rule_type=rule_type,
+                      severity=severity, email_template_key=template_key,
                       recipient_roles=['assigned_sales', 'customer_contact'],
                       cc_roles=['sales_manager'], credit_status=cs)
     return _process_match(match, dry_run, 'manual', triggered_by_user_id, extra_emails)

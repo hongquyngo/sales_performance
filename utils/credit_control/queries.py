@@ -265,11 +265,14 @@ def get_assigned_sales(customer_id: int) -> pd.DataFrame:
 def get_managers_for(employee_ids: List[int]) -> pd.DataFrame:
     if not employee_ids:
         return pd.DataFrame()
-    return execute_query_df("""
+    # Build IN clause dynamically — SQLAlchemy text() doesn't expand tuples
+    placeholders = ','.join(f':eid{i}' for i in range(len(employee_ids)))
+    params = {f'eid{i}': eid for i, eid in enumerate(employee_ids)}
+    return execute_query_df(f"""
         SELECT DISTINCT mgr.id AS employee_id, CONCAT(mgr.first_name,' ',mgr.last_name) AS name, mgr.email
         FROM employees e INNER JOIN employees mgr ON e.manager_id = mgr.id
-        WHERE e.id IN :eids AND mgr.status = 'ACTIVE' AND mgr.email IS NOT NULL AND mgr.delete_flag = 0
-    """, {'eids': tuple(employee_ids)})
+        WHERE e.id IN ({placeholders}) AND mgr.status = 'ACTIVE' AND mgr.email IS NOT NULL AND mgr.delete_flag = 0
+    """, params)
 
 
 def get_customer_contacts(customer_id: int) -> pd.DataFrame:
@@ -280,8 +283,8 @@ def get_customer_contacts(customer_id: int) -> pd.DataFrame:
         LEFT JOIN positions p ON ct.position_id = p.id
         LEFT JOIN departments d ON ct.department_id = d.id
         WHERE ct.company_id = :cid AND ct.delete_flag = 0 AND ct.email IS NOT NULL AND ct.email != ''
-        ORDER BY CASE WHEN LOWER(COALESCE(d.name,'')) LIKE '%%financ%%' THEN 0
-                      WHEN LOWER(COALESCE(d.name,'')) LIKE '%%account%%' THEN 1 ELSE 10 END, ct.id
+        ORDER BY CASE WHEN LOWER(COALESCE(d.name,'')) LIKE '%financ%' THEN 0
+                      WHEN LOWER(COALESCE(d.name,'')) LIKE '%account%' THEN 1 ELSE 10 END, ct.id
     """, {'cid': customer_id})
 
 
