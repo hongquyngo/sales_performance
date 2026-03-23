@@ -2916,24 +2916,29 @@ def _render_sales_drilldown_panel(
             title_parts.append(f"OC: {oc_number}")
         st.markdown(" · ".join(title_parts))
         
-        # === Key info row ===
+        # === Key info row (flexible: works for both Sales Detail and Backlog) ===
         ic1, ic2, ic3, ic4, ic5 = st.columns(5)
         with ic1:
-            inv_date = sel_row.get('inv_date', '')
-            inv_str = pd.Timestamp(inv_date).strftime('%Y-%m-%d') if pd.notna(inv_date) else '—'
-            st.caption(f"📅 {inv_str}")
+            # Date: inv_date → oc_date → etd
+            dt_val = sel_row.get('inv_date') or sel_row.get('oc_date') or sel_row.get('etd', '')
+            dt_str = pd.Timestamp(dt_val).strftime('%Y-%m-%d') if pd.notna(dt_val) else '—'
+            st.caption(f"📅 {dt_str}")
         with ic2:
             customer = sel_row.get('customer', '—')
             st.caption(f"🏢 {customer}")
         with ic3:
-            rev = sel_row.get('sales_by_split_usd', 0) or 0
+            # Amount: sales_by_split_usd → backlog_sales_by_split_usd
+            rev = sel_row.get('sales_by_split_usd') or sel_row.get('backlog_sales_by_split_usd', 0) or 0
             st.caption(f"💰 ${rev:,.0f}")
         with ic4:
-            status = sel_row.get('payment_status', '')
+            # Status: payment_status → pending_type
+            status = sel_row.get('payment_status') or sel_row.get('pending_type', '')
             if pd.notna(status) and status:
                 ratio = sel_row.get('payment_ratio', '')
                 ratio_str = f" · {ratio}" if pd.notna(ratio) and ratio else ""
-                st.caption(f"📊 {status}{ratio_str}")
+                etd = sel_row.get('etd', '')
+                etd_str = f" · ETD: {pd.Timestamp(etd).strftime('%Y-%m-%d')}" if pd.notna(etd) and not ratio_str else ""
+                st.caption(f"📊 {status}{ratio_str}{etd_str}")
             else:
                 st.caption("📊 —")
         with ic5:
@@ -3371,7 +3376,10 @@ def backlog_tab_fragment(
     metrics_calc: Any,
     current_year: int,
     filter_values: Dict,
-    fragment_key: str = "backlog_tab"
+    fragment_key: str = "backlog_tab",
+    # NEW v4.1.0: Drill-down loaders (Order + Delivery only — backlog has no invoices)
+    order_detail_loader=None,
+    delivery_detail_loader=None,
 ):
     """
     Combined fragment for entire Backlog tab.
@@ -3383,6 +3391,10 @@ def backlog_tab_fragment(
     
     When filters change, all sub-tabs update.
     Fragment prevents full page rerun.
+    
+    NEW v4.1.0: Click any row in Backlog List → drill-down panel with:
+    - 📦 Order Details (OC lines, qty ordered/delivered/invoiced)
+    - 🚚 Delivery (DN status, fulfillment, warehouse)
     """
     if backlog_df.empty:
         st.info("📦 No backlog data available")
@@ -3484,7 +3496,9 @@ def backlog_tab_fragment(
     with backlog_tab1:
         _render_backlog_list_content(
             filtered_backlog, backlog_df, in_period_backlog_analysis, 
-            f"{fragment_key}_list"
+            f"{fragment_key}_list",
+            order_detail_loader=order_detail_loader,
+            delivery_detail_loader=delivery_detail_loader,
         )
     
     with backlog_tab2:
@@ -3501,9 +3515,12 @@ def _render_backlog_list_content(
     filtered_backlog: pd.DataFrame,
     original_backlog: pd.DataFrame,
     in_period_backlog_analysis: Dict,
-    key_prefix: str
+    key_prefix: str,
+    # NEW v4.1.0: Drill-down loaders
+    order_detail_loader=None,
+    delivery_detail_loader=None,
 ):
-    """Render Backlog List content (without filters - filters are above)."""
+    """Render Backlog List content with click-to-expand drill-down (v4.1.0)."""
     if filtered_backlog.empty:
         st.info("No backlog items match the current filters")
         return
@@ -3632,13 +3649,43 @@ def _render_backlog_list_content(
         'sales_name': st.column_config.TextColumn("Salesperson"),
     }
     
-    st.dataframe(
+    # Determine if drill-down is available
+    has_drilldown = any([order_detail_loader, delivery_detail_loader])
+    
+    if has_drilldown:
+        st.caption("💡 Click a row to view Order → Delivery details")
+    
+    event = st.dataframe(
         display_detail,
         width="stretch",
         hide_index=True,
         column_config=column_config,
-        height=600
+        height=600,
+        on_select="rerun" if has_drilldown else "ignore",
+        selection_mode="single-row" if has_drilldown else None,
+        key=f"{key_prefix}_table",
     )
+    
+    # =========================================================================
+    # DRILL-DOWN PANEL — Click row to expand (NEW v4.1.0)
+    # Reuses _render_sales_drilldown_panel with OC-only context
+    # (no inv_number → Payment/Documents tabs auto-skipped)
+    # =========================================================================
+    if has_drilldown and event and event.selection:
+        selected_rows = event.selection.rows
+        if selected_rows:
+            row_idx = selected_rows[0]
+            if row_idx < len(display_detail):
+                sel_row = display_backlog.iloc[row_idx]  # Full df with all columns
+                _render_sales_drilldown_panel(
+                    sel_row=sel_row,
+                    order_detail_loader=order_detail_loader,
+                    delivery_detail_loader=delivery_detail_loader,
+                    payment_txn_loader=None,  # Backlog = uninvoiced, no payment
+                    doc_loader=None,
+                    s3_url_generator=None,
+                    fragment_key=key_prefix,
+                )
 
 
 def _render_backlog_by_etd_content(

@@ -2357,7 +2357,10 @@ Backlog is a snapshot of ALL pending orders **at current time**.
         metrics_calc=metrics_calc,
         current_year=active_filters['year'],
         filter_values=active_filters,
-        fragment_key="backlog_tab"
+        fragment_key="backlog_tab",
+        # Drill-down loaders (v4.1.0) — Order + Delivery only (backlog = uninvoiced)
+        order_detail_loader=lambda oc_nums: queries.get_order_details(oc_nums),
+        delivery_detail_loader=lambda oc_nums: queries.get_delivery_details(oc_nums),
     )
 
 # =============================================================================
