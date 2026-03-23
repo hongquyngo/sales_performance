@@ -911,7 +911,7 @@ def sales_detail_fragment(
     # Display columns - reordered with separate % columns
     # UPDATED v2.10.0: Separate GP%, GP1% columns instead of inline
     display_columns = [
-        'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
+        'inv_date', 'inv_number', 'vat_number', 'oc_po_display', 'customer', 'product_display', 'brand',
         'total_revenue_usd', 'total_gp_usd',  # Original values (Revenue, GP only)
         'split_rate_percent',
         'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp_percent', 'gp1_by_split_usd', 'gp1_percent',
@@ -942,6 +942,10 @@ def sales_detail_fragment(
         'inv_number': st.column_config.TextColumn(
             "Invoice#",
             help="Invoice number"
+        ),
+        'vat_number': st.column_config.TextColumn(
+            "VAT Invoice#",
+            help="VAT/GST invoice number"
         ),
         'oc_po_display': st.column_config.TextColumn(
             "OC / PO",
@@ -2743,7 +2747,7 @@ def _render_sales_list_content(
     
     # Display columns
     display_columns = [
-        'inv_date', 'inv_number', 'oc_po_display', 'customer', 'product_display', 'brand',
+        'inv_date', 'inv_number', 'vat_number', 'oc_po_display', 'customer', 'product_display', 'brand',
         'total_revenue_usd', 'total_gp_usd', 'split_rate_percent',
         'sales_by_split_usd', 'gross_profit_by_split_usd', 'gp_percent', 
         'gp1_by_split_usd', 'gp1_percent', 'sales_name'
@@ -2764,6 +2768,8 @@ def _render_sales_list_content(
     column_config = {
         'inv_date': st.column_config.DateColumn("Date"),
         'inv_number': st.column_config.TextColumn("Invoice#"),
+        'vat_number': st.column_config.TextColumn("VAT Invoice#",
+            help="VAT/GST invoice number"),
         'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
         'customer': st.column_config.TextColumn("Customer", width="medium"),
         'product_display': st.column_config.TextColumn("Product", width="large",
