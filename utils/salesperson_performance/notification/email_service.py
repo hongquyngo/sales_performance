@@ -5,21 +5,25 @@ Email Service for Salesperson Performance Notifications.
 Uses shared config credentials (utils.config) — NOT .env directly.
 Supports both local (.env) and Streamlit Cloud (st.secrets).
 
+UPDATED v1.1.0:
+- Added is_email_configured() cached check to avoid repeated config reads
+- EmailService.__init__ unchanged (needed for actual sending)
+
 Usage:
-    from utils.salesperson_performance.notification.email_service import EmailService
+    from utils.salesperson_performance.notification.email_service import (
+        EmailService,
+        is_email_configured,
+    )
 
+    # Fast check — cached, no instantiation
+    if not is_email_configured():
+        return
+
+    # Full service — only when actually sending
     svc = EmailService()
-    if not svc.is_configured:
-        st.warning("Email not configured")
-    else:
-        result = svc.send(
-            to=["sales@company.com"],
-            subject="Weekly Alert",
-            html="<h1>Hello</h1>",
-            cc=["manager@company.com"],
-        )
+    result = svc.send(to=[...], subject="...", html="...")
 
-VERSION: 1.0.0
+VERSION: 1.1.0
 """
 
 import logging
@@ -32,8 +36,31 @@ from email import encoders
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+import streamlit as st
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# CACHED CONFIG CHECK — avoids repeated config reads on every rerun
+# =============================================================================
+
+@st.cache_data(ttl=300)
+def is_email_configured() -> bool:
+    """
+    Check if email sending is configured.
+    
+    Cached for 5 minutes — avoids reading config on every page rerun.
+    Use this for fast gate checks in UI (e.g., whether to show the button).
+    """
+    try:
+        from utils.config import config
+        email_cfg = config.get_email_config("outbound")
+        sender = email_cfg.get("sender")
+        password = email_cfg.get("password")
+        return bool(sender and password)
+    except Exception:
+        return False
 
 
 @dataclass
@@ -51,6 +78,9 @@ class EmailService:
 
     Reads credentials from utils.config (outbound email config).
     Thread-safe: each send() opens and closes its own SMTP connection.
+    
+    NOTE: Only instantiate when actually sending email.
+    For config checks, use is_email_configured() instead.
     """
 
     def __init__(self):

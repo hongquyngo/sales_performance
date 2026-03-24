@@ -18,10 +18,20 @@ Components:
 - ui:                    Streamlit UI (button + preview dialog)
 - setup_ui:              Setup tab sub-section (preferences + history + test send)
 
-VERSION: 2.0.0
+VERSION: 2.1.0
+
+CHANGELOG:
+- v2.1.0: Performance improvements
+          - @st.fragment on render_email_bulletin_button() and render_notification_setup()
+          - @st.dialog on email preview/send (replaces expander-based approach)
+          - @st.cache_data on all SQL read operations (recipient_resolver, preferences, send_log)
+          - is_email_configured() cached check (avoids EmailService() on every rerun)
+          - Removed DataFrame storage in session_state for dialog
+          - Write operations invalidate read caches
+- v2.0.0: Phase 3 — preferences, send log, setup UI
 """
 
-from .email_service import EmailService, EmailResult
+from .email_service import EmailService, EmailResult, is_email_configured
 from .email_builder import build_bulletin_email, build_bulletin_plain_text
 from .alert_data_collector import collect_per_employee_bulletin
 from .recipient_resolver import (
@@ -49,6 +59,7 @@ __all__ = [
     # Email service
     "EmailService",
     "EmailResult",
+    "is_email_configured",
     # Email builder
     "build_bulletin_email",
     "build_bulletin_plain_text",
@@ -77,4 +88,4 @@ __all__ = [
     "get_send_stats",
 ]
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

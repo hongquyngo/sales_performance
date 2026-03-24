@@ -2,22 +2,19 @@
 """
 Notification Send Log — Audit trail for all email notifications.
 
-Write after each send, read for history display in Setup UI.
-Uses notification_log table.
+UPDATED v1.1.0:
+- Added @st.cache_data on read operations (ttl=30s)
+- Write operations invalidate the read cache
+- Eliminates repeated SQL queries on page rerun
 
-Usage:
-    from utils.salesperson_performance.notification.send_log import (
-        log_send,
-        get_send_history,
-    )
-
-VERSION: 1.0.0
+VERSION: 1.1.0
 """
 
 import logging
 from datetime import date, datetime
 from typing import Dict, List, Optional
 import pandas as pd
+import streamlit as st
 from sqlalchemy import text
 
 from utils.db import get_db_engine
@@ -77,9 +74,11 @@ def log_send(
                 'trigger_type': trigger_type,
             })
             conn.commit()
+        
+        # Invalidate read caches after write
+        _invalidate_send_log_cache()
         return True
     except Exception as e:
-        # Non-blocking — don't crash the send flow
         logger.warning(f"Could not write notification_log: {e}")
         return False
 
@@ -97,7 +96,7 @@ def log_send_batch(details: List[Dict], triggered_by: Optional[int] = None) -> i
     """
     logged = 0
     for d in details:
-        ok = log_send(
+        ok = _log_send_no_invalidate(
             employee_id=d.get('employee_id', 0),
             employee_name=d.get('name', ''),
             manager_id=None,
@@ -113,29 +112,67 @@ def log_send_batch(details: List[Dict], triggered_by: Optional[int] = None) -> i
         )
         if ok:
             logged += 1
+    
+    # Invalidate cache once after all writes
+    if logged > 0:
+        _invalidate_send_log_cache()
+    
     return logged
 
 
+def _log_send_no_invalidate(**kwargs) -> bool:
+    """Internal log_send without cache invalidation (for batch use)."""
+    query = """
+        INSERT INTO notification_log
+            (employee_id, employee_name, manager_id, alert_type, subject,
+             to_email, cc_email, alert_count, status, error_message,
+             triggered_by, trigger_type)
+        VALUES
+            (:employee_id, :employee_name, :manager_id, :alert_type, :subject,
+             :to_email, :cc_email, :alert_count, :status, :error_message,
+             :triggered_by, :trigger_type)
+    """
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            conn.execute(text(query), {
+                'employee_id': kwargs['employee_id'],
+                'employee_name': kwargs['employee_name'],
+                'manager_id': kwargs['manager_id'],
+                'alert_type': kwargs['alert_type'],
+                'subject': (kwargs['subject'] or '')[:500],
+                'to_email': (kwargs['to_email'] or '')[:255],
+                'cc_email': (kwargs['cc_email'] or '')[:255],
+                'alert_count': kwargs['alert_count'],
+                'status': kwargs['status'],
+                'error_message': (kwargs['error_message'] or '')[:2000],
+                'triggered_by': kwargs['triggered_by'],
+                'trigger_type': kwargs['trigger_type'],
+            })
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"Could not write notification_log: {e}")
+        return False
+
+
+def _invalidate_send_log_cache():
+    """Clear read caches after writes."""
+    _get_send_history_cached.clear()
+    _get_send_stats_cached.clear()
+
+
 # =============================================================================
-# READ
+# CACHED READS
 # =============================================================================
 
-def get_send_history(
-    employee_ids: Optional[List[int]] = None,
-    days: int = 30,
-    limit: int = 200,
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_send_history_cached(
+    employee_ids_tuple: Optional[tuple],
+    days: int,
+    limit: int,
 ) -> pd.DataFrame:
-    """
-    Get notification send history.
-
-    Args:
-        employee_ids: Filter by employee (None = all)
-        days: Look back N days
-        limit: Max rows
-
-    Returns:
-        DataFrame with send history, newest first
-    """
+    """Cached send history query."""
     query = """
         SELECT
             id,
@@ -156,9 +193,9 @@ def get_send_history(
     """
     params: Dict = {'days': days}
 
-    if employee_ids:
+    if employee_ids_tuple:
         query += " AND employee_id IN :employee_ids"
-        params['employee_ids'] = tuple(employee_ids)
+        params['employee_ids'] = employee_ids_tuple
 
     query += " ORDER BY sent_at DESC LIMIT :limit"
     params['limit'] = limit
@@ -171,14 +208,9 @@ def get_send_history(
         return pd.DataFrame()
 
 
-def get_send_stats(days: int = 30) -> Dict:
-    """
-    Get send statistics for dashboard display.
-
-    Returns:
-        Dict with total_sent, total_failed, total_skipped,
-        unique_recipients, last_sent_at
-    """
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_send_stats_cached(days: int) -> Dict:
+    """Cached send stats query."""
     query = """
         SELECT
             COUNT(*) AS total,
@@ -211,3 +243,38 @@ def get_send_stats(days: int = 30) -> Dict:
         'total': 0, 'sent': 0, 'failed': 0, 'skipped': 0,
         'unique_recipients': 0, 'last_sent_at': None,
     }
+
+
+# =============================================================================
+# PUBLIC READ API
+# =============================================================================
+
+def get_send_history(
+    employee_ids: Optional[List[int]] = None,
+    days: int = 30,
+    limit: int = 200,
+) -> pd.DataFrame:
+    """
+    Get notification send history (cached).
+
+    Args:
+        employee_ids: Filter by employee (None = all)
+        days: Look back N days
+        limit: Max rows
+
+    Returns:
+        DataFrame with send history, newest first
+    """
+    ids_tuple = tuple(sorted(employee_ids)) if employee_ids else None
+    return _get_send_history_cached(ids_tuple, days, limit)
+
+
+def get_send_stats(days: int = 30) -> Dict:
+    """
+    Get send statistics for dashboard display (cached).
+
+    Returns:
+        Dict with total_sent, total_failed, total_skipped,
+        unique_recipients, last_sent_at
+    """
+    return _get_send_stats_cached(days)
