@@ -347,12 +347,22 @@ def _render_send_warning_tab(
     # ─────────────────────────────────────────────────────────────
     st.markdown("##### 📤 Preview & Send")
 
-    col_summary, col_options = st.columns([3, 2])
+    col_summary, col_lang, col_options = st.columns([3, 1.5, 1.5])
 
     with col_summary:
         to_count = len(selected_eids)
         st.markdown(f"**To:** {to_count} salesperson{'s' if to_count!=1 else ''} "
                     f"&nbsp;|&nbsp; **CC:** {total_cc} recipient{'s' if total_cc!=1 else ''}")
+
+    with col_lang:
+        from .preferences import LANGUAGE_OPTIONS as _LANG_OPTS
+        send_lang = st.selectbox(
+            "Email Language",
+            options=list(_LANG_OPTS.keys()),
+            format_func=lambda x: _LANG_OPTS[x],
+            key=f"{key_prefix}_send_lang",
+            help="Language for email content. Per-employee language from preferences is used when 'Use preferences' is checked.",
+        )
 
     with col_options:
         override_prefs = st.checkbox(
@@ -383,6 +393,7 @@ def _render_send_warning_tab(
                 warning_data=preview_data,
                 active_filters=active_filters,
                 sender_name=sender_name,
+                lang=send_lang,
             )
 
             st.info(f"Preview for **{first_name}** — each person receives their own data.")
@@ -410,6 +421,7 @@ def _render_send_warning_tab(
                 additional_cc=additional_cc_emails,
                 external_cc=external_cc_list,
                 override_preferences=override_prefs,
+                default_lang=send_lang,
                 sales_df=sales_df,
                 backlog_detail_df=backlog_detail_df,
                 ar_outstanding_df=ar_outstanding_df,
@@ -436,9 +448,11 @@ def _render_send_warning_tab(
                     if status == "sent":
                         overdue = d.get('overdue', 0)
                         cc_info = f" (CC: {d['cc']})" if d.get('cc') else ""
+                        lang_info = f" [{d.get('lang', 'en').upper()}]"
+                        excel_info = " 📎" if d.get('has_excel') else ""
                         st.markdown(
                             f"✅ **{name}** → `{d.get('to', '')}` "
-                            f"| O/S: ${overdue:,.0f}{cc_info}"
+                            f"| O/S: ${overdue:,.0f}{cc_info}{lang_info}{excel_info}"
                         )
                     elif status == "failed":
                         st.markdown(f"❌ **{name}** → {d.get('error', 'Unknown error')}")
@@ -463,6 +477,7 @@ def _render_preferences_tab(
         save_preferences_bulk,
         ALERT_TYPES,
         FREQUENCY_OPTIONS,
+        LANGUAGE_OPTIONS,
     )
     from .recipient_resolver import resolve_recipients_batch
 
@@ -508,9 +523,9 @@ def _render_preferences_tab(
             else:
                 st.caption(f"Manager: {mgr} &nbsp;·&nbsp; ⚙️ Defaults (not yet saved)")
 
-            master_pref = prefs.get('all', {'enabled': True, 'frequency': 'weekly', 'notify_manager': True})
+            master_pref = prefs.get('all', {'enabled': True, 'frequency': 'weekly', 'notify_manager': True, 'language': 'en'})
 
-            col_master, col_freq, col_cc = st.columns([2, 2, 1])
+            col_master, col_freq, col_lang, col_cc = st.columns([2, 2, 1.5, 1])
             with col_master:
                 master_enabled = st.toggle(
                     "📧 Notifications Enabled",
@@ -528,6 +543,18 @@ def _render_preferences_tab(
                     format_func=lambda x: FREQUENCY_OPTIONS[x],
                     index=freq_idx,
                     key=f"{key_prefix}_{eid}_freq",
+                    disabled=not can_edit or not master_enabled,
+                )
+            with col_lang:
+                lang_options = list(LANGUAGE_OPTIONS.keys())
+                current_lang = master_pref.get('language', 'en')
+                lang_idx = lang_options.index(current_lang) if current_lang in lang_options else 0
+                selected_lang = st.selectbox(
+                    "Language",
+                    options=lang_options,
+                    format_func=lambda x: LANGUAGE_OPTIONS[x],
+                    index=lang_idx,
+                    key=f"{key_prefix}_{eid}_lang",
                     disabled=not can_edit or not master_enabled,
                 )
             with col_cc:
@@ -560,6 +587,7 @@ def _render_preferences_tab(
                             'enabled': master_enabled,
                             'frequency': selected_freq,
                             'notify_manager': cc_mgr,
+                            'language': selected_lang,
                         },
                     }
                     for atype, _ in [(k, v) for k, v in ALERT_TYPES.items() if k != 'all']:
@@ -568,6 +596,7 @@ def _render_preferences_tab(
                             'enabled': widget_val if master_enabled else False,
                             'frequency': selected_freq,
                             'notify_manager': cc_mgr,
+                            'language': selected_lang,
                         }
                     modifier_id = st.session_state.get('employee_id')
                     saved = save_preferences_bulk(eid, new_prefs, modified_by=modifier_id)

@@ -317,7 +317,7 @@ def send_bulletin_to_team(
 
 
 # =============================================================================
-# WARNING EMAIL SENDER (v2.0)
+# WARNING EMAIL SENDER (v3.0 — bilingual + Excel attachment)
 # =============================================================================
 
 def send_warning_to_selected(
@@ -327,6 +327,7 @@ def send_warning_to_selected(
     additional_cc: Optional[List[str]] = None,
     external_cc: Optional[List[str]] = None,
     override_preferences: bool = False,
+    default_lang: str = 'en',
     # Data sources
     sales_df: Optional['pd.DataFrame'] = None,
     backlog_detail_df: Optional['pd.DataFrame'] = None,
@@ -339,9 +340,7 @@ def send_warning_to_selected(
     """
     Send formal warning email to selected salespeople.
 
-    Unlike send_bulletin_to_team (ad-hoc FYI), this sends a structured
-    warning with AR aging detail, customer-level breakdown, and
-    consequences block.
+    v3.0: Bilingual (en/vi), categorized alert sections, Excel attachment.
 
     Args:
         employee_ids:         Selected employee IDs
@@ -350,6 +349,7 @@ def send_warning_to_selected(
         additional_cc:        Extra CC emails from employee picker
         external_cc:          External CC emails (typed by user)
         override_preferences: If True, send even to disabled employees
+        default_lang:         Default language for email ('en' or 'vi')
         sales_df:             Filtered sales data
         backlog_detail_df:    Backlog detail
         ar_outstanding_df:    AR outstanding
@@ -360,13 +360,14 @@ def send_warning_to_selected(
     Returns:
         NotificationResult with per-recipient details
     """
+    import os
     import time
     import pandas as pd
 
     from .email_service import EmailService
     from .email_builder import build_warning_email, build_warning_plain_text
     from .recipient_resolver import resolve_recipients_batch
-    from .alert_data_collector import collect_warning_data
+    from .alert_data_collector import collect_warning_data, generate_warning_excel
 
     start = time.perf_counter()
 
@@ -395,14 +396,13 @@ def send_warning_to_selected(
     except Exception:
         dashboard_url = ""
 
-    # --- 4. Preferences ---
+    # --- 4. Preferences (for enabled check + per-employee language) ---
     prefs_cache = {}
-    if not override_preferences:
-        try:
-            from .preferences import get_preferences_for_employees
-            prefs_cache = get_preferences_for_employees(employee_ids)
-        except Exception as e:
-            logger.debug(f"Preferences not available: {e}")
+    try:
+        from .preferences import get_preferences_for_employees
+        prefs_cache = get_preferences_for_employees(employee_ids)
+    except Exception as e:
+        logger.debug(f"Preferences not available: {e}")
 
     # --- 5. Build combined CC list ---
     combined_extra_cc = list(set(
@@ -414,6 +414,7 @@ def send_warning_to_selected(
     sent_count = 0
     failed_count = 0
     skipped_count = 0
+    temp_files = []  # Track temp Excel files for cleanup
 
     for eid in employee_ids:
         info = recipients_map.get(eid)
@@ -445,6 +446,11 @@ def send_warning_to_selected(
                 skipped_count += 1
                 continue
 
+        # ─── Resolve language (preference > default) ───
+        emp_lang = default_lang
+        if prefs_cache and eid in prefs_cache:
+            emp_lang = prefs_cache[eid].get('all', {}).get('language', default_lang) or default_lang
+
         # ─── Collect warning data ───
         warning_data = collect_warning_data(
             employee_id=eid,
@@ -455,6 +461,19 @@ def send_warning_to_selected(
             targets_df=targets_df if targets_df is not None else pd.DataFrame(),
             active_filters=active_filters,
         )
+
+        # ─── Generate Excel attachment ───
+        excel_path = None
+        try:
+            excel_path = generate_warning_excel(
+                warning_data=warning_data,
+                active_filters=active_filters,
+                lang=emp_lang,
+            )
+            if excel_path:
+                temp_files.append(excel_path)
+        except Exception as e:
+            logger.warning(f"Excel generation failed for {info.sales_name}: {e}")
 
         # ─── CC list: manager (mandatory) + additional ───
         cc_list = []
@@ -474,7 +493,7 @@ def send_warning_to_selected(
         if combined_extra_cc:
             cc_note += f" + {len(combined_extra_cc)} additional"
 
-        # ─── Build email ───
+        # ─── Build email (bilingual) ───
         subject, html_body = build_warning_email(
             warning_data=warning_data,
             active_filters=active_filters,
@@ -483,16 +502,19 @@ def send_warning_to_selected(
             cc_note=cc_note,
             consequences=consequences,
             deadline_days=deadline_days,
+            lang=emp_lang,
         )
-        plain_text = build_warning_plain_text(warning_data, deadline_days)
+        plain_text = build_warning_plain_text(warning_data, deadline_days, lang=emp_lang)
 
-        # ─── Send ───
+        # ─── Send (with Excel attachment if available) ───
+        attachments = [excel_path] if excel_path else None
         result = svc.send(
             to=info.to_list,
             subject=subject,
             html=html_body,
             plain_text=plain_text,
             cc=cc_list,
+            attachments=attachments,
         )
 
         alert_count = warning_data.get('bulletin', {}).get('alert_count', 0)
@@ -505,7 +527,8 @@ def send_warning_to_selected(
                 "status": "sent", "to": info.sales_email,
                 "cc": ", ".join(cc_list) if cc_list else None,
                 "alerts": alert_count, "overdue": overdue,
-                "subject": subject,
+                "subject": subject, "lang": emp_lang,
+                "has_excel": bool(excel_path),
                 "elapsed": result.elapsed_seconds,
             })
         else:
@@ -522,7 +545,14 @@ def send_warning_to_selected(
 
     elapsed = round(time.perf_counter() - start, 2)
 
-    # --- 7. Audit log ---
+    # --- 7. Cleanup temp Excel files ---
+    for tmp_path in temp_files:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    # --- 8. Audit log ---
     try:
         from .send_log import log_send_batch
         triggered_by_id = None
@@ -538,7 +568,7 @@ def send_warning_to_selected(
     except Exception as e:
         logger.debug(f"Could not write send log: {e}")
 
-    # --- 8. Summary ---
+    # --- 9. Summary ---
     if sent_count > 0 and failed_count == 0:
         msg = f"✅ Warning sent to {sent_count} salesperson(s)"
         if skipped_count:

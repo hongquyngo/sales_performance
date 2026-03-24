@@ -241,7 +241,7 @@ def _check_backlog_past_etd(backlog_df: pd.DataFrame) -> List[Dict]:
         return []
 
     return [{
-        'severity': 'high', 'icon': '🔴',
+        'severity': 'high', 'icon': '🔴', 'category': 'backlog',
         'message': f"{count} orders past ETD, total value {_fmt(value)} — follow up on delivery",
     }]
 
@@ -261,7 +261,7 @@ def _check_ar_overdue_90(ar_df: pd.DataFrame) -> List[Dict]:
 
     count = overdue_90['inv_number'].nunique() if 'inv_number' in overdue_90.columns else len(overdue_90)
     return [{
-        'severity': 'high', 'icon': '🔴',
+        'severity': 'high', 'icon': '🔴', 'category': 'ar',
         'message': f"{count} invoices overdue 90+ days, total {_fmt(amount)} — escalate collection",
     }]
 
@@ -311,7 +311,7 @@ def _check_kpi_behind(
         if achievement < KPI_CRITICAL_RATIO * 100:
             display = kpi_name.replace('_', ' ').title()
             alerts.append({
-                'severity': 'medium', 'icon': '🟡',
+                'severity': 'medium', 'icon': '🟡', 'category': 'kpi',
                 'message': (
                     f"{display}: {_fmt(actual)} vs target {_fmt(prorated_target)} "
                     f"({achievement:.0f}% — expected ~{expected_pct:.0f}%)"
@@ -320,7 +320,7 @@ def _check_kpi_behind(
         elif achievement < KPI_WARNING_RATIO * 100:
             display = kpi_name.replace('_', ' ').title()
             alerts.append({
-                'severity': 'medium', 'icon': '🟡',
+                'severity': 'medium', 'icon': '🟡', 'category': 'kpi',
                 'message': f"{display} at {achievement:.0f}% of prorated target",
             })
 
@@ -342,7 +342,7 @@ def _check_ar_overdue(ar_df: pd.DataFrame) -> List[Dict]:
 
     count = overdue['inv_number'].nunique() if 'inv_number' in overdue.columns else len(overdue)
     return [{
-        'severity': 'medium', 'icon': '🟡',
+        'severity': 'medium', 'icon': '🟡', 'category': 'ar',
         'message': f"{count} overdue invoices, total {_fmt(amount)} outstanding",
     }]
 
@@ -372,7 +372,7 @@ def _check_coming_due(ar_df: pd.DataFrame) -> List[Dict]:
         return []
 
     return [{
-        'severity': 'low', 'icon': '🔵',
+        'severity': 'low', 'icon': '🔵', 'category': 'payment_coming_due',
         'message': f"{count} invoices ({_fmt(amount)}) due within {COMING_DUE_DAYS} days — follow up on payment",
     }]
 
@@ -466,6 +466,10 @@ def collect_warning_data(
 
     # 2. AR detail (enrichment)
     my_ar = _filter_by_employee(ar_outstanding_df, employee_id, 'sales_id')
+    my_backlog = _filter_by_employee(backlog_detail_df, employee_id, 'sales_id')
+    my_sales = _filter_by_employee(sales_df, employee_id, 'sales_id')
+    my_targets = _filter_by_employee(targets_df, employee_id, 'employee_id')
+
     ar_summary = _build_ar_aging_summary(my_ar)
     customers_at_risk = _build_customers_at_risk(my_ar)
 
@@ -474,6 +478,11 @@ def collect_warning_data(
         'metrics': metrics,
         'ar_summary': ar_summary,
         'customers_at_risk': customers_at_risk,
+        # Raw filtered DataFrames (for Excel attachment)
+        'ar_df': my_ar,
+        'backlog_df': my_backlog,
+        'sales_df': my_sales,
+        'targets_df': my_targets,
     }
 
 
@@ -720,3 +729,344 @@ def collect_recipients_warning_summary(
         })
 
     return pd.DataFrame(rows)
+
+
+# =============================================================================
+# EXCEL ATTACHMENT GENERATOR (v3.0)
+# =============================================================================
+
+# Column display configs per language
+_EXCEL_TEXTS = {
+    'en': {
+        'sheet_ar': 'AR Overdue Detail',
+        'sheet_backlog': 'Backlog Past ETD',
+        'sheet_kpi': 'KPI Summary',
+        'sheet_alerts': 'Alert Summary',
+        'filename': 'Warning_Detail_{name}_{date}.xlsx',
+        'alert_cols': {'icon': 'Severity', 'category': 'Category', 'message': 'Alert Message'},
+        'kpi_cols': {'kpi': 'KPI', 'target': 'Annual Target', 'prorated': 'Prorated Target',
+                     'actual': 'Actual', 'achievement': 'Achievement %', 'status': 'Status'},
+    },
+    'vi': {
+        'sheet_ar': 'Chi Tiết CN Quá Hạn',
+        'sheet_backlog': 'Backlog Quá Hạn ETD',
+        'sheet_kpi': 'Tóm Tắt KPI',
+        'sheet_alerts': 'Tóm Tắt Cảnh Báo',
+        'filename': 'Canh_Bao_{name}_{date}.xlsx',
+        'alert_cols': {'icon': 'Mức Độ', 'category': 'Nhóm', 'message': 'Nội Dung Cảnh Báo'},
+        'kpi_cols': {'kpi': 'KPI', 'target': 'Mục Tiêu Năm', 'prorated': 'Mục Tiêu Tỷ Lệ',
+                     'actual': 'Thực Tế', 'achievement': '% Đạt', 'status': 'Trạng Thái'},
+    },
+}
+
+# AR column rename mapping
+_AR_COLUMNS_EN = {
+    'customer': 'Customer',
+    'inv_number': 'Invoice #',
+    'inv_date': 'Invoice Date',
+    'due_date': 'Due Date',
+    'days_overdue': 'Days Overdue',
+    'outstanding_by_split_usd': 'Outstanding (USD)',
+    'aging_bucket': 'Aging Bucket',
+}
+_AR_COLUMNS_VI = {
+    'customer': 'Khách Hàng',
+    'inv_number': 'Số Hóa Đơn',
+    'inv_date': 'Ngày Hóa Đơn',
+    'due_date': 'Ngày Đến Hạn',
+    'days_overdue': 'Số Ngày Quá Hạn',
+    'outstanding_by_split_usd': 'Công Nợ (USD)',
+    'aging_bucket': 'Nhóm Tuổi Nợ',
+}
+
+_BACKLOG_COLUMNS_EN = {
+    'oc_number': 'OC Number',
+    'customer': 'Customer',
+    'product_name': 'Product',
+    'etd': 'ETD',
+    'backlog_sales_by_split_usd': 'Backlog Value (USD)',
+}
+_BACKLOG_COLUMNS_VI = {
+    'oc_number': 'Số OC',
+    'customer': 'Khách Hàng',
+    'product_name': 'Sản Phẩm',
+    'etd': 'Ngày Giao Dự Kiến',
+    'backlog_sales_by_split_usd': 'Giá Trị Backlog (USD)',
+}
+
+
+def generate_warning_excel(
+    warning_data: Dict,
+    active_filters: Dict,
+    lang: str = 'en',
+) -> Optional[str]:
+    """
+    Generate Excel attachment with warning detail data.
+
+    Creates a temp .xlsx file with sheets:
+    - AR Overdue Detail (sorted by days overdue desc)
+    - Backlog Past ETD (sorted by ETD)
+    - KPI Summary
+    - Alert Summary
+
+    Args:
+        warning_data:    Output of collect_warning_data() (includes raw DFs)
+        active_filters:  Current filter state
+        lang:            'en' or 'vi'
+
+    Returns:
+        Path to temp xlsx file, or None if no data.
+        Caller must delete the file after use.
+    """
+    import tempfile
+    from datetime import date as _date
+
+    ar_df = warning_data.get('ar_df', pd.DataFrame())
+    backlog_df = warning_data.get('backlog_df', pd.DataFrame())
+    targets_df = warning_data.get('targets_df', pd.DataFrame())
+    sales_df = warning_data.get('sales_df', pd.DataFrame())
+    bulletin = warning_data.get('bulletin', {})
+    alerts = bulletin.get('alerts', [])
+    employee_name = bulletin.get('employee_name', 'Employee')
+
+    # Skip if no data at all
+    if ar_df.empty and backlog_df.empty and not alerts:
+        return None
+
+    txt = _EXCEL_TEXTS.get(lang, _EXCEL_TEXTS['en'])
+    ar_cols = _AR_COLUMNS_VI if lang == 'vi' else _AR_COLUMNS_EN
+    bl_cols = _BACKLOG_COLUMNS_VI if lang == 'vi' else _BACKLOG_COLUMNS_EN
+
+    # Build safe filename
+    safe_name = employee_name.replace(' ', '_')[:30]
+    date_str = _date.today().strftime('%Y%m%d')
+    filename = txt['filename'].format(name=safe_name, date=date_str)
+
+    # Create temp file
+    tmp = tempfile.NamedTemporaryFile(
+        suffix='.xlsx', prefix='warning_', delete=False,
+        dir='/tmp',
+    )
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        with pd.ExcelWriter(tmp_path, engine='openpyxl') as writer:
+            sheet_count = 0
+
+            # ─── Sheet 1: AR Overdue Detail ───
+            if not ar_df.empty:
+                _write_ar_sheet(writer, ar_df, ar_cols, txt['sheet_ar'])
+                sheet_count += 1
+
+            # ─── Sheet 2: Backlog Past ETD ───
+            if not backlog_df.empty:
+                _write_backlog_sheet(writer, backlog_df, bl_cols, txt['sheet_backlog'])
+                sheet_count += 1
+
+            # ─── Sheet 3: KPI Summary ───
+            if not targets_df.empty and not sales_df.empty:
+                _write_kpi_sheet(
+                    writer, sales_df, targets_df,
+                    active_filters, txt, lang,
+                )
+                sheet_count += 1
+
+            # ─── Sheet 4: Alert Summary ───
+            if alerts:
+                _write_alerts_sheet(writer, alerts, txt)
+                sheet_count += 1
+
+            if sheet_count == 0:
+                import os
+                os.unlink(tmp_path)
+                return None
+
+        logger.info(f"Warning Excel generated: {tmp_path} ({sheet_count} sheets)")
+        return tmp_path
+
+    except Exception as e:
+        logger.error(f"Error generating warning Excel: {e}")
+        try:
+            import os
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return None
+
+
+def _write_ar_sheet(
+    writer: pd.ExcelWriter,
+    ar_df: pd.DataFrame,
+    col_map: Dict[str, str],
+    sheet_name: str,
+):
+    """Write AR overdue detail sheet."""
+    # Select and rename available columns
+    available = [c for c in col_map.keys() if c in ar_df.columns]
+    if not available:
+        return
+
+    df = ar_df[available].copy()
+
+    # Sort by days_overdue desc if available
+    if 'days_overdue' in df.columns:
+        df['days_overdue'] = pd.to_numeric(df['days_overdue'], errors='coerce').fillna(0)
+        df = df.sort_values('days_overdue', ascending=False)
+
+    # Only overdue rows (days > 0)
+    if 'days_overdue' in df.columns:
+        df = df[df['days_overdue'] > 0]
+
+    if df.empty:
+        return
+
+    # Format outstanding
+    if 'outstanding_by_split_usd' in df.columns:
+        df['outstanding_by_split_usd'] = pd.to_numeric(
+            df['outstanding_by_split_usd'], errors='coerce'
+        ).fillna(0).round(2)
+
+    rename = {c: col_map[c] for c in available}
+    df.rename(columns=rename, inplace=True)
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    # Auto-width
+    _auto_width(writer, sheet_name, df)
+
+
+def _write_backlog_sheet(
+    writer: pd.ExcelWriter,
+    backlog_df: pd.DataFrame,
+    col_map: Dict[str, str],
+    sheet_name: str,
+):
+    """Write backlog past ETD sheet."""
+    df = backlog_df.copy()
+
+    # Filter to past ETD only
+    if 'etd' in df.columns:
+        df['etd'] = pd.to_datetime(df['etd'], errors='coerce')
+        today = pd.Timestamp(date.today())
+        df = df[df['etd'] < today]
+
+    if df.empty:
+        return
+
+    available = [c for c in col_map.keys() if c in df.columns]
+    if not available:
+        return
+
+    df = df[available].copy()
+
+    if 'backlog_sales_by_split_usd' in df.columns:
+        df['backlog_sales_by_split_usd'] = pd.to_numeric(
+            df['backlog_sales_by_split_usd'], errors='coerce'
+        ).fillna(0).round(2)
+
+    if 'etd' in df.columns:
+        df = df.sort_values('etd')
+
+    rename = {c: col_map[c] for c in available}
+    df.rename(columns=rename, inplace=True)
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    _auto_width(writer, sheet_name, df)
+
+
+def _write_kpi_sheet(
+    writer: pd.ExcelWriter,
+    sales_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    active_filters: Dict,
+    txt: Dict,
+    lang: str,
+):
+    """Write KPI summary sheet."""
+    elapsed = _get_elapsed_ratio(active_filters)
+    if elapsed is None or elapsed < 0.05:
+        return
+
+    kpi_map = {
+        'revenue': 'sales_by_split_usd',
+        'gross_profit': 'gross_profit_by_split_usd',
+        'gross_profit_1': 'gp1_by_split_usd',
+    }
+
+    kpi_txt = txt.get('kpi_cols', _EXCEL_TEXTS['en']['kpi_cols'])
+    rows = []
+
+    for _, row in targets_df.iterrows():
+        kpi_name = str(row.get('kpi_name', '')).lower().replace(' ', '_')
+        annual_target = row.get('annual_target_value_numeric', 0)
+        if annual_target <= 0:
+            continue
+
+        col = kpi_map.get(kpi_name)
+        if not col or col not in sales_df.columns:
+            continue
+
+        actual = sales_df[col].sum()
+        prorated = annual_target * elapsed
+        achievement = (actual / prorated * 100) if prorated > 0 else 0
+
+        status = '✅ On Track' if lang == 'en' else '✅ Đạt'
+        if achievement < KPI_CRITICAL_RATIO * 100:
+            status = '🔴 Critical' if lang == 'en' else '🔴 Nghiêm Trọng'
+        elif achievement < KPI_WARNING_RATIO * 100:
+            status = '🟡 Behind' if lang == 'en' else '🟡 Chậm Tiến Độ'
+
+        rows.append({
+            kpi_txt['kpi']: kpi_name.replace('_', ' ').title(),
+            kpi_txt['target']: round(annual_target, 2),
+            kpi_txt['prorated']: round(prorated, 2),
+            kpi_txt['actual']: round(actual, 2),
+            kpi_txt['achievement']: f"{achievement:.1f}%",
+            kpi_txt['status']: status,
+        })
+
+    if not rows:
+        return
+
+    df = pd.DataFrame(rows)
+    sheet_name = txt.get('sheet_kpi', 'KPI Summary')
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    _auto_width(writer, sheet_name, df)
+
+
+def _write_alerts_sheet(writer: pd.ExcelWriter, alerts: List[Dict], txt: Dict):
+    """Write alert summary sheet."""
+    alert_cols = txt.get('alert_cols', _EXCEL_TEXTS['en']['alert_cols'])
+    category_labels = {
+        'backlog': '📦 Backlog',
+        'ar': '💰 AR Overdue',
+        'kpi': '🎯 KPI',
+        'payment_coming_due': '⏰ Payment Due',
+    }
+
+    rows = []
+    for a in alerts:
+        rows.append({
+            alert_cols['icon']: a.get('icon', '•'),
+            alert_cols['category']: category_labels.get(a.get('category', ''), a.get('category', '')),
+            alert_cols['message']: a.get('message', ''),
+        })
+
+    df = pd.DataFrame(rows)
+    sheet_name = txt.get('sheet_alerts', 'Alert Summary')
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    _auto_width(writer, sheet_name, df)
+
+
+def _auto_width(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame):
+    """Auto-adjust column widths."""
+    try:
+        ws = writer.sheets[sheet_name]
+        for idx, col in enumerate(df.columns):
+            max_len = max(
+                df[col].astype(str).str.len().max(),
+                len(str(col)),
+            ) + 3
+            max_len = min(max_len, 50)  # Cap at 50
+            ws.column_dimensions[chr(65 + idx) if idx < 26 else 'A'].width = max_len
+    except Exception:
+        pass

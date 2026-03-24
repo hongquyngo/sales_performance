@@ -56,10 +56,16 @@ FREQUENCY_OPTIONS = {
     'monthly': 'Monthly (1st of month)',
 }
 
+LANGUAGE_OPTIONS = {
+    'en': '🇺🇸 English',
+    'vi': '🇻🇳 Tiếng Việt',
+}
+
 DEFAULT_PREFS = {
     'enabled': True,
     'frequency': 'weekly',
     'notify_manager': True,
+    'language': 'en',
 }
 
 
@@ -83,7 +89,8 @@ def _get_preferences_cached(
         return {}
 
     query = """
-        SELECT employee_id, alert_type, enabled, frequency, notify_manager
+        SELECT employee_id, alert_type, enabled, frequency, notify_manager,
+               COALESCE(language, 'en') AS language
         FROM notification_preferences
         WHERE employee_id IN :employee_ids
           AND delete_flag = 0
@@ -112,6 +119,7 @@ def _get_preferences_cached(
                 'enabled': bool(row['enabled']),
                 'frequency': row['frequency'] or 'weekly',
                 'notify_manager': bool(row['notify_manager']),
+                'language': row.get('language', 'en') or 'en',
             }
 
     return result
@@ -194,6 +202,7 @@ def save_preference(
     enabled: bool,
     frequency: str = 'weekly',
     notify_manager: bool = True,
+    language: str = 'en',
     modified_by: Optional[int] = None,
 ) -> bool:
     """
@@ -209,13 +218,14 @@ def save_preference(
 
     query = """
         INSERT INTO notification_preferences 
-            (employee_id, alert_type, enabled, frequency, notify_manager, modified_by)
+            (employee_id, alert_type, enabled, frequency, notify_manager, language, modified_by)
         VALUES 
-            (:employee_id, :alert_type, :enabled, :frequency, :notify_manager, :modified_by)
+            (:employee_id, :alert_type, :enabled, :frequency, :notify_manager, :language, :modified_by)
         ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             frequency = VALUES(frequency),
             notify_manager = VALUES(notify_manager),
+            language = VALUES(language),
             modified_by = VALUES(modified_by),
             modified_date = CURRENT_TIMESTAMP
     """
@@ -229,6 +239,7 @@ def save_preference(
                 'enabled': int(enabled),
                 'frequency': frequency,
                 'notify_manager': int(notify_manager),
+                'language': language,
                 'modified_by': modified_by,
             })
             conn.commit()
@@ -270,6 +281,7 @@ def save_preferences_bulk(
             enabled=settings.get('enabled', True),
             frequency=settings.get('frequency', 'weekly'),
             notify_manager=settings.get('notify_manager', True),
+            language=settings.get('language', 'en'),
             modified_by=modified_by,
         )
         if ok:
@@ -288,18 +300,20 @@ def _save_preference_no_invalidate(
     enabled: bool,
     frequency: str,
     notify_manager: bool,
-    modified_by: Optional[int],
+    language: str = 'en',
+    modified_by: Optional[int] = None,
 ) -> bool:
     """Internal save without cache invalidation (for bulk use)."""
     query = """
         INSERT INTO notification_preferences 
-            (employee_id, alert_type, enabled, frequency, notify_manager, modified_by)
+            (employee_id, alert_type, enabled, frequency, notify_manager, language, modified_by)
         VALUES 
-            (:employee_id, :alert_type, :enabled, :frequency, :notify_manager, :modified_by)
+            (:employee_id, :alert_type, :enabled, :frequency, :notify_manager, :language, :modified_by)
         ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             frequency = VALUES(frequency),
             notify_manager = VALUES(notify_manager),
+            language = VALUES(language),
             modified_by = VALUES(modified_by),
             modified_date = CURRENT_TIMESTAMP
     """
@@ -313,6 +327,7 @@ def _save_preference_no_invalidate(
                 'enabled': int(enabled),
                 'frequency': frequency,
                 'notify_manager': int(notify_manager),
+                'language': language,
                 'modified_by': modified_by,
             })
             conn.commit()

@@ -18,7 +18,7 @@ Components:
 - ui:                    Streamlit UI (button + preview dialog) — Overview tab
 - setup_ui:              Notifications tab (send warning + preferences + history)
 
-VERSION: 3.0.0
+VERSION: 4.0.0
 """
 
 from .email_service import EmailService, EmailResult, is_email_configured
@@ -32,6 +32,7 @@ from .alert_data_collector import (
     collect_per_employee_bulletin,
     collect_warning_data,
     collect_recipients_warning_summary,
+    generate_warning_excel,
 )
 from .recipient_resolver import (
     RecipientInfo,
@@ -55,6 +56,7 @@ from .preferences import (
     is_notification_enabled,
     ALERT_TYPES,
     FREQUENCY_OPTIONS,
+    LANGUAGE_OPTIONS,
 )
 from .send_log import log_send, get_send_history, get_send_stats
 from .setup_ui import render_notification_setup
@@ -73,6 +75,7 @@ __all__ = [
     "collect_per_employee_bulletin",
     "collect_warning_data",
     "collect_recipients_warning_summary",
+    "generate_warning_excel",
     # Recipient resolver
     "RecipientInfo",
     "resolve_recipients",
@@ -93,9 +96,10 @@ __all__ = [
     "is_notification_enabled",
     "ALERT_TYPES",
     "FREQUENCY_OPTIONS",
+    "LANGUAGE_OPTIONS",
     "log_send",
     "get_send_history",
     "get_send_stats",
 ]
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"
