@@ -856,31 +856,32 @@ def generate_warning_excel(
 
             # ─── Sheet 1: AR Overdue Detail ───
             if not ar_df.empty:
-                _write_ar_sheet(writer, ar_df, ar_cols, txt['sheet_ar'])
-                sheet_count += 1
+                if _write_ar_sheet(writer, ar_df, ar_cols, txt['sheet_ar']):
+                    sheet_count += 1
 
             # ─── Sheet 2: Backlog Past ETD ───
             if not backlog_df.empty:
-                _write_backlog_sheet(writer, backlog_df, bl_cols, txt['sheet_backlog'])
-                sheet_count += 1
+                if _write_backlog_sheet(writer, backlog_df, bl_cols, txt['sheet_backlog']):
+                    sheet_count += 1
 
             # ─── Sheet 3: KPI Summary ───
             if not targets_df.empty and not sales_df.empty:
-                _write_kpi_sheet(
+                if _write_kpi_sheet(
                     writer, sales_df, targets_df,
                     active_filters, txt, lang,
-                )
-                sheet_count += 1
+                ):
+                    sheet_count += 1
 
             # ─── Sheet 4: Alert Summary ───
             if alerts:
-                _write_alerts_sheet(writer, alerts, txt)
-                sheet_count += 1
+                if _write_alerts_sheet(writer, alerts, txt):
+                    sheet_count += 1
 
-            if sheet_count == 0:
-                import os
-                os.unlink(tmp_path)
-                return None
+        # Check after writer closes (file is saved)
+        if sheet_count == 0:
+            import os
+            os.unlink(tmp_path)
+            return None
 
         logger.info(f"Warning Excel generated: {tmp_path} ({sheet_count} sheets)")
         return tmp_path
@@ -900,12 +901,12 @@ def _write_ar_sheet(
     ar_df: pd.DataFrame,
     col_map: Dict[str, str],
     sheet_name: str,
-):
-    """Write AR overdue detail sheet."""
+) -> bool:
+    """Write AR overdue detail sheet. Returns True if sheet was written."""
     # Select and rename available columns
     available = [c for c in col_map.keys() if c in ar_df.columns]
     if not available:
-        return
+        return False
 
     df = ar_df[available].copy()
 
@@ -919,7 +920,7 @@ def _write_ar_sheet(
         df = df[df['days_overdue'] > 0]
 
     if df.empty:
-        return
+        return False
 
     # Format outstanding
     if 'outstanding_by_split_usd' in df.columns:
@@ -933,6 +934,7 @@ def _write_ar_sheet(
 
     # Auto-width
     _auto_width(writer, sheet_name, df)
+    return True
 
 
 def _write_backlog_sheet(
@@ -940,8 +942,8 @@ def _write_backlog_sheet(
     backlog_df: pd.DataFrame,
     col_map: Dict[str, str],
     sheet_name: str,
-):
-    """Write backlog past ETD sheet."""
+) -> bool:
+    """Write backlog past ETD sheet. Returns True if sheet was written."""
     df = backlog_df.copy()
 
     # Filter to past ETD only
@@ -951,11 +953,11 @@ def _write_backlog_sheet(
         df = df[df['etd'] < today]
 
     if df.empty:
-        return
+        return False
 
     available = [c for c in col_map.keys() if c in df.columns]
     if not available:
-        return
+        return False
 
     df = df[available].copy()
 
@@ -971,6 +973,7 @@ def _write_backlog_sheet(
     df.rename(columns=rename, inplace=True)
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     _auto_width(writer, sheet_name, df)
+    return True
 
 
 def _write_kpi_sheet(
@@ -980,11 +983,11 @@ def _write_kpi_sheet(
     active_filters: Dict,
     txt: Dict,
     lang: str,
-):
-    """Write KPI summary sheet."""
+) -> bool:
+    """Write KPI summary sheet. Returns True if sheet was written."""
     elapsed = _get_elapsed_ratio(active_filters)
     if elapsed is None or elapsed < 0.05:
-        return
+        return False
 
     kpi_map = {
         'revenue': 'sales_by_split_usd',
@@ -1025,16 +1028,17 @@ def _write_kpi_sheet(
         })
 
     if not rows:
-        return
+        return False
 
     df = pd.DataFrame(rows)
     sheet_name = txt.get('sheet_kpi', 'KPI Summary')
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     _auto_width(writer, sheet_name, df)
+    return True
 
 
-def _write_alerts_sheet(writer: pd.ExcelWriter, alerts: List[Dict], txt: Dict):
-    """Write alert summary sheet."""
+def _write_alerts_sheet(writer: pd.ExcelWriter, alerts: List[Dict], txt: Dict) -> bool:
+    """Write alert summary sheet. Returns True if sheet was written."""
     alert_cols = txt.get('alert_cols', _EXCEL_TEXTS['en']['alert_cols'])
     category_labels = {
         'backlog': '📦 Backlog',
@@ -1055,11 +1059,13 @@ def _write_alerts_sheet(writer: pd.ExcelWriter, alerts: List[Dict], txt: Dict):
     sheet_name = txt.get('sheet_alerts', 'Alert Summary')
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     _auto_width(writer, sheet_name, df)
+    return True
 
 
 def _auto_width(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame):
     """Auto-adjust column widths."""
     try:
+        from openpyxl.utils import get_column_letter
         ws = writer.sheets[sheet_name]
         for idx, col in enumerate(df.columns):
             max_len = max(
@@ -1067,6 +1073,6 @@ def _auto_width(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame):
                 len(str(col)),
             ) + 3
             max_len = min(max_len, 50)  # Cap at 50
-            ws.column_dimensions[chr(65 + idx) if idx < 26 else 'A'].width = max_len
+            ws.column_dimensions[get_column_letter(idx + 1)].width = max_len
     except Exception:
         pass
