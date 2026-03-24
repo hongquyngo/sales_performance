@@ -501,7 +501,12 @@ def _render_preferences_tab(
         prefs = all_prefs.get(eid, {})
 
         with st.expander(f"👤 {name} ({email})", expanded=(len(employee_ids) == 1)):
-            st.caption(f"Manager: {mgr}")
+            # Show whether prefs are from DB or hardcoded defaults
+            is_from_db = prefs.get('_from_db', False)
+            if is_from_db:
+                st.caption(f"Manager: {mgr} &nbsp;·&nbsp; ✅ Saved in DB")
+            else:
+                st.caption(f"Manager: {mgr} &nbsp;·&nbsp; ⚙️ Defaults (not yet saved)")
 
             master_pref = prefs.get('all', {'enabled': True, 'frequency': 'weekly', 'notify_manager': True})
 

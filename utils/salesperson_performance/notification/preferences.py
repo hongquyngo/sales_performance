@@ -107,6 +107,7 @@ def _get_preferences_cached(
         eid = int(row['employee_id'])
         atype = row['alert_type']
         if eid in result and atype in ALERT_TYPES:
+            result[eid]['_from_db'] = True
             result[eid][atype] = {
                 'enabled': bool(row['enabled']),
                 'frequency': row['frequency'] or 'weekly',
@@ -327,4 +328,7 @@ def _save_preference_no_invalidate(
 
 def _build_defaults() -> Dict[str, Dict[str, Any]]:
     """Build default preferences for all alert types."""
-    return {atype: DEFAULT_PREFS.copy() for atype in ALERT_TYPES}
+    return {
+        '_from_db': False,
+        **{atype: DEFAULT_PREFS.copy() for atype in ALERT_TYPES},
+    }
