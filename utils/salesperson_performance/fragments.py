@@ -100,6 +100,19 @@ from .filters import (
 )
 
 
+def _safe_date_str(val, fmt: str = '%Y-%m-%d', default: str = '—') -> str:
+    """Safely format a date-like value. Returns default if invalid/NaT/None."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return default
+    try:
+        ts = pd.Timestamp(val)
+        if pd.isna(ts):
+            return default
+        return ts.strftime(fmt)
+    except Exception:
+        return default
+
+
 # =============================================================================
 # FRAGMENT: MONTHLY TREND SECTION (Tab 1)
 # Lines 645-732 from original file - 100% code preserved
@@ -2921,7 +2934,7 @@ def _render_sales_drilldown_panel(
         with ic1:
             # Date: inv_date → oc_date → etd
             dt_val = sel_row.get('inv_date') or sel_row.get('oc_date') or sel_row.get('etd', '')
-            dt_str = pd.Timestamp(dt_val).strftime('%Y-%m-%d') if pd.notna(dt_val) else '—'
+            dt_str = _safe_date_str(dt_val)
             st.caption(f"📅 {dt_str}")
         with ic2:
             customer = sel_row.get('customer', '—')
@@ -2937,7 +2950,8 @@ def _render_sales_drilldown_panel(
                 ratio = sel_row.get('payment_ratio', '')
                 ratio_str = f" · {ratio}" if pd.notna(ratio) and ratio else ""
                 etd = sel_row.get('etd', '')
-                etd_str = f" · ETD: {pd.Timestamp(etd).strftime('%Y-%m-%d')}" if pd.notna(etd) and not ratio_str else ""
+                _etd_fmt = _safe_date_str(etd, default='')
+                etd_str = f" · ETD: {_etd_fmt}" if _etd_fmt and not ratio_str else ""
                 st.caption(f"📊 {status}{ratio_str}{etd_str}")
             else:
                 st.caption("📊 —")
@@ -3001,7 +3015,7 @@ def _render_order_details_tab(oc_number: str, loader, fragment_key: str):
     hc1, hc2, hc3, hc4 = st.columns(4)
     with hc1:
         oc_date = first.get('oc_date', '')
-        oc_str = pd.Timestamp(oc_date).strftime('%Y-%m-%d') if pd.notna(oc_date) else '—'
+        oc_str = _safe_date_str(oc_date)
         st.caption(f"📅 OC Date: {oc_str}")
     with hc2:
         cpo = first.get('customer_po_number', '—') or '—'
@@ -3134,15 +3148,15 @@ def _render_delivery_details_tab(oc_number: str, loader, fragment_key: str):
         dc1, dc2, dc3, dc4 = st.columns(4)
         with dc1:
             etd = first.get('etd', '')
-            etd_str = pd.Timestamp(etd).strftime('%Y-%m-%d') if pd.notna(etd) else '—'
+            etd_str = _safe_date_str(etd)
             st.caption(f"📅 ETD: {etd_str}")
         with dc2:
             dispatched = first.get('dispatched_date', '')
-            disp_str = pd.Timestamp(dispatched).strftime('%Y-%m-%d') if pd.notna(dispatched) else '—'
+            disp_str = _safe_date_str(dispatched)
             st.caption(f"📤 Dispatched: {disp_str}")
         with dc3:
             delivered = first.get('delivered_date', '')
-            del_str = pd.Timestamp(delivered).strftime('%Y-%m-%d') if pd.notna(delivered) else '—'
+            del_str = _safe_date_str(delivered)
             st.caption(f"📥 Delivered: {del_str}")
         with dc4:
             days = first.get('days_overdue', None)
