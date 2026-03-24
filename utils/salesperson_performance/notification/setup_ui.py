@@ -176,36 +176,46 @@ def _render_send_warning_tab(
         st.info("No recipient data available.")
         return
 
-    # Quick filter buttons
+    # ─── Quick filter buttons ───
+    # Pattern: delete checkbox widget keys → rerun → checkbox re-creates
+    # fresh using value= from _sel_target list
     all_eids = summary_df['employee_id'].tolist()
+    _sel_key = f"{key_prefix}_sel_target"
 
-    col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 3])
-    with col_btn1:
-        if st.button("⚠️ With issues", key=f"{key_prefix}_sel_issues", use_container_width=True):
-            issue_ids = set(summary_df[
-                (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
-            ]['employee_id'].tolist())
-            for eid in all_eids:
-                st.session_state[f"{key_prefix}_chk_{eid}"] = (eid in issue_ids)
-            st.rerun(scope="fragment")
-    with col_btn2:
-        if st.button("✅ All enabled", key=f"{key_prefix}_sel_enabled", use_container_width=True):
-            enabled_ids = set(summary_df[summary_df['enabled']]['employee_id'].tolist())
-            for eid in all_eids:
-                st.session_state[f"{key_prefix}_chk_{eid}"] = (eid in enabled_ids)
-            st.rerun(scope="fragment")
-    with col_btn3:
-        if st.button("🗑️ Clear", key=f"{key_prefix}_sel_clear", use_container_width=True):
-            for eid in all_eids:
-                st.session_state[f"{key_prefix}_chk_{eid}"] = False
-            st.rerun(scope="fragment")
-
-    # Default selection (first render only — before any checkbox keys exist)
-    default_selection = summary_df[
+    # Default target (first render): those with issues
+    _default_ids = summary_df[
         (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
     ]['employee_id'].tolist()
 
-    # Render recipient checkboxes
+    def _apply_selection(target_ids: list):
+        """Delete all checkbox keys → set target → rerun."""
+        st.session_state[_sel_key] = target_ids
+        for eid in all_eids:
+            st.session_state.pop(f"{key_prefix}_chk_{eid}", None)
+        st.rerun(scope="fragment")
+
+    col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 3])
+    with col_btn1:
+        if st.button("⚠️ With issues", key=f"{key_prefix}_sel_issues", use_container_width=True,
+                      help="Select only salespersons who have overdue AR or active alerts"):
+            issue_ids = summary_df[
+                (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
+            ]['employee_id'].tolist()
+            _apply_selection(issue_ids)
+    with col_btn2:
+        if st.button("✅ All enabled", key=f"{key_prefix}_sel_enabled", use_container_width=True,
+                      help="Select all salespersons whose notifications are enabled in Preferences"):
+            enabled_ids = summary_df[summary_df['enabled']]['employee_id'].tolist()
+            _apply_selection(enabled_ids)
+    with col_btn3:
+        if st.button("🗑️ Clear", key=f"{key_prefix}_sel_clear", use_container_width=True,
+                      help="Deselect all — no one will receive the warning email"):
+            _apply_selection([])
+
+    # Target selection list (buttons write, checkboxes read)
+    target_selection = st.session_state.get(_sel_key, _default_ids)
+
+    # ─── Render recipient checkboxes ───
     selected_eids = []
 
     for _, row in summary_df.iterrows():
@@ -227,7 +237,7 @@ def _render_send_warning_tab(
 
         with col_check:
             is_checked = st.checkbox(
-                "sel", value=(eid in default_selection),
+                "sel", value=(eid in target_selection),
                 key=f"{key_prefix}_chk_{eid}",
                 label_visibility="collapsed",
                 disabled=not enabled and not st.session_state.get(f"{key_prefix}_override", False),
