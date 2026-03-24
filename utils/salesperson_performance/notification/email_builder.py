@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _STYLES = {
     "container": (
         "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
-        "Helvetica, Arial, sans-serif; max-width: 860px; margin: 0 auto; "
+        "Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; "
         "background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px; "
         "overflow: hidden;"
     ),

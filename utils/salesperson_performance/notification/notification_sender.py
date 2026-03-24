@@ -38,6 +38,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +66,43 @@ def send_bulletin_to_team(
     overview_metrics: Optional[Dict] = None,
     sender_name: str = "Prostech BI",
     cc_managers: bool = True,
+    # Per-employee data sources (NEW — individualized emails)
+    sales_df: Optional['pd.DataFrame'] = None,
+    backlog_detail_df: Optional['pd.DataFrame'] = None,
+    ar_outstanding_df: Optional['pd.DataFrame'] = None,
+    targets_df: Optional['pd.DataFrame'] = None,
 ) -> NotificationResult:
     """
-    Send the warning bulletin email to selected salespeople (+ their managers).
+    Send individualized bulletin email to each salesperson (+ their manager CC).
 
-    Phase 1 approach: One email per salesperson, same bulletin content,
-    CC to their direct manager.
+    Each salesperson receives email with THEIR OWN data:
+    - Their revenue, GP, GP1, invoices
+    - Their backlog past ETD
+    - Their AR overdue
+    - Their KPI achievement vs target
+
+    If per-employee data sources are not provided, falls back to
+    team-level bulletin (same content for everyone).
 
     Args:
-        bulletin:         Output of generate_warning_bulletin()
-        employee_ids:     List of salesperson employee IDs to notify
-        active_filters:   Current filter state
-        overview_metrics: Overview metrics dict for KPI snapshot
-        sender_name:      Name of the person triggering the send
-        cc_managers:       Whether to CC direct managers
+        bulletin:           Team-level bulletin (fallback if no per-employee data)
+        employee_ids:       List of salesperson employee IDs to notify
+        active_filters:     Current filter state
+        overview_metrics:   Team-level metrics (fallback)
+        sender_name:        Name of the person triggering the send
+        cc_managers:        Whether to CC direct managers
+        sales_df:           Filtered sales data (all employees) for per-person split
+        backlog_detail_df:  Backlog detail (all employees) for per-person split
+        ar_outstanding_df:  AR outstanding (all employees) for per-person split
+        targets_df:         KPI targets (all employees) for per-person split
 
     Returns:
         NotificationResult with per-recipient details
     """
     import time
+    import pandas as pd
 
-    # Lazy imports to avoid circular imports at module load
+    # Lazy imports
     from .email_service import EmailService
     from .email_builder import build_bulletin_email, build_bulletin_plain_text
     from .recipient_resolver import resolve_recipients_batch
@@ -122,15 +139,13 @@ def send_bulletin_to_team(
     except Exception:
         dashboard_url = ""
 
-    # --- 4. Build email content (shared for all recipients in Phase 1) ---
-    subject, html_body = build_bulletin_email(
-        bulletin=bulletin,
-        active_filters=active_filters,
-        overview_metrics=overview_metrics,
-        sender_name=sender_name,
-        dashboard_url=dashboard_url,
+    # --- 4. Check if per-employee data is available ---
+    has_per_employee_data = (
+        sales_df is not None and not sales_df.empty
     )
-    plain_text = build_bulletin_plain_text(bulletin)
+
+    if has_per_employee_data:
+        from .alert_data_collector import collect_per_employee_bulletin
 
     # --- 5. Send per-salesperson ---
     details = []
@@ -160,49 +175,63 @@ def send_bulletin_to_team(
             skipped_count += 1
             continue
 
-        # Build CC note for manager
+        # ─── Build per-employee content ───
+        if has_per_employee_data:
+            # INDIVIDUALIZED: filter data for this employee
+            emp_bulletin, emp_metrics = collect_per_employee_bulletin(
+                employee_id=eid,
+                employee_name=info.sales_name,
+                sales_df=sales_df,
+                backlog_detail_df=backlog_detail_df if backlog_detail_df is not None else pd.DataFrame(),
+                ar_outstanding_df=ar_outstanding_df if ar_outstanding_df is not None else pd.DataFrame(),
+                targets_df=targets_df if targets_df is not None else pd.DataFrame(),
+                active_filters=active_filters,
+            )
+        else:
+            # FALLBACK: team-level bulletin
+            emp_bulletin = bulletin
+            emp_metrics = overview_metrics
+
+        # ─── CC note for manager ───
         cc_note = ""
         cc_list = []
         if cc_managers and info.has_manager_email:
             cc_list = info.cc_list
             cc_note = f"This alert was also sent to {info.sales_name} (your direct report)."
 
-        # Personalize subject with name if sending individually
+        # ─── Build HTML email ───
+        subject, html_body = build_bulletin_email(
+            bulletin=emp_bulletin,
+            active_filters=active_filters,
+            overview_metrics=emp_metrics,
+            sender_name=sender_name,
+            dashboard_url=dashboard_url,
+            cc_note=cc_note,
+        )
+        plain_text = build_bulletin_plain_text(emp_bulletin)
+
+        # Append employee name to subject
         personal_subject = f"{subject} — {info.sales_name}"
 
-        # Build personalized HTML (add CC note for manager copy)
-        if cc_note:
-            personal_html = html_body  # manager CC note added via builder
-            # Re-build with cc_note for the manager's benefit
-            personal_subject_text, personal_html = build_bulletin_email(
-                bulletin=bulletin,
-                active_filters=active_filters,
-                overview_metrics=overview_metrics,
-                sender_name=sender_name,
-                dashboard_url=dashboard_url,
-                cc_note=cc_note if cc_managers else "",
-            )
-            personal_subject = f"{personal_subject_text} — {info.sales_name}"
-        else:
-            personal_html = html_body
-
-        # Send
+        # ─── Send ───
         result = svc.send(
             to=info.to_list,
             subject=personal_subject,
-            html=personal_html,
+            html=html_body,
             plain_text=plain_text,
             cc=cc_list,
         )
 
         if result.success:
             sent_count += 1
+            alert_count = emp_bulletin.get('alert_count', 0)
             details.append({
                 "employee_id": eid,
                 "name": info.sales_name,
                 "status": "sent",
                 "to": info.sales_email,
                 "cc": info.manager_email if cc_list else None,
+                "alerts": alert_count,
                 "elapsed": result.elapsed_seconds,
             })
         else:
@@ -222,14 +251,15 @@ def send_bulletin_to_team(
     elapsed = round(time.perf_counter() - start, 2)
 
     # --- 6. Build summary ---
+    mode = "individualized" if has_per_employee_data else "team bulletin"
     if sent_count > 0 and failed_count == 0:
         success = True
-        msg = f"✅ Bulletin sent to {sent_count} salesperson(s)"
+        msg = f"✅ Sent {mode} to {sent_count} salesperson(s)"
         if skipped_count:
             msg += f" ({skipped_count} skipped — no email)"
     elif sent_count > 0 and failed_count > 0:
-        success = True  # partial success
-        msg = f"⚠️ Sent: {sent_count}, Failed: {failed_count}, Skipped: {skipped_count}"
+        success = True
+        msg = f"⚠️ Sent: {sent_count}, Failed: {failed_count}, Skipped: {skipped_count} ({mode})"
     else:
         success = False
         msg = f"❌ All emails failed. Sent: 0, Failed: {failed_count}, Skipped: {skipped_count}"

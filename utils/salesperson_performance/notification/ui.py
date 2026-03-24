@@ -38,33 +38,46 @@ def render_email_bulletin_button(
     overview_metrics: Optional[Dict] = None,
     employee_ids: Optional[List[int]] = None,
     key_prefix: str = "bulletin_email",
+    # Per-employee data sources (for individualized emails)
+    sales_df: Optional[pd.DataFrame] = None,
+    backlog_detail_df: Optional[pd.DataFrame] = None,
+    ar_outstanding_df: Optional[pd.DataFrame] = None,
+    targets_df: Optional[pd.DataFrame] = None,
 ):
     """
     Render the "📧 Email Bulletin" button below the warning bulletin.
 
     When clicked, opens a preview dialog with recipient list and send button.
+    Each salesperson receives individualized email with their own data.
 
     Args:
-        bulletin:         Output of generate_warning_bulletin()
-        active_filters:   Current filter state
-        overview_metrics: Overview metrics for KPI snapshot in email
-        employee_ids:     Salesperson IDs to notify (from current filter selection)
-        key_prefix:       Unique key prefix for Streamlit widgets
+        bulletin:           Output of generate_warning_bulletin() (team-level fallback)
+        active_filters:     Current filter state
+        overview_metrics:   Team-level overview metrics (fallback)
+        employee_ids:       Salesperson IDs to notify
+        key_prefix:         Unique key prefix for Streamlit widgets
+        sales_df:           Filtered sales data (all employees)
+        backlog_detail_df:  Backlog detail (all employees)
+        ar_outstanding_df:  AR outstanding (all employees)
+        targets_df:         KPI targets (all employees)
     """
     from .email_service import EmailService
 
     # Check if email is configured
     svc = EmailService()
     if not svc.is_configured:
-        # Don't show button if email not configured
         return
 
-    # Store data in session_state for the dialog (st.dialog can't receive args)
+    # Store data in session_state for the dialog
     def _open_dialog():
         st.session_state[f"{key_prefix}_bulletin"] = bulletin
         st.session_state[f"{key_prefix}_filters"] = active_filters
         st.session_state[f"{key_prefix}_metrics"] = overview_metrics
         st.session_state[f"{key_prefix}_employee_ids"] = employee_ids or []
+        st.session_state[f"{key_prefix}_sales_df"] = sales_df
+        st.session_state[f"{key_prefix}_backlog_df"] = backlog_detail_df
+        st.session_state[f"{key_prefix}_ar_df"] = ar_outstanding_df
+        st.session_state[f"{key_prefix}_targets_df"] = targets_df
         st.session_state[f"{key_prefix}_open"] = True
 
     # Render button row
@@ -110,6 +123,10 @@ def _render_email_dialog(key_prefix: str):
     active_filters = st.session_state.get(f"{key_prefix}_filters", {})
     overview_metrics = st.session_state.get(f"{key_prefix}_metrics")
     employee_ids = st.session_state.get(f"{key_prefix}_employee_ids", [])
+    sales_df = st.session_state.get(f"{key_prefix}_sales_df")
+    backlog_detail_df = st.session_state.get(f"{key_prefix}_backlog_df")
+    ar_outstanding_df = st.session_state.get(f"{key_prefix}_ar_df")
+    targets_df = st.session_state.get(f"{key_prefix}_targets_df")
 
     with st.expander("📧 **Email Bulletin — Preview & Send**", expanded=True):
         # Close button
@@ -163,18 +180,45 @@ def _render_email_dialog(key_prefix: str):
         # --- Preview section ---
         st.markdown("##### 👁️ Email Preview")
 
-        # Build preview
+        # Build preview — show sample for first employee (individualized)
         sender_name = st.session_state.get("user_fullname", "Prostech BI")
+        has_per_employee = sales_df is not None and not sales_df.empty
+
+        if has_per_employee and employee_ids:
+            from .alert_data_collector import collect_per_employee_bulletin
+            # Preview for first employee
+            first_eid = employee_ids[0]
+            first_info = resolved["recipients"].get(first_eid)
+            first_name = first_info.sales_name if first_info else f"Employee #{first_eid}"
+
+            preview_bulletin, preview_metrics = collect_per_employee_bulletin(
+                employee_id=first_eid,
+                employee_name=first_name,
+                sales_df=sales_df,
+                backlog_detail_df=backlog_detail_df if backlog_detail_df is not None else pd.DataFrame(),
+                ar_outstanding_df=ar_outstanding_df if ar_outstanding_df is not None else pd.DataFrame(),
+                targets_df=targets_df if targets_df is not None else pd.DataFrame(),
+                active_filters=active_filters,
+            )
+            st.info(
+                f"📧 **Individualized emails** — each salesperson receives their own data. "
+                f"Preview below shows sample for **{first_name}**."
+            )
+        else:
+            preview_bulletin = bulletin
+            preview_metrics = overview_metrics
+            st.caption("Preview shows team-level bulletin (no per-employee data available)")
+
         subject, html_preview = build_bulletin_email(
-            bulletin=bulletin,
+            bulletin=preview_bulletin,
             active_filters=active_filters,
-            overview_metrics=overview_metrics,
+            overview_metrics=preview_metrics,
             sender_name=sender_name,
         )
 
         st.markdown(f"**Subject:** `{subject}`")
 
-        with st.container(height=350, border=True):
+        with st.container(height=400, border=True):
             st.html(html_preview)
 
         st.divider()
@@ -198,7 +242,7 @@ def _render_email_dialog(key_prefix: str):
 
         # --- Handle send ---
         if send_clicked and can_send:
-            with st.spinner(f"Sending to {len(to_emails)} recipient(s)..."):
+            with st.spinner(f"Sending individualized emails to {len(to_emails)} recipient(s)..."):
                 result = send_bulletin_to_team(
                     bulletin=bulletin,
                     employee_ids=employee_ids,
@@ -206,6 +250,11 @@ def _render_email_dialog(key_prefix: str):
                     overview_metrics=overview_metrics,
                     sender_name=sender_name,
                     cc_managers=cc_managers,
+                    # Per-employee data
+                    sales_df=sales_df,
+                    backlog_detail_df=backlog_detail_df,
+                    ar_outstanding_df=ar_outstanding_df,
+                    targets_df=targets_df,
                 )
 
             # Show result

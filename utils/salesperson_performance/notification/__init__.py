@@ -29,6 +29,7 @@ VERSION: 1.0.0
 
 from .email_service import EmailService, EmailResult
 from .email_builder import build_bulletin_email, build_bulletin_plain_text
+from .alert_data_collector import collect_per_employee_bulletin
 from .recipient_resolver import (
     RecipientInfo,
     resolve_recipients,
@@ -45,6 +46,8 @@ __all__ = [
     # Email builder
     "build_bulletin_email",
     "build_bulletin_plain_text",
+    # Alert data collector
+    "collect_per_employee_bulletin",
     # Recipient resolver
     "RecipientInfo",
     "resolve_recipients",

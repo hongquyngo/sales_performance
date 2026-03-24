@@ -146,7 +146,13 @@ def show_login_page():
                         auth.login(result)
                         st.success("✅ Login successful!")
                         st.balloons()
-                        st.rerun()
+                        
+                        # Redirect to saved target page (from deep link)
+                        redirect_page = st.session_state.pop('_login_redirect', None)
+                        if redirect_page:
+                            st.switch_page(redirect_page)
+                        else:
+                            st.rerun()
                     else:
                         st.error(result.get("error", "Authentication failed"))
         

@@ -213,9 +213,12 @@ perf.reset()
 auth = AuthManager()
 
 if not auth.check_session():
+    # Save this page as redirect target after login
+    import os
+    st.session_state['_login_redirect'] = os.path.join("pages", os.path.basename(__file__))
     st.warning("⚠️ Please login to access this page")
-    st.info("Go to the main page to login")
-    st.stop()
+    st.info("Redirecting to login...")
+    st.switch_page("app.py")
 
 # =============================================================================
 # DATABASE CONNECTION CHECK
@@ -1453,6 +1456,11 @@ with tab1:
         active_filters=active_filters,
         overview_metrics=overview_metrics,
         employee_ids=active_filters.get('employee_ids') or [],
+        # Per-employee data for individualized emails
+        sales_df=data['sales'],
+        backlog_detail_df=data['backlog_detail'],
+        ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+        targets_df=data['targets'],
     )
     
     st.divider()
