@@ -262,6 +262,7 @@ def send_bulletin_to_team(
                 "to": info.sales_email,
                 "cc": info.manager_email if cc_list else None,
                 "alerts": alert_count,
+                "subject": personal_subject,
                 "elapsed": result.elapsed_seconds,
             })
         else:

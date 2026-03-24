@@ -694,13 +694,13 @@ def _render_send_history_tab(employee_ids: List[int], key_prefix: str):
         return
 
     display_df = history_df[[
-        'sent_at', 'employee_name', 'to_email', 'cc_email',
+        'sent_at', 'employee_name', 'alert_type', 'to_email', 'cc_email',
         'alert_count', 'status', 'trigger_type',
     ]].copy()
 
     display_df['sent_at'] = pd.to_datetime(display_df['sent_at']).dt.strftime('%Y-%m-%d %H:%M')
     display_df.columns = [
-        'Sent At', 'Salesperson', 'To', 'CC',
+        'Sent At', 'Salesperson', 'Type', 'To', 'CC',
         'Alerts', 'Status', 'Trigger',
     ]
 
@@ -709,8 +709,15 @@ def _render_send_history_tab(employee_ids: List[int], key_prefix: str):
         color = colors.get(val, '#333')
         return f'color: {color}; font-weight: 600'
 
+    def _color_type(val):
+        colors = {'warning': '#dc3545', 'bulletin': '#1f77b4'}
+        color = colors.get(val, '#333')
+        return f'color: {color}; font-weight: 600'
+
     st.dataframe(
-        display_df.style.map(_color_status, subset=['Status']),
+        display_df.style
+            .map(_color_status, subset=['Status'])
+            .map(_color_type, subset=['Type']),
         width="stretch",
         hide_index=True,
         height=min(400, 40 + len(display_df) * 35),
