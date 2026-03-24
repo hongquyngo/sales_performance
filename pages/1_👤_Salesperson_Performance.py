@@ -2769,6 +2769,12 @@ with tab7:
     render_notification_setup(
         employee_ids=active_filters.get('employee_ids') or [],
         access_level=access.get_access_level(),
+        # v3.0: Data for Send Warning tab
+        active_filters=active_filters,
+        sales_df=data['sales'],
+        backlog_detail_df=data['backlog_detail'],
+        ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+        targets_df=data['targets'],
     )
 
 

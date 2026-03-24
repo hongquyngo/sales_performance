@@ -20,7 +20,7 @@ Usage:
         sender_name="Quy Ngo",
     )
 
-VERSION: 1.0.0
+VERSION: 2.0.0 — Added build_warning_email(), build_warning_plain_text()
 """
 
 import logging
@@ -389,3 +389,299 @@ def _get_contextual_link(message: str, page_url: str) -> str:
         if any(kw in msg_lower for kw in keywords):
             return page_url
     return ""
+
+
+# =============================================================================
+# WARNING EMAIL BUILDER (v2.0)
+# =============================================================================
+
+_WARNING_STYLES = {
+    "container": (
+        "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
+        "Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; "
+        "background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px; "
+        "overflow: hidden;"
+    ),
+    "header": (
+        "background: linear-gradient(135deg, #b91c1c, #dc2626); color: #ffffff; "
+        "padding: 24px 32px; font-size: 14px;"
+    ),
+    "header_title": "margin: 0 0 4px 0; font-size: 22px; font-weight: 700;",
+    "header_sub": "margin: 0; font-size: 13px; opacity: 0.9;",
+    "body": "padding: 24px 32px;",
+    "section_title": (
+        "font-size: 15px; font-weight: 600; margin: 24px 0 10px 0; "
+        "color: #333; border-bottom: 2px solid #e0e0e0; padding-bottom: 6px;"
+    ),
+    "table": (
+        "width: 100%; border-collapse: collapse; margin: 0 0 16px 0; "
+        "font-size: 13px;"
+    ),
+    "th": (
+        "background: #f1f5f9; padding: 8px 12px; text-align: left; "
+        "font-weight: 600; color: #475569; border-bottom: 2px solid #e2e8f0; "
+        "font-size: 12px;"
+    ),
+    "td": "padding: 8px 12px; border-bottom: 1px solid #f1f5f9; color: #333;",
+    "td_amount": (
+        "padding: 8px 12px; border-bottom: 1px solid #f1f5f9; color: #333; "
+        "text-align: right; font-weight: 600; font-family: monospace;"
+    ),
+    "consequences_box": (
+        "background: #fef2f2; border: 2px solid #dc2626; border-radius: 8px; "
+        "padding: 20px 24px; margin: 24px 0;"
+    ),
+    "consequences_title": (
+        "margin: 0 0 12px 0; font-size: 16px; font-weight: 700; color: #991b1b;"
+    ),
+    "consequences_item": (
+        "margin: 8px 0; font-size: 14px; color: #7f1d1d; line-height: 1.5;"
+    ),
+    "customer_box": (
+        "background: #fff7ed; border-left: 4px solid #ea580c; "
+        "padding: 12px 16px; margin: 0 0 10px 0; border-radius: 0 6px 6px 0;"
+    ),
+    "customer_critical": (
+        "background: #fef2f2; border-left: 4px solid #dc2626; "
+        "padding: 12px 16px; margin: 0 0 10px 0; border-radius: 0 6px 6px 0;"
+    ),
+    "invoice_list": "font-size: 12px; color: #666; margin: 4px 0 0 20px;",
+    "alert_box": (
+        "background: #f8f9fa; border-left: 4px solid #6b7280; "
+        "padding: 10px 16px; margin: 0 0 8px 0; border-radius: 0 4px 4px 0;"
+    ),
+    "footer": (
+        "background: #f8f9fa; padding: 16px 32px; font-size: 11px; "
+        "color: #888; border-top: 1px solid #e0e0e0;"
+    ),
+    "btn_primary": (
+        "display: inline-block; padding: 10px 24px; background: #dc2626; "
+        "color: #ffffff; text-decoration: none; border-radius: 4px; "
+        "font-size: 14px; font-weight: 600;"
+    ),
+    "btn_secondary": (
+        "display: inline-block; padding: 6px 14px; background: #f0f0f0; "
+        "color: #333; text-decoration: none; border-radius: 4px; "
+        "font-size: 12px; font-weight: 500; border: 1px solid #ddd;"
+    ),
+}
+
+# Configurable consequences text
+DEFAULT_CONSEQUENCES = [
+    ("🚫", "Credit terms with flagged customers will be suspended"),
+    ("🚫", "New Order Confirmation (OC) creation will be blocked for flagged customers"),
+    ("🚫", "Pending shipments may be held until payment is collected"),
+]
+
+DEFAULT_DEADLINE_DAYS = 7
+
+
+def build_warning_email(
+    warning_data: Dict,
+    active_filters: Dict,
+    sender_name: str = "Prostech BI",
+    dashboard_url: str = "",
+    cc_note: str = "",
+    consequences: Optional[List[tuple]] = None,
+    deadline_days: int = DEFAULT_DEADLINE_DAYS,
+) -> tuple:
+    """
+    Build formal warning HTML email with AR detail and consequences.
+
+    Args:
+        warning_data:    Output of collect_warning_data()
+        active_filters:  Current filter state
+        sender_name:     Name of the person triggering the email
+        dashboard_url:   Link to dashboard
+        cc_note:         Note for CC recipients
+        consequences:    List of (icon, text) tuples. None = use defaults.
+        deadline_days:   Days before consequences take effect
+
+    Returns:
+        Tuple of (subject: str, html_body: str)
+    """
+    bulletin = warning_data.get('bulletin', {})
+    metrics = warning_data.get('metrics', {})
+    ar_summary = warning_data.get('ar_summary', {})
+    customers_at_risk = warning_data.get('customers_at_risk', [])
+
+    employee_name = bulletin.get('employee_name', '')
+    period_label = bulletin.get('period_label', '')
+    alerts = bulletin.get('alerts', [])
+    alert_count = bulletin.get('alert_count', 0)
+    has_critical = bulletin.get('has_critical', False)
+
+    total_overdue = ar_summary.get('total_overdue', 0)
+    aging_table = ar_summary.get('aging_table', [])
+
+    consequences = consequences or DEFAULT_CONSEQUENCES
+    S = _WARNING_STYLES
+
+    # Subject line
+    if total_overdue > 0:
+        subject = f"⚠️ WARNING — {_fmt(total_overdue)} overdue — {employee_name} — {period_label}"
+    elif has_critical:
+        subject = f"⚠️ WARNING — {alert_count} critical issue(s) — {employee_name}"
+    else:
+        subject = f"⚠️ Sales Warning — {employee_name} — {period_label}"
+
+    # ─── HTML Build ───
+    parts = []
+
+    # Header
+    parts.append(f"""
+    <div style="{S['container']}">
+        <div style="{S['header']}">
+            <h1 style="{S['header_title']}">⚠️ Sales Performance Warning — Action Required</h1>
+            <p style="{S['header_sub']}">{_esc(employee_name)} &nbsp;|&nbsp; {_esc(period_label)} &nbsp;|&nbsp; {datetime.now().strftime('%d %b %Y, %H:%M')}</p>
+        </div>
+        <div style="{S['body']}">
+    """)
+
+    # CC note
+    if cc_note:
+        parts.append(f'<p style="font-size:12px;color:#666;font-style:italic;margin:0 0 16px 0;">{_esc(cc_note)}</p>')
+
+    # ─── SECTION 1: AR OUTSTANDING & AGING ───
+    if aging_table:
+        total_outstanding = ar_summary.get('total_outstanding', 0)
+        parts.append(f'<p style="{S["section_title"]}">📊 AR Outstanding & Aging</p>')
+        parts.append(f'<p style="font-size:14px;color:#333;margin:0 0 10px 0;">'
+                     f'Total Outstanding: <strong>{_fmt(total_outstanding)}</strong> '
+                     f'&nbsp;|&nbsp; Overdue: <strong style="color:#dc2626;">{_fmt(total_overdue)}</strong></p>')
+
+        # Aging table
+        parts.append(f'<table style="{S["table"]}">')
+        parts.append(f'<tr><th style="{S["th"]}">Aging</th>'
+                     f'<th style="{S["th"]}">Amount</th>'
+                     f'<th style="{S["th"]}">Invoices</th>'
+                     f'<th style="{S["th"]}">Share</th></tr>')
+        for row in aging_table:
+            parts.append(
+                f'<tr><td style="{S["td"]}">{row["icon"]} {_esc(row["bucket"])}</td>'
+                f'<td style="{S["td_amount"]}">{_fmt(row["amount"])}</td>'
+                f'<td style="{S["td"]}" align="center">{row["count"]}</td>'
+                f'<td style="{S["td"]}" align="center">{row["share"]:.0%}</td></tr>'
+            )
+        parts.append('</table>')
+
+    # ─── SECTION 2: CUSTOMERS AT RISK ───
+    if customers_at_risk:
+        parts.append(f'<p style="{S["section_title"]}">🏢 Customers at Risk</p>')
+
+        for cust in customers_at_risk:
+            is_critical = cust['max_days_overdue'] >= 90
+            box_style = S['customer_critical'] if is_critical else S['customer_box']
+            icon = '🔴' if is_critical else '🟠'
+            days_label = f"{cust['max_days_overdue']}d overdue"
+
+            parts.append(f'<div style="{box_style}">')
+            parts.append(
+                f'<p style="margin:0;font-size:14px;font-weight:600;color:#333;">'
+                f'{icon} {_esc(cust["customer"])} — {_fmt(cust["outstanding"])} '
+                f'({cust["invoice_count"]} invoice{"s" if cust["invoice_count"]!=1 else ""}, {days_label})</p>'
+            )
+            if cust['invoices']:
+                inv_list = ', '.join(cust['invoices'][:5])
+                more = f" + {len(cust['invoices'])-5} more" if len(cust['invoices']) > 5 else ""
+                parts.append(f'<p style="{S["invoice_list"]}">Invoices: {_esc(inv_list)}{more}</p>')
+            parts.append('</div>')
+
+    # ─── SECTION 3: OTHER ALERTS ───
+    other_alerts = [a for a in alerts if 'overdue' not in a.get('message', '').lower()
+                    or 'ar ' not in a.get('message', '').lower()]
+    if other_alerts:
+        parts.append(f'<p style="{S["section_title"]}">📋 Other Alerts</p>')
+        for a in other_alerts:
+            icon = a.get('icon', '•')
+            parts.append(f'<div style="{S["alert_box"]}">'
+                         f'<p style="margin:0;font-size:14px;color:#333;">{icon} {_esc(a["message"])}</p></div>')
+
+    # ─── CONSEQUENCES BLOCK ───
+    parts.append(f'<div style="{S["consequences_box"]}">')
+    parts.append(f'<p style="{S["consequences_title"]}">⚠️ Consequences if not resolved within {deadline_days} days:</p>')
+    for icon, text in consequences:
+        parts.append(f'<p style="{S["consequences_item"]}">{icon} {_esc(text)}</p>')
+    parts.append(
+        '<p style="margin:12px 0 0 0;font-size:14px;color:#991b1b;font-weight:600;">'
+        'Please contact the customer(s) immediately and update payment status.<br>'
+        'Reply to this email with your action plan.</p>'
+    )
+    parts.append('</div>')
+
+    # ─── CTA BUTTONS ───
+    if dashboard_url:
+        page_url = f"{dashboard_url.rstrip('/')}/Salesperson_Performance"
+        parts.append(f"""
+            <div style="text-align:center;margin:24px 0 12px 0;">
+                <a href="{_esc(page_url)}" style="{S['btn_primary']}">📊 Open Dashboard</a>
+            </div>
+            <div style="text-align:center;margin:0 0 8px 0;">
+                <a href="{_esc(page_url)}" style="{S['btn_secondary']};margin:0 4px;">💰 Payment</a>
+                <a href="{_esc(page_url)}" style="{S['btn_secondary']};margin:0 4px;">📦 Backlog</a>
+                <a href="{_esc(page_url)}" style="{S['btn_secondary']};margin:0 4px;">🎯 KPI</a>
+            </div>
+        """)
+
+    # Close body
+    parts.append('</div>')
+
+    # Footer
+    parts.append(f"""
+        <div style="{S['footer']}">
+            <p style="margin:0 0 4px 0;">
+                <strong>⚠️ This is an automated warning</strong> from Prostech BI Dashboard
+                {f'&nbsp;|&nbsp; Triggered by {_esc(sender_name)}' if sender_name != 'Prostech BI' else ''}
+            </p>
+            <p style="margin:0;">To manage notifications: Dashboard → 📧 Notifications tab</p>
+        </div>
+    </div>
+    """)
+
+    return subject, "\n".join(parts)
+
+
+def build_warning_plain_text(warning_data: Dict, deadline_days: int = DEFAULT_DEADLINE_DAYS) -> str:
+    """Plain text version of warning email."""
+    bulletin = warning_data.get('bulletin', {})
+    ar_summary = warning_data.get('ar_summary', {})
+    customers_at_risk = warning_data.get('customers_at_risk', [])
+
+    lines = [
+        f"⚠️ SALES PERFORMANCE WARNING — ACTION REQUIRED",
+        f"{bulletin.get('employee_name', '')} | {bulletin.get('period_label', '')}",
+        "",
+    ]
+
+    # AR summary
+    total_os = ar_summary.get('total_outstanding', 0)
+    total_od = ar_summary.get('total_overdue', 0)
+    if total_os > 0:
+        lines.append(f"AR Outstanding: {_fmt(total_os)} | Overdue: {_fmt(total_od)}")
+        for row in ar_summary.get('aging_table', []):
+            lines.append(f"  {row['icon']} {row['bucket']}: {_fmt(row['amount'])} ({row['count']} inv)")
+        lines.append("")
+
+    # Customers
+    if customers_at_risk:
+        lines.append("Customers at Risk:")
+        for cust in customers_at_risk[:5]:
+            lines.append(f"  • {cust['customer']} — {_fmt(cust['outstanding'])} ({cust['max_days_overdue']}d overdue)")
+        lines.append("")
+
+    # Alerts
+    for a in bulletin.get('alerts', []):
+        lines.append(f"  {a.get('icon', '•')} {a['message']}")
+
+    lines.extend([
+        "",
+        f"⚠️ CONSEQUENCES if not resolved within {deadline_days} days:",
+        "  🚫 Credit terms will be suspended",
+        "  🚫 New OC creation will be blocked",
+        "  🚫 Pending shipments may be held",
+        "",
+        "Please contact customer(s) immediately.",
+        "—",
+        "Prostech BI Dashboard (automated warning)",
+    ])
+    return "\n".join(lines)

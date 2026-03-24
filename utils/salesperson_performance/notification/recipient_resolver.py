@@ -174,6 +174,40 @@ def resolve_recipients_batch(
     }
 
 
+# =============================================================================
+# CC PICKER — all active employees with email
+# =============================================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_employees_with_email() -> List[Dict]:
+    """
+    Get all active employees with email for CC picker.
+
+    Cached for 5 minutes. Returns list of {id, name, email, department}.
+    Used by Send Now tab to populate additional CC multiselect.
+    """
+    query = """
+        SELECT
+            e.id,
+            CONCAT(e.first_name, ' ', e.last_name) AS name,
+            e.email,
+            COALESCE(d.name, '') AS department
+        FROM employees e
+        LEFT JOIN departments d ON e.department_id = d.id AND d.delete_flag = 0
+        WHERE e.delete_flag = 0
+          AND e.email IS NOT NULL
+          AND e.email != ''
+        ORDER BY e.first_name, e.last_name
+    """
+    try:
+        engine = get_db_engine()
+        df = pd.read_sql(text(query), engine)
+        return df.to_dict('records')
+    except Exception as e:
+        logger.error(f"Error loading employees for CC picker: {e}")
+        return []
+
+
 def resolve_all_selected_recipients(
     employee_ids: List[int],
 ) -> Dict:

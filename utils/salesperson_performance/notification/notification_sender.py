@@ -31,7 +31,7 @@ Usage:
     else:
         st.error(result.message)
 
-VERSION: 1.0.0
+VERSION: 2.0.0 — Added send_warning_to_selected()
 """
 
 import logging
@@ -312,5 +312,250 @@ def send_bulletin_to_team(
         failed_count=failed_count,
         skipped_count=skipped_count,
         details=details,
+        elapsed_seconds=elapsed,
+    )
+
+
+# =============================================================================
+# WARNING EMAIL SENDER (v2.0)
+# =============================================================================
+
+def send_warning_to_selected(
+    employee_ids: List[int],
+    active_filters: Dict,
+    sender_name: str = "Prostech BI",
+    additional_cc: Optional[List[str]] = None,
+    external_cc: Optional[List[str]] = None,
+    override_preferences: bool = False,
+    # Data sources
+    sales_df: Optional['pd.DataFrame'] = None,
+    backlog_detail_df: Optional['pd.DataFrame'] = None,
+    ar_outstanding_df: Optional['pd.DataFrame'] = None,
+    targets_df: Optional['pd.DataFrame'] = None,
+    # Warning config
+    consequences: Optional[List[tuple]] = None,
+    deadline_days: int = 7,
+) -> NotificationResult:
+    """
+    Send formal warning email to selected salespeople.
+
+    Unlike send_bulletin_to_team (ad-hoc FYI), this sends a structured
+    warning with AR aging detail, customer-level breakdown, and
+    consequences block.
+
+    Args:
+        employee_ids:         Selected employee IDs
+        active_filters:       Current filter state
+        sender_name:          Trigger person name
+        additional_cc:        Extra CC emails from employee picker
+        external_cc:          External CC emails (typed by user)
+        override_preferences: If True, send even to disabled employees
+        sales_df:             Filtered sales data
+        backlog_detail_df:    Backlog detail
+        ar_outstanding_df:    AR outstanding
+        targets_df:           KPI targets
+        consequences:         Custom consequences list
+        deadline_days:        Days before consequences take effect
+
+    Returns:
+        NotificationResult with per-recipient details
+    """
+    import time
+    import pandas as pd
+
+    from .email_service import EmailService
+    from .email_builder import build_warning_email, build_warning_plain_text
+    from .recipient_resolver import resolve_recipients_batch
+    from .alert_data_collector import collect_warning_data
+
+    start = time.perf_counter()
+
+    # --- 1. Check email service ---
+    svc = EmailService()
+    if not svc.is_configured:
+        return NotificationResult(
+            success=False,
+            message="Email not configured. Check EMAIL_SENDER / EMAIL_PASSWORD.",
+        )
+
+    if not employee_ids:
+        return NotificationResult(success=False, message="No salespeople selected.")
+
+    # --- 2. Resolve recipients ---
+    recipients_map = resolve_recipients_batch(employee_ids)
+    if not recipients_map:
+        return NotificationResult(
+            success=False, message="Could not resolve any recipient emails.",
+        )
+
+    # --- 3. Dashboard URL ---
+    try:
+        from utils.config import config
+        dashboard_url = config.get_app_setting("APP_BASE_URL", "")
+    except Exception:
+        dashboard_url = ""
+
+    # --- 4. Preferences ---
+    prefs_cache = {}
+    if not override_preferences:
+        try:
+            from .preferences import get_preferences_for_employees
+            prefs_cache = get_preferences_for_employees(employee_ids)
+        except Exception as e:
+            logger.debug(f"Preferences not available: {e}")
+
+    # --- 5. Build combined CC list ---
+    combined_extra_cc = list(set(
+        (additional_cc or []) + (external_cc or [])
+    ))
+
+    # --- 6. Send per-salesperson ---
+    details = []
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    for eid in employee_ids:
+        info = recipients_map.get(eid)
+
+        if not info:
+            details.append({
+                "employee_id": eid, "status": "skipped",
+                "reason": "Employee not found in database",
+            })
+            skipped_count += 1
+            continue
+
+        if not info.has_sales_email:
+            details.append({
+                "employee_id": eid, "name": info.sales_name,
+                "status": "skipped", "reason": "No email address",
+            })
+            skipped_count += 1
+            continue
+
+        # Check preferences (unless override)
+        if not override_preferences and prefs_cache:
+            master_pref = prefs_cache.get(eid, {}).get('all', {})
+            if not master_pref.get('enabled', True):
+                details.append({
+                    "employee_id": eid, "name": info.sales_name,
+                    "status": "skipped", "reason": "Notifications disabled",
+                })
+                skipped_count += 1
+                continue
+
+        # ─── Collect warning data ───
+        warning_data = collect_warning_data(
+            employee_id=eid,
+            employee_name=info.sales_name,
+            sales_df=sales_df if sales_df is not None else pd.DataFrame(),
+            backlog_detail_df=backlog_detail_df if backlog_detail_df is not None else pd.DataFrame(),
+            ar_outstanding_df=ar_outstanding_df if ar_outstanding_df is not None else pd.DataFrame(),
+            targets_df=targets_df if targets_df is not None else pd.DataFrame(),
+            active_filters=active_filters,
+        )
+
+        # ─── CC list: manager (mandatory) + additional ───
+        cc_list = []
+        cc_note_parts = []
+
+        # Manager CC (mandatory)
+        if info.has_manager_email:
+            cc_list.append(info.manager_email)
+            cc_note_parts.append(f"Manager: {info.manager_name}")
+
+        # Additional CC
+        for cc_email in combined_extra_cc:
+            if cc_email not in cc_list and cc_email != info.sales_email:
+                cc_list.append(cc_email)
+
+        cc_note = f"CC: {', '.join(cc_note_parts)}" if cc_note_parts else ""
+        if combined_extra_cc:
+            cc_note += f" + {len(combined_extra_cc)} additional"
+
+        # ─── Build email ───
+        subject, html_body = build_warning_email(
+            warning_data=warning_data,
+            active_filters=active_filters,
+            sender_name=sender_name,
+            dashboard_url=dashboard_url,
+            cc_note=cc_note,
+            consequences=consequences,
+            deadline_days=deadline_days,
+        )
+        plain_text = build_warning_plain_text(warning_data, deadline_days)
+
+        # ─── Send ───
+        result = svc.send(
+            to=info.to_list,
+            subject=subject,
+            html=html_body,
+            plain_text=plain_text,
+            cc=cc_list,
+        )
+
+        alert_count = warning_data.get('bulletin', {}).get('alert_count', 0)
+        overdue = warning_data.get('ar_summary', {}).get('total_overdue', 0)
+
+        if result.success:
+            sent_count += 1
+            details.append({
+                "employee_id": eid, "name": info.sales_name,
+                "status": "sent", "to": info.sales_email,
+                "cc": ", ".join(cc_list) if cc_list else None,
+                "alerts": alert_count, "overdue": overdue,
+                "subject": subject,
+                "elapsed": result.elapsed_seconds,
+            })
+        else:
+            failed_count += 1
+            details.append({
+                "employee_id": eid, "name": info.sales_name,
+                "status": "failed", "to": info.sales_email,
+                "error": result.message,
+            })
+
+        # Rate limit
+        if len(employee_ids) > 1:
+            time.sleep(0.5)
+
+    elapsed = round(time.perf_counter() - start, 2)
+
+    # --- 7. Audit log ---
+    try:
+        from .send_log import log_send_batch
+        triggered_by_id = None
+        try:
+            import streamlit as _st
+            triggered_by_id = _st.session_state.get('employee_id')
+        except Exception:
+            pass
+        # Mark as 'warning' type in log
+        for d in details:
+            d['alert_type'] = 'warning'
+        log_send_batch(details, triggered_by=triggered_by_id)
+    except Exception as e:
+        logger.debug(f"Could not write send log: {e}")
+
+    # --- 8. Summary ---
+    if sent_count > 0 and failed_count == 0:
+        msg = f"✅ Warning sent to {sent_count} salesperson(s)"
+        if skipped_count:
+            msg += f" ({skipped_count} skipped)"
+        success = True
+    elif sent_count > 0:
+        msg = f"⚠️ Sent: {sent_count}, Failed: {failed_count}, Skipped: {skipped_count}"
+        success = True
+    else:
+        msg = f"❌ All failed. Failed: {failed_count}, Skipped: {skipped_count}"
+        success = False
+
+    logger.info(f"Warning notification: {msg} ({elapsed}s)")
+
+    return NotificationResult(
+        success=success, message=msg,
+        sent_count=sent_count, failed_count=failed_count,
+        skipped_count=skipped_count, details=details,
         elapsed_seconds=elapsed,
     )

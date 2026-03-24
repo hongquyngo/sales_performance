@@ -25,7 +25,7 @@ Usage:
         active_filters=active_filters,
     )
 
-VERSION: 1.0.0
+VERSION: 2.0.0 — Added collect_warning_data(), collect_recipients_warning_summary()
 """
 
 import logging
@@ -427,3 +427,296 @@ def _get_elapsed_ratio(filters: Dict) -> Optional[float]:
             total = (end - start).days
             return max(0, min(1, (today - start).days / total)) if total > 0 else None
     return None
+
+
+# =============================================================================
+# WARNING EMAIL: ENRICHED DATA (v2.0)
+# =============================================================================
+
+def collect_warning_data(
+    employee_id: int,
+    employee_name: str,
+    sales_df: pd.DataFrame,
+    backlog_detail_df: pd.DataFrame,
+    ar_outstanding_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    active_filters: Dict,
+) -> Dict:
+    """
+    Collect enriched warning data for one salesperson.
+
+    Extends collect_per_employee_bulletin() with:
+    - AR aging table (per-bucket breakdown)
+    - Customers at risk (per-customer outstanding + invoice list)
+    - Structured data for warning email template
+
+    Returns:
+        Dict with keys: bulletin, metrics, ar_summary, customers_at_risk
+    """
+    # 1. Base bulletin + metrics (existing logic)
+    bulletin, metrics = collect_per_employee_bulletin(
+        employee_id=employee_id,
+        employee_name=employee_name,
+        sales_df=sales_df,
+        backlog_detail_df=backlog_detail_df,
+        ar_outstanding_df=ar_outstanding_df,
+        targets_df=targets_df,
+        active_filters=active_filters,
+    )
+
+    # 2. AR detail (enrichment)
+    my_ar = _filter_by_employee(ar_outstanding_df, employee_id, 'sales_id')
+    ar_summary = _build_ar_aging_summary(my_ar)
+    customers_at_risk = _build_customers_at_risk(my_ar)
+
+    return {
+        'bulletin': bulletin,
+        'metrics': metrics,
+        'ar_summary': ar_summary,
+        'customers_at_risk': customers_at_risk,
+    }
+
+
+def _build_ar_aging_summary(ar_df: pd.DataFrame) -> Dict:
+    """Build AR aging summary for warning email."""
+    if ar_df.empty:
+        return {
+            'total_outstanding': 0,
+            'total_overdue': 0,
+            'aging_table': [],
+            'worst_bucket': 'OK',
+            'overdue_invoice_count': 0,
+        }
+
+    out_col = 'outstanding_by_split_usd'
+    if out_col not in ar_df.columns:
+        return {
+            'total_outstanding': 0, 'total_overdue': 0,
+            'aging_table': [], 'worst_bucket': 'OK',
+            'overdue_invoice_count': 0,
+        }
+
+    df = ar_df.copy()
+    df[out_col] = pd.to_numeric(df[out_col], errors='coerce').fillna(0)
+    outstanding_df = df[df[out_col] > 0.01]
+
+    if outstanding_df.empty:
+        return {
+            'total_outstanding': 0, 'total_overdue': 0,
+            'aging_table': [], 'worst_bucket': 'OK',
+            'overdue_invoice_count': 0,
+        }
+
+    total_outstanding = outstanding_df[out_col].sum()
+
+    # Aging buckets
+    aging_col = 'aging_bucket'
+    days_col = 'days_overdue'
+
+    bucket_order = [
+        ('90+ days overdue', 91, '🔴'),
+        ('61-90 days overdue', 61, '🟠'),
+        ('31-60 days overdue', 31, '🟡'),
+        ('1-30 days overdue', 1, '🟢'),
+        ('Not Yet Due', -999, '✅'),
+        ('No Due Date', -999, '⚪'),
+    ]
+
+    aging_table = []
+    worst_bucket = 'OK'
+
+    if aging_col in outstanding_df.columns and outstanding_df[aging_col].notna().any():
+        for bucket_name, min_days, icon in bucket_order:
+            bucket_df = outstanding_df[outstanding_df[aging_col] == bucket_name]
+            if bucket_df.empty:
+                continue
+            amount = bucket_df[out_col].sum()
+            count = bucket_df['inv_number'].nunique() if 'inv_number' in bucket_df.columns else len(bucket_df)
+            share = amount / total_outstanding if total_outstanding > 0 else 0
+            aging_table.append({
+                'bucket': bucket_name,
+                'icon': icon,
+                'amount': amount,
+                'count': count,
+                'share': share,
+                'min_days': min_days,
+            })
+            if worst_bucket == 'OK' and min_days > 0:
+                worst_bucket = bucket_name
+    elif days_col in outstanding_df.columns:
+        outstanding_df[days_col] = pd.to_numeric(outstanding_df[days_col], errors='coerce').fillna(0)
+        for bucket_name, min_days, icon in bucket_order:
+            if bucket_name == 'Not Yet Due':
+                mask = outstanding_df[days_col] < 0
+            elif bucket_name == '1-30 days overdue':
+                mask = (outstanding_df[days_col] >= 1) & (outstanding_df[days_col] <= 30)
+            elif bucket_name == '31-60 days overdue':
+                mask = (outstanding_df[days_col] >= 31) & (outstanding_df[days_col] <= 60)
+            elif bucket_name == '61-90 days overdue':
+                mask = (outstanding_df[days_col] >= 61) & (outstanding_df[days_col] <= 90)
+            elif bucket_name == '90+ days overdue':
+                mask = outstanding_df[days_col] >= 91
+            else:
+                continue
+            bucket_df = outstanding_df[mask]
+            if bucket_df.empty:
+                continue
+            amount = bucket_df[out_col].sum()
+            count = bucket_df['inv_number'].nunique() if 'inv_number' in bucket_df.columns else len(bucket_df)
+            share = amount / total_outstanding if total_outstanding > 0 else 0
+            aging_table.append({
+                'bucket': bucket_name, 'icon': icon,
+                'amount': amount, 'count': count, 'share': share,
+                'min_days': min_days,
+            })
+            if worst_bucket == 'OK' and min_days > 0:
+                worst_bucket = bucket_name
+
+    # Total overdue
+    total_overdue = sum(b['amount'] for b in aging_table if b['min_days'] > 0)
+    overdue_inv_count = sum(b['count'] for b in aging_table if b['min_days'] > 0)
+
+    return {
+        'total_outstanding': total_outstanding,
+        'total_overdue': total_overdue,
+        'aging_table': aging_table,
+        'worst_bucket': worst_bucket,
+        'overdue_invoice_count': overdue_inv_count,
+    }
+
+
+def _build_customers_at_risk(ar_df: pd.DataFrame) -> List[Dict]:
+    """Build per-customer risk breakdown for warning email."""
+    if ar_df.empty or 'customer' not in ar_df.columns:
+        return []
+
+    out_col = 'outstanding_by_split_usd'
+    days_col = 'days_overdue'
+    if out_col not in ar_df.columns:
+        return []
+
+    df = ar_df.copy()
+    df[out_col] = pd.to_numeric(df[out_col], errors='coerce').fillna(0)
+    if days_col in df.columns:
+        df[days_col] = pd.to_numeric(df[days_col], errors='coerce').fillna(0)
+
+    # Only overdue customers
+    if days_col in df.columns:
+        overdue_df = df[df[days_col] > 0]
+    elif 'due_date' in df.columns:
+        df['due_date'] = pd.to_datetime(df['due_date'], errors='coerce')
+        today = pd.Timestamp(date.today())
+        overdue_df = df[df['due_date'] < today]
+    else:
+        return []
+
+    overdue_df = overdue_df[overdue_df[out_col] > 0.01]
+    if overdue_df.empty:
+        return []
+
+    customers = []
+    for customer, cust_df in overdue_df.groupby('customer'):
+        outstanding = cust_df[out_col].sum()
+        invoices = sorted(cust_df['inv_number'].unique().tolist()) if 'inv_number' in cust_df.columns else []
+        max_days = int(cust_df[days_col].max()) if days_col in cust_df.columns else 0
+        aging = cust_df['aging_bucket'].mode().iloc[0] if 'aging_bucket' in cust_df.columns and not cust_df['aging_bucket'].mode().empty else ''
+
+        customers.append({
+            'customer': customer,
+            'outstanding': outstanding,
+            'invoices': invoices[:10],  # Cap at 10 invoice numbers
+            'invoice_count': len(invoices),
+            'max_days_overdue': max_days,
+            'aging_bucket': aging,
+        })
+
+    # Sort by outstanding descending, top 10
+    customers.sort(key=lambda x: x['outstanding'], reverse=True)
+    return customers[:10]
+
+
+# =============================================================================
+# BATCH SUMMARY FOR RECIPIENT TABLE (v2.0)
+# =============================================================================
+
+def collect_recipients_warning_summary(
+    employee_ids: List[int],
+    ar_outstanding_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    backlog_detail_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    active_filters: Dict,
+    prefs_cache: Optional[Dict] = None,
+) -> pd.DataFrame:
+    """
+    Build summary table for recipient selection in Send Warning UI.
+
+    Returns DataFrame with one row per employee:
+        employee_id, name, overdue_amount, customer_count,
+        worst_aging, worst_icon, alert_count, enabled
+    """
+    rows = []
+
+    # Get names from sales_df
+    name_map = {}
+    if not sales_df.empty and 'sales_id' in sales_df.columns and 'sales_name' in sales_df.columns:
+        name_map = sales_df.drop_duplicates('sales_id').set_index('sales_id')['sales_name'].to_dict()
+
+    for eid in employee_ids:
+        name = name_map.get(eid, f"Employee #{eid}")
+
+        # AR summary
+        ar_summary = {'total_overdue': 0, 'worst_bucket': 'OK', 'overdue_invoice_count': 0}
+        if not ar_outstanding_df.empty and 'sales_id' in ar_outstanding_df.columns:
+            my_ar = ar_outstanding_df[ar_outstanding_df['sales_id'] == eid]
+            if not my_ar.empty:
+                ar_summary = _build_ar_aging_summary(my_ar)
+
+        # Alert count (lightweight — just count, don't build full bulletin)
+        alert_count = 0
+        try:
+            bulletin, _ = collect_per_employee_bulletin(
+                employee_id=eid, employee_name=name,
+                sales_df=sales_df, backlog_detail_df=backlog_detail_df,
+                ar_outstanding_df=ar_outstanding_df, targets_df=targets_df,
+                active_filters=active_filters,
+            )
+            alert_count = bulletin.get('alert_count', 0)
+        except Exception:
+            pass
+
+        # Customer count at risk
+        customer_count = 0
+        if not ar_outstanding_df.empty and 'sales_id' in ar_outstanding_df.columns:
+            my_ar = ar_outstanding_df[ar_outstanding_df['sales_id'] == eid]
+            if not my_ar.empty and 'days_overdue' in my_ar.columns:
+                my_ar_overdue = my_ar[pd.to_numeric(my_ar['days_overdue'], errors='coerce').fillna(0) > 0]
+                if 'customer' in my_ar_overdue.columns:
+                    customer_count = my_ar_overdue['customer'].nunique()
+
+        # Preferences
+        enabled = True
+        if prefs_cache and eid in prefs_cache:
+            master = prefs_cache.get(eid, {}).get('all', {})
+            enabled = master.get('enabled', True)
+
+        # Worst aging icon
+        icon_map = {
+            '90+ days overdue': '🔴', '61-90 days overdue': '🟠',
+            '31-60 days overdue': '🟡', '1-30 days overdue': '🟢',
+            'Not Yet Due': '✅', 'OK': '✅',
+        }
+        worst = ar_summary.get('worst_bucket', 'OK')
+
+        rows.append({
+            'employee_id': eid,
+            'name': name,
+            'overdue_amount': ar_summary.get('total_overdue', 0),
+            'customer_count': customer_count,
+            'worst_aging': worst,
+            'worst_icon': icon_map.get(worst, '✅'),
+            'alert_count': alert_count,
+            'enabled': enabled,
+        })
+
+    return pd.DataFrame(rows)

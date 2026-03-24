@@ -5,42 +5,46 @@ Email Notification Module for Salesperson Performance.
 Phase 1: Ad-hoc bulletin email — send warning bulletin from UI.
 Phase 2: Per-salesperson individualized alerts.
 Phase 3: Notification preferences + send log + setup UI.
-Phase 4 (future): Scheduled weekly alerts via standalone script.
+Phase 4: Formal warning emails with AR detail & consequences.
 
 Components:
 - email_service:         SMTP sender using shared config credentials
-- email_builder:         HTML email template for bulletin
+- email_builder:         HTML email templates (bulletin + warning)
 - alert_data_collector:  Per-employee data filtering (zero SQL)
 - recipient_resolver:    Lookup sales + manager emails from employees table
 - notification_sender:   Orchestrator (resolve → check prefs → build → send → log)
 - preferences:           CRUD for notification_preferences table
 - send_log:              Write/read notification_log for audit trail
-- ui:                    Streamlit UI (button + preview dialog)
-- setup_ui:              Setup tab sub-section (preferences + history + test send)
+- ui:                    Streamlit UI (button + preview dialog) — Overview tab
+- setup_ui:              Notifications tab (send warning + preferences + history)
 
-VERSION: 2.1.0
-
-CHANGELOG:
-- v2.1.0: Performance improvements
-          - @st.fragment on render_email_bulletin_button() and render_notification_setup()
-          - @st.dialog on email preview/send (replaces expander-based approach)
-          - @st.cache_data on all SQL read operations (recipient_resolver, preferences, send_log)
-          - is_email_configured() cached check (avoids EmailService() on every rerun)
-          - Removed DataFrame storage in session_state for dialog
-          - Write operations invalidate read caches
-- v2.0.0: Phase 3 — preferences, send log, setup UI
+VERSION: 3.0.0
 """
 
 from .email_service import EmailService, EmailResult, is_email_configured
-from .email_builder import build_bulletin_email, build_bulletin_plain_text
-from .alert_data_collector import collect_per_employee_bulletin
+from .email_builder import (
+    build_bulletin_email,
+    build_bulletin_plain_text,
+    build_warning_email,
+    build_warning_plain_text,
+)
+from .alert_data_collector import (
+    collect_per_employee_bulletin,
+    collect_warning_data,
+    collect_recipients_warning_summary,
+)
 from .recipient_resolver import (
     RecipientInfo,
     resolve_recipients,
     resolve_recipients_batch,
     resolve_all_selected_recipients,
+    get_all_employees_with_email,
 )
-from .notification_sender import send_bulletin_to_team, NotificationResult
+from .notification_sender import (
+    send_bulletin_to_team,
+    send_warning_to_selected,
+    NotificationResult,
+)
 from .ui import render_email_bulletin_button
 
 # Phase 3: Setup UI, Preferences, Send Log
@@ -63,19 +67,25 @@ __all__ = [
     # Email builder
     "build_bulletin_email",
     "build_bulletin_plain_text",
+    "build_warning_email",
+    "build_warning_plain_text",
     # Alert data collector
     "collect_per_employee_bulletin",
+    "collect_warning_data",
+    "collect_recipients_warning_summary",
     # Recipient resolver
     "RecipientInfo",
     "resolve_recipients",
     "resolve_recipients_batch",
     "resolve_all_selected_recipients",
+    "get_all_employees_with_email",
     # Notification sender
     "send_bulletin_to_team",
+    "send_warning_to_selected",
     "NotificationResult",
     # UI
     "render_email_bulletin_button",
-    # Phase 3: Setup UI, Preferences, Send Log
+    # Setup UI, Preferences, Send Log
     "render_notification_setup",
     "get_preferences_for_employees",
     "save_preference",
@@ -88,4 +98,4 @@ __all__ = [
     "get_send_stats",
 ]
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
