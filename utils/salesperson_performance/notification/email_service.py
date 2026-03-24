@@ -33,6 +33,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from email.utils import formataddr
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
@@ -122,19 +123,23 @@ class EmailService:
         bcc: Optional[List[str]] = None,
         reply_to: Optional[str] = None,
         attachments: Optional[List[str]] = None,
+        to_display: Optional[List[str]] = None,
+        cc_display: Optional[List[str]] = None,
     ) -> EmailResult:
         """
         Send an email.
 
         Args:
-            to:          Recipient email addresses
+            to:          Recipient email addresses (plain — for SMTP envelope)
             subject:     Email subject line
             html:        HTML body (primary)
             plain_text:  Plain text fallback (auto-generated from subject if empty)
-            cc:          CC recipients
+            cc:          CC recipients (plain — for SMTP envelope)
             bcc:         BCC recipients (not shown in headers)
             reply_to:    Reply-To address
             attachments: List of file paths to attach
+            to_display:  'Name <email>' formatted To (for email header display)
+            cc_display:  'Name <email>' formatted CC (for email header display)
 
         Returns:
             EmailResult with success status and message
@@ -160,12 +165,12 @@ class EmailService:
 
         # Build message
         msg = MIMEMultipart("mixed")
-        msg["From"] = self._sender
-        msg["To"] = ", ".join(to)
+        msg["From"] = formataddr(("Prostech BI", self._sender))
+        msg["To"] = ", ".join(to_display or to)
         msg["Subject"] = subject
 
         if cc:
-            msg["Cc"] = ", ".join(cc)
+            msg["Cc"] = ", ".join(cc_display or cc)
         if reply_to:
             msg["Reply-To"] = reply_to
 

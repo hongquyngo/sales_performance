@@ -23,6 +23,7 @@ VERSION: 1.1.0
 
 import logging
 from dataclasses import dataclass
+from email.utils import formataddr
 from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
@@ -53,13 +54,27 @@ class RecipientInfo:
 
     @property
     def to_list(self) -> List[str]:
-        """Primary recipients (sales person)."""
+        """Primary recipients — plain email for SMTP envelope."""
         return [self.sales_email] if self.has_sales_email else []
 
     @property
     def cc_list(self) -> List[str]:
-        """CC recipients (manager)."""
+        """CC recipients — plain email for SMTP envelope."""
         return [self.manager_email] if self.has_manager_email else []
+
+    @property
+    def to_list_named(self) -> List[str]:
+        """Primary recipients — 'Name <email>' for display headers."""
+        if self.has_sales_email:
+            return [formataddr((self.sales_name, self.sales_email))]
+        return []
+
+    @property
+    def cc_list_named(self) -> List[str]:
+        """CC recipients — 'Name <email>' for display headers."""
+        if self.has_manager_email:
+            return [formataddr((self.manager_name or '', self.manager_email))]
+        return []
 
 
 # =============================================================================

@@ -102,11 +102,17 @@ def _render_notification_setup_fragment(
     ])
 
     with warning_tab:
-        _render_send_warning_tab(
-            employee_ids, active_filters or {},
-            sales_df, backlog_detail_df, ar_outstanding_df, targets_df,
-            key_prefix,
-        )
+        if access_level in ('full', 'team'):
+            _render_send_warning_tab(
+                employee_ids, active_filters or {},
+                sales_df, backlog_detail_df, ar_outstanding_df, targets_df,
+                key_prefix,
+            )
+        else:
+            st.info(
+                "🔒 **Send Warning requires team-level or full access.**\n\n"
+                "Contact your manager to grant permission."
+            )
 
     with pref_tab:
         _render_preferences_tab(employee_ids, access_level, key_prefix)

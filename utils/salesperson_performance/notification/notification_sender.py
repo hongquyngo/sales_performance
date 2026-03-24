@@ -217,12 +217,14 @@ def send_bulletin_to_team(
         # ─── CC note for manager ───
         cc_note = ""
         cc_list = []
+        cc_list_named = []
         # Check CC preference (function param + per-employee preference)
         emp_cc_pref = True
         if prefs_cache and eid in prefs_cache:
             emp_cc_pref = prefs_cache[eid].get('all', {}).get('notify_manager', True)
         if cc_managers and emp_cc_pref and info.has_manager_email:
             cc_list = info.cc_list
+            cc_list_named = info.cc_list_named
             cc_note = f"This alert was also sent to {info.sales_name} (your direct report)."
 
         # ─── Build HTML email ───
@@ -246,6 +248,8 @@ def send_bulletin_to_team(
             html=html_body,
             plain_text=plain_text,
             cc=cc_list,
+            to_display=info.to_list_named,
+            cc_display=cc_list_named if cc_list else None,
         )
 
         if result.success:
@@ -477,17 +481,20 @@ def send_warning_to_selected(
 
         # ─── CC list: manager (mandatory) + additional ───
         cc_list = []
+        cc_display_list = []
         cc_note_parts = []
 
         # Manager CC (mandatory)
         if info.has_manager_email:
             cc_list.append(info.manager_email)
+            cc_display_list.extend(info.cc_list_named)
             cc_note_parts.append(f"Manager: {info.manager_name}")
 
-        # Additional CC
+        # Additional CC (no display name available — use plain email)
         for cc_email in combined_extra_cc:
             if cc_email not in cc_list and cc_email != info.sales_email:
                 cc_list.append(cc_email)
+                cc_display_list.append(cc_email)
 
         cc_note = f"CC: {', '.join(cc_note_parts)}" if cc_note_parts else ""
         if combined_extra_cc:
@@ -516,6 +523,8 @@ def send_warning_to_selected(
             plain_text=plain_text,
             cc=cc_list,
             attachments=attachments,
+            to_display=info.to_list_named,
+            cc_display=cc_display_list if cc_list else None,
         )
 
         alert_count = warning_data.get('bulletin', {}).get('alert_count', 0)

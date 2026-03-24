@@ -589,7 +589,7 @@ def render_warning_bulletin(
                             f"- 💰 {c['customer']} — outstanding {_fmt(c['outstanding'])} "
                             f"({c['invoice_count']} invoices{note})"
                         )
-                    with st.expander("💰 Top AR Customers", expanded=False):
+                    with st.expander("💰 Top AR Customers", expanded=True):
                         st.markdown("\n".join(ar_lines))
 
         else:
