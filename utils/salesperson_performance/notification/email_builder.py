@@ -247,7 +247,7 @@ def build_bulletin_email(
                 Links above require login — if not signed in, you'll be prompted to log in first.
             </p>
             <p style="margin: 0;">
-                To manage notifications: Dashboard → Setup → Notifications
+                To manage notifications: Dashboard → 📧 Notifications tab
             </p>
         </div>
     </div>

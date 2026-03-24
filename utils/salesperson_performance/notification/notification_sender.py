@@ -139,6 +139,15 @@ def send_bulletin_to_team(
     except Exception:
         dashboard_url = ""
 
+    # --- 3b. Load preferences (skip disabled employees) ---
+    prefs_cache = {}
+    try:
+        from .preferences import get_preferences_for_employees, is_notification_enabled
+        prefs_cache = get_preferences_for_employees(employee_ids)
+    except Exception as e:
+        logger.debug(f"Preferences not available (table may not exist): {e}")
+        # Continue without preferences — all enabled by default
+
     # --- 4. Check if per-employee data is available ---
     has_per_employee_data = (
         sales_df is not None and not sales_df.empty
@@ -175,6 +184,19 @@ def send_bulletin_to_team(
             skipped_count += 1
             continue
 
+        # Check notification preferences (skip if disabled)
+        if prefs_cache:
+            master_pref = prefs_cache.get(eid, {}).get('all', {})
+            if not master_pref.get('enabled', True):
+                details.append({
+                    "employee_id": eid,
+                    "name": info.sales_name,
+                    "status": "skipped",
+                    "reason": "Notifications disabled",
+                })
+                skipped_count += 1
+                continue
+
         # ─── Build per-employee content ───
         if has_per_employee_data:
             # INDIVIDUALIZED: filter data for this employee
@@ -195,7 +217,11 @@ def send_bulletin_to_team(
         # ─── CC note for manager ───
         cc_note = ""
         cc_list = []
-        if cc_managers and info.has_manager_email:
+        # Check CC preference (function param + per-employee preference)
+        emp_cc_pref = True
+        if prefs_cache and eid in prefs_cache:
+            emp_cc_pref = prefs_cache[eid].get('all', {}).get('notify_manager', True)
+        if cc_managers and emp_cc_pref and info.has_manager_email:
             cc_list = info.cc_list
             cc_note = f"This alert was also sent to {info.sales_name} (your direct report)."
 
@@ -249,6 +275,19 @@ def send_bulletin_to_team(
             time.sleep(0.5)
 
     elapsed = round(time.perf_counter() - start, 2)
+
+    # --- 5b. Write to notification_log (non-blocking) ---
+    try:
+        from .send_log import log_send_batch
+        triggered_by_id = None
+        try:
+            import streamlit as _st
+            triggered_by_id = _st.session_state.get('employee_id')
+        except Exception:
+            pass
+        log_send_batch(details, triggered_by=triggered_by_id)
+    except Exception as e:
+        logger.debug(f"Could not write send log: {e}")
 
     # --- 6. Build summary ---
     mode = "individualized" if has_per_employee_data else "team bulletin"

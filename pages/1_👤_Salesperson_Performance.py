@@ -2,13 +2,14 @@
 """
 👤 Salesperson Performance Dashboard (Tabbed Version)
 
-6 Tabs:
+7 Tabs:
 1. Overview - KPI summary, charts, trends
 2. Sales Detail - Transaction list, pivot analysis
 3. Backlog - Backlog detail, ETD analysis, risk
 4. KPI & Targets - KPI assignments, progress, ranking
 5. Payment - Payment & collection analysis, aging, AR outstanding
 6. Setup - Sales split
+7. Notifications - Email preferences, send history, test send
 
 """
 
@@ -85,6 +86,8 @@ from utils.salesperson_performance.warning_bulletin import (
 
 # NEW v4.2.0: Email Notification (Phase 1 — ad-hoc bulletin email)
 from utils.salesperson_performance.notification.ui import render_email_bulletin_button
+# NEW v4.3.0: Notification Setup (Phase 3 — preferences, send log, test send)
+from utils.salesperson_performance.notification.setup_ui import render_notification_setup
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1430,13 +1433,14 @@ if empty_state_info:
 # TABS
 # =============================================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Overview",
     "📋 Sales Detail",
     "📦 Backlog",
     "🎯 KPI & Targets",
     "💰 Payment",
-    "⚙️ Setup"
+    "⚙️ Setup",
+    "📧 Notifications"
 ])
 
 # =============================================================================
@@ -2755,6 +2759,16 @@ with tab6:
         sales_df=data['sales'],
         active_filters=active_filters,
         fragment_key="setup"
+    )
+
+# =============================================================================
+# TAB 7: NOTIFICATIONS (NEW v4.3.0 — Phase 3)
+# =============================================================================
+
+with tab7:
+    render_notification_setup(
+        employee_ids=active_filters.get('employee_ids') or [],
+        access_level=access.get_access_level(),
     )
 
 
