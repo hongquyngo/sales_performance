@@ -555,10 +555,12 @@ def send_warning_to_selected(
 
     elapsed = round(time.perf_counter() - start, 2)
 
-    # --- 7. Cleanup temp Excel files ---
+    # --- 7. Cleanup temp Excel files + temp dirs ---
     for tmp_path in temp_files:
         try:
+            tmp_dir = os.path.dirname(tmp_path)
             os.unlink(tmp_path)
+            os.rmdir(tmp_dir)
         except Exception:
             pass
 

@@ -189,12 +189,23 @@ class EmailService:
                     message=f"Attachment not found: {filepath}",
                     recipients=all_recipients,
                 )
-            part = MIMEBase("application", "octet-stream")
+            # Use proper MIME type for known file types
+            mime_map = {
+                '.xlsx': ('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+                '.xls': ('application', 'vnd.ms-excel'),
+                '.pdf': ('application', 'pdf'),
+                '.csv': ('text', 'csv'),
+            }
+            maintype, subtype = mime_map.get(
+                path.suffix.lower(), ('application', 'octet-stream')
+            )
+            part = MIMEBase(maintype, subtype)
             part.set_payload(path.read_bytes())
             encoders.encode_base64(part)
+            # RFC 2231 encoding handles non-ASCII filenames (e.g., Vietnamese)
             part.add_header(
-                "Content-Disposition",
-                f'attachment; filename="{path.name}"',
+                "Content-Disposition", "attachment",
+                filename=path.name,
             )
             msg.attach(part)
 

@@ -194,10 +194,10 @@ def _render_send_warning_tab(
     ]['employee_id'].tolist()
 
     def _apply_selection(target_ids: list):
-        """Delete all checkbox keys → set target → rerun."""
+        """Set checkbox values directly → rerun fragment."""
         st.session_state[_sel_key] = target_ids
         for eid in all_eids:
-            st.session_state.pop(f"{key_prefix}_chk_{eid}", None)
+            st.session_state[f"{key_prefix}_chk_{eid}"] = (eid in target_ids)
         st.rerun(scope="fragment")
 
     col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 3])

@@ -818,6 +818,7 @@ def generate_warning_excel(
         Path to temp xlsx file, or None if no data.
         Caller must delete the file after use.
     """
+    import os
     import tempfile
     from datetime import date as _date
 
@@ -842,13 +843,9 @@ def generate_warning_excel(
     date_str = _date.today().strftime('%Y%m%d')
     filename = txt['filename'].format(name=safe_name, date=date_str)
 
-    # Create temp file
-    tmp = tempfile.NamedTemporaryFile(
-        suffix='.xlsx', prefix='warning_', delete=False,
-        dir='/tmp',
-    )
-    tmp_path = tmp.name
-    tmp.close()
+    # Create temp file with proper filename (so email attachment has readable name)
+    tmp_dir = tempfile.mkdtemp(prefix='warning_excel_')
+    tmp_path = os.path.join(tmp_dir, filename)
 
     try:
         with pd.ExcelWriter(tmp_path, engine='openpyxl') as writer:
@@ -879,8 +876,8 @@ def generate_warning_excel(
 
         # Check after writer closes (file is saved)
         if sheet_count == 0:
-            import os
             os.unlink(tmp_path)
+            os.rmdir(tmp_dir)
             return None
 
         logger.info(f"Warning Excel generated: {tmp_path} ({sheet_count} sheets)")
@@ -889,8 +886,9 @@ def generate_warning_excel(
     except Exception as e:
         logger.error(f"Error generating warning Excel: {e}")
         try:
-            import os
-            os.unlink(tmp_path)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            os.rmdir(tmp_dir)
         except Exception:
             pass
         return None
