@@ -37,17 +37,17 @@ logger = logging.getLogger(__name__)
 _STYLES = {
     "container": (
         "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
-        "Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; "
+        "Helvetica, Arial, sans-serif; max-width: 860px; margin: 0 auto; "
         "background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px; "
         "overflow: hidden;"
     ),
     "header": (
         "background: linear-gradient(135deg, #1f77b4, #2ca02c); color: #ffffff; "
-        "padding: 20px 24px; font-size: 14px;"
+        "padding: 24px 32px; font-size: 14px;"
     ),
-    "header_title": "margin: 0 0 4px 0; font-size: 20px; font-weight: 700;",
+    "header_title": "margin: 0 0 4px 0; font-size: 22px; font-weight: 700;",
     "header_sub": "margin: 0; font-size: 13px; opacity: 0.9;",
-    "body": "padding: 20px 24px;",
+    "body": "padding: 24px 32px;",
     "headline": (
         "background: #f8f9fa; border-left: 4px solid #1f77b4; "
         "padding: 12px 16px; margin: 0 0 20px 0; font-size: 14px; "
@@ -74,15 +74,23 @@ _STYLES = {
         "background: #f0fdf4; border-left: 4px solid #22c55e; "
         "padding: 12px 16px; margin: 0 0 12px 0; border-radius: 0 4px 4px 0;"
     ),
-    "alert_item": "margin: 4px 0; font-size: 13px; color: #333; line-height: 1.5;",
+    "alert_item": "margin: 6px 0; font-size: 14px; color: #333; line-height: 1.5;",
     "footer": (
-        "background: #f8f9fa; padding: 16px 24px; font-size: 11px; "
+        "background: #f8f9fa; padding: 16px 32px; font-size: 11px; "
         "color: #888; border-top: 1px solid #e0e0e0;"
     ),
     "btn": (
-        "display: inline-block; padding: 8px 20px; background: #1f77b4; "
+        "display: inline-block; padding: 10px 24px; background: #1f77b4; "
         "color: #ffffff; text-decoration: none; border-radius: 4px; "
-        "font-size: 13px; font-weight: 600;"
+        "font-size: 14px; font-weight: 600;"
+    ),
+    "btn_secondary": (
+        "display: inline-block; padding: 6px 14px; background: #f0f0f0; "
+        "color: #333; text-decoration: none; border-radius: 4px; "
+        "font-size: 12px; font-weight: 500; border: 1px solid #ddd;"
+    ),
+    "inline_link": (
+        "color: #1f77b4; text-decoration: none; font-weight: 600; font-size: 12px;"
     ),
     "muted": "color: #999; font-size: 12px;",
 }
@@ -161,6 +169,9 @@ def build_bulletin_email(
         html_parts.append(_build_kpi_snapshot(overview_metrics))
 
     # --- Alerts ---
+    # Build page URL for deep links within alerts
+    _page_url = f"{dashboard_url.rstrip('/')}/Salesperson_Performance" if dashboard_url else ""
+
     if alerts:
         sorted_alerts = sorted(
             alerts,
@@ -175,6 +186,7 @@ def build_bulletin_email(
                 title="🚨 Action Required",
                 alerts=high,
                 box_style=_STYLES["box_high"],
+                page_url=_page_url,
             ))
 
         if medium:
@@ -182,6 +194,7 @@ def build_bulletin_email(
                 title="⚠️ Monitor",
                 alerts=medium,
                 box_style=_STYLES["box_medium"],
+                page_url=_page_url,
             ))
 
         if low:
@@ -189,6 +202,7 @@ def build_bulletin_email(
                 title="ℹ️ For Your Awareness",
                 alerts=low,
                 box_style=_STYLES["box_low"],
+                page_url=_page_url,
             ))
     else:
         html_parts.append(f"""
@@ -199,14 +213,24 @@ def build_bulletin_email(
             </div>
         """)
 
-    # --- CTA Button ---
+    # --- CTA Buttons — Deep Links to Dashboard Tabs ---
     if dashboard_url:
+        page_url = f"{dashboard_url.rstrip('/')}/Salesperson_Performance"
         html_parts.append(f"""
-            <div style="text-align: center; margin: 24px 0 8px 0;">
-                <a href="{_esc(dashboard_url)}" style="{_STYLES['btn']}">
-                    View Dashboard →
+            <div style="text-align: center; margin: 24px 0 12px 0;">
+                <a href="{_esc(page_url)}" style="{_STYLES['btn']}">
+                    📊 Open Dashboard
                 </a>
             </div>
+            <div style="text-align: center; margin: 0 0 8px 0;">
+                <a href="{_esc(page_url)}" style="{_STYLES['btn_secondary']}; margin: 0 4px;">📦 Backlog</a>
+                <a href="{_esc(page_url)}" style="{_STYLES['btn_secondary']}; margin: 0 4px;">💰 Payment</a>
+                <a href="{_esc(page_url)}" style="{_STYLES['btn_secondary']}; margin: 0 4px;">🎯 KPI &amp; Targets</a>
+                <a href="{_esc(page_url)}" style="{_STYLES['btn_secondary']}; margin: 0 4px;">📋 Sales Detail</a>
+            </div>
+            <p style="text-align: center; {_STYLES['muted']}; margin: 4px 0 0 0;">
+                Login required — you'll be redirected to the dashboard after sign-in
+            </p>
         """)
 
     # --- Close body ---
@@ -218,6 +242,9 @@ def build_bulletin_email(
             <p style="margin: 0 0 4px 0;">
                 Auto-generated by <strong>Prostech BI Dashboard</strong>
                 {f'&nbsp;|&nbsp; Triggered by {_esc(sender_name)}' if sender_name != 'Prostech BI' else ''}
+            </p>
+            <p style="margin: 0 0 4px 0;">
+                Links above require login — if not signed in, you'll be prompted to log in first.
             </p>
             <p style="margin: 0;">
                 To manage notifications: Dashboard → Setup → Notifications
@@ -295,8 +322,8 @@ def _build_kpi_snapshot(metrics: Dict) -> str:
     invoices = metrics.get("total_invoices", 0)
     customers = metrics.get("total_customers", 0)
 
-    row_style = "padding: 6px 12px; font-size: 13px; border-bottom: 1px solid #eee;"
-    label_style = f"{row_style} color: #666; width: 120px;"
+    row_style = "padding: 8px 14px; font-size: 14px; border-bottom: 1px solid #eee;"
+    label_style = f"{row_style} color: #666; width: 130px;"
     value_style = f"{row_style} font-weight: 600; color: #333;"
 
     return f"""
@@ -321,12 +348,19 @@ def _build_alert_section(
     title: str,
     alerts: List[Dict],
     box_style: str,
+    page_url: str = "",
 ) -> str:
-    """Build one alert severity section."""
-    items_html = "\n".join(
-        f'<p style="{_STYLES["alert_item"]}">{a.get("icon", "•")} {_esc(a["message"])}</p>'
-        for a in alerts
-    )
+    """Build one alert severity section with contextual deep links."""
+    items = []
+    for a in alerts:
+        msg = _esc(a["message"])
+        icon = a.get("icon", "•")
+        link = _get_contextual_link(a["message"], page_url)
+        link_html = f' <a href="{_esc(link)}" style="{_STYLES["inline_link"]}">View →</a>' if link else ""
+        items.append(
+            f'<p style="{_STYLES["alert_item"]}">{icon} {msg}{link_html}</p>'
+        )
+    items_html = "\n".join(items)
 
     return f"""
         <p style="{_STYLES['section_title']}">{title}</p>
@@ -334,3 +368,24 @@ def _build_alert_section(
             {items_html}
         </div>
     """
+
+
+# Keyword → tab label mapping for deep links
+_ALERT_TAB_HINTS = [
+    # (keywords in alert message, tab label for hint)
+    (["past etd", "delivery", "backlog", "orders past", "ship"], "Backlog"),
+    (["overdue", "outstanding", "ar ", "90+", "aging", "payment"], "Payment"),
+    (["kpi", "achievement", "target", "behind"], "KPI & Targets"),
+    (["customer", "decline", "inactive", "concentration"], "Sales Detail"),
+]
+
+
+def _get_contextual_link(message: str, page_url: str) -> str:
+    """Return page_url if message matches a tab keyword, else empty string."""
+    if not page_url:
+        return ""
+    msg_lower = message.lower()
+    for keywords, _tab in _ALERT_TAB_HINTS:
+        if any(kw in msg_lower for kw in keywords):
+            return page_url
+    return ""
