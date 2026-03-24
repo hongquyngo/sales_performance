@@ -177,28 +177,33 @@ def _render_send_warning_tab(
         return
 
     # Quick filter buttons
+    all_eids = summary_df['employee_id'].tolist()
+
     col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 3])
     with col_btn1:
         if st.button("⚠️ With issues", key=f"{key_prefix}_sel_issues", use_container_width=True):
-            issue_ids = summary_df[
+            issue_ids = set(summary_df[
                 (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
-            ]['employee_id'].tolist()
-            st.session_state[f"{key_prefix}_selected_eids"] = issue_ids
+            ]['employee_id'].tolist())
+            for eid in all_eids:
+                st.session_state[f"{key_prefix}_chk_{eid}"] = (eid in issue_ids)
+            st.rerun(scope="fragment")
     with col_btn2:
         if st.button("✅ All enabled", key=f"{key_prefix}_sel_enabled", use_container_width=True):
-            enabled_ids = summary_df[summary_df['enabled']]['employee_id'].tolist()
-            st.session_state[f"{key_prefix}_selected_eids"] = enabled_ids
+            enabled_ids = set(summary_df[summary_df['enabled']]['employee_id'].tolist())
+            for eid in all_eids:
+                st.session_state[f"{key_prefix}_chk_{eid}"] = (eid in enabled_ids)
+            st.rerun(scope="fragment")
     with col_btn3:
         if st.button("🗑️ Clear", key=f"{key_prefix}_sel_clear", use_container_width=True):
-            st.session_state[f"{key_prefix}_selected_eids"] = []
+            for eid in all_eids:
+                st.session_state[f"{key_prefix}_chk_{eid}"] = False
+            st.rerun(scope="fragment")
 
-    # Default selection: those with issues
-    default_selection = st.session_state.get(
-        f"{key_prefix}_selected_eids",
-        summary_df[
-            (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
-        ]['employee_id'].tolist()
-    )
+    # Default selection (first render only — before any checkbox keys exist)
+    default_selection = summary_df[
+        (summary_df['overdue_amount'] > 0) | (summary_df['alert_count'] > 0)
+    ]['employee_id'].tolist()
 
     # Render recipient checkboxes
     selected_eids = []

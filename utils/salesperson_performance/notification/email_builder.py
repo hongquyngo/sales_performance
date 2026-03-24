@@ -591,6 +591,7 @@ def build_warning_email(
     consequences: Optional[List[tuple]] = None,
     deadline_days: int = DEFAULT_DEADLINE_DAYS,
     lang: str = 'en',
+    has_attachment: bool = False,
 ) -> tuple:
     """
     Build formal warning HTML email with AR detail and consequences.
@@ -775,7 +776,7 @@ def build_warning_email(
                 <strong>{_t(lang, 'footer_auto')}</strong> {_t(lang, 'footer_from')}
                 {triggered}
             </p>
-            <p style="margin:0 0 4px 0;">{_t(lang, 'footer_excel')}</p>
+            {'<p style="margin:0 0 4px 0;">' + _t(lang, 'footer_excel') + '</p>' if has_attachment else ''}
             <p style="margin:0;">{_t(lang, 'footer_manage')}</p>
         </div>
     </div>

@@ -503,6 +503,7 @@ def send_warning_to_selected(
             consequences=consequences,
             deadline_days=deadline_days,
             lang=emp_lang,
+            has_attachment=bool(excel_path),
         )
         plain_text = build_warning_plain_text(warning_data, deadline_days, lang=emp_lang)
 
