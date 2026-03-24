@@ -83,6 +83,9 @@ from utils.salesperson_performance.warning_bulletin import (
     render_warning_bulletin,
 )
 
+# NEW v4.2.0: Email Notification (Phase 1 — ad-hoc bulletin email)
+from utils.salesperson_performance.notification.ui import render_email_bulletin_button
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1442,6 +1445,14 @@ with tab1:
     render_warning_bulletin(
         bulletin=warning_bulletin,
         ar_outstanding_df=data.get('ar_outstanding', pd.DataFrame()),
+    )
+    
+    # === Email Bulletin Button (NEW v4.2.0) ===
+    render_email_bulletin_button(
+        bulletin=warning_bulletin,
+        active_filters=active_filters,
+        overview_metrics=overview_metrics,
+        employee_ids=active_filters.get('employee_ids') or [],
     )
     
     st.divider()

@@ -116,7 +116,7 @@ if __name__ == "__main__":
     # 1) Simple text email
     result = send_email(
         to="quy.ngo@prostech-asia.com",
-        subject="Test từ ERP Rozitek",
+        subject="Test từ ERP Prostech",
         body="Xin chào, đây là email test từ hệ thống ERP.",
     )
     print(result)

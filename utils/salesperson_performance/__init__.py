@@ -43,6 +43,9 @@ from .perf_logger import perf, PerfCategory
 # S3 Utilities (MOVED v4.1.0: from payment/s3_utils to module root)
 from .s3_utils import get_s3_manager, generate_doc_url
 
+# Notification (NEW v4.2.0: Phase 1 — ad-hoc bulletin email)
+from .notification.ui import render_email_bulletin_button
+
 # Constants
 from .constants import (
     COLORS,
@@ -77,6 +80,9 @@ __all__ = [
     'get_s3_manager',
     'generate_doc_url',
     
+    # Notification
+    'render_email_bulletin_button',
+    
     # Constants
     'COLORS',
     'MONTH_ORDER',
@@ -90,4 +96,4 @@ __all__ = [
     'CHART_HEIGHT',
 ]
 
-__version__ = '4.1.0'
+__version__ = '4.2.0'
