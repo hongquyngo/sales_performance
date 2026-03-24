@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 # PUBLIC API
 # =============================================================================
 
-@st.fragment
 def render_email_bulletin_button(
     bulletin: Dict,
     active_filters: Dict,
@@ -60,20 +59,29 @@ def render_email_bulletin_button(
     """
     Render the "📧 Email Bulletin" button below the warning bulletin.
 
-    Wrapped in @st.fragment — button click does NOT trigger full page rerun.
+    Public API — delegates to @st.fragment for isolation.
+    Button click does NOT trigger full page rerun.
     Opens @st.dialog modal for preview & send (also isolated from page).
-    
-    Args:
-        bulletin:           Output of generate_warning_bulletin() (team-level fallback)
-        active_filters:     Current filter state
-        overview_metrics:   Team-level overview metrics (fallback)
-        employee_ids:       Salesperson IDs to notify
-        key_prefix:         Unique key prefix for Streamlit widgets
-        sales_df:           Filtered sales data (all employees)
-        backlog_detail_df:  Backlog detail (all employees)
-        ar_outstanding_df:  AR outstanding (all employees)
-        targets_df:         KPI targets (all employees)
     """
+    _render_bulletin_button_fragment(
+        bulletin, active_filters, overview_metrics, employee_ids,
+        key_prefix, sales_df, backlog_detail_df, ar_outstanding_df, targets_df,
+    )
+
+
+@st.fragment
+def _render_bulletin_button_fragment(
+    bulletin: Dict,
+    active_filters: Dict,
+    overview_metrics: Optional[Dict],
+    employee_ids: Optional[List[int]],
+    key_prefix: str,
+    sales_df: Optional[pd.DataFrame],
+    backlog_detail_df: Optional[pd.DataFrame],
+    ar_outstanding_df: Optional[pd.DataFrame],
+    targets_df: Optional[pd.DataFrame],
+):
+    """Internal fragment — isolated from full page rerun."""
     from .email_service import is_email_configured
 
     # Fast cached check — no EmailService() instantiation
