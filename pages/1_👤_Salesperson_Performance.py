@@ -1529,6 +1529,7 @@ with tab1:
             p_overdue_lines = 0
             _today_ts = pd.Timestamp(date.today())
             if 'due_date' in _ar_dd.columns:
+                _ar_dd['due_date'] = pd.to_datetime(_ar_dd['due_date'], errors='coerce')
                 _od_mask = (
                     _ar_dd['due_date'].notna() &
                     (_ar_dd['due_date'] < _today_ts) &
@@ -1576,7 +1577,7 @@ with tab1:
             with pc1:
                 st.metric(
                     "Outstanding",
-                    _payment_fmt_currency(p_outstanding),
+                    f"${p_outstanding:,.0f}",
                     f"{p_unpaid_count:,} invoices ({p_summary['unpaid_invoices']} unpaid · {p_summary['partial_invoices']} partial)",
                     delta_color="off",
                     help="Total AR outstanding — actual invoice amounts (deduped)"
@@ -1586,7 +1587,7 @@ with tab1:
                     overdue_pct = (p_overdue / p_outstanding * 100) if p_outstanding > 0 else 0
                     st.metric(
                         "🔴 Overdue",
-                        _payment_fmt_currency(p_overdue),
+                        f"${p_overdue:,.0f}",
                         f"{p_overdue_lines:,} lines · {overdue_pct:.0f}% of total",
                         delta_color="inverse",
                         help="Past due date — needs follow-up"
@@ -1597,7 +1598,7 @@ with tab1:
                 nyd_pct = (p_nyd / p_outstanding * 100) if p_outstanding > 0 else 0
                 st.metric(
                     "🟢 Not Yet Due",
-                    _payment_fmt_currency(p_nyd),
+                    f"${p_nyd:,.0f}",
                     f"{p_nyd_lines:,} lines · {nyd_pct:.0f}% of total",
                     delta_color="off",
                     help="Still within payment terms"
