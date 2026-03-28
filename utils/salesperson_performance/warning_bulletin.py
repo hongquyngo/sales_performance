@@ -51,13 +51,18 @@ BACKLOG_OVERDUE_MIN_VALUE = 10_000 # Only alert if overdue backlog > $10K
 # =============================================================================
 
 def _fmt(value: float) -> str:
-    """$1.2M / $850K / $1,234"""
+    """Short format for headlines: $1.2M / $850K / $1,234"""
     if abs(value) >= 1_000_000:
         return f"${value / 1_000_000:,.1f}M"
     elif abs(value) >= 10_000:
         return f"${value / 1_000:,.0f}K"
     else:
         return f"${value:,.0f}"
+
+
+def _fmt_precise(value: float) -> str:
+    """Precise financial format: $1,234.56 — no rounding."""
+    return f"${value:,.2f}"
 
 
 # =============================================================================
@@ -483,15 +488,35 @@ def _get_elapsed_ratio(period_type: str, filters: Dict = None) -> Optional[float
 
 
 def _get_top_ar_customers(ar_outstanding_df: pd.DataFrame, top_n: int = 3) -> List[Dict]:
-    """Top customers by outstanding invoice amount (USD) with overdue info."""
+    """Top customers by ACTUAL outstanding invoice amount (USD, deduped).
+    
+    UPDATED v1.2.0: Uses line_outstanding_usd (actual invoice amount) with
+    dedup by unified_line_id to avoid double-counting multi-split invoices.
+    Shows true customer AR, not split-allocated amounts.
+    """
     if ar_outstanding_df is None or ar_outstanding_df.empty:
         return []
     df = ar_outstanding_df.copy()
 
-    # Use sales_by_split_usd (USD) — outstanding_amount may be in local currency
-    amount_col = 'sales_by_split_usd'
-    if amount_col not in df.columns or 'customer' not in df.columns:
+    if 'customer' not in df.columns:
         return []
+
+    # Prefer actual line amounts (deduped) over split amounts
+    if 'line_outstanding_usd' in df.columns:
+        # Dedup: multi-split invoices have duplicate rows with same line amount
+        if 'unified_line_id' in df.columns:
+            df = df.drop_duplicates(subset='unified_line_id', keep='first')
+        elif 'inv_number' in df.columns and 'product_pn' in df.columns:
+            df = df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
+        amount_col = 'line_outstanding_usd'
+    elif 'outstanding_by_split_usd' in df.columns:
+        amount_col = 'outstanding_by_split_usd'
+    elif 'sales_by_split_usd' in df.columns:
+        amount_col = 'sales_by_split_usd'
+    else:
+        return []
+
+    df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce').fillna(0)
 
     today = pd.Timestamp(date.today())
     if 'due_date' in df.columns:
@@ -586,7 +611,7 @@ def render_warning_bulletin(
                     for c in top_ar:
                         note = f", overdue {c['max_overdue_days']}d" if c['max_overdue_days'] > 0 else ""
                         ar_lines.append(
-                            f"- 💰 {c['customer']} — outstanding {_fmt(c['outstanding'])} "
+                            f"- 💰 {c['customer']} — outstanding {_fmt_precise(c['outstanding'])} "
                             f"({c['invoice_count']} invoices{note})"
                         )
                     with st.expander("💰 Top AR Customers", expanded=True):

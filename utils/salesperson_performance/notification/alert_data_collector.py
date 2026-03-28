@@ -51,6 +51,62 @@ def _fmt(value: float) -> str:
         return f"${value:,.0f}"
 
 
+def _fmt_precise(value: float, currency: str = 'USD') -> str:
+    """Precise financial format: $1,234.56 USD — no rounding."""
+    if currency == 'USD' or not currency:
+        return f"${value:,.2f}"
+    return f"{value:,.2f} {currency}"
+
+
+def _dedup_ar_lines(ar_df: pd.DataFrame) -> pd.DataFrame:
+    """Dedup multi-split AR rows by invoice line for actual amounts.
+    
+    Multi-split invoices have 1 row per salesperson, each with the same
+    line_outstanding_usd. Summing without dedup would double-count.
+    """
+    if ar_df.empty:
+        return ar_df
+    if 'unified_line_id' in ar_df.columns:
+        return ar_df.drop_duplicates(subset='unified_line_id', keep='first')
+    elif 'inv_number' in ar_df.columns and 'product_pn' in ar_df.columns:
+        return ar_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
+    return ar_df
+
+
+def _find_co_split_salespeople(
+    customer_ids: list,
+    full_ar_df: pd.DataFrame,
+    exclude_employee_id: int = None,
+) -> List[Dict]:
+    """Find all salespeople assigned to given customers from full AR data.
+    
+    Returns list of {employee_id, sales_name, sales_email} for co-split partners.
+    """
+    if full_ar_df is None or full_ar_df.empty or not customer_ids:
+        return []
+    
+    mask = (
+        full_ar_df['customer_id'].isin(customer_ids) &
+        full_ar_df['sales_id'].notna()
+    )
+    if 'is_unassigned' in full_ar_df.columns:
+        mask = mask & (full_ar_df['is_unassigned'] != 1)
+    
+    related = full_ar_df[mask].drop_duplicates('sales_id')
+    
+    result = []
+    for _, row in related.iterrows():
+        eid = int(row['sales_id'])
+        if exclude_employee_id and eid == exclude_employee_id:
+            continue
+        result.append({
+            'employee_id': eid,
+            'sales_name': row.get('sales_name', f'Employee #{eid}'),
+            'sales_email': row.get('sales_email', ''),
+        })
+    return result
+
+
 # =============================================================================
 # THRESHOLDS (same as warning_bulletin.py)
 # =============================================================================
@@ -247,7 +303,7 @@ def _check_backlog_past_etd(backlog_df: pd.DataFrame) -> List[Dict]:
 
 
 def _check_ar_overdue_90(ar_df: pd.DataFrame) -> List[Dict]:
-    """AR outstanding 90+ days past due."""
+    """AR outstanding 90+ days past due — uses actual amounts (deduped)."""
     if ar_df.empty:
         return []
 
@@ -255,14 +311,17 @@ def _check_ar_overdue_90(ar_df: pd.DataFrame) -> List[Dict]:
     if overdue_90.empty:
         return []
 
-    amount = overdue_90['outstanding_by_split_usd'].sum() if 'outstanding_by_split_usd' in overdue_90.columns else 0
+    # Use actual line amounts (deduped) for true AR figure
+    dd = _dedup_ar_lines(overdue_90)
+    out_col = 'line_outstanding_usd' if 'line_outstanding_usd' in dd.columns else 'outstanding_by_split_usd'
+    amount = pd.to_numeric(dd[out_col], errors='coerce').fillna(0).sum() if out_col in dd.columns else 0
     if amount < AR_OVERDUE_90_THRESHOLD:
         return []
 
-    count = overdue_90['inv_number'].nunique() if 'inv_number' in overdue_90.columns else len(overdue_90)
+    count = dd['inv_number'].nunique() if 'inv_number' in dd.columns else len(dd)
     return [{
         'severity': 'high', 'icon': '🔴', 'category': 'ar',
-        'message': f"{count} invoices overdue 90+ days, total {_fmt(amount)} — escalate collection",
+        'message': f"{count} invoices overdue 90+ days, total {_fmt_precise(amount)} — escalate collection",
     }]
 
 
@@ -328,7 +387,7 @@ def _check_kpi_behind(
 
 
 def _check_ar_overdue(ar_df: pd.DataFrame) -> List[Dict]:
-    """Total AR overdue (all buckets)."""
+    """Total AR overdue (all buckets) — uses actual amounts (deduped)."""
     if ar_df.empty:
         return []
 
@@ -336,14 +395,16 @@ def _check_ar_overdue(ar_df: pd.DataFrame) -> List[Dict]:
     if overdue.empty:
         return []
 
-    amount = overdue['outstanding_by_split_usd'].sum() if 'outstanding_by_split_usd' in overdue.columns else 0
+    dd = _dedup_ar_lines(overdue)
+    out_col = 'line_outstanding_usd' if 'line_outstanding_usd' in dd.columns else 'outstanding_by_split_usd'
+    amount = pd.to_numeric(dd[out_col], errors='coerce').fillna(0).sum() if out_col in dd.columns else 0
     if amount < AR_OVERDUE_THRESHOLD:
         return []
 
-    count = overdue['inv_number'].nunique() if 'inv_number' in overdue.columns else len(overdue)
+    count = dd['inv_number'].nunique() if 'inv_number' in dd.columns else len(dd)
     return [{
         'severity': 'medium', 'icon': '🟡', 'category': 'ar',
-        'message': f"{count} overdue invoices, total {_fmt(amount)} outstanding",
+        'message': f"{count} overdue invoices, total {_fmt_precise(amount)} outstanding",
     }]
 
 
@@ -352,7 +413,7 @@ def _check_ar_overdue(ar_df: pd.DataFrame) -> List[Dict]:
 # =============================================================================
 
 def _check_coming_due(ar_df: pd.DataFrame) -> List[Dict]:
-    """Invoices due within next 7 days."""
+    """Invoices due within next 7 days — uses actual amounts (deduped)."""
     if ar_df.empty or 'due_date' not in ar_df.columns:
         return []
 
@@ -365,15 +426,17 @@ def _check_coming_due(ar_df: pd.DataFrame) -> List[Dict]:
     if coming.empty:
         return []
 
-    count = coming['inv_number'].nunique() if 'inv_number' in coming.columns else len(coming)
-    amount = coming['outstanding_by_split_usd'].sum() if 'outstanding_by_split_usd' in coming.columns else 0
+    dd = _dedup_ar_lines(coming)
+    out_col = 'line_outstanding_usd' if 'line_outstanding_usd' in dd.columns else 'outstanding_by_split_usd'
+    count = dd['inv_number'].nunique() if 'inv_number' in dd.columns else len(dd)
+    amount = pd.to_numeric(dd[out_col], errors='coerce').fillna(0).sum() if out_col in dd.columns else 0
 
     if amount <= 0:
         return []
 
     return [{
         'severity': 'low', 'icon': '🔵', 'category': 'payment_coming_due',
-        'message': f"{count} invoices ({_fmt(amount)}) due within {COMING_DUE_DAYS} days — follow up on payment",
+        'message': f"{count} invoices ({_fmt_precise(amount)}) due within {COMING_DUE_DAYS} days — follow up on payment",
     }]
 
 
@@ -441,6 +504,7 @@ def collect_warning_data(
     ar_outstanding_df: pd.DataFrame,
     targets_df: pd.DataFrame,
     active_filters: Dict,
+    full_ar_df: pd.DataFrame = None,
 ) -> Dict:
     """
     Collect enriched warning data for one salesperson.
@@ -448,10 +512,16 @@ def collect_warning_data(
     Extends collect_per_employee_bulletin() with:
     - AR aging table (per-bucket breakdown)
     - Customers at risk (per-customer outstanding + invoice list)
+    - Co-split salespeople for shared customers
     - Structured data for warning email template
 
+    UPDATED v2.1.0:
+    - Added full_ar_df parameter for co-split salesperson lookup
+    - AR amounts use actual line values (deduped), not split-allocated
+    - Customers at risk includes LC currency + co-split info
+
     Returns:
-        Dict with keys: bulletin, metrics, ar_summary, customers_at_risk
+        Dict with keys: bulletin, metrics, ar_summary, customers_at_risk, co_split_employees
     """
     # 1. Base bulletin + metrics (existing logic)
     bulletin, metrics = collect_per_employee_bulletin(
@@ -471,13 +541,26 @@ def collect_warning_data(
     my_targets = _filter_by_employee(targets_df, employee_id, 'employee_id')
 
     ar_summary = _build_ar_aging_summary(my_ar)
-    customers_at_risk = _build_customers_at_risk(my_ar)
+    customers_at_risk = _build_customers_at_risk(
+        my_ar,
+        full_ar_df=full_ar_df if full_ar_df is not None else ar_outstanding_df,
+        employee_id=employee_id,
+    )
+    
+    # 3. Collect ALL co-split employees across all at-risk customers
+    all_co_split = {}
+    for cust in customers_at_risk:
+        for sp in cust.get('co_split_salespeople', []):
+            eid = sp['employee_id']
+            if eid not in all_co_split:
+                all_co_split[eid] = sp
 
     return {
         'bulletin': bulletin,
         'metrics': metrics,
         'ar_summary': ar_summary,
         'customers_at_risk': customers_at_risk,
+        'co_split_employees': list(all_co_split.values()),
         # Raw filtered DataFrames (for Excel attachment)
         'ar_df': my_ar,
         'backlog_df': my_backlog,
@@ -487,7 +570,11 @@ def collect_warning_data(
 
 
 def _build_ar_aging_summary(ar_df: pd.DataFrame) -> Dict:
-    """Build AR aging summary for warning email."""
+    """Build AR aging summary using ACTUAL deduped amounts for warning email.
+    
+    UPDATED v2.1.0: Uses line_outstanding_usd (actual invoice amount, deduped)
+    instead of outstanding_by_split_usd (split-allocated). Shows true customer AR.
+    """
     if ar_df.empty:
         return {
             'total_outstanding': 0,
@@ -497,17 +584,23 @@ def _build_ar_aging_summary(ar_df: pd.DataFrame) -> Dict:
             'overdue_invoice_count': 0,
         }
 
-    out_col = 'outstanding_by_split_usd'
-    if out_col not in ar_df.columns:
+    # Prefer actual line amounts (deduped) over split amounts
+    if 'line_outstanding_usd' in ar_df.columns:
+        dd = _dedup_ar_lines(ar_df)
+        out_col = 'line_outstanding_usd'
+    else:
+        dd = ar_df.copy()
+        out_col = 'outstanding_by_split_usd'
+    
+    if out_col not in dd.columns:
         return {
             'total_outstanding': 0, 'total_overdue': 0,
             'aging_table': [], 'worst_bucket': 'OK',
             'overdue_invoice_count': 0,
         }
 
-    df = ar_df.copy()
-    df[out_col] = pd.to_numeric(df[out_col], errors='coerce').fillna(0)
-    outstanding_df = df[df[out_col] > 0.01]
+    dd[out_col] = pd.to_numeric(dd[out_col], errors='coerce').fillna(0)
+    outstanding_df = dd[dd[out_col] > 0.01]
 
     if outstanding_df.empty:
         return {
@@ -594,17 +687,35 @@ def _build_ar_aging_summary(ar_df: pd.DataFrame) -> Dict:
     }
 
 
-def _build_customers_at_risk(ar_df: pd.DataFrame) -> List[Dict]:
-    """Build per-customer risk breakdown for warning email."""
+def _build_customers_at_risk(
+    ar_df: pd.DataFrame,
+    full_ar_df: pd.DataFrame = None,
+    employee_id: int = None,
+) -> List[Dict]:
+    """Build per-customer risk breakdown for warning email.
+    
+    UPDATED v2.1.0:
+    - Uses line_outstanding_usd (actual, deduped) instead of split amounts
+    - Shows both LC and USD amounts  
+    - Includes co-split salespeople from full_ar_df
+    """
     if ar_df.empty or 'customer' not in ar_df.columns:
         return []
 
-    out_col = 'outstanding_by_split_usd'
+    # Use actual line amounts (deduped) for true customer AR
+    if 'line_outstanding_usd' in ar_df.columns:
+        df = _dedup_ar_lines(ar_df)
+        out_col = 'line_outstanding_usd'
+        lc_col = 'line_outstanding_lc'
+    else:
+        df = ar_df.copy()
+        out_col = 'outstanding_by_split_usd'
+        lc_col = 'outstanding_by_split_lc'
+    
     days_col = 'days_overdue'
-    if out_col not in ar_df.columns:
+    if out_col not in df.columns:
         return []
 
-    df = ar_df.copy()
     df[out_col] = pd.to_numeric(df[out_col], errors='coerce').fillna(0)
     if days_col in df.columns:
         df[days_col] = pd.to_numeric(df[days_col], errors='coerce').fillna(0)
@@ -625,21 +736,44 @@ def _build_customers_at_risk(ar_df: pd.DataFrame) -> List[Dict]:
 
     customers = []
     for customer, cust_df in overdue_df.groupby('customer'):
-        outstanding = cust_df[out_col].sum()
+        outstanding_usd = cust_df[out_col].sum()
+        
+        # LC amount (original currency)
+        outstanding_lc = 0
+        currency = ''
+        if lc_col in cust_df.columns:
+            outstanding_lc = pd.to_numeric(cust_df[lc_col], errors='coerce').fillna(0).sum()
+        if 'invoiced_currency' in cust_df.columns:
+            currency = cust_df['invoiced_currency'].mode().iloc[0] if not cust_df['invoiced_currency'].mode().empty else ''
+        
         invoices = sorted(cust_df['inv_number'].unique().tolist()) if 'inv_number' in cust_df.columns else []
         max_days = int(cust_df[days_col].max()) if days_col in cust_df.columns else 0
         aging = cust_df['aging_bucket'].mode().iloc[0] if 'aging_bucket' in cust_df.columns and not cust_df['aging_bucket'].mode().empty else ''
+        
+        customer_id = cust_df['customer_id'].iloc[0] if 'customer_id' in cust_df.columns else None
+
+        # Find co-split salespeople from full AR data
+        co_split = []
+        if full_ar_df is not None and customer_id is not None:
+            co_split = _find_co_split_salespeople(
+                [customer_id], full_ar_df, exclude_employee_id=employee_id
+            )
 
         customers.append({
             'customer': customer,
-            'outstanding': outstanding,
-            'invoices': invoices[:10],  # Cap at 10 invoice numbers
+            'customer_id': customer_id,
+            'outstanding': outstanding_usd,
+            'outstanding_lc': outstanding_lc,
+            'currency': currency,
+            'outstanding_display': _fmt_precise(outstanding_usd),
+            'outstanding_lc_display': _fmt_precise(outstanding_lc, currency) if outstanding_lc and currency and currency != 'USD' else '',
+            'invoices': invoices[:10],
             'invoice_count': len(invoices),
             'max_days_overdue': max_days,
             'aging_bucket': aging,
+            'co_split_salespeople': co_split,
         })
 
-    # Sort by outstanding descending, top 10
     customers.sort(key=lambda x: x['outstanding'], reverse=True)
     return customers[:10]
 

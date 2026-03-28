@@ -304,7 +304,12 @@ def _esc(text: str) -> str:
 
 
 def _fmt(value: float) -> str:
-    """Format currency: $1.2M / $850K / $1,234"""
+    """Format currency: $1,234.56 — precise, no rounding for financial data."""
+    return f"${value:,.2f}"
+
+
+def _fmt_short(value: float) -> str:
+    """Short format for headlines: $1.2M / $850K"""
     if abs(value) >= 1_000_000:
         return f"${value / 1_000_000:,.1f}M"
     elif abs(value) >= 10_000:
@@ -314,7 +319,7 @@ def _fmt(value: float) -> str:
 
 
 def _build_kpi_snapshot(metrics: Dict) -> str:
-    """Build KPI summary table from overview_metrics."""
+    """Build KPI summary table from overview_metrics — precise financial format."""
     revenue = metrics.get("total_revenue", 0)
     gp = metrics.get("total_gp", 0)
     gp_pct = metrics.get("gp_percent", 0)
@@ -631,9 +636,9 @@ def build_warning_email(
 
     S = _WARNING_STYLES
 
-    # ─── Subject line ───
+    # ─── Subject line (use short format for readability) ───
     if total_overdue > 0:
-        subject = _t(lang, 'subject_overdue', amount=_fmt(total_overdue),
+        subject = _t(lang, 'subject_overdue', amount=_fmt_short(total_overdue),
                       name=employee_name, period=period_label)
     elif has_critical:
         subject = _t(lang, 'subject_critical', count=alert_count, name=employee_name)
@@ -697,16 +702,29 @@ def build_warning_email(
             icon = '🔴' if is_critical else '🟠'
             inv_count = cust['invoice_count']
 
+            # Amount display: USD precise + LC if available
+            amount_display = _fmt(cust['outstanding'])
+            lc_display = cust.get('outstanding_lc_display', '')
+            if lc_display:
+                amount_display = f"{lc_display} ({amount_display})"
+
             parts.append(f'<div style="{box_style}">')
             parts.append(
                 f'<p style="margin:0;font-size:14px;font-weight:600;color:#333;">'
-                f'{icon} {_esc(cust["customer"])} — {_fmt(cust["outstanding"])} '
+                f'{icon} {_esc(cust["customer"])} — {amount_display} '
                 f'({inv_count} {inv_word}, {cust["max_days_overdue"]}{d_overdue})</p>'
             )
-            if cust['invoices']:
+            if cust.get('invoices'):
                 inv_list = ', '.join(cust['invoices'][:5])
                 more = f" + {len(cust['invoices'])-5} more" if len(cust['invoices']) > 5 else ""
                 parts.append(f'<p style="{S["invoice_list"]}">Invoices: {_esc(inv_list)}{more}</p>')
+            # Show co-split salespeople if any
+            co_split = cust.get('co_split_salespeople', [])
+            if co_split:
+                co_names = ', '.join(sp['sales_name'] for sp in co_split)
+                parts.append(
+                    f'<p style="{S["invoice_list"]}">👥 Co-assigned: {_esc(co_names)}</p>'
+                )
             parts.append('</div>')
 
     # ─── SECTION 3+: CATEGORIZED ALERTS (replaces "Other Alerts") ───
@@ -818,10 +836,18 @@ def build_warning_plain_text(
     if customers_at_risk:
         lines.append(f"{_t(lang, 'customers_section').replace('🏢 ', '')}:")
         for cust in customers_at_risk[:5]:
+            amount_str = _fmt(cust['outstanding'])
+            lc_display = cust.get('outstanding_lc_display', '')
+            if lc_display:
+                amount_str = f"{lc_display} ({amount_str})"
             lines.append(
-                f"  • {cust['customer']} — {_fmt(cust['outstanding'])} "
+                f"  • {cust['customer']} — {amount_str} "
                 f"({cust['max_days_overdue']}{_t(lang, 'd_overdue')})"
             )
+            co_split = cust.get('co_split_salespeople', [])
+            if co_split:
+                co_names = ', '.join(sp['sales_name'] for sp in co_split)
+                lines.append(f"    Co-assigned: {co_names}")
         lines.append("")
 
     # Categorized alerts

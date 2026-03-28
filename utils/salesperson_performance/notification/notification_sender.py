@@ -456,7 +456,7 @@ def send_warning_to_selected(
         if prefs_cache and eid in prefs_cache:
             emp_lang = prefs_cache[eid].get('all', {}).get('language', default_lang) or default_lang
 
-        # ─── Collect warning data ───
+        # ─── Collect warning data (with full AR for co-split lookup) ───
         warning_data = collect_warning_data(
             employee_id=eid,
             employee_name=info.sales_name,
@@ -465,6 +465,7 @@ def send_warning_to_selected(
             ar_outstanding_df=ar_outstanding_df if ar_outstanding_df is not None else pd.DataFrame(),
             targets_df=targets_df if targets_df is not None else pd.DataFrame(),
             active_filters=active_filters,
+            full_ar_df=ar_outstanding_df,  # Full AR for co-split lookup
         )
 
         # ─── Generate Excel attachment ───
@@ -480,26 +481,57 @@ def send_warning_to_selected(
         except Exception as e:
             logger.warning(f"Excel generation failed for {info.sales_name}: {e}")
 
-        # ─── CC list: manager (mandatory) + additional ───
+        # ─── TO list: primary employee + co-split salespeople ───
+        to_list = list(info.to_list)
+        to_display_list = list(info.to_list_named)
+        
+        # Add co-split salespeople as To recipients
+        # (shared customer AR → all related salespeople should see it)
+        co_split_employees = warning_data.get('co_split_employees', [])
+        co_split_resolved = {}
+        if co_split_employees:
+            co_split_ids = [sp['employee_id'] for sp in co_split_employees]
+            co_split_resolved = resolve_recipients_batch(co_split_ids)
+        
+        for sp in co_split_employees:
+            sp_eid = sp['employee_id']
+            sp_info = co_split_resolved.get(sp_eid)
+            if sp_info and sp_info.has_sales_email:
+                if sp_info.sales_email not in to_list:
+                    to_list.append(sp_info.sales_email)
+                    to_display_list.extend(sp_info.to_list_named)
+
+        # ─── CC list: managers (all To recipients) + additional ───
         cc_list = []
         cc_display_list = []
         cc_note_parts = []
 
-        # Manager CC (mandatory)
+        # Manager of primary employee (mandatory)
         if info.has_manager_email:
             cc_list.append(info.manager_email)
             cc_display_list.extend(info.cc_list_named)
             cc_note_parts.append(f"Manager: {info.manager_name}")
+        
+        # Managers of co-split salespeople
+        for sp in co_split_employees:
+            sp_info = co_split_resolved.get(sp['employee_id'])
+            if sp_info and sp_info.has_manager_email and sp_info.manager_email not in cc_list:
+                cc_list.append(sp_info.manager_email)
+                cc_display_list.extend(sp_info.cc_list_named)
+                cc_note_parts.append(f"Manager: {sp_info.manager_name}")
 
         # Additional CC (no display name available — use plain email)
         for cc_email in combined_extra_cc:
-            if cc_email not in cc_list and cc_email != info.sales_email:
+            if cc_email not in cc_list and cc_email not in to_list:
                 cc_list.append(cc_email)
                 cc_display_list.append(cc_email)
 
         cc_note = f"CC: {', '.join(cc_note_parts)}" if cc_note_parts else ""
         if combined_extra_cc:
             cc_note += f" + {len(combined_extra_cc)} additional"
+        if co_split_employees:
+            co_names = ', '.join(sp['sales_name'] for sp in co_split_employees)
+            cc_note += f" | Co-assigned: {co_names}"
 
         # ─── Build email (bilingual) ───
         subject, html_body = build_warning_email(
@@ -518,28 +550,30 @@ def send_warning_to_selected(
         # ─── Send (with Excel attachment if available) ───
         attachments = [excel_path] if excel_path else None
         result = svc.send(
-            to=info.to_list,
+            to=to_list,
             subject=subject,
             html=html_body,
             plain_text=plain_text,
             cc=cc_list,
             attachments=attachments,
-            to_display=info.to_list_named,
+            to_display=to_display_list,
             cc_display=cc_display_list if cc_list else None,
         )
 
         alert_count = warning_data.get('bulletin', {}).get('alert_count', 0)
         overdue = warning_data.get('ar_summary', {}).get('total_overdue', 0)
+        co_split_names = [sp['sales_name'] for sp in co_split_employees]
 
         if result.success:
             sent_count += 1
             details.append({
                 "employee_id": eid, "name": info.sales_name,
-                "status": "sent", "to": info.sales_email,
+                "status": "sent", "to": ", ".join(to_list),
                 "cc": ", ".join(cc_list) if cc_list else None,
                 "alerts": alert_count, "overdue": overdue,
                 "subject": subject, "lang": emp_lang,
                 "has_excel": bool(excel_path),
+                "co_split": co_split_names,
                 "elapsed": result.elapsed_seconds,
             })
         else:
