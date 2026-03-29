@@ -44,11 +44,7 @@ v3.1.0 FIX:
   line amounts (line_outstanding_usd, line_collected_usd, calculated_invoiced_amount_usd)
 - Affects: AR Context Banner, Unified Metrics, all sub-tabs, and filter by Assignment
 
-VERSION: 4.1.0
-
-v4.1.0 FIX:
-- payment_summary_fragment: accepts selected_employee_ids, passes to analyze_payments
-  for multi-salesperson AR dedup (fixes overcount in Overview & Aging sub-tab)
+VERSION: 4.0.0
 """
 
 import logging
@@ -572,8 +568,6 @@ def payment_tab_fragment(
         payment_summary_fragment(
             pay_df=filtered_df,
             fragment_key=f"{key_prefix}_summary",
-            # Auto-detect from data: if filtered_df has multiple sales_id → dedup
-            selected_employee_ids=None,
         )
 
     with tab_detail:
@@ -987,7 +981,7 @@ def payment_list_fragment(
     # =========================================================================
     if is_grouped:
         display_columns = [
-            'inv_date', 'inv_number', 'oc_po_display',
+            'inv_date', 'inv_number', 'vat_number', 'oc_po_display',
             '_salesperson_display',
             'legal_entity', 'customer', 'customer_type',
             'product_display', 'brand',
@@ -999,7 +993,7 @@ def payment_list_fragment(
         ]
     else:
         display_columns = [
-            'inv_date', 'inv_number', 'oc_po_display',
+            'inv_date', 'inv_number', 'vat_number', 'oc_po_display',
             'sales_name',
             'legal_entity', 'customer', 'customer_type',
             'product_display', 'brand',
@@ -1049,6 +1043,8 @@ def payment_list_fragment(
         column_config = {
             'inv_date': st.column_config.DateColumn("Inv Date"),
             'inv_number': st.column_config.TextColumn("Invoice#"),
+            'vat_number': st.column_config.TextColumn("VAT/GST Inv#",
+                help="VAT/GST invoice number — the accounting invoice sent to customer"),
             'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
             '_salesperson_display': st.column_config.TextColumn("Salesperson(s)", width="medium",
                 help="All salespersons with split %. Format: Name Split%"),
@@ -1076,6 +1072,8 @@ def payment_list_fragment(
         column_config = {
             'inv_date': st.column_config.DateColumn("Inv Date"),
             'inv_number': st.column_config.TextColumn("Invoice#"),
+            'vat_number': st.column_config.TextColumn("VAT/GST Inv#",
+                help="VAT/GST invoice number — the accounting invoice sent to customer"),
             'oc_po_display': st.column_config.TextColumn("OC / PO", width="medium"),
             'sales_name': st.column_config.TextColumn("Salesperson"),
             'legal_entity': st.column_config.TextColumn("Entity"),
@@ -1234,14 +1232,13 @@ def _render_selected_invoice_detail(
 def payment_summary_fragment(
     pay_df: pd.DataFrame,
     fragment_key: str = "sp_pay_summary",
-    selected_employee_ids: list = None,
 ):
     """Overview & Aging — delegates to payment_analysis.render_payment_section."""
     if pay_df.empty:
         st.info("No payment data for selected filters")
         return
 
-    payment_data = analyze_payments(pay_df, selected_employee_ids=selected_employee_ids)
+    payment_data = analyze_payments(pay_df)
     render_payment_section(payment_data)
 
 
@@ -1255,6 +1252,7 @@ def _render_export_button(pay_df: pd.DataFrame, fragment_key: str):
         export_columns = {
             'inv_date': 'Invoice Date',
             'inv_number': 'Invoice#',
+            'vat_number': 'VAT/GST Inv#',
             'oc_number': 'OC#',
             'customer_po_number': 'Customer PO',
             'sales_name': 'Salesperson',

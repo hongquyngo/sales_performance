@@ -880,6 +880,7 @@ class SalespersonExport:
         columns = [
             ('inv_date', 'Date', 12),
             ('inv_number', 'Invoice #', 18),
+            ('vat_number', 'VAT/GST Inv#', 18),
             ('oc_number', 'OC #', 18),
             ('customer_po_number', 'Customer PO', 15),
             ('customer', 'Customer', 30),
@@ -1602,7 +1603,7 @@ class SalespersonExport:
         
         # Select relevant columns
         detail_columns = [
-            'inv_date', 'inv_number', 'sales_name', 'customer', 
+            'inv_date', 'inv_number', 'vat_number', 'sales_name', 'customer', 
             'product_pn', 'brand', 'sales_by_split_usd', 
             'gross_profit_by_split_usd', 'split_rate_percent'
         ]
@@ -1619,6 +1620,7 @@ class SalespersonExport:
         rename_map = {
             'inv_date': 'Invoice Date',
             'inv_number': 'Invoice #',
+            'vat_number': 'VAT/GST Inv#',
             'sales_name': 'Salesperson',
             'customer': 'Customer',
             'product_pn': 'Product',
