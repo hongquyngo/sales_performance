@@ -747,6 +747,7 @@ def _build_customers_at_risk(
             currency = cust_df['invoiced_currency'].mode().iloc[0] if not cust_df['invoiced_currency'].mode().empty else ''
         
         invoices = sorted(cust_df['inv_number'].unique().tolist()) if 'inv_number' in cust_df.columns else []
+        vat_numbers = sorted(cust_df['vat_number'].dropna().unique().tolist()) if 'vat_number' in cust_df.columns else []
         max_days = int(cust_df[days_col].max()) if days_col in cust_df.columns else 0
         aging = cust_df['aging_bucket'].mode().iloc[0] if 'aging_bucket' in cust_df.columns and not cust_df['aging_bucket'].mode().empty else ''
         
@@ -768,6 +769,7 @@ def _build_customers_at_risk(
             'outstanding_display': _fmt_precise(outstanding_usd),
             'outstanding_lc_display': _fmt_precise(outstanding_lc, currency) if outstanding_lc and currency and currency != 'USD' else '',
             'invoices': invoices[:10],
+            'vat_numbers': vat_numbers[:10],
             'invoice_count': len(invoices),
             'max_days_overdue': max_days,
             'aging_bucket': aging,
@@ -896,36 +898,52 @@ _EXCEL_TEXTS = {
 # AR column rename mapping
 _AR_COLUMNS_EN = {
     'customer': 'Customer',
-    'inv_number': 'Invoice #',
+    'inv_number': 'Invoice # (ERP)',
+    'vat_number': 'VAT/GST Inv#',
     'inv_date': 'Invoice Date',
     'due_date': 'Due Date',
     'days_overdue': 'Days Overdue',
-    'outstanding_by_split_usd': 'Outstanding (USD)',
     'aging_bucket': 'Aging Bucket',
+    'invoiced_currency': 'Currency',
+    'line_outstanding_lc': 'Outstanding (LC)',
+    'line_collected_lc': 'Collected (LC)',
+    'line_outstanding_usd': 'Outstanding (USD)',
+    'outstanding_by_split_usd': 'O/S by Split (USD)',
 }
 _AR_COLUMNS_VI = {
     'customer': 'Khách Hàng',
-    'inv_number': 'Số Hóa Đơn',
+    'inv_number': 'Số HĐ (ERP)',
+    'vat_number': 'Số HĐ VAT/GST',
     'inv_date': 'Ngày Hóa Đơn',
     'due_date': 'Ngày Đến Hạn',
     'days_overdue': 'Số Ngày Quá Hạn',
-    'outstanding_by_split_usd': 'Công Nợ (USD)',
     'aging_bucket': 'Nhóm Tuổi Nợ',
+    'invoiced_currency': 'Đơn Vị Tiền',
+    'line_outstanding_lc': 'Công Nợ (Gốc)',
+    'line_collected_lc': 'Đã Thu (Gốc)',
+    'line_outstanding_usd': 'Công Nợ (USD)',
+    'outstanding_by_split_usd': 'CN Theo Split (USD)',
 }
 
 _BACKLOG_COLUMNS_EN = {
     'oc_number': 'OC Number',
     'customer': 'Customer',
-    'product_name': 'Product',
+    'product_pn': 'Product',
+    'brand': 'Brand',
     'etd': 'ETD',
     'backlog_sales_by_split_usd': 'Backlog Value (USD)',
+    'backlog_gp_by_split_usd': 'Backlog GP (USD)',
+    'sales_name': 'Salesperson',
 }
 _BACKLOG_COLUMNS_VI = {
     'oc_number': 'Số OC',
     'customer': 'Khách Hàng',
-    'product_name': 'Sản Phẩm',
+    'product_pn': 'Sản Phẩm',
+    'brand': 'Thương Hiệu',
     'etd': 'Ngày Giao Dự Kiến',
     'backlog_sales_by_split_usd': 'Giá Trị Backlog (USD)',
+    'backlog_gp_by_split_usd': 'GP Backlog (USD)',
+    'sales_name': 'Nhân Viên',
 }
 
 
@@ -1054,11 +1072,14 @@ def _write_ar_sheet(
     if df.empty:
         return False
 
-    # Format outstanding
-    if 'outstanding_by_split_usd' in df.columns:
-        df['outstanding_by_split_usd'] = pd.to_numeric(
-            df['outstanding_by_split_usd'], errors='coerce'
-        ).fillna(0).round(2)
+    # Format financial columns to numeric with 2 decimals
+    _financial_cols = [
+        'line_outstanding_usd', 'line_outstanding_lc', 'line_collected_lc',
+        'outstanding_by_split_usd',
+    ]
+    for col in _financial_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).round(2)
 
     rename = {c: col_map[c] for c in available}
     df.rename(columns=rename, inplace=True)
@@ -1096,6 +1117,11 @@ def _write_backlog_sheet(
     if 'backlog_sales_by_split_usd' in df.columns:
         df['backlog_sales_by_split_usd'] = pd.to_numeric(
             df['backlog_sales_by_split_usd'], errors='coerce'
+        ).fillna(0).round(2)
+
+    if 'backlog_gp_by_split_usd' in df.columns:
+        df['backlog_gp_by_split_usd'] = pd.to_numeric(
+            df['backlog_gp_by_split_usd'], errors='coerce'
         ).fillna(0).round(2)
 
     if 'etd' in df.columns:

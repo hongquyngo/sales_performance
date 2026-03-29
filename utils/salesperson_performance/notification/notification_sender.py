@@ -43,6 +43,12 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# MANDATORY CC — always included, cannot be removed by user
+# =============================================================================
+MANDATORY_CC = ['ar@prostech.vn']
+
+
 @dataclass
 class NotificationResult:
     """Result of a notification send operation."""
@@ -226,6 +232,12 @@ def send_bulletin_to_team(
             cc_list = info.cc_list
             cc_list_named = info.cc_list_named
             cc_note = f"This alert was also sent to {info.sales_name} (your direct report)."
+
+        # ─── Mandatory CC (always included) ───
+        for mcc in MANDATORY_CC:
+            if mcc not in cc_list and mcc != info.sales_email:
+                cc_list.append(mcc)
+                cc_list_named.append(mcc)
 
         # ─── Build HTML email ───
         subject, html_body = build_bulletin_email(
@@ -504,6 +516,12 @@ def send_warning_to_selected(
             if cc_email not in cc_list and cc_email != info.sales_email:
                 cc_list.append(cc_email)
                 cc_display_list.append(cc_email)
+
+        # Mandatory CC (always included, cannot be removed by user)
+        for mcc in MANDATORY_CC:
+            if mcc not in cc_list and mcc != info.sales_email:
+                cc_list.append(mcc)
+                cc_display_list.append(mcc)
 
         cc_note = f"CC: {', '.join(cc_note_parts)}" if cc_note_parts else ""
         if combined_extra_cc:

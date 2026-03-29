@@ -316,12 +316,20 @@ def _render_send_warning_tab(
     elif selected_eids:
         st.caption("No manager emails found for selected recipients")
 
+    # Mandatory CC (always included, not removable)
+    from .notification_sender import MANDATORY_CC
+    if MANDATORY_CC:
+        st.markdown("**🔒 Always CC (company policy):**")
+        for mcc in MANDATORY_CC:
+            st.caption(f"🔒 {mcc}")
+
     # Additional CC from employees
     all_employees = get_all_employees_with_email()
+    _excluded_cc = manager_cc_emails | set(MANDATORY_CC)
     cc_options = [
         f"{e['name']} ({e['email']})"
         for e in all_employees
-        if e['email'] not in manager_cc_emails
+        if e['email'] not in _excluded_cc
     ]
     cc_email_map = {
         f"{e['name']} ({e['email']})": e['email']
@@ -368,8 +376,9 @@ def _render_send_warning_tab(
                     st.session_state[ext_cc_key].remove(ext_email)
                     st.rerun(scope="fragment")
 
-    total_cc = len(manager_cc_emails) + len(additional_cc_emails) + len(external_cc_list)
+    total_cc = len(manager_cc_emails) + len(MANDATORY_CC) + len(additional_cc_emails) + len(external_cc_list)
     st.caption(f"Total CC: {total_cc} ({len(manager_cc_emails)} manager{'s' if len(manager_cc_emails)!=1 else ''}"
+               f" + {len(MANDATORY_CC)} policy"
                f" + {len(additional_cc_emails)} additional + {len(external_cc_list)} external)")
 
     st.divider()

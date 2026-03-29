@@ -714,7 +714,11 @@ def build_warning_email(
                 f'{icon} {_esc(cust["customer"])} — {amount_display} '
                 f'({inv_count} {inv_word}, {cust["max_days_overdue"]}{d_overdue})</p>'
             )
-            if cust.get('invoices'):
+            if cust.get('vat_numbers'):
+                vat_list = ', '.join(cust['vat_numbers'][:5])
+                more = f" + {len(cust['vat_numbers'])-5} more" if len(cust['vat_numbers']) > 5 else ""
+                parts.append(f'<p style="{S["invoice_list"]}">VAT Inv: {_esc(vat_list)}{more}</p>')
+            elif cust.get('invoices'):
                 inv_list = ', '.join(cust['invoices'][:5])
                 more = f" + {len(cust['invoices'])-5} more" if len(cust['invoices']) > 5 else ""
                 parts.append(f'<p style="{S["invoice_list"]}">Invoices: {_esc(inv_list)}{more}</p>')

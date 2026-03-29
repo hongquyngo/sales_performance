@@ -180,6 +180,13 @@ def _email_preview_dialog(
         elif not cc_emails:
             st.caption("No manager emails found")
 
+        # Mandatory CC (always included)
+        from .notification_sender import MANDATORY_CC
+        if MANDATORY_CC:
+            st.caption("**🔒 Always CC (policy):**")
+            for mcc in MANDATORY_CC:
+                st.caption(f"🔒 `{mcc}`")
+
     if missing:
         st.warning(f"⚠️ Missing email for: {', '.join(missing)}")
 
