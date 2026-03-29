@@ -18,7 +18,14 @@ DATA SOURCE (v2.0):
   Fallback proxy (revenue × ratio) is only triggered if pre-calculated columns
   are missing — this should only happen with legacy callers.
 
-VERSION: 2.0.0
+VERSION: 2.1.0
+CHANGELOG:
+- v2.1.0: FIXED AR overcount when viewing multiple salespeople
+          - Added deduplicate_ar_lines() utility function
+          - analyze_payments() now accepts selected_employee_ids parameter
+          - Multi-salesperson: auto-deduplicates by unified_line_id → company-level AR
+          - Single salesperson: unchanged (shows full actual AR per responsibility)
+          - by_salesperson breakdown always uses split amounts (correct per person)
 """
 
 import logging
@@ -118,19 +125,104 @@ def _normalize_status(val) -> str:
 
 
 # =============================================================================
+# AR LINE DEDUPLICATION (NEW v2.1.0)
+# =============================================================================
+
+def deduplicate_ar_lines(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Deduplicate multi-split rows: keep 1 row per invoice line.
+
+    customer_ar_by_salesperson_view returns 1 row per (si_line_id, sales_id).
+    When multiple salespeople are assigned to the same invoice line, the
+    same line_outstanding_usd appears on each row.  Summing without dedup
+    would overcount the company-level AR.
+
+    After dedup, amounts switch from split-allocated to actual line-level:
+      - _outstanding_usd  →  line_outstanding_usd
+      - _collected_usd    →  line_collected_usd
+      - REV_COL           →  calculated_invoiced_amount_usd
+
+    Args:
+        df: DataFrame with potential duplicate rows per unified_line_id.
+            Must already have _outstanding_usd, _collected_usd columns.
+
+    Returns:
+        Deduplicated DataFrame with line-level amounts.
+    """
+    if df.empty:
+        return df
+
+    # --- pick dedup key ---
+    if 'unified_line_id' in df.columns:
+        key = 'unified_line_id'
+    elif 'si_line_id' in df.columns:
+        key = 'si_line_id'
+    elif 'inv_number' in df.columns and 'product_pn' in df.columns:
+        df = df.copy()
+        df['_dedup_key'] = df['inv_number'].astype(str) + '||' + df['product_pn'].astype(str)
+        key = '_dedup_key'
+    else:
+        return df  # can't dedup — return as-is
+
+    dd = df.drop_duplicates(subset=key, keep='first').copy()
+
+    # --- replace split amounts with actual line amounts ---
+    if LINE_OUTSTANDING_COL in dd.columns:
+        dd['_outstanding_usd'] = pd.to_numeric(
+            dd[LINE_OUTSTANDING_COL], errors='coerce'
+        ).fillna(0)
+    if LINE_COLLECTED_COL in dd.columns:
+        dd['_collected_usd'] = pd.to_numeric(
+            dd[LINE_COLLECTED_COL], errors='coerce'
+        ).fillna(0)
+    if ACTUAL_REVENUE_COL in dd.columns:
+        dd[REV_COL] = pd.to_numeric(
+            dd[ACTUAL_REVENUE_COL], errors='coerce'
+        ).fillna(0)
+    if '_outstanding_gp' in dd.columns and GP_COL in dd.columns:
+        # GP outstanding: use ratio approach (no line-level GP outstanding col)
+        dd['_outstanding_gp'] = dd[GP_COL] * (1 - dd['payment_ratio'])
+
+    # clean up temp column
+    if '_dedup_key' in dd.columns:
+        dd.drop(columns=['_dedup_key'], inplace=True)
+
+    return dd
+
+
+def _is_multi_salesperson(df: pd.DataFrame) -> bool:
+    """Check if DataFrame contains rows from multiple salespeople."""
+    if 'sales_id' not in df.columns:
+        return False
+    unique_ids = df['sales_id'].dropna().nunique()
+    return unique_ids > 1
+
+
+# =============================================================================
 # MAIN ANALYSIS
 # =============================================================================
 
 def analyze_payments(
     sales_df: pd.DataFrame,
     as_of_date: date = None,
+    selected_employee_ids: list = None,
 ) -> Optional[Dict]:
     """
     Analyze payment & collection from salesperson sales data.
 
+    UPDATED v2.1.0: Auto-deduplicates when multiple salespeople selected.
+    When viewing team/all, the same invoice line appears once per salesperson.
+    Summing split amounts would overcount company-level AR.
+
+    Single salesperson: shows full actual AR per line (their responsibility).
+    Multiple salespeople: deduplicates by line → true company-level AR.
+
     Args:
-        sales_df: Filtered sales DataFrame from unified_sales_by_salesperson_view
+        sales_df: Filtered sales DataFrame from customer_ar_by_salesperson_view
         as_of_date: Reference date for aging (default: today)
+        selected_employee_ids: List of selected employee IDs.
+            If len > 1, deduplicate line amounts for company-level totals.
+            If None or len <= 1, use per-salesperson amounts.
 
     Returns:
         Dict with payment metrics, or None if no payment data available.
@@ -201,29 +293,53 @@ def analyze_payments(
     raw_statuses = df['payment_status'].dropna().unique().tolist()
 
     # =========================================================================
-    # 1. SUMMARY
+    # DEDUP DECISION (NEW v2.1.0)
+    # Multi-salesperson → dedup by line for company-level totals
+    # Single salesperson → use split amounts (each sales sees full AR)
     # =========================================================================
-    total_invoiced = df[REV_COL].sum()
-    total_collected = df['_collected_usd'].sum()
-    total_outstanding = df['_outstanding_usd'].sum()
+    need_dedup = False
+    if selected_employee_ids is not None and len(selected_employee_ids) > 1:
+        need_dedup = True
+    elif selected_employee_ids is None:
+        # Auto-detect from data
+        need_dedup = _is_multi_salesperson(df)
+
+    # df_company: deduplicated for company-level aggregates
+    # df_split:   original (with split amounts) for by_salesperson breakdown
+    df_split = df  # always keep original for per-salesperson analysis
+    if need_dedup:
+        df_company = deduplicate_ar_lines(df)
+        logger.info(
+            f"AR dedup: {len(df)} rows → {len(df_company)} lines "
+            f"(removed {len(df) - len(df_company)} multi-split duplicates)"
+        )
+    else:
+        df_company = df
+
+    # =========================================================================
+    # 1. SUMMARY (uses company-level amounts)
+    # =========================================================================
+    total_invoiced = df_company[REV_COL].sum()
+    total_collected = df_company['_collected_usd'].sum()
+    total_outstanding = df_company['_outstanding_usd'].sum()
     collection_rate = (total_collected / total_invoiced) if total_invoiced > 0 else 0
 
     # Count by status (invoice-level dedup for counts)
-    has_inv_number = 'inv_number' in df.columns
+    has_inv_number = 'inv_number' in df_company.columns
     if has_inv_number:
-        inv_status = df.groupby('inv_number')['_status'].first()
+        inv_status = df_company.groupby('inv_number')['_status'].first()
         fully_paid_invoices = (inv_status == 'fully_paid').sum()
         partial_invoices = (inv_status == 'partially_paid').sum()
         unpaid_invoices = (inv_status == 'unpaid').sum()
         total_invoices = len(inv_status)
     else:
-        fully_paid_invoices = (df['_status'] == 'fully_paid').sum()
-        partial_invoices = (df['_status'] == 'partially_paid').sum()
-        unpaid_invoices = (df['_status'] == 'unpaid').sum()
-        total_invoices = len(df)
+        fully_paid_invoices = (df_company['_status'] == 'fully_paid').sum()
+        partial_invoices = (df_company['_status'] == 'partially_paid').sum()
+        unpaid_invoices = (df_company['_status'] == 'unpaid').sum()
+        total_invoices = len(df_company)
 
     # Revenue breakdown by status category
-    status_rev = df.groupby('_status').agg(
+    status_rev = df_company.groupby('_status').agg(
         invoiced=(REV_COL, 'sum'),
         collected=('_collected_usd', 'sum'),
         outstanding=('_outstanding_usd', 'sum'),
@@ -241,33 +357,34 @@ def analyze_payments(
         'invoice_paid_rate': (fully_paid_invoices / total_invoices) if total_invoices > 0 else 0,
         'status_breakdown': status_rev,
         'has_outstanding': total_outstanding > 0,
+        'is_deduped': need_dedup,
     }
 
     # =========================================================================
-    # 2. AGING ANALYSIS (outstanding only)
+    # 2. AGING ANALYSIS (outstanding only — company-level)
     # =========================================================================
-    outstanding_df = df[df['_outstanding_usd'] > 0.01].copy()
+    outstanding_df = df_company[df_company['_outstanding_usd'] > 0.01].copy()
     aging_data = _calculate_aging(outstanding_df, today)
 
     # =========================================================================
-    # 3. BY CUSTOMER (outstanding)
+    # 3. BY CUSTOMER (outstanding — company-level)
     # =========================================================================
     by_customer = _analyze_by_customer(outstanding_df, today)
 
     # =========================================================================
-    # 4. BY SALESPERSON
+    # 4. BY SALESPERSON (always uses split amounts — correct per person)
     # =========================================================================
-    by_salesperson = _analyze_by_salesperson(df)
+    by_salesperson = _analyze_by_salesperson(df_split)
 
     # =========================================================================
-    # 5. BY ENTITY
+    # 5. BY ENTITY (company-level)
     # =========================================================================
-    by_entity = _analyze_by_entity(df)
+    by_entity = _analyze_by_entity(df_company)
 
     # =========================================================================
-    # 6. BY MONTH (collection trend)
+    # 6. BY MONTH (collection trend — company-level)
     # =========================================================================
-    by_month = _analyze_by_month(df)
+    by_month = _analyze_by_month(df_company)
 
     return {
         'summary': summary,

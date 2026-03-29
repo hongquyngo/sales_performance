@@ -44,7 +44,11 @@ v3.1.0 FIX:
   line amounts (line_outstanding_usd, line_collected_usd, calculated_invoiced_amount_usd)
 - Affects: AR Context Banner, Unified Metrics, all sub-tabs, and filter by Assignment
 
-VERSION: 4.0.0
+VERSION: 4.1.0
+
+v4.1.0 FIX:
+- payment_summary_fragment: accepts selected_employee_ids, passes to analyze_payments
+  for multi-salesperson AR dedup (fixes overcount in Overview & Aging sub-tab)
 """
 
 import logging
@@ -568,6 +572,8 @@ def payment_tab_fragment(
         payment_summary_fragment(
             pay_df=filtered_df,
             fragment_key=f"{key_prefix}_summary",
+            # Auto-detect from data: if filtered_df has multiple sales_id → dedup
+            selected_employee_ids=None,
         )
 
     with tab_detail:
@@ -1228,13 +1234,14 @@ def _render_selected_invoice_detail(
 def payment_summary_fragment(
     pay_df: pd.DataFrame,
     fragment_key: str = "sp_pay_summary",
+    selected_employee_ids: list = None,
 ):
     """Overview & Aging — delegates to payment_analysis.render_payment_section."""
     if pay_df.empty:
         st.info("No payment data for selected filters")
         return
 
-    payment_data = analyze_payments(pay_df)
+    payment_data = analyze_payments(pay_df, selected_employee_ids=selected_employee_ids)
     render_payment_section(payment_data)
 
 

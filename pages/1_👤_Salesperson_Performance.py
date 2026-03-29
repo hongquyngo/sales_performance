@@ -1302,7 +1302,10 @@ if not ar_df.empty and 'payment_status' in ar_df.columns:
             ar_df.loc[_ar_no_split, 'sales_by_split_usd'] = pd.to_numeric(
                 ar_df.loc[_ar_no_split, 'calculated_invoiced_amount_usd'], errors='coerce'
             ).fillna(0)
-    payment_overview = sp_analyze_payments(ar_df)
+    payment_overview = sp_analyze_payments(
+        ar_df,
+        selected_employee_ids=active_filters.get('employee_ids'),
+    )
 
 # =============================================================================
 # ANALYZE PERIOD TYPE
@@ -1498,66 +1501,33 @@ with tab1:
     )
     
     # =========================================================================
-    # PAYMENT & COLLECTION SECTION (UPDATED v4.3.0)
-    # Uses actual deduped amounts — consistent with Payment tab
+    # PAYMENT & COLLECTION SECTION (UPDATED v4.4.0)
+    # Uses deduped amounts from analyze_payments v2.1.0
+    # — no manual dedup needed; analyze_payments handles multi-split dedup
     # =========================================================================
     if payment_overview and payment_overview.get('summary', {}).get('has_outstanding', False):
         p_summary = payment_overview['summary']
         p_aging = payment_overview.get('aging_buckets', pd.DataFrame())
         
         # =================================================================
-        # Compute ACTUAL deduped amounts from ar_df (same logic as Payment
-        # tab's _render_unified_metrics in payment/fragments.py)
+        # Company-level totals (already deduped by analyze_payments v2.1.0)
         # =================================================================
-        _has_actual_cols = 'line_outstanding_usd' in ar_df.columns
+        p_outstanding = p_summary['total_outstanding']
         
-        if _has_actual_cols:
-            # Dedup multi-split rows: keep 1 row per invoice line
-            if 'unified_line_id' in ar_df.columns:
-                _ar_dd = ar_df.drop_duplicates(subset='unified_line_id', keep='first')
-            elif 'inv_number' in ar_df.columns and 'product_pn' in ar_df.columns:
-                _ar_dd = ar_df.drop_duplicates(subset=['inv_number', 'product_pn'], keep='first')
-            else:
-                _ar_dd = ar_df
-            
-            p_outstanding = pd.to_numeric(
-                _ar_dd['line_outstanding_usd'], errors='coerce'
-            ).fillna(0).sum()
-            
-            # Overdue: due_date < today AND outstanding > 0
-            p_overdue = 0
-            p_overdue_lines = 0
-            _today_ts = pd.Timestamp(date.today())
-            if 'due_date' in _ar_dd.columns:
-                _ar_dd['due_date'] = pd.to_datetime(_ar_dd['due_date'], errors='coerce')
-                _od_mask = (
-                    _ar_dd['due_date'].notna() &
-                    (_ar_dd['due_date'] < _today_ts) &
-                    (pd.to_numeric(_ar_dd['line_outstanding_usd'], errors='coerce').fillna(0) > 0.01)
-                )
-                p_overdue = pd.to_numeric(
-                    _ar_dd.loc[_od_mask, 'line_outstanding_usd'], errors='coerce'
-                ).fillna(0).sum()
-                p_overdue_lines = int(_od_mask.sum())
-            
-            p_nyd = p_outstanding - p_overdue
-            p_nyd_lines = len(_ar_dd) - p_overdue_lines
-        else:
-            # Fallback: use split amounts from payment_overview
-            p_outstanding = p_summary['total_outstanding']
-            p_overdue = 0
-            p_overdue_lines = 0
-            p_nyd = 0
-            p_nyd_lines = 0
-            if not p_aging.empty and 'min_days' in p_aging.columns:
-                nyd_mask = p_aging['min_days'] < 0
-                p_nyd = p_aging.loc[nyd_mask, 'amount'].sum()
-                p_nyd_lines = int(p_aging.loc[nyd_mask, 'count'].sum())
-                overdue_mask = p_aging['min_days'] >= 0
-                p_overdue = p_aging.loc[overdue_mask, 'amount'].sum()
-                p_overdue_lines = int(p_aging.loc[overdue_mask, 'count'].sum())
+        # Overdue / Not Yet Due from deduped aging buckets
+        p_overdue = 0
+        p_overdue_lines = 0
+        p_nyd = 0
+        p_nyd_lines = 0
+        if not p_aging.empty and 'min_days' in p_aging.columns:
+            od_mask = p_aging['min_days'] >= 0
+            p_overdue = p_aging.loc[od_mask, 'amount'].sum()
+            p_overdue_lines = int(p_aging.loc[od_mask, 'count'].sum())
+            nyd_mask = p_aging['min_days'] < 0
+            p_nyd = p_aging.loc[nyd_mask, 'amount'].sum()
+            p_nyd_lines = int(p_aging.loc[nyd_mask, 'count'].sum())
         
-        # Avg Days Overdue — always from aging buckets (weighted by amount)
+        # Avg Days Overdue — weighted by amount from deduped aging buckets
         p_weighted_days = 0
         p_weighted_total = 0
         if not p_aging.empty and 'min_days' in p_aging.columns:
